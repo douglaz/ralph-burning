@@ -49,8 +49,13 @@ status_summary = "created"
     ).expect("write journal");
     fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#).expect("write sessions");
     for subdir in &[
-        "history/payloads", "history/artifacts", "runtime/logs",
-        "runtime/backend", "runtime/temp", "amendments", "rollback",
+        "history/payloads",
+        "history/artifacts",
+        "runtime/logs",
+        "runtime/backend",
+        "runtime/temp",
+        "amendments",
+        "rollback",
     ] {
         fs::create_dir_all(project_root.join(subdir)).expect("create project subdirectory");
     }
@@ -371,17 +376,26 @@ fn project_create_succeeds_and_writes_all_canonical_files() {
 
     let output = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "alpha",
-            "--name", "Alpha Project",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "alpha",
+            "--name",
+            "Alpha Project",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run project create");
 
-    assert!(output.status.success(), "stderr: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Created project 'alpha'"));
@@ -409,11 +423,16 @@ fn project_create_initializes_journal_with_project_created_event() {
 
     let output = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "beta",
-            "--name", "Beta",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "quick_dev",
+            "project",
+            "create",
+            "--id",
+            "beta",
+            "--name",
+            "Beta",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -421,7 +440,9 @@ fn project_create_initializes_journal_with_project_created_event() {
     assert!(output.status.success());
 
     let journal = fs::read_to_string(
-        temp_dir.path().join(".ralph-burning/projects/beta/journal.ndjson"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/beta/journal.ndjson"),
     )
     .expect("read journal");
 
@@ -436,18 +457,25 @@ fn project_create_run_json_shows_not_started() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "gamma",
-            "--name", "Gamma",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "gamma",
+            "--name",
+            "Gamma",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run project create");
 
     let run_json = fs::read_to_string(
-        temp_dir.path().join(".ralph-burning/projects/gamma/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/gamma/run.json"),
     )
     .expect("read run.json");
 
@@ -464,11 +492,16 @@ fn project_create_records_canonical_prompt_reference_not_source_path() {
 
     let output = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "reftest",
-            "--name", "Ref Test",
-            "--prompt", external_prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "reftest",
+            "--name",
+            "Ref Test",
+            "--prompt",
+            external_prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -476,7 +509,9 @@ fn project_create_records_canonical_prompt_reference_not_source_path() {
     assert!(output.status.success());
 
     let project_toml = fs::read_to_string(
-        temp_dir.path().join(".ralph-burning/projects/reftest/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/reftest/project.toml"),
     )
     .expect("read project.toml");
 
@@ -498,11 +533,16 @@ fn project_create_fails_on_duplicate_id() {
 
     let first = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "dup",
-            "--name", "First",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "dup",
+            "--name",
+            "First",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -511,11 +551,16 @@ fn project_create_fails_on_duplicate_id() {
 
     let second = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "dup",
-            "--name", "Second",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "dup",
+            "--name",
+            "Second",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -533,11 +578,16 @@ fn project_create_fails_on_invalid_flow() {
 
     let output = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "bad-flow",
-            "--name", "Bad Flow",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "nonexistent",
+            "project",
+            "create",
+            "--id",
+            "bad-flow",
+            "--name",
+            "Bad Flow",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "nonexistent",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -554,11 +604,16 @@ fn project_create_fails_on_missing_prompt() {
 
     let output = Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "no-prompt",
-            "--name", "No Prompt",
-            "--prompt", "/nonexistent/prompt.md",
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "no-prompt",
+            "--name",
+            "No Prompt",
+            "--prompt",
+            "/nonexistent/prompt.md",
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -576,11 +631,16 @@ fn project_create_does_not_set_active_project() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "noactive",
-            "--name", "No Active",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "noactive",
+            "--name",
+            "No Active",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -618,11 +678,16 @@ fn project_list_shows_created_projects_with_active_marker() {
     // Create two projects
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "alpha",
-            "--name", "Alpha",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "alpha",
+            "--name",
+            "Alpha",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -630,11 +695,16 @@ fn project_list_shows_created_projects_with_active_marker() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "beta",
-            "--name", "Beta",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "quick_dev",
+            "project",
+            "create",
+            "--id",
+            "beta",
+            "--name",
+            "Beta",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -670,11 +740,16 @@ fn project_show_displays_project_details() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "showme",
-            "--name", "Show Me",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "docs_change",
+            "project",
+            "create",
+            "--id",
+            "showme",
+            "--name",
+            "Show Me",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "docs_change",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -703,11 +778,16 @@ fn project_show_resolves_active_project_when_no_id_given() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "active-show",
-            "--name", "Active Show",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "active-show",
+            "--name",
+            "Active Show",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -739,11 +819,16 @@ fn project_delete_removes_project_directory() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "deleteme",
-            "--name", "Delete Me",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "deleteme",
+            "--name",
+            "Delete Me",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -771,11 +856,16 @@ fn project_delete_clears_active_project_if_selected() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "active-del",
-            "--name", "Active Del",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "active-del",
+            "--name",
+            "Active Del",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -829,11 +919,16 @@ fn run_status_shows_not_started_for_new_project() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "status-test",
-            "--name", "Status Test",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "status-test",
+            "--name",
+            "Status Test",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -865,11 +960,16 @@ fn run_history_shows_journal_events_for_new_project() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "hist-test",
-            "--name", "History Test",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "hist-test",
+            "--name",
+            "History Test",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -902,11 +1002,16 @@ fn run_tail_shows_durable_history_only_by_default() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "tail-test",
-            "--name", "Tail Test",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "tail-test",
+            "--name",
+            "Tail Test",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -938,11 +1043,16 @@ fn run_tail_with_logs_includes_runtime_logs_section() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "tail-logs",
-            "--name", "Tail Logs",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "tail-logs",
+            "--name",
+            "Tail Logs",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -973,11 +1083,16 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "tail-multi",
-            "--name", "Tail Multi",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "tail-multi",
+            "--name",
+            "Tail Multi",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -990,7 +1105,9 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
         .expect("select project");
 
     // Write two runtime log files: old and new
-    let logs_dir = temp_dir.path().join(".ralph-burning/projects/tail-multi/runtime/logs");
+    let logs_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/tail-multi/runtime/logs");
     fs::write(
         logs_dir.join("001.ndjson"),
         r#"{"timestamp":"2026-03-11T18:00:00Z","level":"info","source":"agent","message":"old log entry"}"#.to_owned() + "\n",
@@ -1010,8 +1127,14 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Runtime Logs"));
     // Only the newest log file entries should appear
-    assert!(stdout.contains("new log entry"), "newest log should be shown");
-    assert!(!stdout.contains("old log entry"), "older log files should not be included");
+    assert!(
+        stdout.contains("new log entry"),
+        "newest log should be shown"
+    );
+    assert!(
+        !stdout.contains("old log entry"),
+        "older log files should not be included"
+    );
 }
 
 // ── Fail-fast on missing canonical files ──
@@ -1023,11 +1146,16 @@ fn run_status_fails_fast_when_run_json_is_missing() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "broken",
-            "--name", "Broken",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "broken",
+            "--name",
+            "Broken",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1041,7 +1169,9 @@ fn run_status_fails_fast_when_run_json_is_missing() {
 
     // Delete run.json to simulate corruption
     fs::remove_file(
-        temp_dir.path().join(".ralph-burning/projects/broken/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/broken/run.json"),
     )
     .expect("remove run.json");
 
@@ -1064,11 +1194,16 @@ fn run_history_fails_fast_when_journal_is_missing() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "nojrnl",
-            "--name", "No Journal",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "nojrnl",
+            "--name",
+            "No Journal",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1082,7 +1217,9 @@ fn run_history_fails_fast_when_journal_is_missing() {
 
     // Delete journal.ndjson to simulate corruption
     fs::remove_file(
-        temp_dir.path().join(".ralph-burning/projects/nojrnl/journal.ndjson"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/nojrnl/journal.ndjson"),
     )
     .expect("remove journal");
 
@@ -1105,11 +1242,16 @@ fn run_status_fails_fast_when_run_json_is_corrupt() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt",
-            "--name", "Corrupt",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt",
+            "--name",
+            "Corrupt",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1123,7 +1265,9 @@ fn run_status_fails_fast_when_run_json_is_corrupt() {
 
     // Write corrupt JSON to run.json
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/corrupt/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt/run.json"),
         "{invalid json}",
     )
     .expect("corrupt run.json");
@@ -1148,11 +1292,16 @@ fn project_show_fails_fast_when_project_toml_is_missing() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt-proj",
-            "--name", "Corrupt",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt-proj",
+            "--name",
+            "Corrupt",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1160,7 +1309,9 @@ fn project_show_fails_fast_when_project_toml_is_missing() {
 
     // Delete project.toml to simulate corruption
     fs::remove_file(
-        temp_dir.path().join(".ralph-burning/projects/corrupt-proj/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt-proj/project.toml"),
     )
     .expect("remove project.toml");
 
@@ -1183,11 +1334,16 @@ fn project_list_fails_fast_when_project_toml_is_missing() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "good-proj",
-            "--name", "Good",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "good-proj",
+            "--name",
+            "Good",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1195,7 +1351,9 @@ fn project_list_fails_fast_when_project_toml_is_missing() {
 
     // Delete project.toml to simulate corruption
     fs::remove_file(
-        temp_dir.path().join(".ralph-burning/projects/good-proj/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/good-proj/project.toml"),
     )
     .expect("remove project.toml");
 
@@ -1240,11 +1398,16 @@ fn run_status_reports_completed_for_terminal_run_snapshot() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "terminal",
-            "--name", "Terminal",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "terminal",
+            "--name",
+            "Terminal",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1267,7 +1430,9 @@ fn run_status_reports_completed_for_terminal_run_snapshot() {
   "status_summary": "completed after 3 rounds"
 }"#;
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/terminal/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/terminal/run.json"),
         completed_snapshot,
     )
     .expect("write completed snapshot");
@@ -1291,11 +1456,16 @@ fn run_status_fails_for_semantically_inconsistent_snapshot() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "inconsist",
-            "--name", "Inconsistent",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "inconsist",
+            "--name",
+            "Inconsistent",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1318,7 +1488,9 @@ fn run_status_fails_for_semantically_inconsistent_snapshot() {
   "status_summary": "running"
 }"#;
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/inconsist/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/inconsist/run.json"),
         bad_snapshot,
     )
     .expect("write inconsistent snapshot");
@@ -1342,11 +1514,16 @@ fn project_delete_fails_for_semantically_inconsistent_active_run() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "bad-state",
-            "--name", "Bad State",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "bad-state",
+            "--name",
+            "Bad State",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1363,7 +1540,9 @@ fn project_delete_fails_for_semantically_inconsistent_active_run() {
   "status_summary": "paused"
 }"#;
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/bad-state/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/bad-state/run.json"),
         bad_snapshot,
     )
     .expect("write inconsistent snapshot");
@@ -1389,11 +1568,16 @@ fn run_status_fails_fast_when_active_project_toml_is_corrupt() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt-active",
-            "--name", "Corrupt Active",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt-active",
+            "--name",
+            "Corrupt Active",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1407,7 +1591,9 @@ fn run_status_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content (file exists but is malformed)
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/corrupt-active/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt-active/project.toml"),
         "this is {{ not valid toml",
     )
     .expect("corrupt project.toml");
@@ -1430,11 +1616,16 @@ fn run_history_fails_fast_when_active_project_toml_is_corrupt() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt-hist",
-            "--name", "Corrupt Hist",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt-hist",
+            "--name",
+            "Corrupt Hist",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1448,7 +1639,9 @@ fn run_history_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/corrupt-hist/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt-hist/project.toml"),
         "not valid toml {{{",
     )
     .expect("corrupt project.toml");
@@ -1471,11 +1664,16 @@ fn run_tail_fails_fast_when_active_project_toml_is_corrupt() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt-tail",
-            "--name", "Corrupt Tail",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt-tail",
+            "--name",
+            "Corrupt Tail",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1489,7 +1687,9 @@ fn run_tail_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/corrupt-tail/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt-tail/project.toml"),
         "{invalid toml}",
     )
     .expect("corrupt project.toml");
@@ -1512,11 +1712,16 @@ fn project_show_no_id_fails_fast_when_active_project_toml_is_corrupt() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "corrupt-show",
-            "--name", "Corrupt Show",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "corrupt-show",
+            "--name",
+            "Corrupt Show",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1530,7 +1735,9 @@ fn project_show_no_id_fails_fast_when_active_project_toml_is_corrupt() {
 
     // Corrupt project.toml content
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/corrupt-show/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/corrupt-show/project.toml"),
         "garbled content }{{}",
     )
     .expect("corrupt project.toml");
@@ -1553,11 +1760,16 @@ fn run_status_fails_fast_when_active_project_toml_is_missing() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "missing-toml",
-            "--name", "Missing Toml",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "missing-toml",
+            "--name",
+            "Missing Toml",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1571,7 +1783,9 @@ fn run_status_fails_fast_when_active_project_toml_is_missing() {
 
     // Delete project.toml
     fs::remove_file(
-        temp_dir.path().join(".ralph-burning/projects/missing-toml/project.toml"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/missing-toml/project.toml"),
     )
     .expect("remove project.toml");
 
@@ -1596,18 +1810,25 @@ fn project_create_run_json_contains_all_canonical_fields() {
 
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "schema",
-            "--name", "Schema Check",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "schema",
+            "--name",
+            "Schema Check",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
         .expect("create project");
 
     let run_json = fs::read_to_string(
-        temp_dir.path().join(".ralph-burning/projects/schema/run.json"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/schema/run.json"),
     )
     .expect("read run.json");
 
@@ -1630,11 +1851,8 @@ fn project_select_rejects_syntactically_valid_but_schema_invalid_project_toml() 
     // required canonical fields (only has 'id', no name/flow/prompt_reference/etc.)
     let project_root = temp_dir.path().join(".ralph-burning/projects/partial");
     fs::create_dir_all(&project_root).expect("create project directory");
-    fs::write(
-        project_root.join("project.toml"),
-        "id = \"partial\"\n",
-    )
-    .expect("write incomplete project.toml");
+    fs::write(project_root.join("project.toml"), "id = \"partial\"\n")
+        .expect("write incomplete project.toml");
 
     let output = Command::new(binary())
         .args(["project", "select", "partial"])
@@ -1664,11 +1882,16 @@ fn project_delete_clears_active_pointer_transactionally() {
     // Create and select a project
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "txn-del",
-            "--name", "Txn Delete",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "txn-del",
+            "--name",
+            "Txn Delete",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1695,13 +1918,19 @@ fn project_delete_clears_active_pointer_transactionally() {
 
     // Active-project pointer should be cleared
     assert!(
-        !temp_dir.path().join(".ralph-burning/active-project").exists(),
+        !temp_dir
+            .path()
+            .join(".ralph-burning/active-project")
+            .exists(),
         "active-project pointer should be cleared after delete"
     );
 
     // Project directory should be gone
     assert!(
-        !temp_dir.path().join(".ralph-burning/projects/txn-del").exists(),
+        !temp_dir
+            .path()
+            .join(".ralph-burning/projects/txn-del")
+            .exists(),
         "project directory should be removed"
     );
 }
@@ -1713,7 +1942,9 @@ fn empty_journal_fails_fast_on_project_show() {
 
     // Truncate journal to empty
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -1749,7 +1980,9 @@ fn empty_journal_fails_fast_on_run_history() {
         .expect("select project");
 
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -1780,7 +2013,9 @@ fn empty_journal_fails_fast_on_run_tail() {
         .expect("select project");
 
     fs::write(
-        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
         "",
     )
     .expect("truncate journal");
@@ -1807,11 +2042,16 @@ fn delete_with_unremovable_active_pointer_restores_project() {
     // Create and select a project
     Command::new(binary())
         .args([
-            "project", "create",
-            "--id", "restore-me",
-            "--name", "Restore Me",
-            "--prompt", prompt.to_str().unwrap(),
-            "--flow", "standard",
+            "project",
+            "create",
+            "--id",
+            "restore-me",
+            "--name",
+            "Restore Me",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -1842,7 +2082,10 @@ fn delete_with_unremovable_active_pointer_restores_project() {
 
     // Project must still be addressable at its canonical path
     assert!(
-        temp_dir.path().join(".ralph-burning/projects/restore-me/project.toml").exists(),
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/restore-me/project.toml")
+            .exists(),
         "project should be restored after failed pointer clear"
     );
 }

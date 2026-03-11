@@ -8,14 +8,14 @@ use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FsActiveProjectStore, FsArtifactStore, FsJournalStore, FsProjectStore,
-    FsRuntimeLogStore, FsRunSnapshotStore, FileSystem,
+    FileSystem, FsActiveProjectStore, FsArtifactStore, FsJournalStore, FsProjectStore,
+    FsRunSnapshotStore, FsRuntimeLogStore,
 };
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service::{
-    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort,
-    RuntimeLogStorePort, RunSnapshotPort,
+    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
+    RuntimeLogStorePort,
 };
 use ralph_burning::shared::domain::{FlowPreset, ProjectId};
 use ralph_burning::shared::error::AppError;
@@ -59,7 +59,14 @@ fn create_project_on_disk(base_dir: &std::path::Path, id: &str) {
     };
     let journal_line = journal::serialize_event(&event).expect("serialize event");
     store
-        .create_project_atomic(base_dir, &record, "# Prompt\n", &snapshot, &journal_line, &sessions)
+        .create_project_atomic(
+            base_dir,
+            &record,
+            "# Prompt\n",
+            &snapshot,
+            &journal_line,
+            &sessions,
+        )
         .expect("create project");
 }
 
@@ -133,7 +140,9 @@ fn project_store_stage_and_commit_delete_removes_project() {
     store.commit_delete(tmp.path(), &pid).unwrap();
 
     // Verify pending-delete dir is also gone
-    let pending = tmp.path().join(".ralph-burning/projects/.alpha.pending-delete");
+    let pending = tmp
+        .path()
+        .join(".ralph-burning/projects/.alpha.pending-delete");
     assert!(!pending.exists());
 }
 
@@ -573,7 +582,10 @@ fn runtime_log_store_empty_returns_empty() {
 
     let store = FsRuntimeLogStore;
     let pid = ProjectId::new("alpha").unwrap();
-    assert!(store.read_runtime_logs(tmp.path(), &pid).unwrap().is_empty());
+    assert!(store
+        .read_runtime_logs(tmp.path(), &pid)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -683,11 +695,7 @@ fn active_project_store_round_trip() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
 
-    FileSystem::write_active_project(
-        &tmp.path().join(".ralph-burning"),
-        "alpha",
-    )
-    .unwrap();
+    FileSystem::write_active_project(&tmp.path().join(".ralph-burning"), "alpha").unwrap();
 
     let store = FsActiveProjectStore;
     let id = store.read_active_project_id(tmp.path()).unwrap();
@@ -699,11 +707,7 @@ fn active_project_store_clear() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
 
-    FileSystem::write_active_project(
-        &tmp.path().join(".ralph-burning"),
-        "alpha",
-    )
-    .unwrap();
+    FileSystem::write_active_project(&tmp.path().join(".ralph-burning"), "alpha").unwrap();
 
     let store = FsActiveProjectStore;
     store.clear_active_project(tmp.path()).unwrap();
@@ -750,11 +754,8 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
         .unwrap();
 
     // Verify the copied prompt.md contains the original content
-    let copied = fs::read_to_string(
-        tmp.path()
-            .join(".ralph-burning/projects/alpha/prompt.md"),
-    )
-    .unwrap();
+    let copied =
+        fs::read_to_string(tmp.path().join(".ralph-burning/projects/alpha/prompt.md")).unwrap();
     assert_eq!(copied, "# External Prompt\nContent here.");
 
     // Verify project.toml records the canonical reference, not a source path

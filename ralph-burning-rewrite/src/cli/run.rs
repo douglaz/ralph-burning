@@ -1,8 +1,11 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsProjectStore, FsRunSnapshotStore, FsRuntimeLogStore,
+    FsArtifactStore, FsJournalStore, FsProjectStore, FsRawOutputStore, FsRunSnapshotStore,
+    FsRuntimeLogStore, FsSessionStore,
 };
+use crate::adapters::stub_backend::StubBackendAdapter;
+use crate::contexts::agent_execution::service::AgentExecutionService;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort};
 use crate::contexts::workspace_governance;
 use crate::shared::error::{AppError, AppResult};
@@ -46,6 +49,15 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
             command: "run rollback".to_owned(),
         }),
     }
+}
+
+pub fn build_agent_execution_service(
+) -> AgentExecutionService<StubBackendAdapter, FsRawOutputStore, FsSessionStore> {
+    AgentExecutionService::new(
+        StubBackendAdapter::default(),
+        FsRawOutputStore,
+        FsSessionStore,
+    )
 }
 
 async fn handle_status() -> AppResult<()> {
@@ -94,12 +106,7 @@ async fn handle_history() -> AppResult<()> {
     let journal_store = FsJournalStore;
     let artifact_store = FsArtifactStore;
 
-    let history = service::run_history(
-        &journal_store,
-        &artifact_store,
-        &current_dir,
-        &project_id,
-    )?;
+    let history = service::run_history(&journal_store, &artifact_store, &current_dir, &project_id)?;
 
     println!("Project: {}", history.project_id);
     println!("--- Journal Events ---");

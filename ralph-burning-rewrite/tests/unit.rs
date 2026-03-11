@@ -30,3 +30,9 @@ mod query_test;
 
 #[path = "unit/adapter_contract_test.rs"]
 mod adapter_contract_test;
+
+#[path = "unit/agent_execution_test.rs"]
+mod agent_execution_test;
+
+#[path = "unit/stub_backend_test.rs"]
+mod stub_backend_test;

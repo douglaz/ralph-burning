@@ -54,6 +54,31 @@ pub enum AppError {
     JournalSequence { details: String },
     #[error("{command} is not yet implemented")]
     NotYetImplemented { command: String },
+    #[error("backend '{backend}' is unavailable: {details}")]
+    BackendUnavailable { backend: String, details: String },
+    #[error("backend '{backend}' cannot satisfy stage '{stage_id}': {details}")]
+    CapabilityMismatch {
+        backend: String,
+        stage_id: StageId,
+        details: String,
+    },
+    #[error("backend invocation failed for stage '{stage_id}' via '{backend}': {details}")]
+    InvocationFailed {
+        backend: String,
+        stage_id: StageId,
+        failure_class: FailureClass,
+        details: String,
+    },
+    #[error(
+        "backend invocation timed out for stage '{stage_id}' via '{backend}' after {timeout_ms} ms"
+    )]
+    InvocationTimeout {
+        backend: String,
+        stage_id: StageId,
+        timeout_ms: u64,
+    },
+    #[error("backend invocation cancelled for stage '{stage_id}' via '{backend}'")]
+    InvocationCancelled { backend: String, stage_id: StageId },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
@@ -101,6 +126,19 @@ impl ContractError {
             | Self::DomainValidation { stage_id, .. }
             | Self::RenderError { stage_id, .. }
             | Self::QaReviewOutcome { stage_id, .. } => *stage_id,
+        }
+    }
+}
+
+impl AppError {
+    pub fn failure_class(&self) -> Option<FailureClass> {
+        match self {
+            Self::BackendUnavailable { .. } => Some(FailureClass::TransportFailure),
+            Self::CapabilityMismatch { .. } => Some(FailureClass::DomainValidationFailure),
+            Self::InvocationFailed { failure_class, .. } => Some(*failure_class),
+            Self::InvocationTimeout { .. } => Some(FailureClass::Timeout),
+            Self::InvocationCancelled { .. } => Some(FailureClass::Cancellation),
+            _ => None,
         }
     }
 }

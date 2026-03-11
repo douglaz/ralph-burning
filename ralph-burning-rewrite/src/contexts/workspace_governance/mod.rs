@@ -125,8 +125,8 @@ fn validate_project_exists(base_dir: &Path, project_id: &ProjectId) -> AppResult
         file: format!("projects/{}/project.toml", project_id),
         details: format!("cannot read project.toml: {}", e),
     })?;
-    let _: crate::contexts::project_run_record::model::ProjectRecord =
-        toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+    let _: crate::contexts::project_run_record::model::ProjectRecord = toml::from_str(&raw)
+        .map_err(|e| AppError::CorruptRecord {
             file: format!("projects/{}/project.toml", project_id),
             details: format!("project.toml has invalid canonical structure: {}", e),
         })?;

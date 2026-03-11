@@ -1,8 +1,6 @@
 use crate::shared::error::AppResult;
 
-use super::model::{
-    JournalEvent, PayloadRecord, ArtifactRecord, RuntimeLogEntry, RunSnapshot,
-};
+use super::model::{ArtifactRecord, JournalEvent, PayloadRecord, RunSnapshot, RuntimeLogEntry};
 
 /// Read model for `run status`: canonical state only, no inference from artifacts.
 #[derive(Debug, Clone)]

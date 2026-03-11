@@ -4,7 +4,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsActiveProjectStore, FsJournalStore, FsProjectStore, FsRunSnapshotStore, FileSystem,
+    FileSystem, FsActiveProjectStore, FsJournalStore, FsProjectStore, FsRunSnapshotStore,
 };
 use crate::contexts::project_run_record::model::ProjectStatusSummary;
 use crate::contexts::project_run_record::service::{self, CreateProjectInput};
@@ -75,12 +75,11 @@ async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
         current_dir.join(&args.prompt)
     };
 
-    let prompt_contents = std::fs::read_to_string(&prompt_path).map_err(|e| {
-        AppError::InvalidPrompt {
+    let prompt_contents =
+        std::fs::read_to_string(&prompt_path).map_err(|e| AppError::InvalidPrompt {
             path: args.prompt.display().to_string(),
             reason: e.to_string(),
-        }
-    })?;
+        })?;
 
     if prompt_contents.trim().is_empty() {
         return Err(AppError::InvalidPrompt {
@@ -201,13 +200,7 @@ async fn handle_delete(id: String) -> AppResult<()> {
     let run_store = FsRunSnapshotStore;
     let active_store = FsActiveProjectStore;
 
-    service::delete_project(
-        &store,
-        &run_store,
-        &active_store,
-        &current_dir,
-        &project_id,
-    )?;
+    service::delete_project(&store, &run_store, &active_store, &current_dir, &project_id)?;
 
     println!("Deleted project '{}'", project_id);
     Ok(())

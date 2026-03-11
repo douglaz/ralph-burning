@@ -5,20 +5,21 @@ use chrono::{DateTime, Utc};
 use crate::shared::domain::{FlowPreset, ProjectId};
 use crate::shared::error::{AppError, AppResult};
 
-use super::model::{
-    ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
-    ProjectDetail, ProjectListEntry, ProjectRecord, ProjectStatusSummary,
-    RunSnapshot, RuntimeLogEntry, SessionStore,
-};
 use super::journal;
-use super::queries::{
-    self, RunHistoryView, RunStatusView, RunTailView,
+use super::model::{
+    ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, ProjectDetail, ProjectListEntry,
+    ProjectRecord, ProjectStatusSummary, RunSnapshot, RuntimeLogEntry, SessionStore,
 };
+use super::queries::{self, RunHistoryView, RunStatusView, RunTailView};
 
 /// Port for reading and writing project records.
 pub trait ProjectStorePort {
     fn project_exists(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool>;
-    fn read_project_record(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<ProjectRecord>;
+    fn read_project_record(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ProjectRecord>;
     fn list_project_ids(&self, base_dir: &Path) -> AppResult<Vec<ProjectId>>;
 
     /// Stage a project for deletion: makes it invisible to list/show but
@@ -46,19 +47,32 @@ pub trait ProjectStorePort {
 
 /// Port for reading and appending journal events.
 pub trait JournalStorePort {
-    fn read_journal(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<Vec<JournalEvent>>;
+    fn read_journal(&self, base_dir: &Path, project_id: &ProjectId)
+        -> AppResult<Vec<JournalEvent>>;
     fn append_event(&self, base_dir: &Path, project_id: &ProjectId, line: &str) -> AppResult<()>;
 }
 
 /// Port for reading payload and artifact durable history.
 pub trait ArtifactStorePort {
-    fn list_payloads(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<Vec<PayloadRecord>>;
-    fn list_artifacts(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<Vec<ArtifactRecord>>;
+    fn list_payloads(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<PayloadRecord>>;
+    fn list_artifacts(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<ArtifactRecord>>;
 }
 
 /// Port for reading runtime logs (separate from durable history).
 pub trait RuntimeLogStorePort {
-    fn read_runtime_logs(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<Vec<RuntimeLogEntry>>;
+    fn read_runtime_logs(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<RuntimeLogEntry>>;
 }
 
 /// Port for reading/writing the run snapshot.
@@ -245,15 +259,15 @@ pub fn delete_project(
     // addressable and the pointer is unchanged.
     if was_active {
         if let Err(clear_err) = active_port.clear_active_project(base_dir) {
-            store.rollback_delete(base_dir, project_id).map_err(|restore_err| {
-                AppError::CorruptRecord {
+            store
+                .rollback_delete(base_dir, project_id)
+                .map_err(|restore_err| AppError::CorruptRecord {
                     file: format!("projects/{}", project_id),
                     details: format!(
                         "delete partially failed: pointer clear error: {}, restore error: {}",
                         clear_err, restore_err
                     ),
-                }
-            })?;
+                })?;
             return Err(clear_err);
         }
     }

@@ -23,6 +23,252 @@ pub enum FailureClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BackendFamily {
+    Claude,
+    Codex,
+    OpenRouter,
+    Stub,
+}
+
+impl BackendFamily {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Claude => "claude",
+            Self::Codex => "codex",
+            Self::OpenRouter => "openrouter",
+            Self::Stub => "stub",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Claude => "Claude",
+            Self::Codex => "Codex",
+            Self::OpenRouter => "OpenRouter",
+            Self::Stub => "Stub",
+        }
+    }
+
+    pub fn default_model_id(self) -> &'static str {
+        match self {
+            Self::Claude => "opus-4.1",
+            Self::Codex => "gpt-5-codex",
+            Self::OpenRouter => "openai/gpt-5",
+            Self::Stub => "stub-default",
+        }
+    }
+}
+
+impl fmt::Display for BackendFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for BackendFamily {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "claude" => Ok(Self::Claude),
+            "codex" => Ok(Self::Codex),
+            "openrouter" => Ok(Self::OpenRouter),
+            "stub" => Ok(Self::Stub),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "backend".to_owned(),
+                value: value.to_owned(),
+                reason: "expected one of claude, codex, openrouter, stub".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CapabilityMetadata {
+    pub supports_structured_output: bool,
+    pub supports_session_reuse: bool,
+    pub supports_cancellation: bool,
+    pub supported_stages: Vec<StageId>,
+}
+
+impl CapabilityMetadata {
+    pub fn for_all_stages(supports_session_reuse: bool, supports_cancellation: bool) -> Self {
+        Self {
+            supports_structured_output: true,
+            supports_session_reuse,
+            supports_cancellation,
+            supported_stages: StageId::ALL.to_vec(),
+        }
+    }
+
+    pub fn supports_stage(&self, stage_id: StageId) -> bool {
+        self.supported_stages.contains(&stage_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendSpec {
+    pub family: BackendFamily,
+    pub display_name: String,
+    pub capabilities: CapabilityMetadata,
+}
+
+impl BackendSpec {
+    pub fn from_family(family: BackendFamily) -> Self {
+        let supports_session_reuse = !matches!(family, BackendFamily::OpenRouter);
+        Self {
+            family,
+            display_name: family.display_name().to_owned(),
+            capabilities: CapabilityMetadata::for_all_stages(supports_session_reuse, true),
+        }
+    }
+}
+
+impl fmt::Display for BackendSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.display_name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ModelSpec {
+    pub backend_family: BackendFamily,
+    pub model_id: String,
+    pub display_name: String,
+    pub capabilities: CapabilityMetadata,
+}
+
+impl ModelSpec {
+    pub fn new(backend_family: BackendFamily, model_id: impl Into<String>) -> Self {
+        let model_id = model_id.into();
+        let display_name = format!("{} {}", backend_family.display_name(), model_id);
+        let supports_session_reuse = !matches!(backend_family, BackendFamily::OpenRouter);
+        Self {
+            backend_family,
+            model_id,
+            display_name,
+            capabilities: CapabilityMetadata::for_all_stages(supports_session_reuse, true),
+        }
+    }
+
+    pub fn default_for_backend(backend_family: BackendFamily) -> Self {
+        Self::new(backend_family, backend_family.default_model_id())
+    }
+}
+
+impl fmt::Display for ModelSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.display_name)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedBackendTarget {
+    pub backend: BackendSpec,
+    pub model: ModelSpec,
+}
+
+impl ResolvedBackendTarget {
+    pub fn new(backend_family: BackendFamily, model_id: impl Into<String>) -> Self {
+        Self {
+            backend: BackendSpec::from_family(backend_family),
+            model: ModelSpec::new(backend_family, model_id),
+        }
+    }
+
+    pub fn supports_stage(&self, stage_id: StageId) -> bool {
+        self.backend.capabilities.supports_stage(stage_id)
+            && self.model.capabilities.supports_stage(stage_id)
+    }
+
+    pub fn supports_session_reuse(&self) -> bool {
+        self.backend.capabilities.supports_session_reuse
+            && self.model.capabilities.supports_session_reuse
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendRole {
+    Planner,
+    Implementer,
+    Reviewer,
+    QaValidator,
+    CompletionJudge,
+}
+
+impl BackendRole {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::Implementer => "implementer",
+            Self::Reviewer => "reviewer",
+            Self::QaValidator => "qa_validator",
+            Self::CompletionJudge => "completion_judge",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Planner => "Planner",
+            Self::Implementer => "Implementer",
+            Self::Reviewer => "Reviewer",
+            Self::QaValidator => "QA Validator",
+            Self::CompletionJudge => "Completion Judge",
+        }
+    }
+
+    pub fn default_target(self) -> ResolvedBackendTarget {
+        match self {
+            Self::Planner => ResolvedBackendTarget::new(BackendFamily::Claude, "opus-4.1"),
+            Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5-codex"),
+            Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Claude, "sonnet-4.0"),
+            Self::QaValidator => {
+                ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
+            }
+            Self::CompletionJudge => ResolvedBackendTarget::new(BackendFamily::Claude, "opus-4.1"),
+        }
+    }
+
+    pub fn allows_session_reuse(self) -> bool {
+        matches!(self, Self::Implementer | Self::Reviewer | Self::QaValidator)
+    }
+
+    pub fn for_stage(stage_id: StageId) -> Self {
+        match stage_id {
+            StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
+                Self::Planner
+            }
+            StageId::Implementation
+            | StageId::PlanAndImplement
+            | StageId::ApplyFixes
+            | StageId::DocsUpdate
+            | StageId::CiUpdate => Self::Implementer,
+            StageId::Qa
+            | StageId::DocsValidation
+            | StageId::CiValidation
+            | StageId::AcceptanceQa => Self::QaValidator,
+            StageId::CompletionPanel => Self::CompletionJudge,
+            StageId::Review | StageId::FinalReview => Self::Reviewer,
+        }
+    }
+}
+
+impl fmt::Display for BackendRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SessionPolicy {
+    NewSession,
+    ReuseIfAllowed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FlowPreset {
     Standard,
     QuickDev,

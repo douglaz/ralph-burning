@@ -174,11 +174,7 @@ impl ActiveProjectPort for FakeActiveProjectStore {
         Ok(())
     }
 
-    fn write_active_project(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<()> {
+    fn write_active_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
         Ok(())
     }
 }
@@ -333,8 +329,15 @@ fn show_project_returns_detail() {
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let detail =
-        show_project(&store, &run_store, &journal_store, &active_store, &base_dir, &pid).unwrap();
+    let detail = show_project(
+        &store,
+        &run_store,
+        &journal_store,
+        &active_store,
+        &base_dir,
+        &pid,
+    )
+    .unwrap();
 
     assert_eq!(detail.record.id.as_str(), "alpha");
     assert!(detail.is_active);
@@ -351,8 +354,14 @@ fn show_project_fails_for_missing_project() {
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("missing").unwrap();
 
-    let result =
-        show_project(&store, &run_store, &journal_store, &active_store, &base_dir, &pid);
+    let result = show_project(
+        &store,
+        &run_store,
+        &journal_store,
+        &active_store,
+        &base_dir,
+        &pid,
+    );
     assert!(matches!(
         result.unwrap_err(),
         AppError::ProjectNotFound { .. }
@@ -629,11 +638,7 @@ fn delete_project_does_not_touch_pointer_on_stage_failure() {
             Ok(())
         }
 
-        fn write_active_project(
-            &self,
-            _base_dir: &Path,
-            _project_id: &ProjectId,
-        ) -> AppResult<()> {
+        fn write_active_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
             self.write_called.set(true);
             Ok(())
         }
@@ -733,11 +738,7 @@ fn delete_project_rolls_back_on_clear_pointer_failure() {
             )))
         }
 
-        fn write_active_project(
-            &self,
-            _base_dir: &Path,
-            _project_id: &ProjectId,
-        ) -> AppResult<()> {
+        fn write_active_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
             Ok(())
         }
     }

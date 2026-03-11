@@ -8,10 +8,7 @@ pub fn validate_sequence(last_sequence: u64, event: &JournalEvent) -> AppResult<
     let expected = last_sequence + 1;
     if event.sequence != expected {
         return Err(AppError::JournalSequence {
-            details: format!(
-                "expected sequence {expected}, got {}",
-                event.sequence
-            ),
+            details: format!("expected sequence {expected}, got {}", event.sequence),
         });
     }
     Ok(())

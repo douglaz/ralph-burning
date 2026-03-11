@@ -5,14 +5,17 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::contexts::agent_execution::model::RawOutputReference;
+use crate::contexts::agent_execution::service::RawOutputPort;
+use crate::contexts::agent_execution::session::{PersistedSessions, SessionStorePort};
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RunSnapshot,
-    RuntimeLogEntry, SessionStore,
+    ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RunSnapshot, RuntimeLogEntry,
+    SessionStore,
 };
 use crate::contexts::project_run_record::service::{
-    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort,
-    RuntimeLogStorePort, RunSnapshotPort,
+    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
+    RuntimeLogStorePort,
 };
 use crate::shared::domain::{ProjectId, WorkspaceConfig};
 use crate::shared::error::{AppError, AppResult};
@@ -186,10 +189,7 @@ impl FileSystem {
         })?;
         fs::create_dir_all(parent)?;
 
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(path)?;
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
         writeln!(file, "{}", line)?;
         file.sync_all()?;
         Ok(())
@@ -268,9 +268,8 @@ impl ProjectStorePort for FsProjectStore {
                 if !entry.path().join(PROJECT_CONFIG_FILE).is_file() {
                     return Err(AppError::CorruptRecord {
                         file: format!("projects/{}/project.toml", name_str),
-                        details:
-                            "project directory exists but canonical project.toml is missing"
-                                .to_owned(),
+                        details: "project directory exists but canonical project.toml is missing"
+                            .to_owned(),
                     });
                 }
                 ids.push(pid);
@@ -354,9 +353,8 @@ impl ProjectStorePort for FsProjectStore {
         // Write all canonical files into staging
         let write_result = (|| -> AppResult<()> {
             // project.toml
-            let project_toml = toml::to_string_pretty(record).map_err(|e| {
-                AppError::Io(std::io::Error::other(e.to_string()))
-            })?;
+            let project_toml = toml::to_string_pretty(record)
+                .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
             fs::write(staging_root.join(PROJECT_CONFIG_FILE), project_toml)?;
 
             // prompt.md
@@ -406,22 +404,15 @@ impl JournalStorePort for FsJournalStore {
         let path = FileSystem::project_root(base_dir, project_id).join(JOURNAL_FILE);
         match fs::read_to_string(&path) {
             Ok(contents) => journal::parse_journal(&contents),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(AppError::CorruptRecord {
-                    file: format!("projects/{}/journal.ndjson", project_id),
-                    details: "canonical file is missing".to_owned(),
-                })
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(AppError::CorruptRecord {
+                file: format!("projects/{}/journal.ndjson", project_id),
+                details: "canonical file is missing".to_owned(),
+            }),
             Err(e) => Err(e.into()),
         }
     }
 
-    fn append_event(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-        line: &str,
-    ) -> AppResult<()> {
+    fn append_event(&self, base_dir: &Path, project_id: &ProjectId, line: &str) -> AppResult<()> {
         let path = FileSystem::project_root(base_dir, project_id).join(JOURNAL_FILE);
         FileSystem::append_line(&path, line)
     }
@@ -447,17 +438,14 @@ impl ArtifactStorePort for FsArtifactStore {
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "json") {
                 let raw = fs::read_to_string(&path)?;
-                let record: PayloadRecord = serde_json::from_str(&raw).map_err(|e| {
-                    AppError::CorruptRecord {
+                let record: PayloadRecord =
+                    serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
                         file: format!(
                             "history/payloads/{}",
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
+                            path.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         details: e.to_string(),
-                    }
-                })?;
+                    })?;
                 records.push(record);
             }
         }
@@ -486,9 +474,7 @@ impl ArtifactStorePort for FsArtifactStore {
                     serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
                         file: format!(
                             "history/artifacts/{}",
-                            path.file_name()
-                                .unwrap_or_default()
-                                .to_string_lossy()
+                            path.file_name().unwrap_or_default().to_string_lossy()
                         ),
                         details: e.to_string(),
                     })?;
@@ -546,11 +532,7 @@ impl RuntimeLogStorePort for FsRuntimeLogStore {
 pub struct FsRunSnapshotStore;
 
 impl RunSnapshotPort for FsRunSnapshotStore {
-    fn read_run_snapshot(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-    ) -> AppResult<RunSnapshot> {
+    fn read_run_snapshot(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<RunSnapshot> {
         let path = FileSystem::project_root(base_dir, project_id).join(RUN_FILE);
         match fs::read_to_string(&path) {
             Ok(raw) => {
@@ -568,12 +550,10 @@ impl RunSnapshotPort for FsRunSnapshotStore {
                     })?;
                 Ok(snapshot)
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Err(AppError::CorruptRecord {
-                    file: format!("projects/{}/run.json", project_id),
-                    details: "canonical file is missing".to_owned(),
-                })
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id),
+                details: "canonical file is missing".to_owned(),
+            }),
             Err(e) => Err(e.into()),
         }
     }
@@ -604,3 +584,48 @@ impl ActiveProjectPort for FsActiveProjectStore {
     }
 }
 
+/// Filesystem-backed implementation of `RawOutputPort`.
+pub struct FsRawOutputStore;
+
+impl RawOutputPort for FsRawOutputStore {
+    fn persist_raw_output(
+        &self,
+        project_root: &Path,
+        invocation_id: &str,
+        contents: &str,
+    ) -> AppResult<RawOutputReference> {
+        let path = project_root
+            .join("runtime/backend")
+            .join(format!("{invocation_id}.raw"));
+        FileSystem::write_atomic(&path, contents)?;
+        Ok(RawOutputReference::Stored(path))
+    }
+}
+
+/// Filesystem-backed implementation of `SessionStorePort`.
+pub struct FsSessionStore;
+
+impl SessionStorePort for FsSessionStore {
+    fn load_sessions(&self, project_root: &Path) -> AppResult<PersistedSessions> {
+        let path = project_root.join(SESSIONS_FILE);
+        match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                file: format!("{}/{}", project_root.display(), SESSIONS_FILE),
+                details: error.to_string(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Err(AppError::CorruptRecord {
+                    file: format!("{}/{}", project_root.display(), SESSIONS_FILE),
+                    details: "canonical file is missing".to_owned(),
+                })
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn save_sessions(&self, project_root: &Path, sessions: &PersistedSessions) -> AppResult<()> {
+        let path = project_root.join(SESSIONS_FILE);
+        let contents = serde_json::to_string_pretty(sessions)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+}
