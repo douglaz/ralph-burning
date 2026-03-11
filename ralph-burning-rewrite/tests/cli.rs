@@ -22,7 +22,38 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
-    fs::write(project_root.join("project.toml"), "id = \"fixture\"\n").expect("write project");
+    // Write a complete canonical ProjectRecord so validation passes
+    let project_toml = format!(
+        r#"id = "{project_id}"
+name = "Fixture {project_id}"
+flow = "standard"
+prompt_reference = "prompt.md"
+prompt_hash = "0000000000000000"
+created_at = "2026-03-11T19:00:00Z"
+status_summary = "created"
+"#
+    );
+    fs::write(project_root.join("project.toml"), project_toml).expect("write project");
+    // Write required canonical files so run queries don't fail on missing files
+    fs::write(project_root.join("prompt.md"), "# Fixture prompt\n").expect("write prompt");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
+    ).expect("write run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-11T19:00:00Z","event_type":"project_created","details":{{"project_id":"{}","flow":"standard"}}}}"#,
+            project_id
+        ),
+    ).expect("write journal");
+    fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#).expect("write sessions");
+    for subdir in &[
+        "history/payloads", "history/artifacts", "runtime/logs",
+        "runtime/backend", "runtime/temp", "amendments", "rollback",
+    ] {
+        fs::create_dir_all(project_root.join(subdir)).expect("create project subdirectory");
+    }
 }
 
 fn write_editor_script(
@@ -1539,4 +1570,90 @@ fn project_create_run_json_contains_all_canonical_fields() {
     assert!(run_json.contains("\"active_run\""));
     assert!(run_json.contains("\"status\""));
     assert!(run_json.contains("\"status_summary\""));
+}
+
+// ── Regression: project select rejects schema-invalid project.toml ──
+
+#[test]
+fn project_select_rejects_syntactically_valid_but_schema_invalid_project_toml() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Create a project directory with a syntactically valid TOML that is missing
+    // required canonical fields (only has 'id', no name/flow/prompt_reference/etc.)
+    let project_root = temp_dir.path().join(".ralph-burning/projects/partial");
+    fs::create_dir_all(&project_root).expect("create project directory");
+    fs::write(
+        project_root.join("project.toml"),
+        "id = \"partial\"\n",
+    )
+    .expect("write incomplete project.toml");
+
+    let output = Command::new(binary())
+        .args(["project", "select", "partial"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project select");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("project.toml"),
+        "error should reference project.toml, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("invalid canonical structure") || stderr.contains("corrupt"),
+        "error should indicate structural invalidity, got: {stderr}"
+    );
+}
+
+// ── Regression: delete transactional with active-project pointer ──
+
+#[test]
+fn project_delete_clears_active_pointer_transactionally() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    // Create and select a project
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "txn-del",
+            "--name", "Txn Delete",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "txn-del"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Verify it's the active project
+    let active = fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+        .expect("read active-project");
+    assert_eq!(active, "txn-del");
+
+    // Delete the project
+    let output = Command::new(binary())
+        .args(["project", "delete", "txn-del"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("delete project");
+    assert!(output.status.success());
+
+    // Active-project pointer should be cleared
+    assert!(
+        !temp_dir.path().join(".ralph-burning/active-project").exists(),
+        "active-project pointer should be cleared after delete"
+    );
+
+    // Project directory should be gone
+    assert!(
+        !temp_dir.path().join(".ralph-burning/projects/txn-del").exists(),
+        "project directory should be removed"
+    );
 }

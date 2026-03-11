@@ -117,16 +117,18 @@ fn validate_project_exists(base_dir: &Path, project_id: &ProjectId) -> AppResult
             details: "project directory exists but canonical project.toml is missing".to_owned(),
         });
     }
-    // Parse the TOML to validate it is well-formed. This catches corruption
-    // early so that commands resolving the active project fail fast instead of
-    // silently operating on corrupt canonical state.
+    // Deserialize as the canonical ProjectRecord to validate both TOML syntax
+    // and structural completeness. This catches corruption early so that
+    // commands resolving the active project fail fast instead of silently
+    // operating on corrupt canonical state (e.g. missing required fields).
     let raw = std::fs::read_to_string(&config_path).map_err(|e| AppError::CorruptRecord {
         file: format!("projects/{}/project.toml", project_id),
         details: format!("cannot read project.toml: {}", e),
     })?;
-    let _: toml::Value = toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
-        file: format!("projects/{}/project.toml", project_id),
-        details: format!("project.toml is malformed: {}", e),
-    })?;
+    let _: crate::contexts::project_run_record::model::ProjectRecord =
+        toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+            file: format!("projects/{}/project.toml", project_id),
+            details: format!("project.toml has invalid canonical structure: {}", e),
+        })?;
     Ok(())
 }

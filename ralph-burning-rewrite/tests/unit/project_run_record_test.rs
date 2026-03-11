@@ -165,6 +165,14 @@ impl ActiveProjectPort for FakeActiveProjectStore {
     fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
         Ok(())
     }
+
+    fn write_active_project(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<()> {
+        Ok(())
+    }
 }
 
 // ── Helpers ──
@@ -542,6 +550,94 @@ fn run_status_reports_failed_for_terminal_snapshot() {
 
     let status = run_status(&run_store, &base_dir, &pid).unwrap();
     assert_eq!(status.status, "failed");
+}
+
+#[test]
+fn delete_project_restores_active_pointer_on_delete_failure() {
+    use std::cell::Cell;
+
+    struct FailingDeleteStore {
+        existing_ids: Vec<String>,
+    }
+
+    impl ProjectStorePort for FailingDeleteStore {
+        fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+            Ok(self.existing_ids.contains(&project_id.to_string()))
+        }
+
+        fn read_project_record(
+            &self,
+            _base_dir: &Path,
+            project_id: &ProjectId,
+        ) -> AppResult<ProjectRecord> {
+            Ok(make_project_record(project_id.as_str()))
+        }
+
+        fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+            self.existing_ids.iter().map(ProjectId::new).collect()
+        }
+
+        fn delete_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated delete failure",
+            )))
+        }
+
+        fn create_project_atomic(
+            &self,
+            _base_dir: &Path,
+            _record: &ProjectRecord,
+            _prompt_contents: &str,
+            _run_snapshot: &RunSnapshot,
+            _initial_journal_line: &str,
+            _sessions: &SessionStore,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct TrackingActiveStore {
+        active_id: Option<String>,
+        write_called: Cell<bool>,
+    }
+
+    impl ActiveProjectPort for TrackingActiveStore {
+        fn read_active_project_id(&self, _base_dir: &Path) -> AppResult<Option<String>> {
+            Ok(self.active_id.clone())
+        }
+
+        fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn write_active_project(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+        ) -> AppResult<()> {
+            self.write_called.set(true);
+            Ok(())
+        }
+    }
+
+    let store = FailingDeleteStore {
+        existing_ids: vec!["alpha".to_owned()],
+    };
+    let run_store = FakeRunSnapshotStore::no_run();
+    let active_store = TrackingActiveStore {
+        active_id: Some("alpha".to_owned()),
+        write_called: Cell::new(false),
+    };
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    assert!(result.is_err(), "delete should fail");
+    assert!(
+        active_store.write_called.get(),
+        "write_active_project should be called to restore the pointer after delete failure"
+    );
 }
 
 #[test]

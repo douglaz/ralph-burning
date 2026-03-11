@@ -143,3 +143,18 @@ Feature: Project Records
     When the filesystem delete fails after the project has been moved to a trash path
     Then the project "alpha" remains addressable at its canonical path
     And the active-project pointer is unchanged
+
+  # SC-PROJ-021
+  Scenario: Project select rejects schema-invalid project.toml
+    Given an initialized workspace
+    And a project directory "partial" with a syntactically valid project.toml missing required canonical fields
+    When the user runs "project select partial"
+    Then the command fails with error referencing "project.toml" and "invalid canonical structure"
+    And the active-project pointer is unchanged
+
+  # SC-PROJ-022
+  Scenario: Delete of active project restores pointer on failure
+    Given an initialized workspace with project "alpha" selected as active
+    When the filesystem delete of project "alpha" fails after active-project pointer was cleared
+    Then the active-project pointer is restored to "alpha"
+    And the project "alpha" remains addressable

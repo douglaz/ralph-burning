@@ -595,6 +595,13 @@ impl ActiveProjectPort for FsActiveProjectStore {
             Err(e) => Err(e.into()),
         }
     }
+
+    fn write_active_project(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        FileSystem::write_active_project(
+            &FileSystem::workspace_root_path(base_dir),
+            project_id.as_str(),
+        )
+    }
 }
 
 /// Recursively copy a directory tree from `src` to `dst`.

@@ -57,10 +57,11 @@ pub trait RunSnapshotPort {
     fn read_run_snapshot(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<RunSnapshot>;
 }
 
-/// Port for reading/clearing the active project pointer.
+/// Port for reading/writing/clearing the active project pointer.
 pub trait ActiveProjectPort {
     fn read_active_project_id(&self, base_dir: &Path) -> AppResult<Option<String>>;
     fn clear_active_project(&self, base_dir: &Path) -> AppResult<()>;
+    fn write_active_project(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
 }
 
 /// Input for the `project create` use case.
@@ -222,12 +223,23 @@ pub fn delete_project(
     let active_id = active_port.read_active_project_id(base_dir)?;
     let was_active = active_id.as_deref() == Some(project_id.as_str());
 
-    // Perform the actual delete
-    store.delete_project(base_dir, project_id)?;
-
-    // Clear active-project pointer only after successful delete
+    // Transactional delete: clear active-project pointer first, then delete.
+    // If the delete fails, restore the pointer so the project remains fully
+    // addressable. This avoids the scenario where the project is deleted but
+    // the pointer clear fails, stranding the delete half-complete.
     if was_active {
         active_port.clear_active_project(base_dir)?;
+    }
+
+    if let Err(delete_err) = store.delete_project(base_dir, project_id) {
+        // Delete failed — restore the active-project pointer if we cleared it.
+        if was_active {
+            // Best-effort restore: if this also fails we still return the
+            // original delete error, but the project directory is intact so
+            // the user can re-select manually.
+            let _ = active_port.write_active_project(base_dir, project_id);
+        }
+        return Err(delete_err);
     }
 
     Ok(())
