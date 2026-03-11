@@ -679,6 +679,29 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
 
         Ok(())
     }
+
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()> {
+        let project_root = FileSystem::project_root(base_dir, project_id);
+
+        let payload_path = project_root
+            .join("history/payloads")
+            .join(format!("{}.json", payload_id));
+        let artifact_path = project_root
+            .join("history/artifacts")
+            .join(format!("{}.json", artifact_id));
+
+        // Best-effort removal of both files
+        let _ = fs::remove_file(&artifact_path);
+        let _ = fs::remove_file(&payload_path);
+
+        Ok(())
+    }
 }
 
 /// Filesystem-backed implementation of `RuntimeLogWritePort`.

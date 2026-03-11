@@ -99,6 +99,17 @@ pub trait PayloadArtifactWritePort {
         payload: &PayloadRecord,
         artifact: &ArtifactRecord,
     ) -> AppResult<()>;
+
+    /// Remove a previously written payload/artifact pair.
+    /// Used to roll back a stage commit when journal or snapshot persistence
+    /// fails after the pair was already written.
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()>;
 }
 
 /// Port for appending runtime log entries (best-effort, not durable history).

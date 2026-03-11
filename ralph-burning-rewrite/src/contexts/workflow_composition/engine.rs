@@ -169,12 +169,8 @@ where
 
     let first_stage = stage_plan[0].stage_id;
 
-    // 6. Persist run_started: create run.json with running status + journal events
-    seq += 1;
-    let run_started = journal::run_started_event(seq, now, &run_id, first_stage);
-    let run_started_line = journal::serialize_event(&run_started)?;
-    journal_store.append_event(base_dir, project_id, &run_started_line)?;
-
+    // 6. Persist run_started: write run.json with running status FIRST, then journal events.
+    // The snapshot must be durable before journal events become visible.
     let initial_cursor = StageCursor::initial(first_stage);
     let mut current_snapshot = RunSnapshot {
         active_run: Some(ActiveRun {
@@ -190,6 +186,11 @@ where
         status_summary: format!("running: {}", first_stage.display_name()),
     };
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
+
+    seq += 1;
+    let run_started = journal::run_started_event(seq, now, &run_id, first_stage);
+    let run_started_line = journal::serialize_event(&run_started)?;
+    journal_store.append_event(base_dir, project_id, &run_started_line)?;
 
     let project_root = project_root_path(base_dir, project_id);
 
@@ -323,7 +324,8 @@ where
             content: bundle.artifact.clone(),
         };
 
-        // Atomic stage commit: payload + artifact + journal + snapshot
+        // Atomic stage commit: payload + artifact + journal + snapshot.
+        // If payload/artifact write fails, the stage is not committed.
         artifact_write
             .write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
             .map_err(|e| AppError::StageCommitFailed {
@@ -331,7 +333,8 @@ where
                 details: format!("payload/artifact persistence failed: {}", e),
             })?;
 
-        // stage_completed journal event
+        // stage_completed journal event.
+        // If this fails, roll back the payload/artifact and fail the run.
         seq += 1;
         let stage_completed = journal::stage_completed_event(
             seq,
@@ -345,13 +348,33 @@ where
         );
         let stage_completed_line = journal::serialize_event(&stage_completed)?;
         if let Err(e) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
-            return Err(AppError::StageCommitFailed {
+            // Roll back payload/artifact so no partial durable history is visible
+            let _ =
+                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+            seq -= 1; // undo the seq increment since the event was not persisted
+            let commit_err = AppError::StageCommitFailed {
                 stage_id,
                 details: format!("journal append failed after payload/artifact write: {}", e),
-            });
+            };
+            return fail_run(
+                &commit_err,
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
         }
 
-        // Update snapshot cursor to reflect completed stage
+        // Update snapshot cursor to reflect completed stage.
+        // If snapshot write fails, roll back payload/artifact and journal is
+        // left with a stage_completed that has no matching snapshot cursor,
+        // but we mark the run failed so the boundary remains at the prior
+        // durable point.
         if idx + 1 < stage_plan.len() {
             let next_stage = stage_plan[idx + 1].stage_id;
             current_snapshot.active_run.as_mut().unwrap().stage_cursor =
@@ -362,7 +385,27 @@ where
                 next_stage.display_name()
             );
         }
-        run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
+        if let Err(e) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot) {
+            // Roll back payload/artifact so no partial durable history is visible
+            let _ =
+                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+            let commit_err = AppError::StageCommitFailed {
+                stage_id,
+                details: format!("snapshot write failed after stage_completed journal: {}", e),
+            };
+            return fail_run(
+                &commit_err,
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
+        }
 
         // Best-effort runtime log
         let _ = log_write.append_runtime_log(

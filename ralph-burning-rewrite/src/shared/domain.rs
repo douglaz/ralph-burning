@@ -248,8 +248,8 @@ impl BackendRole {
             | StageId::DocsValidation
             | StageId::CiValidation
             | StageId::AcceptanceQa => Self::QaValidator,
-            StageId::CompletionPanel => Self::CompletionJudge,
-            StageId::Review | StageId::FinalReview => Self::Reviewer,
+            StageId::CompletionPanel | StageId::FinalReview => Self::CompletionJudge,
+            StageId::Review => Self::Reviewer,
         }
     }
 }

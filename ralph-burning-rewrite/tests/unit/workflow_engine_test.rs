@@ -11,11 +11,12 @@ use ralph_burning::adapters::fs::{
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
 use ralph_burning::contexts::project_run_record::model::{
-    JournalEventType, RunSnapshot, RunStatus,
+    JournalEvent, JournalEventType, RunSnapshot, RunStatus,
 };
 use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
 };
+use ralph_burning::shared::error::{AppError, AppResult};
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
@@ -88,7 +89,7 @@ fn role_mapping_is_deterministic() {
     assert_eq!(engine::role_for_stage(StageId::Review), BackendRole::Reviewer);
     assert_eq!(engine::role_for_stage(StageId::CompletionPanel), BackendRole::CompletionJudge);
     assert_eq!(engine::role_for_stage(StageId::AcceptanceQa), BackendRole::QaValidator);
-    assert_eq!(engine::role_for_stage(StageId::FinalReview), BackendRole::Reviewer);
+    assert_eq!(engine::role_for_stage(StageId::FinalReview), BackendRole::CompletionJudge);
 }
 
 // ── Happy path tests ────────────────────────────────────────────────────────
@@ -385,4 +386,191 @@ async fn preflight_check_fails_with_unavailable_backend() {
     let adapter = StubBackendAdapter::default().unavailable();
     let result = engine::preflight_check(&adapter, &plan).await;
     assert!(result.is_err());
+}
+
+// ── Failing-port tests: journal-append and snapshot-write errors ─────────
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+/// A journal store that delegates to `FsJournalStore` but fails on the Nth
+/// append_event call (1-indexed). This lets us test failure at specific
+/// stage-commit boundaries.
+struct FailingJournalStore {
+    call_count: AtomicU32,
+    fail_on_call: u32,
+}
+
+impl FailingJournalStore {
+    fn new(fail_on_call: u32) -> Self {
+        Self {
+            call_count: AtomicU32::new(0),
+            fail_on_call,
+        }
+    }
+}
+
+impl JournalStorePort for FailingJournalStore {
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        FsJournalStore.read_journal(base_dir, project_id)
+    }
+
+    fn append_event(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        line: &str,
+    ) -> AppResult<()> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == self.fail_on_call {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated journal append failure",
+            )));
+        }
+        FsJournalStore.append_event(base_dir, project_id, line)
+    }
+}
+
+/// A snapshot write store that delegates to `FsRunSnapshotWriteStore` but fails
+/// on the Nth write call (1-indexed).
+struct FailingSnapshotWriteStore {
+    call_count: AtomicU32,
+    fail_on_call: u32,
+}
+
+impl FailingSnapshotWriteStore {
+    fn new(fail_on_call: u32) -> Self {
+        Self {
+            call_count: AtomicU32::new(0),
+            fail_on_call,
+        }
+    }
+}
+
+impl RunSnapshotWritePort for FailingSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == self.fail_on_call {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated snapshot write failure",
+            )));
+        }
+        FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, snapshot)
+    }
+}
+
+/// Journal append failure after payload/artifact write must roll back the
+/// payload/artifact pair so no partial durable history is visible, and the
+/// run must end in failed state.
+#[tokio::test]
+async fn journal_failure_after_payload_rolls_back_and_fails_run() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "journal-fail");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // The engine calls append_event for:
+    //   1: run_started
+    //   2: stage_entered (stage 1)
+    //   3: stage_completed (stage 1) — fail here
+    let failing_journal = FailingJournalStore::new(3);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on journal failure");
+
+    // Run must be in failed state
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // No payload/artifact should be visible for the first stage since it was
+    // rolled back after journal failure
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/journal-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(payload_count, 0, "payload should have been rolled back");
+
+    let artifacts_dir = base_dir
+        .join(".ralph-burning/projects/journal-fail/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
+    assert_eq!(artifact_count, 0, "artifact should have been rolled back");
+}
+
+/// Snapshot write failure after stage_completed journal should roll back the
+/// payload/artifact pair and mark the run as failed.
+#[tokio::test]
+async fn snapshot_failure_after_stage_completed_rolls_back_and_fails_run() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "snap-fail");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // The engine calls write_run_snapshot for:
+    //   1: initial Running snapshot (run start)
+    //   2: stage_entered cursor update (stage 1)
+    //   3: stage_completed cursor update (stage 1) — fail here
+    let failing_snapshot = FailingSnapshotWriteStore::new(3);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &failing_snapshot,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on snapshot failure");
+
+    // The run must end in failed state. Since the failing store only fails
+    // on call 3, the fail_run recovery can still write the failed snapshot
+    // (calls 4+).
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // No payload/artifact should be visible for the first stage
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/snap-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(payload_count, 0, "payload should have been rolled back");
+
+    let artifacts_dir = base_dir
+        .join(".ralph-burning/projects/snap-fail/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
+    assert_eq!(artifact_count, 0, "artifact should have been rolled back");
 }
