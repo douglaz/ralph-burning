@@ -15,7 +15,7 @@
 
 use schemars::schema::RootSchema;
 
-use crate::shared::domain::{FailureClass, StageId};
+use crate::shared::domain::StageId;
 use crate::shared::error::ContractError;
 
 use super::payloads::{
@@ -50,22 +50,12 @@ pub struct StageContract {
 /// Bundle of a validated payload and its rendered Markdown artifact.
 ///
 /// Callers receive either a `ValidatedBundle` or an error — never one without
-/// the other.
+/// the other. On any failure (schema, domain, or QA/review outcome), no bundle
+/// is returned.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedBundle {
     pub payload: StagePayload,
     pub artifact: String,
-}
-
-/// Outcome of a successful contract evaluation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EvalSuccess {
-    pub bundle: ValidatedBundle,
-    /// Set to [`FailureClass::QaReviewOutcomeFailure`] when a validation/review
-    /// stage produces a non-passing outcome. The bundle is still returned
-    /// because the payload is structurally and semantically valid — only the
-    /// workflow-level outcome is non-passing.
-    pub outcome_failure: Option<FailureClass>,
 }
 
 // ── Registry ────────────────────────────────────────────────────────────────
@@ -119,28 +109,25 @@ impl StageContract {
 
     /// Evaluate a raw JSON value through the full contract pipeline.
     ///
-    /// Schema validation → semantic validation → rendering.
+    /// Schema validation → semantic validation → outcome check → rendering.
     ///
-    /// Returns [`EvalSuccess`] on success (which may still carry a
-    /// [`FailureClass::QaReviewOutcomeFailure`] for non-passing review outcomes)
-    /// or a [`ContractError`] on any hard failure.
-    pub fn evaluate(&self, raw_json: &serde_json::Value) -> Result<EvalSuccess, ContractError> {
+    /// Returns [`ValidatedBundle`] on success or a [`ContractError`] on any
+    /// failure. Non-passing QA/review outcomes are errors classified as
+    /// [`FailureClass::QaReviewOutcomeFailure`] — no success bundle is returned.
+    pub fn evaluate(&self, raw_json: &serde_json::Value) -> Result<ValidatedBundle, ContractError> {
         // Step 1: Schema validation (deserialization into typed payload).
         let payload = self.validate_schema(raw_json)?;
 
         // Step 2: Semantic / domain validation.
         self.validate_semantics(&payload)?;
 
-        // Step 3: Deterministic Markdown rendering.
+        // Step 3: Non-passing QA/review outcome check (before rendering).
+        self.check_outcome(&payload)?;
+
+        // Step 4: Deterministic Markdown rendering (only on full success).
         let artifact = self.render(&payload);
 
-        // Step 4: Map non-passing QA/review outcomes.
-        let outcome_failure = Self::check_outcome_failure(&payload);
-
-        Ok(EvalSuccess {
-            bundle: ValidatedBundle { payload, artifact },
-            outcome_failure,
-        })
+        Ok(ValidatedBundle { payload, artifact })
     }
 
     // ── Private helpers ─────────────────────────────────────────────────
@@ -255,12 +242,15 @@ impl StageContract {
         }
     }
 
-    fn check_outcome_failure(payload: &StagePayload) -> Option<FailureClass> {
+    fn check_outcome(&self, payload: &StagePayload) -> Result<(), ContractError> {
         if let StagePayload::Validation(p) = payload {
             if !p.outcome.is_passing() {
-                return Some(FailureClass::QaReviewOutcomeFailure);
+                return Err(ContractError::QaReviewOutcome {
+                    stage_id: self.stage_id,
+                    outcome: p.outcome.to_string(),
+                });
             }
         }
-        None
+        Ok(())
     }
 }

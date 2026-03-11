@@ -51,14 +51,14 @@ Feature: Stage Contracts
     And no success bundle is returned
 
   @SC-EVAL-006
-  Scenario: QA/review outcome failure with valid payload
+  Scenario: QA/review outcome failure returns error with no success bundle
     Given a validation stage contract
     When a valid validation payload with outcome "rejected" is submitted
     Then schema validation passes
     And semantic validation passes
-    And a deterministic Markdown artifact is produced
-    And the result carries outcome failure class "qa_review_outcome_failure"
-    And the validated bundle is still returned
+    And the result is an error with failure class "qa_review_outcome_failure"
+    And no success bundle is returned
+    And rendering does not run
 
   @SC-EVAL-007
   Scenario: Every stage in every built-in flow has contract coverage
@@ -78,6 +78,7 @@ Feature: Stage Contracts
     When a valid validation payload with outcome "request_changes" is submitted
     Then schema validation passes
     And semantic validation passes
-    And the failure class is "qa_review_outcome_failure"
+    And the result is an error with failure class "qa_review_outcome_failure"
     And the failure class is not "schema_validation_failure"
     And the failure class is not "domain_validation_failure"
+    And no success bundle is returned

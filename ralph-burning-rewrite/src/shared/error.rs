@@ -47,6 +47,9 @@ pub enum ContractError {
 
     #[error("rendering failed for stage '{stage_id}': {details}")]
     RenderError { stage_id: StageId, details: String },
+
+    #[error("non-passing QA/review outcome for stage '{stage_id}': {outcome}")]
+    QaReviewOutcome { stage_id: StageId, outcome: String },
 }
 
 impl ContractError {
@@ -56,6 +59,7 @@ impl ContractError {
             Self::DomainValidation { .. } | Self::RenderError { .. } => {
                 FailureClass::DomainValidationFailure
             }
+            Self::QaReviewOutcome { .. } => FailureClass::QaReviewOutcomeFailure,
         }
     }
 
@@ -63,7 +67,8 @@ impl ContractError {
         match self {
             Self::SchemaValidation { stage_id, .. }
             | Self::DomainValidation { stage_id, .. }
-            | Self::RenderError { stage_id, .. } => *stage_id,
+            | Self::RenderError { stage_id, .. }
+            | Self::QaReviewOutcome { stage_id, .. } => *stage_id,
         }
     }
 }
