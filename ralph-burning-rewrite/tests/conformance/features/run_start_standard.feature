@@ -142,3 +142,41 @@ Feature: Standard Preset Run Start Orchestration
     When the user runs "run start" for each project
     Then only "standard" succeeds
     And the others fail with "not yet supported" error
+
+  # SC-START-018
+  Scenario: Prompt-review-disabled run start completes with 7 stages
+    Given an initialized workspace with project "november" using flow "standard"
+    And prompt_review.enabled is false
+    And project "november" is selected as active
+    And the run snapshot shows status "not_started" with no active run
+    When the user runs "run start"
+    Then the command exits successfully
+    And the run snapshot shows status "completed" with no active run
+    And payload and artifact records exist for 7 stages (all except prompt_review)
+    And the journal contains no "stage_entered" or "stage_completed" events for "prompt_review"
+    And the first stage_entered event is for "planning"
+
+  # SC-START-019
+  Scenario: Preflight failure leaves all canonical state unchanged
+    Given an initialized workspace with project "oscar" using flow "standard"
+    And project "oscar" is selected as active
+    And the backend is unavailable for preflight
+    When the user runs "run start"
+    Then the command fails with error containing "preflight"
+    And the run snapshot is byte-identical to its pre-run state
+    And the journal is byte-identical to its pre-run state
+    And no payload or artifact files exist
+    And no sessions were created or modified
+
+  # SC-START-020
+  Scenario: Mid-stage failure exposes no partial durable history
+    Given an initialized workspace with project "papa" using flow "standard"
+    And project "papa" is selected as active
+    And the run snapshot shows status "not_started" with no active run
+    And persistence will fail during the first stage commit
+    When the user runs "run start"
+    Then the command fails
+    And the run snapshot shows status "failed" with no active run
+    And no payload or artifact files exist for any stage
+    And no "stage_completed" event exists in the journal
+    And the journal ends with a "run_failed" event referencing the failed stage

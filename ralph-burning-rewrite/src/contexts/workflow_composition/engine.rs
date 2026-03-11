@@ -324,8 +324,14 @@ where
             content: bundle.artifact.clone(),
         };
 
-        // Atomic stage commit: payload + artifact + journal + snapshot.
-        // If payload/artifact write fails, the stage is not committed.
+        // Atomic stage commit: payload + artifact + snapshot + journal.
+        // All four must succeed for the stage to become durably visible.
+        // Order: payload/artifact → snapshot cursor → stage_completed journal.
+        // This ensures that if any step fails, no stage_completed event leaks
+        // into the journal without a matching snapshot and durable files.
+
+        // Step 1: Write payload + artifact pair.
+        // If this fails, the stage is not committed — nothing else to roll back.
         artifact_write
             .write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
             .map_err(|e| AppError::StageCommitFailed {
@@ -333,8 +339,46 @@ where
                 details: format!("payload/artifact persistence failed: {}", e),
             })?;
 
-        // stage_completed journal event.
-        // If this fails, roll back the payload/artifact and fail the run.
+        // Step 2: Update snapshot cursor to reflect completed stage.
+        // Written BEFORE stage_completed journal so that snapshot failure
+        // never leaves a stage_completed event without a matching cursor.
+        let pre_commit_snapshot = current_snapshot.clone();
+        if idx + 1 < stage_plan.len() {
+            let next_stage = stage_plan[idx + 1].stage_id;
+            current_snapshot.active_run.as_mut().unwrap().stage_cursor =
+                StageCursor::initial(next_stage);
+            current_snapshot.status_summary = format!(
+                "running: completed {}, next {}",
+                stage_id.display_name(),
+                next_stage.display_name()
+            );
+        }
+        if let Err(e) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot) {
+            // Roll back payload/artifact; no stage_completed was written yet.
+            let _ =
+                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+            current_snapshot = pre_commit_snapshot;
+            let commit_err = AppError::StageCommitFailed {
+                stage_id,
+                details: format!("snapshot write failed during stage commit: {}", e),
+            };
+            return fail_run(
+                &commit_err,
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
+        }
+
+        // Step 3: Append stage_completed journal event.
+        // If this fails, roll back payload/artifact and overwrite snapshot
+        // via fail_run so the stage remains uncommitted.
         seq += 1;
         let stage_completed = journal::stage_completed_event(
             seq,
@@ -354,44 +398,7 @@ where
             seq -= 1; // undo the seq increment since the event was not persisted
             let commit_err = AppError::StageCommitFailed {
                 stage_id,
-                details: format!("journal append failed after payload/artifact write: {}", e),
-            };
-            return fail_run(
-                &commit_err,
-                stage_id,
-                &run_id,
-                &mut seq,
-                &mut current_snapshot,
-                journal_store,
-                run_snapshot_write,
-                base_dir,
-                project_id,
-            )
-            .await;
-        }
-
-        // Update snapshot cursor to reflect completed stage.
-        // If snapshot write fails, roll back payload/artifact and journal is
-        // left with a stage_completed that has no matching snapshot cursor,
-        // but we mark the run failed so the boundary remains at the prior
-        // durable point.
-        if idx + 1 < stage_plan.len() {
-            let next_stage = stage_plan[idx + 1].stage_id;
-            current_snapshot.active_run.as_mut().unwrap().stage_cursor =
-                StageCursor::initial(next_stage);
-            current_snapshot.status_summary = format!(
-                "running: completed {}, next {}",
-                stage_id.display_name(),
-                next_stage.display_name()
-            );
-        }
-        if let Err(e) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot) {
-            // Roll back payload/artifact so no partial durable history is visible
-            let _ =
-                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
-            let commit_err = AppError::StageCommitFailed {
-                stage_id,
-                details: format!("snapshot write failed after stage_completed journal: {}", e),
+                details: format!("journal append failed during stage commit: {}", e),
             };
             return fail_run(
                 &commit_err,

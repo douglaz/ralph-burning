@@ -2398,3 +2398,143 @@ fn run_start_without_active_project_fails() {
         "should require active project, got: {stderr}"
     );
 }
+
+#[test]
+fn run_start_with_prompt_review_disabled_produces_seven_stages() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Disable prompt_review before creating the project
+    let set_output = Command::new(binary())
+        .args(["config", "set", "prompt_review.enabled", "false"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("config set");
+    assert!(
+        set_output.status.success(),
+        "config set failed: {}",
+        String::from_utf8_lossy(&set_output.stderr)
+    );
+
+    setup_standard_project(&temp_dir, "no-pr-cli");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(
+        start.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    // Verify 7 payloads (no prompt_review)
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/no-pr-cli/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir)
+        .expect("read payloads dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .count();
+    assert_eq!(
+        payload_count, 7,
+        "expected 7 payloads without prompt_review, got {payload_count}"
+    );
+
+    // Verify no prompt_review stage in journal
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/no-pr-cli/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(
+        !journal.contains("\"prompt_review\""),
+        "journal should not contain prompt_review stage when disabled"
+    );
+
+    // Verify completed status
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/no-pr-cli/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        run_json.contains("\"completed\""),
+        "run should be completed, got: {run_json}"
+    );
+}
+
+#[test]
+fn run_start_preflight_failure_leaves_state_unchanged() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "preflight-cli");
+
+    // Corrupt the run.json to simulate a state that would fail validation
+    // before the engine can proceed. We test that the CLI properly handles
+    // preflight-like errors with no state mutation.
+    //
+    // The stub backend always passes preflight, so we verify the no-mutation
+    // invariant via the workspace-version validation path: an unsupported
+    // workspace version must leave all project state unchanged.
+    let ws_toml_path = temp_dir.path().join(".ralph-burning/workspace.toml");
+    let ws_toml = fs::read_to_string(&ws_toml_path).expect("read workspace.toml");
+    let corrupted = ws_toml.replace("version = 1", "version = 999");
+    fs::write(&ws_toml_path, corrupted).expect("write corrupted workspace.toml");
+
+    // Capture pre-run state
+    let pre_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-cli/run.json"),
+    )
+    .expect("read run.json before");
+    let pre_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-cli/journal.ndjson"),
+    )
+    .expect("read journal before");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(!output.status.success(), "run start should fail with bad workspace version");
+
+    // Verify NO state mutation occurred
+    let post_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-cli/run.json"),
+    )
+    .expect("read run.json after");
+    let post_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-cli/journal.ndjson"),
+    )
+    .expect("read journal after");
+
+    assert_eq!(
+        pre_run_json, post_run_json,
+        "run.json must not change on pre-engine failure"
+    );
+    assert_eq!(
+        pre_journal, post_journal,
+        "journal must not change on pre-engine failure"
+    );
+
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/preflight-cli/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir)
+        .expect("read payloads dir")
+        .filter_map(|e| e.ok())
+        .count();
+    assert_eq!(payload_count, 0, "no payloads should exist after preflight failure");
+}

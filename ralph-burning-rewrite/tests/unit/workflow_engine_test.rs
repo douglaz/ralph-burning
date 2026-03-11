@@ -426,8 +426,7 @@ impl JournalStorePort for FailingJournalStore {
     ) -> AppResult<()> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
         if n == self.fail_on_call {
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(AppError::Io(std::io::Error::other(
                 "simulated journal append failure",
             )));
         }
@@ -460,8 +459,7 @@ impl RunSnapshotWritePort for FailingSnapshotWriteStore {
     ) -> AppResult<()> {
         let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
         if n == self.fail_on_call {
-            return Err(AppError::Io(std::io::Error::new(
-                std::io::ErrorKind::Other,
+            return Err(AppError::Io(std::io::Error::other(
                 "simulated snapshot write failure",
             )));
         }
@@ -520,12 +518,26 @@ async fn journal_failure_after_payload_rolls_back_and_fails_run() {
         .join(".ralph-burning/projects/journal-fail/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(artifact_count, 0, "artifact should have been rolled back");
+
+    // No stage_completed event should exist since journal append failed
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_completed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::StageCompleted)
+        .collect();
+    assert!(
+        stage_completed_events.is_empty(),
+        "no stage_completed event should exist after journal failure, found {}",
+        stage_completed_events.len()
+    );
 }
 
-/// Snapshot write failure after stage_completed journal should roll back the
-/// payload/artifact pair and mark the run as failed.
+/// Snapshot write failure during stage commit must roll back the
+/// payload/artifact pair, leave no stage_completed journal event, and mark
+/// the run as failed. Because the engine writes the snapshot BEFORE
+/// stage_completed, a snapshot failure means stage_completed is never appended.
 #[tokio::test]
-async fn snapshot_failure_after_stage_completed_rolls_back_and_fails_run() {
+async fn snapshot_failure_during_stage_commit_rolls_back_without_journal_leak() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -538,7 +550,7 @@ async fn snapshot_failure_after_stage_completed_rolls_back_and_fails_run() {
     // The engine calls write_run_snapshot for:
     //   1: initial Running snapshot (run start)
     //   2: stage_entered cursor update (stage 1)
-    //   3: stage_completed cursor update (stage 1) — fail here
+    //   3: stage commit cursor update (stage 1) — fail here
     let failing_snapshot = FailingSnapshotWriteStore::new(3);
 
     let result = engine::execute_standard_run(
@@ -573,4 +585,18 @@ async fn snapshot_failure_after_stage_completed_rolls_back_and_fails_run() {
         .join(".ralph-burning/projects/snap-fail/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(artifact_count, 0, "artifact should have been rolled back");
+
+    // CRITICAL: No stage_completed event must exist in the journal.
+    // Because the engine writes snapshot before stage_completed, snapshot
+    // failure prevents the journal event from ever being appended.
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_completed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::StageCompleted)
+        .collect();
+    assert!(
+        stage_completed_events.is_empty(),
+        "no stage_completed event should exist after snapshot failure, found {}",
+        stage_completed_events.len()
+    );
 }
