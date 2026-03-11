@@ -631,6 +631,42 @@ fn runtime_log_store_skips_malformed_lines() {
     assert_eq!(logs[0].message, "good line");
 }
 
+#[test]
+fn runtime_log_store_reads_only_newest_file() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let old_entry = RuntimeLogEntry {
+        timestamp: test_timestamp(),
+        level: LogLevel::Info,
+        source: "agent".to_owned(),
+        message: "old log".to_owned(),
+    };
+    let new_entry = RuntimeLogEntry {
+        timestamp: test_timestamp(),
+        level: LogLevel::Info,
+        source: "agent".to_owned(),
+        message: "new log".to_owned(),
+    };
+    let old_line = serde_json::to_string(&old_entry).unwrap();
+    let new_line = serde_json::to_string(&new_entry).unwrap();
+
+    let logs_dir = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/runtime/logs");
+    fs::write(logs_dir.join("001.ndjson"), format!("{old_line}\n")).unwrap();
+    fs::write(logs_dir.join("002.ndjson"), format!("{new_line}\n")).unwrap();
+
+    let store = FsRuntimeLogStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let logs = store.read_runtime_logs(tmp.path(), &pid).unwrap();
+
+    // Only the newest file (002.ndjson) should be read
+    assert_eq!(logs.len(), 1);
+    assert_eq!(logs[0].message, "new log");
+}
+
 // ── FsActiveProjectStore ──
 
 #[test]

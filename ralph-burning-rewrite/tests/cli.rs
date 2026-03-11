@@ -966,6 +966,54 @@ fn run_tail_with_logs_includes_runtime_logs_section() {
     assert!(stdout.contains("Runtime Logs"));
 }
 
+#[test]
+fn run_tail_with_logs_shows_only_newest_log_file() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "tail-multi",
+            "--name", "Tail Multi",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "tail-multi"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Write two runtime log files: old and new
+    let logs_dir = temp_dir.path().join(".ralph-burning/projects/tail-multi/runtime/logs");
+    fs::write(
+        logs_dir.join("001.ndjson"),
+        r#"{"timestamp":"2026-03-11T18:00:00Z","level":"info","source":"agent","message":"old log entry"}"#.to_owned() + "\n",
+    ).expect("write old log");
+    fs::write(
+        logs_dir.join("002.ndjson"),
+        r#"{"timestamp":"2026-03-11T19:00:00Z","level":"info","source":"agent","message":"new log entry"}"#.to_owned() + "\n",
+    ).expect("write new log");
+
+    let output = Command::new(binary())
+        .args(["run", "tail", "--logs"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail --logs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Runtime Logs"));
+    // Only the newest log file entries should appear
+    assert!(stdout.contains("new log entry"), "newest log should be shown");
+    assert!(!stdout.contains("old log entry"), "older log files should not be included");
+}
+
 // ── Fail-fast on missing canonical files ──
 
 #[test]

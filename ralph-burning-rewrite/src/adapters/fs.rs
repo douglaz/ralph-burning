@@ -523,8 +523,10 @@ impl RuntimeLogStorePort for FsRuntimeLogStore {
             .collect();
         paths.sort();
 
-        for path in paths {
-            let contents = fs::read_to_string(&path)?;
+        // Only read the newest/latest log file per spec:
+        // "run tail --logs appends the newest runtime logs"
+        if let Some(path) = paths.last() {
+            let contents = fs::read_to_string(path)?;
             for line in contents.lines() {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {

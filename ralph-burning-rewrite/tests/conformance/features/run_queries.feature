@@ -196,3 +196,11 @@ Feature: Run Queries
     And "journal.ndjson" for project "alpha" contains a run_started event as the first entry
     When the user runs "run history"
     Then the command fails with error referencing "journal.ndjson" and "project_created"
+
+  # SC-RUN-028
+  Scenario: Run tail --logs shows only the newest runtime log file
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has multiple runtime log files: "001.ndjson" with "old log" and "002.ndjson" with "new log"
+    When the user runs "run tail --logs"
+    Then the runtime logs section contains entries from the newest file only
+    And the runtime logs section does not contain entries from older files
