@@ -425,6 +425,36 @@ impl fmt::Display for StageId {
     }
 }
 
+impl FromStr for StageId {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "prompt_review" => Ok(Self::PromptReview),
+            "planning" => Ok(Self::Planning),
+            "implementation" => Ok(Self::Implementation),
+            "qa" => Ok(Self::Qa),
+            "review" => Ok(Self::Review),
+            "completion_panel" => Ok(Self::CompletionPanel),
+            "acceptance_qa" => Ok(Self::AcceptanceQa),
+            "final_review" => Ok(Self::FinalReview),
+            "plan_and_implement" => Ok(Self::PlanAndImplement),
+            "apply_fixes" => Ok(Self::ApplyFixes),
+            "docs_plan" => Ok(Self::DocsPlan),
+            "docs_update" => Ok(Self::DocsUpdate),
+            "docs_validation" => Ok(Self::DocsValidation),
+            "ci_plan" => Ok(Self::CiPlan),
+            "ci_update" => Ok(Self::CiUpdate),
+            "ci_validation" => Ok(Self::CiValidation),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "stage_id".to_owned(),
+                value: value.to_owned(),
+                reason: "unknown stage identifier".to_owned(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageCursor {
     pub stage: StageId,

@@ -9,7 +9,7 @@ use crate::contexts::agent_execution::model::{
     InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
-use crate::shared::domain::{SessionPolicy, StageId};
+use crate::shared::domain::{FailureClass, SessionPolicy, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Clone)]
@@ -17,6 +17,8 @@ pub struct StubBackendAdapter {
     delay: Duration,
     available: bool,
     unsupported_stages: HashSet<StageId>,
+    /// Stages that pass preflight but fail during invocation (for testing).
+    fail_invoke_stages: HashSet<StageId>,
     cancelled_invocations: Arc<Mutex<Vec<String>>>,
 }
 
@@ -26,6 +28,7 @@ impl Default for StubBackendAdapter {
             delay: Duration::from_millis(0),
             available: true,
             unsupported_stages: HashSet::new(),
+            fail_invoke_stages: HashSet::new(),
             cancelled_invocations: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -44,6 +47,12 @@ impl StubBackendAdapter {
 
     pub fn without_stage_support(mut self, stage_id: StageId) -> Self {
         self.unsupported_stages.insert(stage_id);
+        self
+    }
+
+    /// Configure a stage to pass preflight but fail during invocation.
+    pub fn with_invoke_failure(mut self, stage_id: StageId) -> Self {
+        self.fail_invoke_stages.insert(stage_id);
         self
     }
 
@@ -93,6 +102,18 @@ impl AgentExecutionPort for StubBackendAdapter {
             return Err(AppError::InvocationCancelled {
                 backend: request.resolved_target.backend.family.to_string(),
                 stage_id: request.stage_contract.stage_id,
+            });
+        }
+
+        if self
+            .fail_invoke_stages
+            .contains(&request.stage_contract.stage_id)
+        {
+            return Err(AppError::InvocationFailed {
+                backend: request.resolved_target.backend.family.to_string(),
+                stage_id: request.stage_contract.stage_id,
+                failure_class: FailureClass::TransportFailure,
+                details: "stub adapter configured to fail invocation for this stage".to_owned(),
             });
         }
 

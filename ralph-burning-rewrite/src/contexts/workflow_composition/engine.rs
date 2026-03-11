@@ -190,7 +190,23 @@ where
     seq += 1;
     let run_started = journal::run_started_event(seq, now, &run_id, first_stage);
     let run_started_line = journal::serialize_event(&run_started)?;
-    journal_store.append_event(base_dir, project_id, &run_started_line)?;
+    if let Err(e) = journal_store.append_event(base_dir, project_id, &run_started_line) {
+        seq -= 1; // event was not persisted
+        return fail_run(
+            &AppError::RunStartFailed {
+                reason: format!("failed to persist run_started event: {}", e),
+            },
+            first_stage,
+            &run_id,
+            &mut seq,
+            &mut current_snapshot,
+            journal_store,
+            run_snapshot_write,
+            base_dir,
+            project_id,
+        )
+        .await;
+    }
 
     let project_root = project_root_path(base_dir, project_id);
 
@@ -199,7 +215,8 @@ where
         let stage_id = stage_entry.stage_id;
         let cursor = StageCursor::initial(stage_id);
 
-        // Emit stage_entered
+        // Emit stage_entered — if journal append fails after run_started,
+        // the run must persist failed state at this stage boundary.
         seq += 1;
         let stage_entered = journal::stage_entered_event(
             seq,
@@ -210,12 +227,54 @@ where
             cursor.attempt,
         );
         let stage_entered_line = journal::serialize_event(&stage_entered)?;
-        journal_store.append_event(base_dir, project_id, &stage_entered_line)?;
+        if let Err(e) = journal_store.append_event(base_dir, project_id, &stage_entered_line) {
+            seq -= 1; // event was not persisted
+            return fail_run(
+                &AppError::RunStartFailed {
+                    reason: format!(
+                        "failed to persist stage_entered event for {}: {}",
+                        stage_id.as_str(),
+                        e
+                    ),
+                },
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
+        }
 
-        // Update cursor in snapshot
+        // Update cursor in snapshot — if this fails after stage_entered,
+        // the run must persist failed state at this stage boundary.
         current_snapshot.active_run.as_mut().unwrap().stage_cursor = cursor.clone();
         current_snapshot.status_summary = format!("running: {}", stage_id.display_name());
-        run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
+        if let Err(e) =
+            run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)
+        {
+            return fail_run(
+                &AppError::RunStartFailed {
+                    reason: format!(
+                        "failed to update snapshot for stage {}: {}",
+                        stage_id.as_str(),
+                        e
+                    ),
+                },
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
+        }
 
         // Best-effort runtime log
         let _ = log_write.append_runtime_log(
@@ -427,22 +486,28 @@ where
         );
     }
 
-    // 8. All stages completed — mark run as completed
-    seq += 1;
-    let run_completed = journal::run_completed_event(seq, Utc::now(), &run_id, 1);
-    let run_completed_line = journal::serialize_event(&run_completed)?;
-    journal_store.append_event(base_dir, project_id, &run_completed_line)?;
-
+    // 8. All stages completed — mark run as completed.
+    // Write completed snapshot FIRST so the run is marked as completed
+    // even if journal append fails (consistent with snapshot-first ordering).
     current_snapshot.status = RunStatus::Completed;
     current_snapshot.active_run = None;
     current_snapshot.completion_rounds = 1;
     current_snapshot.status_summary = "completed".to_owned();
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
 
+    seq += 1;
+    let run_completed = journal::run_completed_event(seq, Utc::now(), &run_id, 1);
+    let run_completed_line = journal::serialize_event(&run_completed)?;
+    journal_store.append_event(base_dir, project_id, &run_completed_line)?;
+
     Ok(())
 }
 
-/// Record a run failure: persist journal event, update snapshot, return error.
+/// Record a run failure: persist failed snapshot, then journal event, return error.
+///
+/// The snapshot is written first (critical path) so the run is never left in an
+/// ambiguous running state. The journal append is best-effort relative to the
+/// snapshot — if it fails, the snapshot already reflects the failed state.
 #[allow(clippy::too_many_arguments)]
 async fn fail_run(
     err: &AppError,
@@ -461,16 +526,21 @@ async fn fail_run(
         .unwrap_or_else(|| "unknown".to_owned());
     let message = err.to_string();
 
-    *seq += 1;
-    let run_failed =
-        journal::run_failed_event(*seq, Utc::now(), run_id, stage_id, &failure_class, &message);
-    let run_failed_line = journal::serialize_event(&run_failed)?;
-    journal_store.append_event(base_dir, project_id, &run_failed_line)?;
-
+    // Critical: persist the failed snapshot first so the run is never
+    // left in an ambiguous running state after any failure.
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+
+    // Best-effort: append run_failed journal event. If this fails,
+    // the snapshot already reflects the failed state.
+    *seq += 1;
+    let run_failed =
+        journal::run_failed_event(*seq, Utc::now(), run_id, stage_id, &failure_class, &message);
+    if let Ok(run_failed_line) = journal::serialize_event(&run_failed) {
+        let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
+    }
 
     Err(AppError::RunStartFailed {
         reason: format!("stage {} failed: {}", stage_id.as_str(), message),

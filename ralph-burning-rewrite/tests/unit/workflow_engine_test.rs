@@ -467,6 +467,109 @@ impl RunSnapshotWritePort for FailingSnapshotWriteStore {
     }
 }
 
+/// Stage-entered journal append failure must persist failed state.
+/// The run must never be left in an ambiguous running state when the
+/// stage_entered event cannot be persisted.
+#[tokio::test]
+async fn stage_entered_journal_failure_persists_failed_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "stage-entry-fail");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // The engine calls append_event for:
+    //   1: run_started
+    //   2: stage_entered (stage 1) — fail here
+    let failing_journal = FailingJournalStore::new(2);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on stage_entered journal failure");
+
+    // Run must be in failed state, not left in running
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // No stage_entered event should exist for the first stage since the append failed
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_entered_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::StageEntered)
+        .collect();
+    assert!(
+        stage_entered_events.is_empty(),
+        "no stage_entered event should exist after journal failure, found {}",
+        stage_entered_events.len()
+    );
+
+    // No payload/artifact should exist
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/stage-entry-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(payload_count, 0, "no payloads should exist");
+}
+
+/// Run-started journal append failure must persist failed state.
+/// The run must never be left in running state when run_started cannot be
+/// appended to the journal.
+#[tokio::test]
+async fn run_started_journal_failure_persists_failed_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "run-started-fail");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // The engine calls append_event for:
+    //   1: run_started — fail here
+    let failing_journal = FailingJournalStore::new(1);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on run_started journal failure");
+
+    // Run must be in failed state, not left in running
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // No payloads or artifacts should exist
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/run-started-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(payload_count, 0, "no payloads should exist");
+}
+
 /// Journal append failure after payload/artifact write must roll back the
 /// payload/artifact pair so no partial durable history is visible, and the
 /// run must end in failed state.

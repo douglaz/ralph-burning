@@ -11,7 +11,7 @@ use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSn
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::FlowPreset;
+use crate::shared::domain::{FlowPreset, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -55,11 +55,20 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
 
 pub fn build_agent_execution_service(
 ) -> AgentExecutionService<StubBackendAdapter, FsRawOutputStore, FsSessionStore> {
-    AgentExecutionService::new(
-        StubBackendAdapter::default(),
-        FsRawOutputStore,
-        FsSessionStore,
-    )
+    let mut adapter = StubBackendAdapter::default();
+
+    // Test-only injection seam: environment variables configure the stub backend
+    // to simulate failure modes that aren't reachable through normal CLI usage.
+    if std::env::var("RALPH_BURNING_TEST_BACKEND_UNAVAILABLE").is_ok() {
+        adapter = adapter.unavailable();
+    }
+    if let Ok(stage_str) = std::env::var("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE") {
+        if let Ok(stage_id) = stage_str.parse::<StageId>() {
+            adapter = adapter.with_invoke_failure(stage_id);
+        }
+    }
+
+    AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
 }
 
 async fn handle_start() -> AppResult<()> {

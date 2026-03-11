@@ -2538,3 +2538,164 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
         .count();
     assert_eq!(payload_count, 0, "no payloads should exist after preflight failure");
 }
+
+#[test]
+fn run_start_backend_preflight_failure_leaves_state_unchanged() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "preflight-backend");
+
+    // Capture pre-run state
+    let pre_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-backend/run.json"),
+    )
+    .expect("read run.json before");
+    let pre_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-backend/journal.ndjson"),
+    )
+    .expect("read journal before");
+
+    // Use env var to make the backend unavailable at preflight
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_TEST_BACKEND_UNAVAILABLE", "1")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        !output.status.success(),
+        "run start should fail with unavailable backend"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("preflight") || stderr.contains("unavailable"),
+        "error should reference preflight or unavailable, got: {stderr}"
+    );
+
+    // Verify NO state mutation occurred — byte-identical
+    let post_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-backend/run.json"),
+    )
+    .expect("read run.json after");
+    let post_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/preflight-backend/journal.ndjson"),
+    )
+    .expect("read journal after");
+
+    assert_eq!(
+        pre_run_json, post_run_json,
+        "run.json must be byte-identical after preflight failure"
+    );
+    assert_eq!(
+        pre_journal, post_journal,
+        "journal must be byte-identical after preflight failure"
+    );
+
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/preflight-backend/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir)
+        .expect("read payloads dir")
+        .filter_map(|e| e.ok())
+        .count();
+    assert_eq!(payload_count, 0, "no payloads should exist after preflight failure");
+
+    let artifacts_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/preflight-backend/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir)
+        .expect("read artifacts dir")
+        .filter_map(|e| e.ok())
+        .count();
+    assert_eq!(artifact_count, 0, "no artifacts should exist after preflight failure");
+}
+
+#[test]
+fn run_start_mid_stage_failure_no_partial_durable_history() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "midstage-fail");
+
+    // Use env var to fail the first stage's invocation (prompt_review is
+    // enabled by default, so it's the first stage executed).
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "prompt_review")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        !output.status.success(),
+        "run start should fail on mid-stage invoke failure"
+    );
+
+    // Run snapshot must be failed, not running
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/midstage-fail/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        run_json.contains("\"failed\""),
+        "run.json should show failed status, got: {run_json}"
+    );
+    assert!(
+        run_json.contains("\"active_run\":null") || run_json.contains("\"active_run\": null"),
+        "active_run should be null after failure"
+    );
+
+    // No payload or artifact files should exist — no partial durable history
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/midstage-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir)
+        .expect("read payloads dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .count();
+    assert_eq!(
+        payload_count, 0,
+        "no payloads should exist after mid-stage failure"
+    );
+
+    let artifacts_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/midstage-fail/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir)
+        .expect("read artifacts dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .count();
+    assert_eq!(
+        artifact_count, 0,
+        "no artifacts should exist after mid-stage failure"
+    );
+
+    // No stage_completed event should exist in the journal
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/midstage-fail/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(
+        !journal.contains("\"stage_completed\""),
+        "no stage_completed event should exist after mid-stage failure"
+    );
+
+    // Journal should end with run_failed event
+    let last_line = journal.lines().last().expect("journal should not be empty");
+    assert!(
+        last_line.contains("\"run_failed\""),
+        "last journal event should be run_failed, got: {last_line}"
+    );
+}
