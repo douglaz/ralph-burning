@@ -153,8 +153,15 @@ Feature: Project Records
     And the active-project pointer is unchanged
 
   # SC-PROJ-022
-  Scenario: Delete of active project restores pointer on failure
+  Scenario: Delete failure of active project leaves pointer unchanged
     Given an initialized workspace with project "alpha" selected as active
-    When the filesystem delete of project "alpha" fails after active-project pointer was cleared
-    Then the active-project pointer is restored to "alpha"
+    When the filesystem delete of project "alpha" fails
+    Then the active-project pointer still points to "alpha"
     And the project "alpha" remains addressable
+
+  # SC-PROJ-023
+  Scenario: Successful delete propagates pointer clear failure
+    Given an initialized workspace with project "alpha" selected as active
+    When the project "alpha" is successfully deleted but clearing the active-project pointer fails
+    Then the command fails with an error
+    And the project directory "alpha" no longer exists

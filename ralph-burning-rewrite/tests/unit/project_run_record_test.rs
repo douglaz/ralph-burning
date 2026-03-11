@@ -553,7 +553,7 @@ fn run_status_reports_failed_for_terminal_snapshot() {
 }
 
 #[test]
-fn delete_project_restores_active_pointer_on_delete_failure() {
+fn delete_project_does_not_touch_pointer_on_delete_failure() {
     use std::cell::Cell;
 
     struct FailingDeleteStore {
@@ -599,6 +599,7 @@ fn delete_project_restores_active_pointer_on_delete_failure() {
 
     struct TrackingActiveStore {
         active_id: Option<String>,
+        clear_called: Cell<bool>,
         write_called: Cell<bool>,
     }
 
@@ -608,6 +609,7 @@ fn delete_project_restores_active_pointer_on_delete_failure() {
         }
 
         fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
+            self.clear_called.set(true);
             Ok(())
         }
 
@@ -627,6 +629,7 @@ fn delete_project_restores_active_pointer_on_delete_failure() {
     let run_store = FakeRunSnapshotStore::no_run();
     let active_store = TrackingActiveStore {
         active_id: Some("alpha".to_owned()),
+        clear_called: Cell::new(false),
         write_called: Cell::new(false),
     };
     let base_dir = dummy_base_dir();
@@ -634,9 +637,105 @@ fn delete_project_restores_active_pointer_on_delete_failure() {
 
     let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
     assert!(result.is_err(), "delete should fail");
+    // The pointer must never be cleared or written when delete fails —
+    // the project remains fully addressable with the original pointer.
     assert!(
-        active_store.write_called.get(),
-        "write_active_project should be called to restore the pointer after delete failure"
+        !active_store.clear_called.get(),
+        "clear_active_project must not be called when delete fails"
+    );
+    assert!(
+        !active_store.write_called.get(),
+        "write_active_project must not be called when delete fails"
+    );
+}
+
+#[test]
+fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
+    use std::cell::Cell;
+
+    struct SucceedingDeleteStore {
+        existing_ids: Vec<String>,
+    }
+
+    impl ProjectStorePort for SucceedingDeleteStore {
+        fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+            Ok(self.existing_ids.contains(&project_id.to_string()))
+        }
+
+        fn read_project_record(
+            &self,
+            _base_dir: &Path,
+            project_id: &ProjectId,
+        ) -> AppResult<ProjectRecord> {
+            Ok(make_project_record(project_id.as_str()))
+        }
+
+        fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+            self.existing_ids.iter().map(ProjectId::new).collect()
+        }
+
+        fn delete_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn create_project_atomic(
+            &self,
+            _base_dir: &Path,
+            _record: &ProjectRecord,
+            _prompt_contents: &str,
+            _run_snapshot: &RunSnapshot,
+            _initial_journal_line: &str,
+            _sessions: &SessionStore,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct FailingClearActiveStore {
+        active_id: Option<String>,
+        clear_called: Cell<bool>,
+    }
+
+    impl ActiveProjectPort for FailingClearActiveStore {
+        fn read_active_project_id(&self, _base_dir: &Path) -> AppResult<Option<String>> {
+            Ok(self.active_id.clone())
+        }
+
+        fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
+            self.clear_called.set(true);
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated clear failure",
+            )))
+        }
+
+        fn write_active_project(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    let store = SucceedingDeleteStore {
+        existing_ids: vec!["alpha".to_owned()],
+    };
+    let run_store = FakeRunSnapshotStore::no_run();
+    let active_store = FailingClearActiveStore {
+        active_id: Some("alpha".to_owned()),
+        clear_called: Cell::new(false),
+    };
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    // Delete succeeded, but clearing the pointer failed — the error
+    // must propagate so the caller knows the pointer is stale.
+    assert!(result.is_err(), "should propagate clear-pointer failure");
+    assert!(
+        active_store.clear_called.get(),
+        "clear_active_project should be attempted after successful delete"
     );
 }
 
