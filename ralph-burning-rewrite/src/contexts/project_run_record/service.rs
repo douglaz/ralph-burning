@@ -92,7 +92,7 @@ pub fn create_project(
         id: input.id.clone(),
         name: input.name,
         flow: input.flow,
-        prompt_reference: input.prompt_path,
+        prompt_reference: "prompt.md".to_owned(),
         prompt_hash: input.prompt_hash,
         created_at: input.created_at,
         status_summary: ProjectStatusSummary::Created,

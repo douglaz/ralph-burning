@@ -126,3 +126,20 @@ Feature: Project Records
     Given an initialized workspace with a project directory "alpha" that has no project.toml
     When the user runs "project delete alpha"
     Then the command fails with error referencing "project.toml" and "missing"
+
+  # SC-PROJ-019
+  Scenario: Project.toml records canonical copied prompt reference
+    Given an initialized workspace
+    And a readable prompt file "external-prompt.md"
+    When the user runs "project create --id alpha --name Alpha --prompt external-prompt.md --flow standard"
+    Then the command succeeds
+    And "project.toml" for "alpha" contains prompt_reference "prompt.md"
+    And "project.toml" for "alpha" does not reference the source path "external-prompt.md"
+    And "project show alpha" displays "Prompt reference: prompt.md"
+
+  # SC-PROJ-020
+  Scenario: Delete failure leaves project addressable
+    Given an initialized workspace with project "alpha" and no active run
+    When the filesystem delete fails after the project has been moved to a trash path
+    Then the project "alpha" remains addressable at its canonical path
+    And the active-project pointer is unchanged

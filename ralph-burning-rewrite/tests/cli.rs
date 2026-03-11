@@ -425,6 +425,42 @@ fn project_create_run_json_shows_not_started() {
 }
 
 #[test]
+fn project_create_records_canonical_prompt_reference_not_source_path() {
+    let temp_dir = initialize_workspace_fixture();
+    // Use a non-standard filename to verify the recorded reference is canonical
+    let external_prompt = temp_dir.path().join("my-external-prompt.md");
+    fs::write(&external_prompt, "# External Prompt\nContent.").expect("write prompt");
+
+    let output = Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "reftest",
+            "--name", "Ref Test",
+            "--prompt", external_prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create");
+    assert!(output.status.success());
+
+    let project_toml = fs::read_to_string(
+        temp_dir.path().join(".ralph-burning/projects/reftest/project.toml"),
+    )
+    .expect("read project.toml");
+
+    // prompt_reference should be the canonical copied path, not the source path
+    assert!(
+        project_toml.contains("prompt_reference = \"prompt.md\""),
+        "project.toml should record canonical prompt.md, got:\n{project_toml}"
+    );
+    assert!(
+        !project_toml.contains("my-external-prompt"),
+        "project.toml should not contain the source path"
+    );
+}
+
+#[test]
 fn project_create_fails_on_duplicate_id() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());

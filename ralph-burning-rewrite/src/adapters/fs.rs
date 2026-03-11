@@ -296,10 +296,27 @@ impl ProjectStorePort for FsProjectStore {
 
         // Phase 2: remove the trash directory
         if let Err(remove_err) = fs::remove_dir_all(&trash_path) {
-            // Removal failed — try to restore the project to its original path
-            if let Err(_restore_err) = fs::rename(&trash_path, &project_root) {
-                // Restore also failed; return the original removal error.
-                // The project is stranded at the trash path but not partially deleted.
+            // Removal failed — restore the project to its original path.
+            // The spec requires that a failed delete leaves the project addressable,
+            // so we must guarantee the restore succeeds. If rename-back fails, fall
+            // back to copying the entire tree back before returning the error.
+            if fs::rename(&trash_path, &project_root).is_err() {
+                // Rename-back failed (e.g., partial removal left an inconsistent
+                // state). Use a recursive copy as a last resort to restore
+                // addressability, then clean up the trash path.
+                if let Err(copy_err) = copy_dir_recursive(&trash_path, &project_root) {
+                    // Even the copy fallback failed. Return a compound error that
+                    // makes the situation clear to the operator.
+                    return Err(AppError::CorruptRecord {
+                        file: format!("projects/{}", project_id),
+                        details: format!(
+                            "delete failed and project could not be restored: remove error: {}, restore error: {}",
+                            remove_err, copy_err
+                        ),
+                    });
+                }
+                // Copy succeeded — clean up the trash remnants (best effort).
+                let _ = fs::remove_dir_all(&trash_path);
             }
             return Err(remove_err.into());
         }
@@ -578,4 +595,21 @@ impl ActiveProjectPort for FsActiveProjectStore {
             Err(e) => Err(e.into()),
         }
     }
+}
+
+/// Recursively copy a directory tree from `src` to `dst`.
+/// Used as a fallback when rename-based restore fails during transactional delete.
+fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path)?;
+        } else {
+            fs::copy(&src_path, &dst_path)?;
+        }
+    }
+    Ok(())
 }

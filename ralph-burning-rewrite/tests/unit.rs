@@ -27,3 +27,6 @@ mod journal_test;
 
 #[path = "unit/query_test.rs"]
 mod query_test;
+
+#[path = "unit/adapter_contract_test.rs"]
+mod adapter_contract_test;
