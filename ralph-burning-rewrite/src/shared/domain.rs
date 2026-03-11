@@ -262,7 +262,12 @@ pub struct ProjectId(String);
 impl ProjectId {
     pub fn new(value: impl Into<String>) -> AppResult<Self> {
         let normalized = value.into().trim().to_owned();
-        if normalized.is_empty() {
+        if normalized.is_empty()
+            || normalized == "."
+            || normalized == ".."
+            || normalized.contains('/')
+            || normalized.contains('\\')
+        {
             return Err(AppError::InvalidIdentifier { value: normalized });
         }
 

@@ -1,4 +1,5 @@
-use ralph_burning::shared::domain::{StageCursor, StageId};
+use ralph_burning::shared::domain::{ProjectId, StageCursor, StageId};
+use ralph_burning::shared::error::AppError;
 
 #[test]
 fn stage_cursor_rejects_zero_values() {
@@ -25,4 +26,19 @@ fn stage_cursor_cycle_and_completion_round_are_monotonic_and_independent() {
     assert_eq!(2, next_completion_round.cycle);
     assert_eq!(2, next_completion_round.completion_round);
     assert_eq!(1, next_completion_round.attempt);
+}
+
+#[test]
+fn project_id_rejects_path_like_values() {
+    for value in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "nested/project",
+        r"nested\project",
+    ] {
+        let error = ProjectId::new(value).expect_err("path-like project id should fail");
+        assert!(matches!(error, AppError::InvalidIdentifier { .. }));
+    }
 }

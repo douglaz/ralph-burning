@@ -16,7 +16,7 @@ pub enum AppError {
     WorkspaceConflict { path: PathBuf },
     #[error("invalid {field}: must be greater than zero")]
     InvalidStageCursorField { field: &'static str },
-    #[error("invalid identifier '{value}': identifiers must not be empty")]
+    #[error("invalid identifier '{value}': identifiers must be non-empty single path segments")]
     InvalidIdentifier { value: String },
     #[error(
         "unknown flow preset '{flow_id}'. supported presets: standard, quick_dev, docs_change, ci_improvement"

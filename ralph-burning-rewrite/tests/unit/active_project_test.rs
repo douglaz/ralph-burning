@@ -64,6 +64,22 @@ fn set_active_project_rejects_missing_projects() {
     assert!(matches!(error, AppError::ProjectNotFound { .. }));
 }
 
+#[test]
+fn resolve_active_project_rejects_path_like_pointer_values() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+    fs::write(
+        temp_dir.path().join(".ralph-burning/active-project"),
+        "../escape\n",
+    )
+    .expect("write active project");
+
+    let error =
+        resolve_active_project(temp_dir.path()).expect_err("path-like active project should fail");
+
+    assert!(matches!(error, AppError::InvalidIdentifier { .. }));
+}
+
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     fs::create_dir_all(&project_root).expect("create project directory");

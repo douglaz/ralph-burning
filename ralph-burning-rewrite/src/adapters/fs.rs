@@ -95,11 +95,11 @@ impl FileSystem {
     }
 
     pub fn open_editor(path: &Path) -> AppResult<()> {
-        let editor = env::var("VISUAL")
+        let editor = env::var("EDITOR")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .or_else(|| {
-                env::var("EDITOR")
+                env::var("VISUAL")
                     .ok()
                     .filter(|value| !value.trim().is_empty())
             })

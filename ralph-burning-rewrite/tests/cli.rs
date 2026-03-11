@@ -227,6 +227,37 @@ fn config_edit_revalidates_workspace_file() {
 }
 
 #[test]
+fn config_edit_prefers_editor_over_visual() {
+    let temp_dir = initialize_workspace_fixture();
+    let editor = write_editor_script(
+        temp_dir.path(),
+        "editor-wins.sh",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"editor\"\nEOF\n",
+    );
+    let visual = write_editor_script(
+        temp_dir.path(),
+        "visual-loses.sh",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"visual\"\nEOF\n",
+    );
+
+    let output = Command::new(binary())
+        .args(["config", "edit"])
+        .env("EDITOR", &editor)
+        .env("VISUAL", &visual)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run config edit");
+
+    assert!(output.status.success());
+
+    let workspace_config =
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/workspace.toml"))
+            .expect("read workspace config");
+    assert!(workspace_config.contains("default_backend = \"editor\""));
+    assert!(!workspace_config.contains("default_backend = \"visual\""));
+}
+
+#[test]
 fn config_edit_fails_when_editor_leaves_invalid_file() {
     let temp_dir = initialize_workspace_fixture();
     let editor = write_editor_script(
@@ -274,4 +305,22 @@ fn project_select_sets_active_project_and_rejects_missing_projects() {
         .expect("run missing project select");
     assert!(!missing.status.success());
     assert!(String::from_utf8_lossy(&missing.stderr).contains("project 'missing' was not found"));
+}
+
+#[test]
+fn project_select_rejects_path_like_ids_before_writing_active_project() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["project", "select", "../escape"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run path-like project select");
+
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid identifier"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/active-project")
+        .exists());
 }
