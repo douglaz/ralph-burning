@@ -1,3 +1,28 @@
+---
+artifact: prompt-review
+project: ralph-burning-rewrite
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-11T17:48:31Z
+---
+
+# Prompt Review
+
+## Issues Found
+- No explicit priority/decomposition for v1 scope. The prompt mixes architecture vision, roadmap, and behavior details, which makes first implementation loop unclear about what is required immediately versus later slices.
+- Multiple unresolved open questions are deferred instead of resolved (e.g., `cycle` vs `loop`, `run tail` behavior, `quick_dev` reviewer shape, daemon label vocabulary). This leaves downstream agents forced to invent defaults and causes divergence across teams.
+- The prompt assumes existing terms without enforcing a canonical vocabulary. Terms like `loop`, `phase`, `artifact`, `run`, and `history` appear inconsistently, which increases parser and spec ambiguity.
+- `flow` behavior is described conceptually but not in a machine-executable contract. There is no single, precise definition of legal stage transitions and state transitions per preset, so implementation teams can interpret flow sequencing differently.
+- Testing requirements are broad but not operationalized as gating criteria. The prompt lacks explicit “must pass before advancing slice” and concrete conformance-run expectations for each milestone.
+- Conformance is described as top-level but not linked as a hard acceptance rule. Without a required CI/test gate, “greenfield rewrite” can regress without visible failure.
+- Storage model is extensive but lacks explicit file-level contracts (e.g., exact field names and required/optional keys for `project.toml`, `run.json`, journal events, payload metadata), which weakens deterministic implementation.
+- Backend requirements are strong (structured payloads, structured contract) but no single source-of-truth schema format and validation process is required, inviting adapter-level inconsistency.
+- Daemon/runtime behavior is specified as a context but not sufficiently constrained for safe concurrency (e.g., task claim race, lease release order, cancellation timing), creating hidden reliability gaps.
+- Markdown rendering is repeatedly emphasized, but there is no explicit statement that all Markdown outputs are render-only and never a fallback parser for state reconstruction.
+- There is no explicit non-goal list for first release in the prompt body; while hints exist, this invites accidental work on out-of-scope legacy migration and compatibility paths.
+- Several duplicated sections (capability map, architecture, testing, context packs, roadmap) repeat requirements without adding strict precedence, increasing the chance of conflicting interpretations.
+
+## Refined Prompt
 # Implement `ralph-burning` v1 Rewrite
 
 ## 1) Objective and Source of Truth

@@ -1,0 +1,160 @@
+[workspace]
+version = "1.0"
+default_backend = "claude"
+tmux = false
+tmux_session = "ralph"
+tmux_window_keep_seconds = 5
+daemon_poll_seconds = 60
+daemon_max_concurrent = 5
+daemon_labels = ["ralph:ready"]
+daemon_refinement_enabled = true
+daemon_refinement_backend = "claude(sonnet)"
+daemon_auto_rebase_enabled = true
+daemon_rebase_interval_seconds = 1800
+daemon_max_rebases_per_cycle = 3
+daemon_rebase_timeout_seconds = 120
+daemon_rebase_agent_backend = "claude(opus)"
+daemon_prd_enabled = true
+daemon_prd_question_backends = [
+    "claude",
+    "codex",
+]
+daemon_prd_writer_backend = "claude"
+daemon_prd_reviewer_backend = "codex"
+daemon_prd_max_revisions = 3
+daemon_prd_backend_timeout_secs = 3600
+
+[backends.claude]
+command = "claude"
+args = [
+    "-p",
+    "--permission-mode",
+    "acceptEdits",
+    "--allowedTools",
+    "Bash,Edit,Write,Read,Glob,Grep,WebSearch,WebFetch,Task,TaskOutput,TaskStop",
+]
+timeout_seconds = 7200
+enabled = "auto"
+
+[backends.claude.env]
+
+[backends.claude.models]
+planner = "opus"
+implementer = "opus"
+reviewer = "opus"
+final_reviewer = "opus"
+arbiter = "opus"
+qa = "opus"
+completer = "opus"
+acceptance_qa = "opus"
+reformatter = "sonnet"
+
+[backends.claude.role_timeouts]
+
+[backends.codex]
+command = "codex"
+args = [
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "-",
+]
+timeout_seconds = 7200
+enabled = "auto"
+
+[backends.codex.env]
+
+[backends.codex.models]
+planner = "gpt-5.4-xhigh"
+implementer = "gpt-5.4-xhigh"
+reviewer = "gpt-5.4-xhigh"
+final_reviewer = "gpt-5.4-xhigh"
+arbiter = "gpt-5.4-xhigh"
+qa = "gpt-5.4-xhigh"
+completer = "gpt-5.4-xhigh"
+acceptance_qa = "gpt-5.4-xhigh"
+reformatter = "gpt-5.4-medium"
+
+[backends.codex.role_timeouts]
+
+[backends.openrouter]
+command = "openrouter"
+args = [
+    "exec",
+    "--dangerously-bypass-approvals-and-sandbox",
+    "-",
+]
+timeout_seconds = 7200
+enabled = false
+
+[backends.openrouter.env]
+
+[backends.openrouter.models]
+planner = "gpt-5.4-xhigh"
+implementer = "gpt-5.4-xhigh"
+reviewer = "gpt-5.4-xhigh"
+final_reviewer = "gpt-5.4-xhigh"
+arbiter = "gpt-5.4-xhigh"
+qa = "gpt-5.4-xhigh"
+completer = "gpt-5.4-xhigh"
+acceptance_qa = "gpt-5.4-xhigh"
+reformatter = "gpt-5.4-medium"
+
+[backends.openrouter.role_timeouts]
+
+[workflow]
+reviewer_backend = "codex"
+max_review_iterations = 30
+auto_commit = true
+commit_message_style = "conventional"
+commit_tag_format = "ralph/{project_id}/loop-{loop_number}"
+prompt_change_action = "abort"
+prompt_review_enabled = true
+prompt_review_backend = "codex"
+final_review_enabled = true
+final_review_backends = [
+    "claude",
+    "codex",
+]
+final_review_arbiter_backend = "codex"
+final_review_min_reviewers = 2
+final_review_consensus_threshold = 1.0
+max_final_review_restarts = 25
+completion_backends = [
+    "claude",
+    "codex",
+]
+completion_min_completers = 2
+qa_enabled = false
+max_qa_iterations = 3
+planner_state_in_prompt = "summary"
+planner_previous_specs_in_prompt = "titles"
+planner_max_prior_loops = 10
+max_review_history_entries_in_prompt = 3
+max_qa_history_entries_in_prompt = 2
+include_history_when_session_reuse_enabled = false
+session_reuse_enabled = false
+session_reuse_roles = [
+    "implementer",
+    "reviewer",
+    "qa",
+]
+session_reuse_reset_on_prompt_change = true
+session_reuse_reset_on_rollback = true
+
+[templates]
+planner = "templates/spec.md"
+implementer = "templates/implementation.md"
+reviewer = "templates/review.md"
+prompt_reviewer = "templates/prompt_reviewer.md"
+completer = "templates/completion.md"
+qa = "templates/qa.md"
+final_reviewer = "templates/final_reviewer.md"
+planner_position = "templates/planner_position.md"
+vote = "templates/vote.md"
+arbiter = "templates/arbiter.md"
+
+[git]
+auto_branch = true
+branch_format = "ralph/{project_id}"
+sign_commits = false
+base_branch = "master"
