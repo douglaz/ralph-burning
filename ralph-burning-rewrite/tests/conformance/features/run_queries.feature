@@ -75,3 +75,31 @@ Feature: Run Queries
     When durable history is queried via "run history"
     Then durable history records are returned intact
     And no durable history records are fabricated, removed, or reordered
+
+  # SC-RUN-011
+  Scenario: Missing run.json fails fast
+    Given an initialized workspace with project "alpha"
+    And "run.json" for project "alpha" has been deleted
+    When the user runs "run status"
+    Then the command fails with error referencing "run.json" and "missing"
+
+  # SC-RUN-012
+  Scenario: Missing journal.ndjson fails fast
+    Given an initialized workspace with project "alpha"
+    And "journal.ndjson" for project "alpha" has been deleted
+    When the user runs "run history"
+    Then the command fails with error referencing "journal.ndjson" and "missing"
+
+  # SC-RUN-013
+  Scenario: Orphaned payload record fails consistency check
+    Given an initialized workspace with project "alpha"
+    And project "alpha" has a payload with no matching artifact
+    When the user runs "run history"
+    Then the command fails with error containing "no matching artifact"
+
+  # SC-RUN-014
+  Scenario: Run tail includes payload and artifact records in durable section
+    Given an initialized workspace with project "alpha" that has payload and artifact records
+    When the user runs "run tail"
+    Then the durable section includes payload and artifact records
+    And the output matches what "run history" would show for the same data

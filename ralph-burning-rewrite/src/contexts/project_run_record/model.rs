@@ -30,6 +30,10 @@ pub enum ProjectStatusSummary {
 pub struct RunSnapshot {
     pub active_run: Option<ActiveRun>,
     pub status: RunStatus,
+    pub cycle_history: Vec<CycleHistoryEntry>,
+    pub completion_rounds: u32,
+    pub rollback_point_meta: RollbackPointMeta,
+    pub amendment_queue: AmendmentQueueState,
     pub status_summary: String,
 }
 
@@ -38,6 +42,10 @@ impl RunSnapshot {
         Self {
             active_run: None,
             status: RunStatus::NotStarted,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            rollback_point_meta: RollbackPointMeta::default(),
+            amendment_queue: AmendmentQueueState::default(),
             status_summary: "not started".to_owned(),
         }
     }
@@ -62,6 +70,29 @@ pub enum RunStatus {
     Paused,
     Completed,
     Failed,
+}
+
+/// A single entry in the cycle history tracking progression through work cycles.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CycleHistoryEntry {
+    pub cycle: u32,
+    pub stage_id: StageId,
+    pub started_at: DateTime<Utc>,
+    pub completed_at: Option<DateTime<Utc>>,
+}
+
+/// Rollback-point metadata tracked in the canonical run snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct RollbackPointMeta {
+    pub last_rollback_id: Option<String>,
+    pub rollback_count: u32,
+}
+
+/// Amendment queue state tracked in the canonical run snapshot.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AmendmentQueueState {
+    pub pending: Vec<serde_json::Value>,
+    pub processed_count: u32,
 }
 
 /// A single journal event stored in `journal.ndjson`.

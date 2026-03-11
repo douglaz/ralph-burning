@@ -253,7 +253,28 @@ impl ProjectStorePort for FsProjectStore {
                 project_id: project_id.to_string(),
             });
         }
-        fs::remove_dir_all(&project_root)?;
+
+        // Transactional delete: rename to a trash path first, then remove.
+        // If removal fails, rename back so the project remains addressable.
+        let trash_name = format!(".{}.deleting.{}", project_id, std::process::id());
+        let trash_path = project_root
+            .parent()
+            .expect("project root has parent")
+            .join(&trash_name);
+
+        // Phase 1: atomic rename to trash location
+        fs::rename(&project_root, &trash_path)?;
+
+        // Phase 2: remove the trash directory
+        if let Err(remove_err) = fs::remove_dir_all(&trash_path) {
+            // Removal failed — try to restore the project to its original path
+            if let Err(_restore_err) = fs::rename(&trash_path, &project_root) {
+                // Restore also failed; return the original removal error.
+                // The project is stranded at the trash path but not partially deleted.
+            }
+            return Err(remove_err.into());
+        }
+
         Ok(())
     }
 
@@ -341,7 +362,12 @@ impl JournalStorePort for FsJournalStore {
         let path = FileSystem::project_root(base_dir, project_id).join(JOURNAL_FILE);
         match fs::read_to_string(&path) {
             Ok(contents) => journal::parse_journal(&contents),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/journal.ndjson", project_id),
+                    details: "canonical file is missing".to_owned(),
+                })
+            }
             Err(e) => Err(e.into()),
         }
     }
@@ -485,7 +511,12 @@ impl RunSnapshotPort for FsRunSnapshotStore {
                 file: format!("projects/{}/run.json", project_id),
                 details: e.to_string(),
             }),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(RunSnapshot::initial()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id),
+                    details: "canonical file is missing".to_owned(),
+                })
+            }
             Err(e) => Err(e.into()),
         }
     }

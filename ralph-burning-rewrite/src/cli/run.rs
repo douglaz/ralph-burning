@@ -155,6 +155,26 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
         );
     }
 
+    if !tail.payloads.is_empty() {
+        println!("--- Payloads ---");
+        for payload in &tail.payloads {
+            println!(
+                "  {} ({}, cycle {}, attempt {})",
+                payload.payload_id, payload.stage_id, payload.cycle, payload.attempt
+            );
+        }
+    }
+
+    if !tail.artifacts.is_empty() {
+        println!("--- Artifacts ---");
+        for artifact in &tail.artifacts {
+            println!(
+                "  {} (payload: {}, stage: {})",
+                artifact.artifact_id, artifact.payload_id, artifact.stage_id
+            );
+        }
+    }
+
     if let Some(ref logs) = tail.runtime_logs {
         println!("--- Runtime Logs ---");
         if logs.is_empty() {

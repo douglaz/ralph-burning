@@ -898,3 +898,161 @@ fn run_tail_with_logs_includes_runtime_logs_section() {
     assert!(stdout.contains("Durable History"));
     assert!(stdout.contains("Runtime Logs"));
 }
+
+// ── Fail-fast on missing canonical files ──
+
+#[test]
+fn run_status_fails_fast_when_run_json_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "broken",
+            "--name", "Broken",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "broken"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Delete run.json to simulate corruption
+    fs::remove_file(
+        temp_dir.path().join(".ralph-burning/projects/broken/run.json"),
+    )
+    .expect("remove run.json");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run.json"));
+    assert!(stderr.contains("missing"));
+}
+
+#[test]
+fn run_history_fails_fast_when_journal_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "nojrnl",
+            "--name", "No Journal",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "nojrnl"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Delete journal.ndjson to simulate corruption
+    fs::remove_file(
+        temp_dir.path().join(".ralph-burning/projects/nojrnl/journal.ndjson"),
+    )
+    .expect("remove journal");
+
+    let output = Command::new(binary())
+        .args(["run", "history"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("journal.ndjson"));
+    assert!(stderr.contains("missing"));
+}
+
+#[test]
+fn run_status_fails_fast_when_run_json_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt",
+            "--name", "Corrupt",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "corrupt"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Write corrupt JSON to run.json
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/corrupt/run.json"),
+        "{invalid json}",
+    )
+    .expect("corrupt run.json");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run.json"));
+}
+
+// ── Run.json schema completeness ──
+
+#[test]
+fn project_create_run_json_contains_all_canonical_fields() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "schema",
+            "--name", "Schema Check",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    let run_json = fs::read_to_string(
+        temp_dir.path().join(".ralph-burning/projects/schema/run.json"),
+    )
+    .expect("read run.json");
+
+    assert!(run_json.contains("\"cycle_history\""));
+    assert!(run_json.contains("\"completion_rounds\""));
+    assert!(run_json.contains("\"rollback_point_meta\""));
+    assert!(run_json.contains("\"amendment_queue\""));
+    assert!(run_json.contains("\"active_run\""));
+    assert!(run_json.contains("\"status\""));
+    assert!(run_json.contains("\"status_summary\""));
+}

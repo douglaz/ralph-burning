@@ -94,3 +94,15 @@ Feature: Project Records
     Given an initialized workspace
     When the user runs "project create --id alpha --name Alpha --prompt prompt.md --flow standard"
     Then the active-project pointer does not exist
+
+  # SC-PROJ-014
+  Scenario: Project delete is transactional
+    Given an initialized workspace with project "alpha" and no active run
+    When the filesystem delete partially fails after validation
+    Then the project "alpha" remains addressable
+    And the active-project pointer is unchanged
+
+  # SC-PROJ-015
+  Scenario: Run.json contains full canonical run snapshot schema
+    Given an initialized workspace with project "alpha"
+    Then "run.json" for "alpha" contains cycle_history, completion_rounds, rollback_point_meta, and amendment_queue fields

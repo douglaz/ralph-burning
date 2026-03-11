@@ -129,6 +129,10 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                     started_at: test_timestamp(),
                 }),
                 status: RunStatus::Running,
+                cycle_history: Vec::new(),
+                completion_rounds: 0,
+                rollback_point_meta: RollbackPointMeta::default(),
+                amendment_queue: AmendmentQueueState::default(),
                 status_summary: "running".to_owned(),
             })
         } else {

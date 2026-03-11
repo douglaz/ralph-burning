@@ -100,11 +100,14 @@ pub fn build_tail_view(
     }
 }
 
-/// Validate that durable history records are consistent: every artifact has a matching payload.
+/// Validate that durable history records are consistent:
+/// every artifact has a matching payload and every payload has a matching artifact.
+/// Payload + artifact are treated as a paired durable-history unit.
 pub fn validate_history_consistency(
     payloads: &[PayloadRecord],
     artifacts: &[ArtifactRecord],
 ) -> AppResult<()> {
+    // Check orphaned artifacts (artifact without matching payload)
     for artifact in artifacts {
         if !payloads.iter().any(|p| p.payload_id == artifact.payload_id) {
             return Err(crate::shared::error::AppError::CorruptRecord {
@@ -113,6 +116,15 @@ pub fn validate_history_consistency(
                     "artifact references payload '{}' which does not exist",
                     artifact.payload_id
                 ),
+            });
+        }
+    }
+    // Check orphaned payloads (payload without matching artifact)
+    for payload in payloads {
+        if !artifacts.iter().any(|a| a.payload_id == payload.payload_id) {
+            return Err(crate::shared::error::AppError::CorruptRecord {
+                file: format!("history/payloads/{}", payload.payload_id),
+                details: "payload has no matching artifact".to_owned(),
             });
         }
     }

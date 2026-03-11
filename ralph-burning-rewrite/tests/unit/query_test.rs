@@ -34,6 +34,10 @@ fn status_view_reports_running_with_cursor() {
             started_at: test_timestamp(),
         }),
         status: RunStatus::Running,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
         status_summary: "running at planning".to_owned(),
     };
     let view = queries::build_status_view("alpha", &snapshot);
@@ -136,6 +140,57 @@ fn validate_history_consistency_fails_with_orphaned_artifact() {
 #[test]
 fn validate_history_consistency_passes_with_no_records() {
     assert!(queries::validate_history_consistency(&[], &[]).is_ok());
+}
+
+// ── Orphaned Payload Detection ──
+
+#[test]
+fn validate_history_consistency_fails_with_orphaned_payload() {
+    let payloads = vec![PayloadRecord {
+        payload_id: "p-orphan".to_owned(),
+        stage_id: StageId::Planning,
+        cycle: 1,
+        attempt: 1,
+        created_at: test_timestamp(),
+        payload: serde_json::json!({}),
+    }];
+    let artifacts = vec![];
+
+    let result = queries::validate_history_consistency(&payloads, &artifacts);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, AppError::CorruptRecord { .. }));
+    match err {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(details.contains("no matching artifact"));
+        }
+        _ => panic!("expected CorruptRecord"),
+    }
+}
+
+// ── RunSnapshot Schema Completeness ──
+
+#[test]
+fn run_snapshot_initial_includes_all_canonical_fields() {
+    let snapshot = RunSnapshot::initial();
+    let json = serde_json::to_string_pretty(&snapshot).expect("serialize");
+
+    // Verify all canonical fields are present in the serialized form
+    assert!(json.contains("\"active_run\""));
+    assert!(json.contains("\"status\""));
+    assert!(json.contains("\"cycle_history\""));
+    assert!(json.contains("\"completion_rounds\""));
+    assert!(json.contains("\"rollback_point_meta\""));
+    assert!(json.contains("\"amendment_queue\""));
+    assert!(json.contains("\"status_summary\""));
+}
+
+#[test]
+fn run_snapshot_round_trips_through_json() {
+    let snapshot = RunSnapshot::initial();
+    let json = serde_json::to_string(&snapshot).expect("serialize");
+    let parsed: RunSnapshot = serde_json::from_str(&json).expect("deserialize");
+    assert_eq!(snapshot, parsed);
 }
 
 // ── Runtime Log Separation ──
