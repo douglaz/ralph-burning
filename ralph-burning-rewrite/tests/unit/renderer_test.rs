@@ -1,8 +1,8 @@
 #![forbid(unsafe_code)]
 
 use ralph_burning::contexts::workflow_composition::payloads::{
-    ExecutionPayload, ExecutionStep, PlanningPayload, ProposedWorkItem,
-    ReadinessAssessment, ReviewOutcome, StepStatus, ValidationPayload,
+    ExecutionPayload, ExecutionStep, PlanningPayload, ProposedWorkItem, ReadinessAssessment,
+    ReviewOutcome, StepStatus, ValidationPayload,
 };
 use ralph_burning::contexts::workflow_composition::renderers;
 use ralph_burning::shared::domain::StageId;
@@ -12,9 +12,7 @@ use ralph_burning::shared::domain::StageId;
 fn sample_planning_payload() -> PlanningPayload {
     PlanningPayload {
         problem_framing: "We need to add stage contracts.".to_string(),
-        assumptions_or_open_questions: vec![
-            "All stages are covered.".to_string(),
-        ],
+        assumptions_or_open_questions: vec!["All stages are covered.".to_string()],
         proposed_work: vec![ProposedWorkItem {
             order: 1,
             summary: "Define payload types".to_string(),
@@ -103,8 +101,7 @@ fn planning_artifact_contains_expected_sections() {
 #[test]
 fn planning_artifact_uses_stage_display_name() {
     let payload = sample_planning_payload();
-    let artifact =
-        renderers::render_planning(StageId::PromptReview, &payload);
+    let artifact = renderers::render_planning(StageId::PromptReview, &payload);
     assert!(artifact.starts_with("# Prompt Review\n"));
 }
 
@@ -119,8 +116,10 @@ fn planning_artifact_shows_empty_assumptions() {
 #[test]
 fn planning_artifact_shows_risks() {
     let mut payload = sample_planning_payload();
-    payload.readiness.risks =
-        vec!["Tight deadline.".to_string(), "API instability.".to_string()];
+    payload.readiness.risks = vec![
+        "Tight deadline.".to_string(),
+        "API instability.".to_string(),
+    ];
     let artifact = renderers::render_planning(StageId::Planning, &payload);
     assert!(artifact.contains("- **Risks:**"));
     assert!(artifact.contains("  - Tight deadline."));
@@ -132,8 +131,7 @@ fn planning_artifact_shows_risks() {
 #[test]
 fn execution_artifact_contains_expected_sections() {
     let payload = sample_execution_payload();
-    let artifact =
-        renderers::render_execution(StageId::Implementation, &payload);
+    let artifact = renderers::render_execution(StageId::Implementation, &payload);
 
     assert!(artifact.starts_with("# Implementation\n"));
     assert!(artifact.contains("## Change Summary"));
@@ -150,8 +148,7 @@ fn execution_artifact_contains_expected_sections() {
 #[test]
 fn execution_artifact_uses_stage_display_name() {
     let payload = sample_execution_payload();
-    let artifact =
-        renderers::render_execution(StageId::PlanAndImplement, &payload);
+    let artifact = renderers::render_execution(StageId::PlanAndImplement, &payload);
     assert!(artifact.starts_with("# Plan and Implement\n"));
 }
 
@@ -181,8 +178,7 @@ fn validation_artifact_shows_rejected_with_follow_up() {
         findings_or_gaps: vec!["Missing tests.".to_string()],
         follow_up_or_amendments: vec!["Add integration tests.".to_string()],
     };
-    let artifact =
-        renderers::render_validation(StageId::FinalReview, &payload);
+    let artifact = renderers::render_validation(StageId::FinalReview, &payload);
 
     assert!(artifact.starts_with("# Final Review\n"));
     assert!(artifact.contains("**Rejected**"));
@@ -194,8 +190,7 @@ fn validation_artifact_shows_rejected_with_follow_up() {
 #[test]
 fn validation_artifact_uses_stage_display_name() {
     let payload = sample_validation_payload();
-    let artifact =
-        renderers::render_validation(StageId::CompletionPanel, &payload);
+    let artifact = renderers::render_validation(StageId::CompletionPanel, &payload);
     assert!(artifact.starts_with("# Completion Panel\n"));
 }
 

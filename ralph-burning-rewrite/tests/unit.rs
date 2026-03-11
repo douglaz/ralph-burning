@@ -7,6 +7,12 @@ mod flow_preset_test;
 #[path = "unit/workspace_test.rs"]
 mod workspace_test;
 
+#[path = "unit/config_test.rs"]
+mod config_test;
+
+#[path = "unit/active_project_test.rs"]
+mod active_project_test;
+
 #[path = "unit/stage_contract_test.rs"]
 mod stage_contract_test;
 

@@ -18,9 +18,7 @@ use schemars::schema::RootSchema;
 use crate::shared::domain::StageId;
 use crate::shared::error::ContractError;
 
-use super::payloads::{
-    ExecutionPayload, PlanningPayload, StagePayload, ValidationPayload,
-};
+use super::payloads::{ExecutionPayload, PlanningPayload, StagePayload, ValidationPayload};
 use super::renderers;
 
 // ── Contract family ─────────────────────────────────────────────────────────
@@ -64,10 +62,9 @@ pub struct ValidatedBundle {
 /// to exactly one contract.
 pub fn contract_for_stage(stage_id: StageId) -> StageContract {
     let family = match stage_id {
-        StageId::PromptReview
-        | StageId::Planning
-        | StageId::DocsPlan
-        | StageId::CiPlan => ContractFamily::Planning,
+        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
+            ContractFamily::Planning
+        }
 
         StageId::Implementation
         | StageId::PlanAndImplement
@@ -135,33 +132,30 @@ impl StageContract {
     fn validate_schema(&self, raw: &serde_json::Value) -> Result<StagePayload, ContractError> {
         match self.family {
             ContractFamily::Planning => {
-                let p: PlanningPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| {
-                        ContractError::SchemaValidation {
-                            stage_id: self.stage_id,
-                            details: e.to_string(),
-                        }
-                    })?;
+                let p: PlanningPayload = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
+                        stage_id: self.stage_id,
+                        details: e.to_string(),
+                    }
+                })?;
                 Ok(StagePayload::Planning(p))
             }
             ContractFamily::Execution => {
-                let p: ExecutionPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| {
-                        ContractError::SchemaValidation {
-                            stage_id: self.stage_id,
-                            details: e.to_string(),
-                        }
-                    })?;
+                let p: ExecutionPayload = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
+                        stage_id: self.stage_id,
+                        details: e.to_string(),
+                    }
+                })?;
                 Ok(StagePayload::Execution(p))
             }
             ContractFamily::Validation => {
-                let p: ValidationPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| {
-                        ContractError::SchemaValidation {
-                            stage_id: self.stage_id,
-                            details: e.to_string(),
-                        }
-                    })?;
+                let p: ValidationPayload = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
+                        stage_id: self.stage_id,
+                        details: e.to_string(),
+                    }
+                })?;
                 Ok(StagePayload::Validation(p))
             }
         }
@@ -175,14 +169,11 @@ impl StageContract {
                     errors.push("problem_framing must not be empty".to_string());
                 }
                 if p.proposed_work.is_empty() {
-                    errors
-                        .push("proposed_work must contain at least one item".to_string());
+                    errors.push("proposed_work must contain at least one item".to_string());
                 }
                 for (i, item) in p.proposed_work.iter().enumerate() {
                     if item.order == 0 {
-                        errors.push(format!(
-                            "proposed_work[{i}].order must be positive"
-                        ));
+                        errors.push(format!("proposed_work[{i}].order must be positive"));
                     }
                 }
                 if !errors.is_empty() {
@@ -202,8 +193,7 @@ impl StageContract {
                 }
                 for (i, step) in p.steps.iter().enumerate() {
                     if step.order == 0 {
-                        errors
-                            .push(format!("steps[{i}].order must be positive"));
+                        errors.push(format!("steps[{i}].order must be positive"));
                     }
                 }
                 if !errors.is_empty() {
@@ -214,13 +204,11 @@ impl StageContract {
                 }
             }
             StagePayload::Validation(p) => {
-                if !p.outcome.is_passing() && p.follow_up_or_amendments.is_empty()
-                {
+                if !p.outcome.is_passing() && p.follow_up_or_amendments.is_empty() {
                     return Err(ContractError::DomainValidation {
                         stage_id: self.stage_id,
-                        details:
-                            "follow_up_or_amendments required when outcome is not approved"
-                                .to_string(),
+                        details: "follow_up_or_amendments required when outcome is not approved"
+                            .to_string(),
                     });
                 }
             }
@@ -230,15 +218,9 @@ impl StageContract {
 
     fn render(&self, payload: &StagePayload) -> String {
         match payload {
-            StagePayload::Planning(p) => {
-                renderers::render_planning(self.stage_id, p)
-            }
-            StagePayload::Execution(p) => {
-                renderers::render_execution(self.stage_id, p)
-            }
-            StagePayload::Validation(p) => {
-                renderers::render_validation(self.stage_id, p)
-            }
+            StagePayload::Planning(p) => renderers::render_planning(self.stage_id, p),
+            StagePayload::Execution(p) => renderers::render_execution(self.stage_id, p),
+            StagePayload::Validation(p) => renderers::render_validation(self.stage_id, p),
         }
     }
 

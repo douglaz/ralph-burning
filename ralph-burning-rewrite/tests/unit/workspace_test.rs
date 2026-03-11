@@ -3,6 +3,7 @@ use ralph_burning::contexts::workspace_governance::{
     initialize_workspace, load_workspace_config, REQUIRED_WORKSPACE_DIRECTORIES, WORKSPACE_DIR,
 };
 use ralph_burning::shared::domain::{WorkspaceConfig, CURRENT_WORKSPACE_VERSION};
+use std::path::{Path, PathBuf};
 use tempfile::tempdir;
 
 #[test]
@@ -52,4 +53,14 @@ fn initialize_workspace_fails_when_workspace_already_exists() {
     let second_attempt = initialize_workspace(temp_dir.path(), created_at);
 
     assert!(second_attempt.is_err());
+}
+
+pub(crate) fn initialize_workspace_fixture(base_dir: &Path) -> PathBuf {
+    let created_at = chrono::Utc
+        .with_ymd_and_hms(2026, 3, 11, 17, 50, 55)
+        .single()
+        .expect("valid timestamp");
+    initialize_workspace(base_dir, created_at)
+        .expect("initialize workspace")
+        .workspace_root
 }

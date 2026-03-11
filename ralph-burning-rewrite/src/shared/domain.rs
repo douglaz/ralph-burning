@@ -3,6 +3,7 @@ use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use toml::Table;
 
 use crate::shared::error::{AppError, AppResult};
 
@@ -304,10 +305,12 @@ impl fmt::Display for RunId {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub version: u32,
     pub created_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "WorkspaceSettings::is_empty")]
+    pub settings: WorkspaceSettings,
 }
 
 impl WorkspaceConfig {
@@ -315,6 +318,45 @@ impl WorkspaceConfig {
         Self {
             version: CURRENT_WORKSPACE_VERSION,
             created_at,
+            settings: WorkspaceSettings::default(),
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkspaceSettings {
+    #[serde(default, skip_serializing_if = "PromptReviewSettings::is_empty")]
+    pub prompt_review: PromptReviewSettings,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_flow: Option<FlowPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl WorkspaceSettings {
+    pub fn is_empty(&self) -> bool {
+        self.prompt_review.is_empty()
+            && self.default_flow.is_none()
+            && self.default_backend.is_none()
+            && self.default_model.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct PromptReviewSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl PromptReviewSettings {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none() && self.extra.is_empty()
     }
 }

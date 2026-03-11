@@ -1,6 +1,8 @@
 use clap::{Args, Subcommand};
 
-use crate::shared::error::{AppError, AppResult};
+use crate::adapters::fs::FileSystem;
+use crate::contexts::workspace_governance::{self, EffectiveConfig};
+use crate::shared::error::AppResult;
 
 #[derive(Debug, Args)]
 pub struct ConfigCommand {
@@ -17,14 +19,54 @@ pub enum ConfigSubcommand {
 }
 
 pub async fn handle(command: ConfigCommand) -> AppResult<()> {
-    let command_name = match command.command {
-        ConfigSubcommand::Show => "config show",
-        ConfigSubcommand::Get { .. } => "config get",
-        ConfigSubcommand::Set { .. } => "config set",
-        ConfigSubcommand::Edit => "config edit",
-    };
+    let current_dir = std::env::current_dir()?;
 
-    Err(AppError::NotYetImplemented {
-        command: command_name.to_owned(),
-    })
+    match command.command {
+        ConfigSubcommand::Show => {
+            let config = EffectiveConfig::load(&current_dir)?;
+            println!("[settings]");
+            for entry in config.entries() {
+                println!(
+                    "{} = {} # source: {}",
+                    entry.key,
+                    entry.value.toml_like_value(),
+                    entry.source
+                );
+            }
+            Ok(())
+        }
+        ConfigSubcommand::Get { key } => {
+            let entry = EffectiveConfig::load(&current_dir)?.get(&key)?;
+            println!("{}", entry.value.display_value());
+            Ok(())
+        }
+        ConfigSubcommand::Set { key, value } => {
+            let entry = EffectiveConfig::set(&current_dir, &key, &value)?;
+            println!(
+                "Updated {} = {} in workspace.toml",
+                entry.key,
+                entry.value.display_value()
+            );
+            Ok(())
+        }
+        ConfigSubcommand::Edit => {
+            let _ = EffectiveConfig::load(&current_dir)?;
+            let config_path = current_dir
+                .join(workspace_governance::WORKSPACE_DIR)
+                .join(workspace_governance::WORKSPACE_CONFIG_FILE);
+            FileSystem::open_editor(&config_path)?;
+            match EffectiveConfig::load(&current_dir) {
+                Ok(_) => {
+                    println!("Validated workspace.toml");
+                    Ok(())
+                }
+                Err(error) => {
+                    eprintln!(
+                        "workspace.toml is invalid after editing: {error}. Fix the file manually."
+                    );
+                    Err(error)
+                }
+            }
+        }
+    }
 }

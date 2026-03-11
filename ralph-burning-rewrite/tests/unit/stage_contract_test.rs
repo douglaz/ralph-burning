@@ -181,10 +181,7 @@ fn domain_failure_short_circuits_rendering() {
         matches!(err, ContractError::DomainValidation { .. }),
         "expected DomainValidation, got: {err:?}"
     );
-    assert_eq!(
-        err.failure_class(),
-        FailureClass::DomainValidationFailure
-    );
+    assert_eq!(err.failure_class(), FailureClass::DomainValidationFailure);
 }
 
 #[test]
@@ -261,7 +258,9 @@ fn execution_contract_evaluates_successfully() {
 #[test]
 fn validation_approved_evaluates_with_no_outcome_failure() {
     let contract = contract_for_stage(StageId::Review);
-    let bundle = contract.evaluate(&valid_validation_approved_json()).unwrap();
+    let bundle = contract
+        .evaluate(&valid_validation_approved_json())
+        .unwrap();
     assert!(bundle.artifact.contains("**Approved**"));
 }
 
@@ -303,7 +302,8 @@ fn json_schema_is_generated_for_each_family() {
         let schema = contract.json_schema();
         // Schema must have a root schema object with definitions.
         assert!(
-            schema.schema.metadata.is_some() || !schema.definitions.is_empty()
+            schema.schema.metadata.is_some()
+                || !schema.definitions.is_empty()
                 || schema.schema.object.is_some()
                 || schema.schema.subschemas.is_some(),
             "schema for {stage_id} should have content"
@@ -332,7 +332,9 @@ fn sc_eval_002_successful_execution_contract_evaluation() {
 #[test]
 fn sc_eval_003_successful_validation_contract_evaluation() {
     let contract = contract_for_stage(StageId::Review);
-    let bundle = contract.evaluate(&valid_validation_approved_json()).unwrap();
+    let bundle = contract
+        .evaluate(&valid_validation_approved_json())
+        .unwrap();
     assert!(!bundle.artifact.is_empty());
 }
 
@@ -411,10 +413,8 @@ fn schema_validation_rejects_what_generated_schema_marks_required() {
     use jsonschema::JSONSchema;
 
     let contract = contract_for_stage(StageId::Planning);
-    let schema_value =
-        serde_json::to_value(contract.json_schema()).expect("schema serializes");
-    let compiled =
-        JSONSchema::compile(&schema_value).expect("schema compiles");
+    let schema_value = serde_json::to_value(contract.json_schema()).expect("schema serializes");
+    let compiled = JSONSchema::compile(&schema_value).expect("schema compiles");
 
     let missing_fields = json!({"not_a_real_field": true});
 
@@ -436,10 +436,8 @@ fn schema_validation_accepts_what_generated_schema_accepts() {
     use jsonschema::JSONSchema;
 
     let contract = contract_for_stage(StageId::Planning);
-    let schema_value =
-        serde_json::to_value(contract.json_schema()).expect("schema serializes");
-    let compiled =
-        JSONSchema::compile(&schema_value).expect("schema compiles");
+    let schema_value = serde_json::to_value(contract.json_schema()).expect("schema serializes");
+    let compiled = JSONSchema::compile(&schema_value).expect("schema compiles");
 
     let valid = valid_planning_json();
 

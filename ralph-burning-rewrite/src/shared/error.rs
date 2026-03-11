@@ -24,6 +24,24 @@ pub enum AppError {
     InvalidFlowPreset { flow_id: String },
     #[error("unsupported workspace version {version}; supported version is {supported}")]
     UnsupportedWorkspaceVersion { version: u32, supported: u32 },
+    #[error(
+        "unknown config key '{key}'. supported keys: prompt_review.enabled, default_flow, default_backend, default_model"
+    )]
+    UnknownConfigKey { key: String },
+    #[error("invalid value '{value}' for config key '{key}': {reason}")]
+    InvalidConfigValue {
+        key: String,
+        value: String,
+        reason: String,
+    },
+    #[error("no active project selected; run `ralph-burning project select <id>`")]
+    NoActiveProject,
+    #[error(
+        "project '{project_id}' was not found under .ralph-burning/projects/ or is missing project.toml"
+    )]
+    ProjectNotFound { project_id: String },
+    #[error("editor '{editor}' failed{details}")]
+    EditorFailed { editor: String, details: String },
     #[error("{command} is not yet implemented")]
     NotYetImplemented { command: String },
     #[error(transparent)]
@@ -32,6 +50,8 @@ pub enum AppError {
     TomlDeserialize(#[from] toml::de::Error),
     #[error(transparent)]
     TomlSerialize(#[from] toml::ser::Error),
+    #[error(transparent)]
+    TomlEdit(#[from] toml_edit::TomlError),
 }
 
 /// Errors specific to stage contract evaluation.

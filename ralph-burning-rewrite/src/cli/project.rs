@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Args, Subcommand};
 
+use crate::contexts::workspace_governance;
+use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -32,15 +34,25 @@ pub struct ProjectCreateArgs {
 }
 
 pub async fn handle(command: ProjectCommand) -> AppResult<()> {
-    let command_name = match command.command {
-        ProjectSubcommand::Create(_) => "project create",
-        ProjectSubcommand::Select { .. } => "project select",
-        ProjectSubcommand::List => "project list",
-        ProjectSubcommand::Show { .. } => "project show",
-        ProjectSubcommand::Delete { .. } => "project delete",
-    };
-
-    Err(AppError::NotYetImplemented {
-        command: command_name.to_owned(),
-    })
+    match command.command {
+        ProjectSubcommand::Select { id } => {
+            let current_dir = std::env::current_dir()?;
+            let project_id = ProjectId::new(id)?;
+            workspace_governance::set_active_project(&current_dir, &project_id)?;
+            println!("Selected project {}", project_id);
+            Ok(())
+        }
+        ProjectSubcommand::Create(_) => Err(AppError::NotYetImplemented {
+            command: "project create".to_owned(),
+        }),
+        ProjectSubcommand::List => Err(AppError::NotYetImplemented {
+            command: "project list".to_owned(),
+        }),
+        ProjectSubcommand::Show { .. } => Err(AppError::NotYetImplemented {
+            command: "project show".to_owned(),
+        }),
+        ProjectSubcommand::Delete { .. } => Err(AppError::NotYetImplemented {
+            command: "project delete".to_owned(),
+        }),
+    }
 }
