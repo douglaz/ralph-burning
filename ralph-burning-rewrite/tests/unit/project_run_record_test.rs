@@ -52,12 +52,20 @@ impl ProjectStorePort for FakeProjectStore {
             .collect()
     }
 
-    fn delete_project(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+    fn stage_delete(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
         if !self.existing_ids.contains(&project_id.to_string()) {
             return Err(AppError::ProjectNotFound {
                 project_id: project_id.to_string(),
             });
         }
+        Ok(())
+    }
+
+    fn commit_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn rollback_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
         Ok(())
     }
 
@@ -553,14 +561,14 @@ fn run_status_reports_failed_for_terminal_snapshot() {
 }
 
 #[test]
-fn delete_project_does_not_touch_pointer_on_delete_failure() {
+fn delete_project_does_not_touch_pointer_on_stage_failure() {
     use std::cell::Cell;
 
-    struct FailingDeleteStore {
+    struct FailingStageStore {
         existing_ids: Vec<String>,
     }
 
-    impl ProjectStorePort for FailingDeleteStore {
+    impl ProjectStorePort for FailingStageStore {
         fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
             Ok(self.existing_ids.contains(&project_id.to_string()))
         }
@@ -577,11 +585,19 @@ fn delete_project_does_not_touch_pointer_on_delete_failure() {
             self.existing_ids.iter().map(ProjectId::new).collect()
         }
 
-        fn delete_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        fn stage_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
-                "simulated delete failure",
+                "simulated stage failure",
             )))
+        }
+
+        fn commit_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn rollback_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Ok(())
         }
 
         fn create_project_atomic(
@@ -623,7 +639,7 @@ fn delete_project_does_not_touch_pointer_on_delete_failure() {
         }
     }
 
-    let store = FailingDeleteStore {
+    let store = FailingStageStore {
         existing_ids: vec!["alpha".to_owned()],
     };
     let run_store = FakeRunSnapshotStore::no_run();
@@ -637,27 +653,28 @@ fn delete_project_does_not_touch_pointer_on_delete_failure() {
 
     let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
     assert!(result.is_err(), "delete should fail");
-    // The pointer must never be cleared or written when delete fails —
+    // The pointer must never be cleared or written when stage fails —
     // the project remains fully addressable with the original pointer.
     assert!(
         !active_store.clear_called.get(),
-        "clear_active_project must not be called when delete fails"
+        "clear_active_project must not be called when stage fails"
     );
     assert!(
         !active_store.write_called.get(),
-        "write_active_project must not be called when delete fails"
+        "write_active_project must not be called when stage fails"
     );
 }
 
 #[test]
-fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
+fn delete_project_rolls_back_on_clear_pointer_failure() {
     use std::cell::Cell;
 
-    struct SucceedingDeleteStore {
+    struct TrackingDeleteStore {
         existing_ids: Vec<String>,
+        rollback_called: Cell<bool>,
     }
 
-    impl ProjectStorePort for SucceedingDeleteStore {
+    impl ProjectStorePort for TrackingDeleteStore {
         fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
             Ok(self.existing_ids.contains(&project_id.to_string()))
         }
@@ -674,7 +691,16 @@ fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
             self.existing_ids.iter().map(ProjectId::new).collect()
         }
 
-        fn delete_project(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        fn stage_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn commit_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            Ok(())
+        }
+
+        fn rollback_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+            self.rollback_called.set(true);
             Ok(())
         }
 
@@ -693,7 +719,6 @@ fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
 
     struct FailingClearActiveStore {
         active_id: Option<String>,
-        clear_called: Cell<bool>,
     }
 
     impl ActiveProjectPort for FailingClearActiveStore {
@@ -702,7 +727,6 @@ fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
         }
 
         fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
-            self.clear_called.set(true);
             Err(AppError::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "simulated clear failure",
@@ -718,24 +742,24 @@ fn delete_project_propagates_clear_pointer_failure_after_successful_delete() {
         }
     }
 
-    let store = SucceedingDeleteStore {
+    let store = TrackingDeleteStore {
         existing_ids: vec!["alpha".to_owned()],
+        rollback_called: Cell::new(false),
     };
     let run_store = FakeRunSnapshotStore::no_run();
     let active_store = FailingClearActiveStore {
         active_id: Some("alpha".to_owned()),
-        clear_called: Cell::new(false),
     };
     let base_dir = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
     let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
-    // Delete succeeded, but clearing the pointer failed — the error
-    // must propagate so the caller knows the pointer is stale.
+    // Stage succeeded but pointer clear failed — the project must be
+    // rolled back so it remains addressable.
     assert!(result.is_err(), "should propagate clear-pointer failure");
     assert!(
-        active_store.clear_called.get(),
-        "clear_active_project should be attempted after successful delete"
+        store.rollback_called.get(),
+        "rollback_delete must be called when clear_active_project fails"
     );
 }
 

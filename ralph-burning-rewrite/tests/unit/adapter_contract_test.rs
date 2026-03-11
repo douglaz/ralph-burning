@@ -117,15 +117,70 @@ fn project_store_list_returns_sorted_ids() {
 }
 
 #[test]
-fn project_store_delete_removes_project() {
+fn project_store_stage_and_commit_delete_removes_project() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
     create_project_on_disk(tmp.path(), "alpha");
 
     let store = FsProjectStore;
     let pid = ProjectId::new("alpha").unwrap();
-    store.delete_project(tmp.path(), &pid).unwrap();
+
+    // Stage: project becomes invisible
+    store.stage_delete(tmp.path(), &pid).unwrap();
     assert!(!store.project_exists(tmp.path(), &pid).unwrap());
+
+    // Commit: permanently remove
+    store.commit_delete(tmp.path(), &pid).unwrap();
+
+    // Verify pending-delete dir is also gone
+    let pending = tmp.path().join(".ralph-burning/projects/.alpha.pending-delete");
+    assert!(!pending.exists());
+}
+
+#[test]
+fn project_store_stage_and_rollback_restores_project() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsProjectStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Stage: project becomes invisible
+    store.stage_delete(tmp.path(), &pid).unwrap();
+    assert!(!store.project_exists(tmp.path(), &pid).unwrap());
+
+    // Rollback: project is restored
+    store.rollback_delete(tmp.path(), &pid).unwrap();
+    assert!(store.project_exists(tmp.path(), &pid).unwrap());
+
+    // Verify the record is intact
+    let record = store.read_project_record(tmp.path(), &pid).unwrap();
+    assert_eq!(record.id.as_str(), "alpha");
+}
+
+#[test]
+fn project_store_rollback_noop_when_no_pending_delete() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+
+    let store = FsProjectStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Rollback with nothing pending should be a no-op
+    store.rollback_delete(tmp.path(), &pid).unwrap();
+}
+
+#[test]
+fn project_store_commit_noop_when_no_pending_delete() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+
+    let store = FsProjectStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Commit with nothing pending should be a no-op
+    store.commit_delete(tmp.path(), &pid).unwrap();
 }
 
 #[test]
@@ -273,6 +328,32 @@ fn journal_store_missing_file_returns_corrupt() {
     let pid = ProjectId::new("alpha").unwrap();
     let err = store.read_journal(tmp.path(), &pid).unwrap_err();
     assert!(matches!(err, AppError::CorruptRecord { .. }));
+}
+
+#[test]
+fn journal_store_empty_file_returns_corrupt_error() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    // Truncate journal to empty
+    fs::write(
+        tmp.path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+        "",
+    )
+    .unwrap();
+
+    let store = FsJournalStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let err = store.read_journal(tmp.path(), &pid).unwrap_err();
+    assert!(matches!(err, AppError::CorruptRecord { .. }));
+    match err {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(details.contains("empty"));
+        }
+        _ => panic!("expected CorruptRecord"),
+    }
 }
 
 #[test]

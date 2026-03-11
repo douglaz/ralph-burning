@@ -1657,3 +1657,144 @@ fn project_delete_clears_active_pointer_transactionally() {
         "project directory should be removed"
     );
 }
+
+#[test]
+fn empty_journal_fails_fast_on_project_show() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    // Truncate journal to empty
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        "",
+    )
+    .expect("truncate journal");
+
+    let output = Command::new(binary())
+        .args(["project", "show", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("journal.ndjson"),
+        "error should reference journal.ndjson, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("empty"),
+        "error should mention empty journal, got: {stderr}"
+    );
+}
+
+#[test]
+fn empty_journal_fails_fast_on_run_history() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    // Select and truncate journal
+    Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        "",
+    )
+    .expect("truncate journal");
+
+    let output = Command::new(binary())
+        .args(["run", "history"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("journal.ndjson"),
+        "error should reference journal.ndjson, got: {stderr}"
+    );
+}
+
+#[test]
+fn empty_journal_fails_fast_on_run_tail() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+        "",
+    )
+    .expect("truncate journal");
+
+    let output = Command::new(binary())
+        .args(["run", "tail"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("journal.ndjson"),
+        "error should reference journal.ndjson, got: {stderr}"
+    );
+}
+
+#[test]
+fn delete_with_unremovable_active_pointer_restores_project() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    // Create and select a project
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "restore-me",
+            "--name", "Restore Me",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "restore-me"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Replace active-project file with a directory to make remove_file fail
+    let ap_path = temp_dir.path().join(".ralph-burning/active-project");
+    fs::remove_file(&ap_path).expect("remove active-project file");
+    fs::create_dir_all(ap_path.join("blocker")).expect("create blocking dir");
+
+    // Attempt delete — should fail because clearing the pointer fails
+    let output = Command::new(binary())
+        .args(["project", "delete", "restore-me"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("delete project");
+
+    assert!(
+        !output.status.success(),
+        "delete should fail when pointer clear fails"
+    );
+
+    // Project must still be addressable at its canonical path
+    assert!(
+        temp_dir.path().join(".ralph-burning/projects/restore-me/project.toml").exists(),
+        "project should be restored after failed pointer clear"
+    );
+}

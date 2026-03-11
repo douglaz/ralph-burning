@@ -160,8 +160,9 @@ Feature: Project Records
     And the project "alpha" remains addressable
 
   # SC-PROJ-023
-  Scenario: Successful delete propagates pointer clear failure
+  Scenario: Pointer clear failure during delete restores project
     Given an initialized workspace with project "alpha" selected as active
-    When the project "alpha" is successfully deleted but clearing the active-project pointer fails
+    When the project "alpha" is staged for deletion but clearing the active-project pointer fails
     Then the command fails with an error
-    And the project directory "alpha" no longer exists
+    And the project "alpha" remains addressable at its canonical path
+    And the active-project pointer is unchanged

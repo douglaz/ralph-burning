@@ -1,6 +1,6 @@
 use crate::shared::error::{AppError, AppResult};
 
-use super::model::JournalEvent;
+use super::model::{JournalEvent, JournalEventType};
 
 /// Validates that a new event's sequence follows the last known sequence.
 /// The first event must have sequence 1.
@@ -38,7 +38,8 @@ pub fn deserialize_event(line: &str) -> AppResult<JournalEvent> {
 }
 
 /// Parses the full contents of a journal.ndjson file into ordered events.
-/// Validates monotonic sequence ordering.
+/// Validates monotonic sequence ordering and journal integrity (first event
+/// must be `project_created` with sequence 1).
 pub fn parse_journal(contents: &str) -> AppResult<Vec<JournalEvent>> {
     let mut events = Vec::new();
     let mut last_sequence = 0u64;
@@ -53,7 +54,35 @@ pub fn parse_journal(contents: &str) -> AppResult<Vec<JournalEvent>> {
         events.push(event);
     }
 
+    validate_journal_integrity(&events)?;
+
     Ok(events)
+}
+
+/// Validates that a journal has the required structure:
+/// - Must not be empty (must contain at least the initial `project_created` event)
+/// - First event must be `project_created` with sequence 1
+pub fn validate_journal_integrity(events: &[JournalEvent]) -> AppResult<()> {
+    if events.is_empty() {
+        return Err(AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: "journal is empty — must contain at least the initial project_created event"
+                .to_owned(),
+        });
+    }
+
+    let first = &events[0];
+    if first.event_type != JournalEventType::ProjectCreated {
+        return Err(AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "first journal event type is '{:?}', expected 'project_created'",
+                first.event_type
+            ),
+        });
+    }
+
+    Ok(())
 }
 
 /// Returns the last sequence number from a set of events, or 0 if empty.

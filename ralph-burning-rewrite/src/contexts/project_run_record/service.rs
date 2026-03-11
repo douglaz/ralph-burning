@@ -20,7 +20,16 @@ pub trait ProjectStorePort {
     fn project_exists(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool>;
     fn read_project_record(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<ProjectRecord>;
     fn list_project_ids(&self, base_dir: &Path) -> AppResult<Vec<ProjectId>>;
-    fn delete_project(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
+
+    /// Stage a project for deletion: makes it invisible to list/show but
+    /// keeps data on disk for potential rollback.
+    fn stage_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
+
+    /// Finalize a staged delete: permanently removes the project data.
+    fn commit_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
+
+    /// Roll back a staged delete: restores the project to its canonical path.
+    fn rollback_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
 
     /// Atomically stage and commit a new project. If any step fails,
     /// the project must not be visible to list/show.
@@ -198,6 +207,10 @@ pub fn show_project(
 
 /// Delete a project. Fails if project has an active run.
 /// Clears active-project pointer if it pointed to the deleted project.
+///
+/// Transactional: if any post-validation step fails, the project remains
+/// addressable at its canonical path and the active-project pointer is
+/// unchanged.
 pub fn delete_project(
     store: &dyn ProjectStorePort,
     run_port: &dyn RunSnapshotPort,
@@ -223,16 +236,32 @@ pub fn delete_project(
     let active_id = active_port.read_active_project_id(base_dir)?;
     let was_active = active_id.as_deref() == Some(project_id.as_str());
 
-    // Delete the project first — the active-project pointer must remain
-    // intact until the delete has committed so that a failed delete leaves
-    // both the project and the pointer unchanged.
-    store.delete_project(base_dir, project_id)?;
+    // Phase 1: Stage the delete — project becomes invisible to list/show
+    // but data remains on disk for rollback.
+    store.stage_delete(base_dir, project_id)?;
 
-    // Delete succeeded — now clear the active-project pointer if it
-    // pointed to the deleted project.
+    // Phase 2: Clear the active-project pointer if needed.
+    // If this fails, roll back the staged delete so the project remains
+    // addressable and the pointer is unchanged.
     if was_active {
-        active_port.clear_active_project(base_dir)?;
+        if let Err(clear_err) = active_port.clear_active_project(base_dir) {
+            store.rollback_delete(base_dir, project_id).map_err(|restore_err| {
+                AppError::CorruptRecord {
+                    file: format!("projects/{}", project_id),
+                    details: format!(
+                        "delete partially failed: pointer clear error: {}, restore error: {}",
+                        clear_err, restore_err
+                    ),
+                }
+            })?;
+            return Err(clear_err);
+        }
     }
+
+    // Phase 3: Finalize — permanently remove the project data.
+    // At this point the logical delete has succeeded (project is invisible,
+    // pointer is cleared). Best-effort cleanup of the staged data.
+    let _ = store.commit_delete(base_dir, project_id);
 
     Ok(())
 }

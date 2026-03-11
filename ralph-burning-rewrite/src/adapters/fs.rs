@@ -171,6 +171,12 @@ impl FileSystem {
             .join(project_id.as_str())
     }
 
+    fn pending_delete_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::workspace_root_path(base_dir)
+            .join(PROJECTS_DIR)
+            .join(format!(".{}.pending-delete", project_id))
+    }
+
     fn append_line(path: &Path, line: &str) -> AppResult<()> {
         let parent = path.parent().ok_or_else(|| {
             AppError::Io(std::io::Error::new(
@@ -275,7 +281,7 @@ impl ProjectStorePort for FsProjectStore {
         Ok(ids)
     }
 
-    fn delete_project(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+    fn stage_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
         let project_root = FileSystem::project_root(base_dir, project_id);
         if !project_root.is_dir() {
             return Err(AppError::ProjectNotFound {
@@ -283,44 +289,36 @@ impl ProjectStorePort for FsProjectStore {
             });
         }
 
-        // Transactional delete: rename to a trash path first, then remove.
-        // If removal fails, rename back so the project remains addressable.
-        let trash_name = format!(".{}.deleting.{}", project_id, std::process::id());
-        let trash_path = project_root
-            .parent()
-            .expect("project root has parent")
-            .join(&trash_name);
+        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
 
-        // Phase 1: atomic rename to trash location
-        fs::rename(&project_root, &trash_path)?;
-
-        // Phase 2: remove the trash directory
-        if let Err(remove_err) = fs::remove_dir_all(&trash_path) {
-            // Removal failed — restore the project to its original path.
-            // The spec requires that a failed delete leaves the project addressable,
-            // so we must guarantee the restore succeeds. If rename-back fails, fall
-            // back to copying the entire tree back before returning the error.
-            if fs::rename(&trash_path, &project_root).is_err() {
-                // Rename-back failed (e.g., partial removal left an inconsistent
-                // state). Use a recursive copy as a last resort to restore
-                // addressability, then clean up the trash path.
-                if let Err(copy_err) = copy_dir_recursive(&trash_path, &project_root) {
-                    // Even the copy fallback failed. Return a compound error that
-                    // makes the situation clear to the operator.
-                    return Err(AppError::CorruptRecord {
-                        file: format!("projects/{}", project_id),
-                        details: format!(
-                            "delete failed and project could not be restored: remove error: {}, restore error: {}",
-                            remove_err, copy_err
-                        ),
-                    });
-                }
-                // Copy succeeded — clean up the trash remnants (best effort).
-                let _ = fs::remove_dir_all(&trash_path);
-            }
-            return Err(remove_err.into());
+        // Clean up any leftover pending-delete from a previous crash
+        if pending_path.exists() {
+            fs::remove_dir_all(&pending_path)?;
         }
 
+        // Atomic rename to pending-delete location — project becomes
+        // invisible to list/show but data stays on disk.
+        fs::rename(&project_root, &pending_path)?;
+        Ok(())
+    }
+
+    fn commit_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
+        if pending_path.is_dir() {
+            fs::remove_dir_all(&pending_path)?;
+        }
+        Ok(())
+    }
+
+    fn rollback_delete(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        let project_root = FileSystem::project_root(base_dir, project_id);
+        let pending_path = FileSystem::pending_delete_path(base_dir, project_id);
+
+        if !pending_path.is_dir() {
+            return Ok(());
+        }
+
+        fs::rename(&pending_path, &project_root)?;
         Ok(())
     }
 
@@ -604,19 +602,3 @@ impl ActiveProjectPort for FsActiveProjectStore {
     }
 }
 
-/// Recursively copy a directory tree from `src` to `dst`.
-/// Used as a fallback when rename-based restore fails during transactional delete.
-fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path)?;
-        } else {
-            fs::copy(&src_path, &dst_path)?;
-        }
-    }
-    Ok(())
-}

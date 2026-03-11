@@ -98,9 +98,34 @@ fn deserialize_event_rejects_malformed_json() {
 // ── Full Journal Parsing ──
 
 #[test]
-fn parse_journal_handles_empty_content() {
-    let events = journal::parse_journal("").expect("parse empty");
-    assert!(events.is_empty());
+fn parse_journal_rejects_empty_content() {
+    let result = journal::parse_journal("");
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, AppError::CorruptRecord { .. }));
+    match err {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(details.contains("empty"));
+        }
+        _ => panic!("expected CorruptRecord"),
+    }
+}
+
+#[test]
+fn parse_journal_rejects_non_project_created_first_event() {
+    let event = make_event(1, JournalEventType::RunStarted);
+    let content = format!("{}\n", journal::serialize_event(&event).unwrap());
+
+    let result = journal::parse_journal(&content);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(matches!(err, AppError::CorruptRecord { .. }));
+    match err {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(details.contains("project_created"));
+        }
+        _ => panic!("expected CorruptRecord"),
+    }
 }
 
 #[test]

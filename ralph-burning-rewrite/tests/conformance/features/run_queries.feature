@@ -168,3 +168,31 @@ Feature: Run Queries
     And "project.toml" for project "alpha" has been deleted
     When the user runs "run status"
     Then the command fails with error referencing "project.toml" and "missing"
+
+  # SC-RUN-024
+  Scenario: Empty journal.ndjson fails fast on project show
+    Given an initialized workspace with project "alpha"
+    And "journal.ndjson" for project "alpha" has been truncated to empty
+    When the user runs "project show alpha"
+    Then the command fails with error referencing "journal.ndjson" and "empty"
+
+  # SC-RUN-025
+  Scenario: Empty journal.ndjson fails fast on run history
+    Given an initialized workspace with project "alpha" selected as active
+    And "journal.ndjson" for project "alpha" has been truncated to empty
+    When the user runs "run history"
+    Then the command fails with error referencing "journal.ndjson" and "empty"
+
+  # SC-RUN-026
+  Scenario: Empty journal.ndjson fails fast on run tail
+    Given an initialized workspace with project "alpha" selected as active
+    And "journal.ndjson" for project "alpha" has been truncated to empty
+    When the user runs "run tail"
+    Then the command fails with error referencing "journal.ndjson" and "empty"
+
+  # SC-RUN-027
+  Scenario: Journal with non-project_created first event fails fast
+    Given an initialized workspace with project "alpha" selected as active
+    And "journal.ndjson" for project "alpha" contains a run_started event as the first entry
+    When the user runs "run history"
+    Then the command fails with error referencing "journal.ndjson" and "project_created"
