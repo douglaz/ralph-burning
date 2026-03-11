@@ -391,9 +391,19 @@ where
 
         // Step 1: Write payload + artifact pair.
         // If this fails after stage_entered, the run must persist failed state.
+        // The fs adapter uses staging + rename so canonical files only appear on
+        // full success, but as defense-in-depth we also call remove_payload_artifact_pair
+        // to clean up any orphaned canonical files before failing the run.
         if let Err(e) =
             artifact_write.write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
         {
+            // Defense-in-depth: remove any leaked canonical files.
+            let _ = artifact_write.remove_payload_artifact_pair(
+                base_dir,
+                project_id,
+                &payload_id,
+                &artifact_id,
+            );
             let commit_err = AppError::StageCommitFailed {
                 stage_id,
                 details: format!("payload/artifact persistence failed: {}", e),

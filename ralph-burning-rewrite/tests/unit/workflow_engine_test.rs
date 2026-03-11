@@ -754,6 +754,128 @@ impl PayloadArtifactWritePort for FailingPayloadArtifactWriteStore {
     }
 }
 
+/// A payload/artifact write store that simulates a leaked canonical payload:
+/// on the Nth write call, it writes the payload to the canonical location
+/// but then fails (simulating artifact write failure + cleanup failure).
+/// This verifies the engine's defense-in-depth cleanup.
+struct LeakingPayloadArtifactWriteStore {
+    call_count: AtomicU32,
+    fail_on_call: u32,
+}
+
+impl LeakingPayloadArtifactWriteStore {
+    fn new(fail_on_call: u32) -> Self {
+        Self {
+            call_count: AtomicU32::new(0),
+            fail_on_call,
+        }
+    }
+}
+
+impl PayloadArtifactWritePort for LeakingPayloadArtifactWriteStore {
+    fn write_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        payload: &PayloadRecord,
+        artifact: &ArtifactRecord,
+    ) -> AppResult<()> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == self.fail_on_call {
+            // Deliberately write the payload to the canonical location to simulate a leak
+            let project_root = base_dir
+                .join(".ralph-burning")
+                .join("projects")
+                .join(project_id.as_str());
+            let payload_path = project_root
+                .join("history/payloads")
+                .join(format!("{}.json", payload.payload_id));
+            let payload_json = serde_json::to_string_pretty(payload).unwrap();
+            fs::write(&payload_path, payload_json).unwrap();
+
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated artifact write failure with leaked payload",
+            )));
+        }
+        FsPayloadArtifactWriteStore.write_payload_artifact_pair(base_dir, project_id, payload, artifact)
+    }
+
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()> {
+        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(base_dir, project_id, payload_id, artifact_id)
+    }
+}
+
+/// When write_payload_artifact_pair fails but leaks a canonical payload file,
+/// the engine's defense-in-depth cleanup must remove it so no orphaned durable
+/// history is visible after the run is failed.
+#[tokio::test]
+async fn leaked_payload_cleanup_on_write_failure() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "leak-cleanup");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // Fail on first write with a leaked payload in canonical location
+    let leaking_store = LeakingPayloadArtifactWriteStore::new(1);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &leaking_store,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on write failure");
+
+    // Run must be in failed state
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // CRITICAL: No leaked payload should remain in canonical location.
+    // The engine's defense-in-depth cleanup should have removed it.
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/leak-cleanup/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(
+        payload_count, 0,
+        "leaked payload should have been cleaned up by engine, found {} files",
+        payload_count
+    );
+
+    let artifacts_dir = base_dir
+        .join(".ralph-burning/projects/leak-cleanup/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
+    assert_eq!(artifact_count, 0, "no artifacts should exist");
+
+    // No stage_completed event should exist
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_completed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::StageCompleted)
+        .collect();
+    assert!(
+        stage_completed_events.is_empty(),
+        "no stage_completed event should exist after write failure"
+    );
+}
+
 /// Payload/artifact write failure after stage_entered must persist failed
 /// state. The run must never be left in running state when the payload/artifact
 /// pair cannot be written.

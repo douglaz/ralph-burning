@@ -660,29 +660,47 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
     ) -> AppResult<()> {
         let project_root = FileSystem::project_root(base_dir, project_id);
 
-        // Write payload first
-        let payload_path = project_root
+        let payload_final = project_root
             .join("history/payloads")
             .join(format!("{}.json", payload.payload_id));
-        let payload_json = serde_json::to_string_pretty(payload)?;
-        FileSystem::write_atomic(&payload_path, &payload_json)?;
-
-        // Write artifact second — if this fails, remove the payload to maintain pairing invariant.
-        // Propagate cleanup failure so the caller knows leaked state may exist.
-        let artifact_path = project_root
+        let artifact_final = project_root
             .join("history/artifacts")
             .join(format!("{}.json", artifact.artifact_id));
+
+        // Stage both files under runtime/temp/ first so that no canonical
+        // history file exists until both writes succeed. This prevents
+        // orphaned payloads from leaking into durable history on partial failure.
+        let staging_dir = project_root.join("runtime/temp");
+        fs::create_dir_all(&staging_dir)?;
+
+        let payload_staging = staging_dir.join(format!(".{}.payload.staging", payload.payload_id));
+        let artifact_staging =
+            staging_dir.join(format!(".{}.artifact.staging", artifact.artifact_id));
+
+        let payload_json = serde_json::to_string_pretty(payload)?;
         let artifact_json = serde_json::to_string_pretty(artifact)?;
-        if let Err(e) = FileSystem::write_atomic(&artifact_path, &artifact_json) {
-            if let Err(cleanup_err) = fs::remove_file(&payload_path) {
-                if cleanup_err.kind() != std::io::ErrorKind::NotFound {
-                    return Err(AppError::Io(std::io::Error::other(format!(
-                        "artifact write failed: {}; payload cleanup also failed: {} — leaked payload at {}",
-                        e, cleanup_err, payload_path.display()
-                    ))));
-                }
-            }
+
+        // Write payload to staging
+        FileSystem::write_atomic(&payload_staging, &payload_json)?;
+
+        // Write artifact to staging — if this fails, clean up payload staging
+        if let Err(e) = FileSystem::write_atomic(&artifact_staging, &artifact_json) {
+            let _ = fs::remove_file(&payload_staging);
             return Err(e);
+        }
+
+        // Rename payload staging into canonical location
+        if let Err(e) = fs::rename(&payload_staging, &payload_final) {
+            let _ = fs::remove_file(&payload_staging);
+            let _ = fs::remove_file(&artifact_staging);
+            return Err(e.into());
+        }
+
+        // Rename artifact staging into canonical location
+        if let Err(e) = fs::rename(&artifact_staging, &artifact_final) {
+            // Roll back the payload that was already moved to canonical location
+            let _ = fs::remove_file(&payload_final);
+            return Err(e.into());
         }
 
         Ok(())
