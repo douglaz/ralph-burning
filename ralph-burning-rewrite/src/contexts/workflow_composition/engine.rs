@@ -390,13 +390,27 @@ where
         // into the journal without a matching snapshot and durable files.
 
         // Step 1: Write payload + artifact pair.
-        // If this fails, the stage is not committed — nothing else to roll back.
-        artifact_write
-            .write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
-            .map_err(|e| AppError::StageCommitFailed {
+        // If this fails after stage_entered, the run must persist failed state.
+        if let Err(e) =
+            artifact_write.write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
+        {
+            let commit_err = AppError::StageCommitFailed {
                 stage_id,
                 details: format!("payload/artifact persistence failed: {}", e),
-            })?;
+            };
+            return fail_run(
+                &commit_err,
+                stage_id,
+                &run_id,
+                &mut seq,
+                &mut current_snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+            )
+            .await;
+        }
 
         // Step 2: Update snapshot cursor to reflect completed stage.
         // Written BEFORE stage_completed journal so that snapshot failure
@@ -414,12 +428,15 @@ where
         }
         if let Err(e) = run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot) {
             // Roll back payload/artifact; no stage_completed was written yet.
-            let _ =
-                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+            // Propagate rollback failure so leaked durable history is surfaced.
+            let rollback_detail = match artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id) {
+                Ok(()) => String::new(),
+                Err(cleanup_err) => format!("; payload/artifact rollback failed: {} — leaked durable history may exist", cleanup_err),
+            };
             current_snapshot = pre_commit_snapshot;
             let commit_err = AppError::StageCommitFailed {
                 stage_id,
-                details: format!("snapshot write failed during stage commit: {}", e),
+                details: format!("snapshot write failed during stage commit: {}{}", e, rollback_detail),
             };
             return fail_run(
                 &commit_err,
@@ -451,13 +468,16 @@ where
         );
         let stage_completed_line = journal::serialize_event(&stage_completed)?;
         if let Err(e) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
-            // Roll back payload/artifact so no partial durable history is visible
-            let _ =
-                artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+            // Roll back payload/artifact so no partial durable history is visible.
+            // Propagate rollback failure so leaked durable history is surfaced.
+            let rollback_detail = match artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id) {
+                Ok(()) => String::new(),
+                Err(cleanup_err) => format!("; payload/artifact rollback failed: {} — leaked durable history may exist", cleanup_err),
+            };
             seq -= 1; // undo the seq increment since the event was not persisted
             let commit_err = AppError::StageCommitFailed {
                 stage_id,
-                details: format!("journal append failed during stage commit: {}", e),
+                details: format!("journal append failed during stage commit: {}{}", e, rollback_detail),
             };
             return fail_run(
                 &commit_err,

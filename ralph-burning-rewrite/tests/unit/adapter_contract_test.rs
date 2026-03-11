@@ -724,6 +724,199 @@ fn active_project_store_clear_when_already_absent() {
     store.clear_active_project(tmp.path()).unwrap();
 }
 
+// ── FsPayloadArtifactWriteStore ──
+
+use ralph_burning::adapters::fs::FsPayloadArtifactWriteStore;
+use ralph_burning::contexts::project_run_record::service::PayloadArtifactWritePort;
+
+#[test]
+fn payload_artifact_write_pair_round_trip() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let pid = ProjectId::new("alpha").unwrap();
+    let store = FsPayloadArtifactWriteStore;
+    let payload = PayloadRecord {
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        cycle: 1,
+        attempt: 1,
+        created_at: test_timestamp(),
+        payload: serde_json::json!({"plan": "test"}),
+    };
+    let artifact = ArtifactRecord {
+        artifact_id: "a1".to_owned(),
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        created_at: test_timestamp(),
+        content: "# Planning\nTest.".to_owned(),
+    };
+
+    store
+        .write_payload_artifact_pair(tmp.path(), &pid, &payload, &artifact)
+        .unwrap();
+
+    // Verify both files exist
+    let payload_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    let artifact_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/artifacts/a1.json");
+    assert!(payload_path.is_file());
+    assert!(artifact_path.is_file());
+}
+
+#[test]
+fn payload_artifact_remove_pair_removes_both_files() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let pid = ProjectId::new("alpha").unwrap();
+    let store = FsPayloadArtifactWriteStore;
+    let payload = PayloadRecord {
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        cycle: 1,
+        attempt: 1,
+        created_at: test_timestamp(),
+        payload: serde_json::json!({"plan": "test"}),
+    };
+    let artifact = ArtifactRecord {
+        artifact_id: "a1".to_owned(),
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        created_at: test_timestamp(),
+        content: "# Planning\nTest.".to_owned(),
+    };
+
+    store
+        .write_payload_artifact_pair(tmp.path(), &pid, &payload, &artifact)
+        .unwrap();
+    store
+        .remove_payload_artifact_pair(tmp.path(), &pid, "p1", "a1")
+        .unwrap();
+
+    let payload_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    let artifact_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/artifacts/a1.json");
+    assert!(!payload_path.exists());
+    assert!(!artifact_path.exists());
+}
+
+#[test]
+fn payload_artifact_remove_pair_not_found_is_ok() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let pid = ProjectId::new("alpha").unwrap();
+    let store = FsPayloadArtifactWriteStore;
+
+    // Removing non-existent files should succeed (NotFound is not an error)
+    let result = store.remove_payload_artifact_pair(tmp.path(), &pid, "nonexistent", "nonexistent-artifact");
+    assert!(result.is_ok(), "removing non-existent pair should succeed");
+}
+
+#[test]
+fn payload_artifact_remove_pair_propagates_removal_error() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let pid = ProjectId::new("alpha").unwrap();
+    let store = FsPayloadArtifactWriteStore;
+    let payload = PayloadRecord {
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        cycle: 1,
+        attempt: 1,
+        created_at: test_timestamp(),
+        payload: serde_json::json!({"plan": "test"}),
+    };
+    let artifact = ArtifactRecord {
+        artifact_id: "a1".to_owned(),
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        created_at: test_timestamp(),
+        content: "# Planning\nTest.".to_owned(),
+    };
+
+    store
+        .write_payload_artifact_pair(tmp.path(), &pid, &payload, &artifact)
+        .unwrap();
+
+    // Replace the payload file with a non-empty directory so fs::remove_file
+    // fails with "is a directory" — works regardless of user (including root).
+    let payload_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    fs::remove_file(&payload_path).unwrap();
+    fs::create_dir(&payload_path).unwrap();
+    fs::write(payload_path.join("block"), "prevent removal").unwrap();
+
+    let result = store.remove_payload_artifact_pair(tmp.path(), &pid, "p1", "a1");
+
+    assert!(
+        result.is_err(),
+        "removing pair should propagate error when payload is a directory"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("payload"),
+        "error should reference the failed payload removal: {err_msg}"
+    );
+}
+
+#[test]
+fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let pid = ProjectId::new("alpha").unwrap();
+    let store = FsPayloadArtifactWriteStore;
+    let payload = PayloadRecord {
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        cycle: 1,
+        attempt: 1,
+        created_at: test_timestamp(),
+        payload: serde_json::json!({"plan": "test"}),
+    };
+    let artifact = ArtifactRecord {
+        artifact_id: "a1".to_owned(),
+        payload_id: "p1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        created_at: test_timestamp(),
+        content: "# Planning\nTest.".to_owned(),
+    };
+
+    // Make the artifacts directory a file so artifact write fails
+    let artifacts_dir = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/artifacts");
+    fs::remove_dir(&artifacts_dir).unwrap();
+    fs::write(&artifacts_dir, "not a directory").unwrap();
+
+    let result = store.write_payload_artifact_pair(tmp.path(), &pid, &payload, &artifact);
+    assert!(result.is_err(), "write should fail when artifact dir is a file");
+
+    // Payload should have been cleaned up — no leaked file
+    let payload_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/history/payloads/p1.json");
+    assert!(
+        !payload_path.exists(),
+        "payload should be cleaned up when artifact write fails"
+    );
+}
+
 // ── Project prompt.md round trip ──
 
 #[test]

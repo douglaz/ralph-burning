@@ -667,13 +667,21 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
         let payload_json = serde_json::to_string_pretty(payload)?;
         FileSystem::write_atomic(&payload_path, &payload_json)?;
 
-        // Write artifact second — if this fails, remove the payload to maintain pairing invariant
+        // Write artifact second — if this fails, remove the payload to maintain pairing invariant.
+        // Propagate cleanup failure so the caller knows leaked state may exist.
         let artifact_path = project_root
             .join("history/artifacts")
             .join(format!("{}.json", artifact.artifact_id));
         let artifact_json = serde_json::to_string_pretty(artifact)?;
         if let Err(e) = FileSystem::write_atomic(&artifact_path, &artifact_json) {
-            let _ = fs::remove_file(&payload_path);
+            if let Err(cleanup_err) = fs::remove_file(&payload_path) {
+                if cleanup_err.kind() != std::io::ErrorKind::NotFound {
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "artifact write failed: {}; payload cleanup also failed: {} — leaked payload at {}",
+                        e, cleanup_err, payload_path.display()
+                    ))));
+                }
+            }
             return Err(e);
         }
 
@@ -696,11 +704,28 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
             .join("history/artifacts")
             .join(format!("{}.json", artifact_id));
 
-        // Best-effort removal of both files
-        let _ = fs::remove_file(&artifact_path);
-        let _ = fs::remove_file(&payload_path);
+        // Remove both files, propagating errors so the caller knows about
+        // leaked durable history. NotFound is not an error (already cleaned up).
+        let mut errors = Vec::new();
+        if let Err(e) = fs::remove_file(&artifact_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                errors.push(format!("artifact {}: {}", artifact_id, e));
+            }
+        }
+        if let Err(e) = fs::remove_file(&payload_path) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                errors.push(format!("payload {}: {}", payload_id, e));
+            }
+        }
 
-        Ok(())
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(AppError::Io(std::io::Error::other(format!(
+                "failed to remove payload/artifact pair: {}",
+                errors.join("; ")
+            ))))
+        }
     }
 }
 

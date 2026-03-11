@@ -703,3 +703,123 @@ async fn snapshot_failure_during_stage_commit_rolls_back_without_journal_leak() 
         stage_completed_events.len()
     );
 }
+
+// ── Failing-port tests: payload/artifact write errors ────────────────────
+
+use ralph_burning::contexts::project_run_record::model::ArtifactRecord;
+use ralph_burning::contexts::project_run_record::model::PayloadRecord;
+use ralph_burning::contexts::project_run_record::service::PayloadArtifactWritePort;
+
+/// A payload/artifact write store that delegates to `FsPayloadArtifactWriteStore`
+/// but fails `write_payload_artifact_pair` on the Nth call (1-indexed).
+struct FailingPayloadArtifactWriteStore {
+    call_count: AtomicU32,
+    fail_on_call: u32,
+}
+
+impl FailingPayloadArtifactWriteStore {
+    fn new(fail_on_call: u32) -> Self {
+        Self {
+            call_count: AtomicU32::new(0),
+            fail_on_call,
+        }
+    }
+}
+
+impl PayloadArtifactWritePort for FailingPayloadArtifactWriteStore {
+    fn write_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        payload: &PayloadRecord,
+        artifact: &ArtifactRecord,
+    ) -> AppResult<()> {
+        let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == self.fail_on_call {
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated payload/artifact write failure",
+            )));
+        }
+        FsPayloadArtifactWriteStore.write_payload_artifact_pair(base_dir, project_id, payload, artifact)
+    }
+
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()> {
+        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(base_dir, project_id, payload_id, artifact_id)
+    }
+}
+
+/// Payload/artifact write failure after stage_entered must persist failed
+/// state. The run must never be left in running state when the payload/artifact
+/// pair cannot be written.
+#[tokio::test]
+async fn payload_artifact_write_failure_persists_failed_state() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "pa-write-fail");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // Fail on the first write_payload_artifact_pair call (first stage commit)
+    let failing_artifact = FailingPayloadArtifactWriteStore::new(1);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &failing_artifact,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on payload/artifact write failure");
+
+    // Run must be in failed state, not left in running
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    // No payload/artifact should exist since the write failed
+    let payloads_dir = base_dir
+        .join(".ralph-burning/projects/pa-write-fail/history/payloads");
+    let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
+    assert_eq!(payload_count, 0, "no payloads should exist after write failure");
+
+    let artifacts_dir = base_dir
+        .join(".ralph-burning/projects/pa-write-fail/history/artifacts");
+    let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
+    assert_eq!(artifact_count, 0, "no artifacts should exist after write failure");
+
+    // No stage_completed event should exist
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let stage_completed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::StageCompleted)
+        .collect();
+    assert!(
+        stage_completed_events.is_empty(),
+        "no stage_completed event should exist after payload/artifact write failure"
+    );
+
+    // A run_failed event should exist
+    let run_failed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::RunFailed)
+        .collect();
+    assert!(
+        !run_failed_events.is_empty(),
+        "run_failed event should exist after payload/artifact write failure"
+    );
+}
