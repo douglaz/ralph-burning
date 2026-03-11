@@ -105,11 +105,28 @@ fn validate_project_exists(base_dir: &Path, project_id: &ProjectId) -> AppResult
     let project_root = workspace_root(base_dir)
         .join(PROJECTS_DIR)
         .join(project_id.as_str());
-    if project_root.is_dir() && project_root.join(PROJECT_CONFIG_FILE).is_file() {
-        Ok(())
-    } else {
-        Err(AppError::ProjectNotFound {
+    if !project_root.is_dir() {
+        return Err(AppError::ProjectNotFound {
             project_id: project_id.to_string(),
-        })
+        });
     }
+    let config_path = project_root.join(PROJECT_CONFIG_FILE);
+    if !config_path.is_file() {
+        return Err(AppError::CorruptRecord {
+            file: format!("projects/{}/project.toml", project_id),
+            details: "project directory exists but canonical project.toml is missing".to_owned(),
+        });
+    }
+    // Parse the TOML to validate it is well-formed. This catches corruption
+    // early so that commands resolving the active project fail fast instead of
+    // silently operating on corrupt canonical state.
+    let raw = std::fs::read_to_string(&config_path).map_err(|e| AppError::CorruptRecord {
+        file: format!("projects/{}/project.toml", project_id),
+        details: format!("cannot read project.toml: {}", e),
+    })?;
+    let _: toml::Value = toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+        file: format!("projects/{}/project.toml", project_id),
+        details: format!("project.toml is malformed: {}", e),
+    })?;
+    Ok(())
 }

@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsRunSnapshotStore, FsRuntimeLogStore,
+    FsArtifactStore, FsJournalStore, FsProjectStore, FsRunSnapshotStore, FsRuntimeLogStore,
 };
-use crate::contexts::project_run_record::service;
+use crate::contexts::project_run_record::service::{self, ProjectStorePort};
 use crate::contexts::workspace_governance;
 use crate::shared::error::{AppError, AppResult};
 
@@ -56,6 +56,10 @@ async fn handle_status() -> AppResult<()> {
 
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
 
+    // Validate canonical project record before proceeding with run queries
+    let project_store = FsProjectStore;
+    let _ = project_store.read_project_record(&current_dir, &project_id)?;
+
     let run_store = FsRunSnapshotStore;
     let status = service::run_status(&run_store, &current_dir, &project_id)?;
 
@@ -82,6 +86,10 @@ async fn handle_history() -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
 
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    // Validate canonical project record before proceeding with run queries
+    let project_store = FsProjectStore;
+    let _ = project_store.read_project_record(&current_dir, &project_id)?;
 
     let journal_store = FsJournalStore;
     let artifact_store = FsArtifactStore;
@@ -132,6 +140,10 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
 
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    // Validate canonical project record before proceeding with run queries
+    let project_store = FsProjectStore;
+    let _ = project_store.read_project_record(&current_dir, &project_id)?;
 
     let journal_store = FsJournalStore;
     let artifact_store = FsArtifactStore;

@@ -133,3 +133,38 @@ Feature: Run Queries
     And "run.json" for project "alpha" contains status "paused" with active_run null
     When the user runs "project delete alpha"
     Then the command fails with error referencing "run.json" and "inconsistent"
+
+  # SC-RUN-019
+  Scenario: Run status fails fast when active project has corrupt project.toml
+    Given an initialized workspace with project "alpha" selected as active
+    And "project.toml" for project "alpha" contains malformed content
+    When the user runs "run status"
+    Then the command fails with error referencing "project.toml"
+
+  # SC-RUN-020
+  Scenario: Run history fails fast when active project has corrupt project.toml
+    Given an initialized workspace with project "alpha" selected as active
+    And "project.toml" for project "alpha" contains malformed content
+    When the user runs "run history"
+    Then the command fails with error referencing "project.toml"
+
+  # SC-RUN-021
+  Scenario: Run tail fails fast when active project has corrupt project.toml
+    Given an initialized workspace with project "alpha" selected as active
+    And "project.toml" for project "alpha" contains malformed content
+    When the user runs "run tail"
+    Then the command fails with error referencing "project.toml"
+
+  # SC-RUN-022
+  Scenario: Project show without ID fails fast when active project has corrupt project.toml
+    Given an initialized workspace with project "alpha" selected as active
+    And "project.toml" for project "alpha" contains malformed content
+    When the user runs "project show"
+    Then the command fails with error referencing "project.toml"
+
+  # SC-RUN-023
+  Scenario: Run status fails fast when active project has missing project.toml
+    Given an initialized workspace with project "alpha" selected as active
+    And "project.toml" for project "alpha" has been deleted
+    When the user runs "run status"
+    Then the command fails with error referencing "project.toml" and "missing"

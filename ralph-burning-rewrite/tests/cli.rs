@@ -1265,6 +1265,213 @@ fn project_delete_fails_for_semantically_inconsistent_active_run() {
     assert!(stderr.contains("inconsistent"));
 }
 
+// ── Active-project canonical validation (corrupt project.toml) ──
+
+#[test]
+fn run_status_fails_fast_when_active_project_toml_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt-active",
+            "--name", "Corrupt Active",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "corrupt-active"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Corrupt project.toml content (file exists but is malformed)
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/corrupt-active/project.toml"),
+        "this is {{ not valid toml",
+    )
+    .expect("corrupt project.toml");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+}
+
+#[test]
+fn run_history_fails_fast_when_active_project_toml_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt-hist",
+            "--name", "Corrupt Hist",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "corrupt-hist"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Corrupt project.toml content
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/corrupt-hist/project.toml"),
+        "not valid toml {{{",
+    )
+    .expect("corrupt project.toml");
+
+    let output = Command::new(binary())
+        .args(["run", "history"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+}
+
+#[test]
+fn run_tail_fails_fast_when_active_project_toml_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt-tail",
+            "--name", "Corrupt Tail",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "corrupt-tail"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Corrupt project.toml content
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/corrupt-tail/project.toml"),
+        "{invalid toml}",
+    )
+    .expect("corrupt project.toml");
+
+    let output = Command::new(binary())
+        .args(["run", "tail"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+}
+
+#[test]
+fn project_show_no_id_fails_fast_when_active_project_toml_is_corrupt() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt-show",
+            "--name", "Corrupt Show",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "corrupt-show"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Corrupt project.toml content
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/corrupt-show/project.toml"),
+        "garbled content }{{}",
+    )
+    .expect("corrupt project.toml");
+
+    let output = Command::new(binary())
+        .args(["project", "show"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+}
+
+#[test]
+fn run_status_fails_fast_when_active_project_toml_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "missing-toml",
+            "--name", "Missing Toml",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "missing-toml"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Delete project.toml
+    fs::remove_file(
+        temp_dir.path().join(".ralph-burning/projects/missing-toml/project.toml"),
+    )
+    .expect("remove project.toml");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+    assert!(stderr.contains("missing"));
+}
+
 // ── Run.json schema completeness ──
 
 #[test]
