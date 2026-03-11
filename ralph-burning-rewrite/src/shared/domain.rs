@@ -8,6 +8,18 @@ use crate::shared::error::{AppError, AppResult};
 
 pub const CURRENT_WORKSPACE_VERSION: u32 = 1;
 
+/// Canonical failure classes for stage contract evaluation and retry semantics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FailureClass {
+    TransportFailure,
+    SchemaValidationFailure,
+    DomainValidationFailure,
+    Timeout,
+    Cancellation,
+    QaReviewOutcomeFailure,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowPreset {
@@ -98,6 +110,46 @@ pub enum StageId {
 }
 
 impl StageId {
+    pub const ALL: [Self; 16] = [
+        Self::PromptReview,
+        Self::Planning,
+        Self::Implementation,
+        Self::Qa,
+        Self::Review,
+        Self::CompletionPanel,
+        Self::AcceptanceQa,
+        Self::FinalReview,
+        Self::PlanAndImplement,
+        Self::ApplyFixes,
+        Self::DocsPlan,
+        Self::DocsUpdate,
+        Self::DocsValidation,
+        Self::CiPlan,
+        Self::CiUpdate,
+        Self::CiValidation,
+    ];
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::PromptReview => "Prompt Review",
+            Self::Planning => "Planning",
+            Self::Implementation => "Implementation",
+            Self::Qa => "QA",
+            Self::Review => "Review",
+            Self::CompletionPanel => "Completion Panel",
+            Self::AcceptanceQa => "Acceptance QA",
+            Self::FinalReview => "Final Review",
+            Self::PlanAndImplement => "Plan and Implement",
+            Self::ApplyFixes => "Apply Fixes",
+            Self::DocsPlan => "Docs Plan",
+            Self::DocsUpdate => "Docs Update",
+            Self::DocsValidation => "Docs Validation",
+            Self::CiPlan => "CI Plan",
+            Self::CiUpdate => "CI Update",
+            Self::CiValidation => "CI Validation",
+        }
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::PromptReview => "prompt_review",

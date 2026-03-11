@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
+use crate::shared::domain::{FailureClass, StageId};
+
 pub type AppResult<T> = Result<T, AppError>;
 
 #[derive(Debug, Error)]
@@ -30,4 +32,38 @@ pub enum AppError {
     TomlDeserialize(#[from] toml::de::Error),
     #[error(transparent)]
     TomlSerialize(#[from] toml::ser::Error),
+}
+
+/// Errors specific to stage contract evaluation.
+///
+/// Each variant maps to a distinct [`FailureClass`] for retry/terminal policy.
+#[derive(Debug, Error)]
+pub enum ContractError {
+    #[error("schema validation failed for stage '{stage_id}': {details}")]
+    SchemaValidation { stage_id: StageId, details: String },
+
+    #[error("domain validation failed for stage '{stage_id}': {details}")]
+    DomainValidation { stage_id: StageId, details: String },
+
+    #[error("rendering failed for stage '{stage_id}': {details}")]
+    RenderError { stage_id: StageId, details: String },
+}
+
+impl ContractError {
+    pub fn failure_class(&self) -> FailureClass {
+        match self {
+            Self::SchemaValidation { .. } => FailureClass::SchemaValidationFailure,
+            Self::DomainValidation { .. } | Self::RenderError { .. } => {
+                FailureClass::DomainValidationFailure
+            }
+        }
+    }
+
+    pub fn stage_id(&self) -> StageId {
+        match self {
+            Self::SchemaValidation { stage_id, .. }
+            | Self::DomainValidation { stage_id, .. }
+            | Self::RenderError { stage_id, .. } => *stage_id,
+        }
+    }
 }

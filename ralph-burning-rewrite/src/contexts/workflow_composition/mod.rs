@@ -1,3 +1,7 @@
+pub mod contracts;
+pub mod payloads;
+pub mod renderers;
+
 use crate::shared::domain::{FlowPreset, StageId};
 use crate::shared::error::AppResult;
 
