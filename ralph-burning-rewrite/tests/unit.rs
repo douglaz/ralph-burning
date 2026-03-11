@@ -36,3 +36,6 @@ mod agent_execution_test;
 
 #[path = "unit/stub_backend_test.rs"]
 mod stub_backend_test;
+
+#[path = "unit/workflow_engine_test.rs"]
+mod workflow_engine_test;

@@ -109,6 +109,12 @@ impl RunStatus {
     }
 }
 
+impl std::fmt::Display for RunStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.display_str())
+    }
+}
+
 /// A single entry in the cycle history tracking progression through work cycles.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CycleHistoryEntry {
@@ -217,6 +223,17 @@ impl SessionStore {
             sessions: Vec::new(),
         }
     }
+}
+
+/// Summary of a failed stage for run snapshot persistence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FailedStageSummary {
+    pub stage_id: StageId,
+    pub cycle: u32,
+    pub attempt: u32,
+    pub failure_class: String,
+    pub message: String,
+    pub failed_at: DateTime<Utc>,
 }
 
 /// Summary used in `project list` output.

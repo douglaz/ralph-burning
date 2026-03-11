@@ -86,3 +86,115 @@ pub fn validate_journal_integrity(events: &[JournalEvent]) -> AppResult<()> {
 pub fn last_sequence(events: &[JournalEvent]) -> u64 {
     events.last().map_or(0, |e| e.sequence)
 }
+
+// ── Lifecycle event builders ────────────────────────────────────────────────
+
+use chrono::{DateTime, Utc};
+use crate::shared::domain::{RunId, StageId};
+
+/// Build a `run_started` journal event.
+pub fn run_started_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    first_stage: StageId,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RunStarted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "first_stage": first_stage.as_str(),
+        }),
+    }
+}
+
+/// Build a `stage_entered` journal event.
+pub fn stage_entered_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::StageEntered,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+        }),
+    }
+}
+
+/// Build a `stage_completed` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn stage_completed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    payload_id: &str,
+    artifact_id: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::StageCompleted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "payload_id": payload_id,
+            "artifact_id": artifact_id,
+        }),
+    }
+}
+
+/// Build a `run_completed` journal event.
+pub fn run_completed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    completion_rounds: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RunCompleted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "completion_rounds": completion_rounds,
+        }),
+    }
+}
+
+/// Build a `run_failed` journal event.
+pub fn run_failed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    failure_class: &str,
+    message: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RunFailed,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "failure_class": failure_class,
+            "message": message,
+        }),
+    }
+}

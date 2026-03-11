@@ -80,6 +80,37 @@ pub trait RunSnapshotPort {
     fn read_run_snapshot(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<RunSnapshot>;
 }
 
+/// Port for writing the run snapshot atomically.
+pub trait RunSnapshotWritePort {
+    fn write_run_snapshot(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()>;
+}
+
+/// Port for writing payload and artifact records atomically as a pair.
+pub trait PayloadArtifactWritePort {
+    fn write_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload: &PayloadRecord,
+        artifact: &ArtifactRecord,
+    ) -> AppResult<()>;
+}
+
+/// Port for appending runtime log entries (best-effort, not durable history).
+pub trait RuntimeLogWritePort {
+    fn append_runtime_log(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        entry: &RuntimeLogEntry,
+    ) -> AppResult<()>;
+}
+
 /// Port for reading/writing/clearing the active project pointer.
 pub trait ActiveProjectPort {
     fn read_active_project_id(&self, base_dir: &Path) -> AppResult<Option<String>>;

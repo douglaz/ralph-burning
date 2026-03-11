@@ -778,3 +778,62 @@ fn delete_project_succeeds_for_completed_terminal_state() {
     let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
     assert!(result.is_ok());
 }
+
+// ── Failed Stage Summary model tests ──
+
+#[test]
+fn failed_stage_summary_serializes_correctly() {
+    let summary = FailedStageSummary {
+        stage_id: ralph_burning::shared::domain::StageId::Qa,
+        cycle: 1,
+        attempt: 1,
+        failure_class: "QaReviewOutcomeFailure".to_owned(),
+        message: "non-passing outcome".to_owned(),
+        failed_at: test_timestamp(),
+    };
+    let json = serde_json::to_string(&summary).unwrap();
+    assert!(json.contains("qa"));
+    assert!(json.contains("QaReviewOutcomeFailure"));
+
+    let roundtrip: FailedStageSummary = serde_json::from_str(&json).unwrap();
+    assert_eq!(roundtrip.stage_id, ralph_burning::shared::domain::StageId::Qa);
+}
+
+#[test]
+fn run_status_display_matches_display_str() {
+    assert_eq!(format!("{}", RunStatus::NotStarted), "not started");
+    assert_eq!(format!("{}", RunStatus::Running), "running");
+    assert_eq!(format!("{}", RunStatus::Completed), "completed");
+    assert_eq!(format!("{}", RunStatus::Failed), "failed");
+    assert_eq!(format!("{}", RunStatus::Paused), "paused");
+}
+
+#[test]
+fn run_snapshot_completed_has_no_active_run() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Completed,
+        cycle_history: Vec::new(),
+        completion_rounds: 1,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed".to_owned(),
+    };
+    assert!(snapshot.validate_semantics().is_ok());
+    assert!(!snapshot.has_active_run());
+}
+
+#[test]
+fn run_snapshot_failed_has_no_active_run() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed at QA".to_owned(),
+    };
+    assert!(snapshot.validate_semantics().is_ok());
+    assert!(!snapshot.has_active_run());
+}

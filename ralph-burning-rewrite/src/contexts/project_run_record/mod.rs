@@ -7,8 +7,9 @@ pub const CONTEXT_NAME: &str = "project_run_record";
 
 // Re-export ports for adapter implementation
 pub use service::{
-    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
-    RuntimeLogStorePort,
+    ActiveProjectPort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
+    ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort, RuntimeLogStorePort,
+    RuntimeLogWritePort,
 };
 
 // Re-export service use cases

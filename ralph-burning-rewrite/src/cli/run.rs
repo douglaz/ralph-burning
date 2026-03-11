@@ -1,13 +1,17 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsProjectStore, FsRawOutputStore, FsRunSnapshotStore,
-    FsRuntimeLogStore, FsSessionStore,
+    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore,
+    FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore,
+    FsRuntimeLogWriteStore, FsSessionStore,
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
-use crate::contexts::project_run_record::service::{self, ProjectStorePort};
+use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
+use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
+use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::shared::domain::FlowPreset;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -39,9 +43,7 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         RunSubcommand::Status => handle_status().await,
         RunSubcommand::History => handle_history().await,
         RunSubcommand::Tail { logs } => handle_tail(logs).await,
-        RunSubcommand::Start => Err(AppError::NotYetImplemented {
-            command: "run start".to_owned(),
-        }),
+        RunSubcommand::Start => handle_start().await,
         RunSubcommand::Resume => Err(AppError::NotYetImplemented {
             command: "run resume".to_owned(),
         }),
@@ -58,6 +60,73 @@ pub fn build_agent_execution_service(
         FsRawOutputStore,
         FsSessionStore,
     )
+}
+
+async fn handle_start() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+
+    // Validate workspace version
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    // Resolve active project
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    // Validate canonical project record
+    let project_store = FsProjectStore;
+    let project_record = project_store.read_project_record(&current_dir, &project_id)?;
+
+    // Only standard flow is supported in this slice
+    if project_record.flow != FlowPreset::Standard {
+        return Err(AppError::UnsupportedFlow {
+            flow_id: project_record.flow.as_str().to_owned(),
+        });
+    }
+
+    // Validate run snapshot integrity
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+
+    // Check preconditions before engine call (fail fast with clear errors)
+    if run_snapshot.status != crate::contexts::project_run_record::model::RunStatus::NotStarted {
+        return Err(AppError::RunStartFailed {
+            reason: format!(
+                "project snapshot status is '{}'; run start requires 'not_started'",
+                run_snapshot.status
+            ),
+        });
+    }
+    if run_snapshot.has_active_run() {
+        return Err(AppError::RunStartFailed {
+            reason: "project already has an active run".to_owned(),
+        });
+    }
+
+    let effective_config = EffectiveConfig::load(&current_dir)?;
+
+    let agent_service = build_agent_execution_service();
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+
+    println!("Starting run for project '{}'...", project_id);
+
+    engine::execute_standard_run(
+        &agent_service,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_write,
+        &log_write,
+        &current_dir,
+        &project_id,
+        &effective_config,
+    )
+    .await?;
+
+    println!("Run completed successfully.");
+    Ok(())
 }
 
 async fn handle_status() -> AppResult<()> {

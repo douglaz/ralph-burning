@@ -2089,3 +2089,312 @@ fn delete_with_unremovable_active_pointer_restores_project() {
         "project should be restored after failed pointer clear"
     );
 }
+
+// ── Run Start ──
+
+fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
+    let prompt = write_prompt_fixture(temp_dir.path());
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            project_id,
+            "--name",
+            &format!("Test {project_id}"),
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+    assert!(
+        create.status.success(),
+        "setup create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let select = Command::new(binary())
+        .args(["project", "select", project_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+    assert!(select.status.success());
+}
+
+#[test]
+fn run_start_completes_standard_flow_end_to_end() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-e2e");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        output.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Starting run for project"));
+    assert!(stdout.contains("Run completed successfully"));
+}
+
+#[test]
+fn run_start_produces_completed_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-snap");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(
+        start.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    // Verify run.json shows completed
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/run-snap/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        run_json.contains("\"completed\""),
+        "run.json should contain completed status, got: {run_json}"
+    );
+    assert!(
+        run_json.contains("\"active_run\":null") || run_json.contains("\"active_run\": null"),
+        "active_run should be null after completion"
+    );
+}
+
+#[test]
+fn run_start_persists_journal_events() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-journal");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(start.status.success());
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/run-journal/journal.ndjson"),
+    )
+    .expect("read journal");
+
+    // Should have project_created + run_started + stage events + run_completed
+    assert!(journal.contains("\"run_started\""), "journal should contain run_started");
+    assert!(journal.contains("\"stage_entered\""), "journal should contain stage_entered");
+    assert!(
+        journal.contains("\"stage_completed\""),
+        "journal should contain stage_completed"
+    );
+    assert!(
+        journal.contains("\"run_completed\""),
+        "journal should contain run_completed"
+    );
+}
+
+#[test]
+fn run_start_persists_payload_and_artifact_records() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-artifacts");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(start.status.success());
+
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/run-artifacts/history/payloads");
+    let artifacts_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/run-artifacts/history/artifacts");
+
+    // Standard flow has 8 stages, each producing a payload + artifact
+    let payload_files: Vec<_> = fs::read_dir(&payloads_dir)
+        .expect("read payloads dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
+    let artifact_files: Vec<_> = fs::read_dir(&artifacts_dir)
+        .expect("read artifacts dir")
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+        .collect();
+
+    assert_eq!(
+        payload_files.len(),
+        8,
+        "expected 8 payload files for standard flow, got {}",
+        payload_files.len()
+    );
+    assert_eq!(
+        artifact_files.len(),
+        8,
+        "expected 8 artifact files for standard flow, got {}",
+        artifact_files.len()
+    );
+}
+
+#[test]
+fn run_start_status_shows_completed_after_run() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-status-after");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(start.status.success());
+
+    let status = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(status.status.success());
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("Status: completed"),
+        "run status should show completed after successful run, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_start_rejects_non_standard_flow() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "quickdev",
+            "--name",
+            "Quick Dev",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "quickdev"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not yet supported"),
+        "should reject non-standard flow, got: {stderr}"
+    );
+}
+
+#[test]
+fn run_start_rejects_already_completed_project() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-dup");
+
+    // First run should succeed
+    let first = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("first run start");
+    assert!(first.status.success());
+
+    // Second run should fail because status is completed
+    let second = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("second run start");
+
+    assert!(!second.status.success());
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        stderr.contains("not_started"),
+        "should require not_started status, got: {stderr}"
+    );
+}
+
+#[test]
+fn run_start_rejects_already_running_project() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "run-running");
+
+    // Write a running snapshot to simulate an active run
+    let running_snapshot = r#"{"active_run":{"run_id":"run-test","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":0},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running: Planning"}"#;
+    fs::write(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/run-running/run.json"),
+        running_snapshot,
+    )
+    .expect("write running snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not_started"),
+        "should require not_started status, got: {stderr}"
+    );
+}
+
+#[test]
+fn run_start_without_active_project_fails() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("active") || stderr.contains("no project"),
+        "should require active project, got: {stderr}"
+    );
+}

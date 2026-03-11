@@ -14,8 +14,9 @@ use crate::contexts::project_run_record::model::{
     SessionStore,
 };
 use crate::contexts::project_run_record::service::{
-    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
-    RuntimeLogStorePort,
+    ActiveProjectPort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
+    ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort, RuntimeLogStorePort,
+    RuntimeLogWritePort,
 };
 use crate::shared::domain::{ProjectId, WorkspaceConfig};
 use crate::shared::error::{AppError, AppResult};
@@ -627,5 +628,73 @@ impl SessionStorePort for FsSessionStore {
         let path = project_root.join(SESSIONS_FILE);
         let contents = serde_json::to_string_pretty(sessions)?;
         FileSystem::write_atomic(&path, &contents)
+    }
+}
+
+/// Filesystem-backed implementation of `RunSnapshotWritePort`.
+pub struct FsRunSnapshotWriteStore;
+
+impl RunSnapshotWritePort for FsRunSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        let path = FileSystem::project_root(base_dir, project_id).join(RUN_FILE);
+        let contents = serde_json::to_string_pretty(snapshot)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+}
+
+/// Filesystem-backed implementation of `PayloadArtifactWritePort`.
+pub struct FsPayloadArtifactWriteStore;
+
+impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
+    fn write_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload: &PayloadRecord,
+        artifact: &ArtifactRecord,
+    ) -> AppResult<()> {
+        let project_root = FileSystem::project_root(base_dir, project_id);
+
+        // Write payload first
+        let payload_path = project_root
+            .join("history/payloads")
+            .join(format!("{}.json", payload.payload_id));
+        let payload_json = serde_json::to_string_pretty(payload)?;
+        FileSystem::write_atomic(&payload_path, &payload_json)?;
+
+        // Write artifact second — if this fails, remove the payload to maintain pairing invariant
+        let artifact_path = project_root
+            .join("history/artifacts")
+            .join(format!("{}.json", artifact.artifact_id));
+        let artifact_json = serde_json::to_string_pretty(artifact)?;
+        if let Err(e) = FileSystem::write_atomic(&artifact_path, &artifact_json) {
+            let _ = fs::remove_file(&payload_path);
+            return Err(e);
+        }
+
+        Ok(())
+    }
+}
+
+/// Filesystem-backed implementation of `RuntimeLogWritePort`.
+pub struct FsRuntimeLogWriteStore;
+
+impl RuntimeLogWritePort for FsRuntimeLogWriteStore {
+    fn append_runtime_log(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        entry: &RuntimeLogEntry,
+    ) -> AppResult<()> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("runtime/logs");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join("run.ndjson");
+        let line = serde_json::to_string(entry)?;
+        FileSystem::append_line(&path, &line)
     }
 }

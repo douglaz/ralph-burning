@@ -52,6 +52,14 @@ pub enum AppError {
     ActiveRunDelete { project_id: String },
     #[error("journal sequence error: {details}")]
     JournalSequence { details: String },
+    #[error("cannot start run: {reason}")]
+    RunStartFailed { reason: String },
+    #[error("flow '{flow_id}' is not yet supported for `run start`; only 'standard' is supported in this slice")]
+    UnsupportedFlow { flow_id: String },
+    #[error("preflight check failed for stage '{stage_id}': {details}")]
+    PreflightFailed { stage_id: StageId, details: String },
+    #[error("stage commit failed for stage '{stage_id}': {details}")]
+    StageCommitFailed { stage_id: StageId, details: String },
     #[error("{command} is not yet implemented")]
     NotYetImplemented { command: String },
     #[error("backend '{backend}' is unavailable: {details}")]

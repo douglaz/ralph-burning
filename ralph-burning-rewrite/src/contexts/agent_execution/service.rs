@@ -144,6 +144,10 @@ impl<A, R, S> AgentExecutionService<A, R, S> {
     pub fn resolver(&self) -> &BackendResolver {
         &self.resolver
     }
+
+    pub fn adapter(&self) -> &A {
+        &self.adapter
+    }
 }
 
 impl<A, R, S> AgentExecutionService<A, R, S>
