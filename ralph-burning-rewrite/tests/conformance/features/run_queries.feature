@@ -103,3 +103,33 @@ Feature: Run Queries
     When the user runs "run tail"
     Then the durable section includes payload and artifact records
     And the output matches what "run history" would show for the same data
+
+  # SC-RUN-015
+  Scenario: Run status reports terminal completed state without active run
+    Given an initialized workspace with project "alpha" selected as active
+    And "run.json" for project "alpha" contains status "completed" with active_run null
+    When the user runs "run status"
+    Then the output includes "completed"
+    And the output does not include "not started"
+
+  # SC-RUN-016
+  Scenario: Run status reports terminal failed state without active run
+    Given an initialized workspace with project "alpha" selected as active
+    And "run.json" for project "alpha" contains status "failed" with active_run null
+    When the user runs "run status"
+    Then the output includes "failed"
+    And the output does not include "not started"
+
+  # SC-RUN-017
+  Scenario: Semantically inconsistent run.json fails fast
+    Given an initialized workspace with project "alpha" selected as active
+    And "run.json" for project "alpha" contains status "running" with active_run null
+    When the user runs "run status"
+    Then the command fails with error referencing "run.json" and "inconsistent"
+
+  # SC-RUN-018
+  Scenario: Project delete fails for semantically inconsistent paused snapshot
+    Given an initialized workspace with project "alpha"
+    And "run.json" for project "alpha" contains status "paused" with active_run null
+    When the user runs "project delete alpha"
+    Then the command fails with error referencing "run.json" and "inconsistent"

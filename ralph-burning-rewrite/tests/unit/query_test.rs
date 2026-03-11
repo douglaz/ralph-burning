@@ -26,6 +26,41 @@ fn status_view_not_started_when_no_active_run() {
 }
 
 #[test]
+fn status_view_reports_completed_terminal_state_without_active_run() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Completed,
+        cycle_history: Vec::new(),
+        completion_rounds: 3,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed after 3 rounds".to_owned(),
+    };
+    let view = queries::build_status_view("alpha", &snapshot);
+
+    assert_eq!(view.status, "completed");
+    assert!(view.stage.is_none());
+    assert_eq!(view.summary, "completed after 3 rounds");
+}
+
+#[test]
+fn status_view_reports_failed_terminal_state_without_active_run() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed at implementation".to_owned(),
+    };
+    let view = queries::build_status_view("alpha", &snapshot);
+
+    assert_eq!(view.status, "failed");
+    assert_eq!(view.summary, "failed at implementation");
+}
+
+#[test]
 fn status_view_reports_running_with_cursor() {
     let snapshot = RunSnapshot {
         active_run: Some(ActiveRun {

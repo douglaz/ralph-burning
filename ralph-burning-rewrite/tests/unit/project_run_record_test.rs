@@ -408,3 +408,153 @@ fn run_status_reports_running_with_stage_cursor() {
     assert_eq!(status.stage, Some("planning".to_owned()));
     assert_eq!(status.cycle, Some(1));
 }
+
+// ── Semantic Validation ──
+
+#[test]
+fn run_snapshot_validates_running_without_active_run_as_corrupt() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Running,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "running".to_owned(),
+    };
+    let result = snapshot.validate_semantics();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("running"));
+}
+
+#[test]
+fn run_snapshot_validates_paused_without_active_run_as_corrupt() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Paused,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "paused".to_owned(),
+    };
+    let result = snapshot.validate_semantics();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("paused"));
+}
+
+#[test]
+fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
+    let snapshot = RunSnapshot {
+        active_run: Some(ActiveRun {
+            run_id: "run-1".to_owned(),
+            stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                ralph_burning::shared::domain::StageId::Planning,
+            ),
+            started_at: test_timestamp(),
+        }),
+        status: RunStatus::NotStarted,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "not started".to_owned(),
+    };
+    let result = snapshot.validate_semantics();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("not_started"));
+}
+
+#[test]
+fn run_snapshot_validates_completed_without_active_run_as_valid() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Completed,
+        cycle_history: Vec::new(),
+        completion_rounds: 3,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed".to_owned(),
+    };
+    assert!(snapshot.validate_semantics().is_ok());
+}
+
+#[test]
+fn run_snapshot_validates_failed_without_active_run_as_valid() {
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed".to_owned(),
+    };
+    assert!(snapshot.validate_semantics().is_ok());
+}
+
+// ── Terminal State Run Status Reporting ──
+
+struct FakeTerminalRunSnapshotStore {
+    status: RunStatus,
+    summary: String,
+}
+
+impl RunSnapshotPort for FakeTerminalRunSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(RunSnapshot {
+            active_run: None,
+            status: self.status,
+            cycle_history: Vec::new(),
+            completion_rounds: 0,
+            rollback_point_meta: RollbackPointMeta::default(),
+            amendment_queue: AmendmentQueueState::default(),
+            status_summary: self.summary.clone(),
+        })
+    }
+}
+
+#[test]
+fn run_status_reports_completed_for_terminal_snapshot() {
+    let run_store = FakeTerminalRunSnapshotStore {
+        status: RunStatus::Completed,
+        summary: "done".to_owned(),
+    };
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let status = run_status(&run_store, &base_dir, &pid).unwrap();
+    assert_eq!(status.status, "completed");
+}
+
+#[test]
+fn run_status_reports_failed_for_terminal_snapshot() {
+    let run_store = FakeTerminalRunSnapshotStore {
+        status: RunStatus::Failed,
+        summary: "error".to_owned(),
+    };
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let status = run_status(&run_store, &base_dir, &pid).unwrap();
+    assert_eq!(status.status, "failed");
+}
+
+#[test]
+fn delete_project_succeeds_for_completed_terminal_state() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let run_store = FakeTerminalRunSnapshotStore {
+        status: RunStatus::Completed,
+        summary: "done".to_owned(),
+    };
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    assert!(result.is_ok());
+}

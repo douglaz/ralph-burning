@@ -106,3 +106,23 @@ Feature: Project Records
   Scenario: Run.json contains full canonical run snapshot schema
     Given an initialized workspace with project "alpha"
     Then "run.json" for "alpha" contains cycle_history, completion_rounds, rollback_point_meta, and amendment_queue fields
+
+  # SC-PROJ-016
+  Scenario: Missing project.toml fails fast with corruption error on show
+    Given an initialized workspace with project "alpha"
+    And "project.toml" for project "alpha" has been deleted
+    When the user runs "project show alpha"
+    Then the command fails with error referencing "project.toml" and "missing"
+
+  # SC-PROJ-017
+  Scenario: Missing project.toml fails fast with corruption error on list
+    Given an initialized workspace with project "alpha"
+    And "project.toml" for project "alpha" has been deleted
+    When the user runs "project list"
+    Then the command fails with error referencing "project.toml" and "missing"
+
+  # SC-PROJ-018
+  Scenario: Missing project.toml fails fast with corruption error on delete
+    Given an initialized workspace with a project directory "alpha" that has no project.toml
+    When the user runs "project delete alpha"
+    Then the command fails with error referencing "project.toml" and "missing"

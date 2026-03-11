@@ -1024,6 +1024,247 @@ fn run_status_fails_fast_when_run_json_is_corrupt() {
     assert!(stderr.contains("run.json"));
 }
 
+// ── Missing project.toml corruption detection ──
+
+#[test]
+fn project_show_fails_fast_when_project_toml_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "corrupt-proj",
+            "--name", "Corrupt",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    // Delete project.toml to simulate corruption
+    fs::remove_file(
+        temp_dir.path().join(".ralph-burning/projects/corrupt-proj/project.toml"),
+    )
+    .expect("remove project.toml");
+
+    let output = Command::new(binary())
+        .args(["project", "show", "corrupt-proj"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+    assert!(stderr.contains("missing"));
+}
+
+#[test]
+fn project_list_fails_fast_when_project_toml_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "good-proj",
+            "--name", "Good",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    // Delete project.toml to simulate corruption
+    fs::remove_file(
+        temp_dir.path().join(".ralph-burning/projects/good-proj/project.toml"),
+    )
+    .expect("remove project.toml");
+
+    let output = Command::new(binary())
+        .args(["project", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project list");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+    assert!(stderr.contains("missing"));
+}
+
+#[test]
+fn project_delete_fails_fast_when_project_toml_is_missing() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Create a bare directory without project.toml (simulates corruption)
+    let corrupt_dir = temp_dir.path().join(".ralph-burning/projects/bare-proj");
+    fs::create_dir_all(&corrupt_dir).expect("create bare project dir");
+
+    let output = Command::new(binary())
+        .args(["project", "delete", "bare-proj"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project delete");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("project.toml"));
+    assert!(stderr.contains("missing"));
+}
+
+// ── Terminal snapshot status reporting ──
+
+#[test]
+fn run_status_reports_completed_for_terminal_run_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "terminal",
+            "--name", "Terminal",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "terminal"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Write a completed terminal snapshot (no active_run)
+    let completed_snapshot = r#"{
+  "active_run": null,
+  "status": "completed",
+  "cycle_history": [],
+  "completion_rounds": 3,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "completed after 3 rounds"
+}"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/terminal/run.json"),
+        completed_snapshot,
+    )
+    .expect("write completed snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Status: completed"));
+    assert!(stdout.contains("completed after 3 rounds"));
+}
+
+#[test]
+fn run_status_fails_for_semantically_inconsistent_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "inconsist",
+            "--name", "Inconsistent",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "inconsist"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    // Write a semantically inconsistent snapshot: running with no active_run
+    let bad_snapshot = r#"{
+  "active_run": null,
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 0,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "running"
+}"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/inconsist/run.json"),
+        bad_snapshot,
+    )
+    .expect("write inconsistent snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run.json"));
+    assert!(stderr.contains("inconsistent"));
+}
+
+#[test]
+fn project_delete_fails_for_semantically_inconsistent_active_run() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project", "create",
+            "--id", "bad-state",
+            "--name", "Bad State",
+            "--prompt", prompt.to_str().unwrap(),
+            "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    // Write a semantically inconsistent snapshot: paused with no active_run
+    let bad_snapshot = r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 0,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "paused"
+}"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/projects/bad-state/run.json"),
+        bad_snapshot,
+    )
+    .expect("write inconsistent snapshot");
+
+    let output = Command::new(binary())
+        .args(["project", "delete", "bad-state"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project delete");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("run.json"));
+    assert!(stderr.contains("inconsistent"));
+}
+
 // ── Run.json schema completeness ──
 
 #[test]

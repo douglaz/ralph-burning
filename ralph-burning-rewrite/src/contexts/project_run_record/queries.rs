@@ -20,7 +20,7 @@ impl RunStatusView {
         match &snapshot.active_run {
             Some(active) => Self {
                 project_id: project_id.to_owned(),
-                status: format!("{:?}", snapshot.status).to_lowercase(),
+                status: snapshot.status.display_str().to_owned(),
                 stage: Some(active.stage_cursor.stage.as_str().to_owned()),
                 cycle: Some(active.stage_cursor.cycle),
                 completion_round: Some(active.stage_cursor.completion_round),
@@ -28,7 +28,7 @@ impl RunStatusView {
             },
             None => Self {
                 project_id: project_id.to_owned(),
-                status: "not started".to_owned(),
+                status: snapshot.status.display_str().to_owned(),
                 stage: None,
                 cycle: None,
                 completion_round: None,

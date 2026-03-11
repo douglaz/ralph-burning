@@ -196,7 +196,17 @@ pub struct FsProjectStore;
 impl ProjectStorePort for FsProjectStore {
     fn project_exists(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
         let project_root = FileSystem::project_root(base_dir, project_id);
-        Ok(project_root.is_dir() && project_root.join(PROJECT_CONFIG_FILE).is_file())
+        if !project_root.is_dir() {
+            return Ok(false);
+        }
+        if !project_root.join(PROJECT_CONFIG_FILE).is_file() {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/project.toml", project_id),
+                details: "project directory exists but canonical project.toml is missing"
+                    .to_owned(),
+            });
+        }
+        Ok(true)
     }
 
     fn read_project_record(
@@ -204,11 +214,21 @@ impl ProjectStorePort for FsProjectStore {
         base_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<ProjectRecord> {
-        let path = FileSystem::project_root(base_dir, project_id).join(PROJECT_CONFIG_FILE);
+        let project_root = FileSystem::project_root(base_dir, project_id);
+        let path = project_root.join(PROJECT_CONFIG_FILE);
         let raw = fs::read_to_string(&path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                AppError::ProjectNotFound {
-                    project_id: project_id.to_string(),
+                if project_root.is_dir() {
+                    // Directory exists but project.toml is missing — corruption
+                    AppError::CorruptRecord {
+                        file: format!("projects/{}/project.toml", project_id),
+                        details: "project directory exists but canonical project.toml is missing"
+                            .to_owned(),
+                    }
+                } else {
+                    AppError::ProjectNotFound {
+                        project_id: project_id.to_string(),
+                    }
                 }
             } else {
                 e.into()
@@ -234,11 +254,20 @@ impl ProjectStorePort for FsProjectStore {
             }
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
-            // Only include projects that have a valid project.toml
-            if entry.path().join(PROJECT_CONFIG_FILE).is_file() {
-                if let Ok(pid) = ProjectId::new(name_str.as_ref()) {
-                    ids.push(pid);
+            // Skip hidden directories (staging/trash from transactional operations)
+            if name_str.starts_with('.') {
+                continue;
+            }
+            if let Ok(pid) = ProjectId::new(name_str.as_ref()) {
+                if !entry.path().join(PROJECT_CONFIG_FILE).is_file() {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("projects/{}/project.toml", name_str),
+                        details:
+                            "project directory exists but canonical project.toml is missing"
+                                .to_owned(),
+                    });
                 }
+                ids.push(pid);
             }
         }
 
@@ -507,10 +536,21 @@ impl RunSnapshotPort for FsRunSnapshotStore {
     ) -> AppResult<RunSnapshot> {
         let path = FileSystem::project_root(base_dir, project_id).join(RUN_FILE);
         match fs::read_to_string(&path) {
-            Ok(raw) => serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
-                file: format!("projects/{}/run.json", project_id),
-                details: e.to_string(),
-            }),
+            Ok(raw) => {
+                let snapshot: RunSnapshot =
+                    serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+                        file: format!("projects/{}/run.json", project_id),
+                        details: e.to_string(),
+                    })?;
+                // Semantic validation: reject inconsistent status/active_run combinations
+                snapshot
+                    .validate_semantics()
+                    .map_err(|details| AppError::CorruptRecord {
+                        file: format!("projects/{}/run.json", project_id),
+                        details,
+                    })?;
+                Ok(snapshot)
+            }
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 Err(AppError::CorruptRecord {
                     file: format!("projects/{}/run.json", project_id),

@@ -53,6 +53,30 @@ impl RunSnapshot {
     pub fn has_active_run(&self) -> bool {
         self.active_run.is_some()
     }
+
+    /// Semantic validation of run snapshot consistency.
+    /// Returns `Err` with a description if status and active_run are inconsistent.
+    pub fn validate_semantics(&self) -> Result<(), String> {
+        match (&self.status, &self.active_run) {
+            // Running or Paused requires an active run cursor
+            (RunStatus::Running, None) => Err(
+                "status is 'running' but active_run is null — inconsistent canonical state"
+                    .to_owned(),
+            ),
+            (RunStatus::Paused, None) => Err(
+                "status is 'paused' but active_run is null — inconsistent canonical state"
+                    .to_owned(),
+            ),
+            // NotStarted must not have an active run cursor
+            (RunStatus::NotStarted, Some(_)) => Err(
+                "status is 'not_started' but active_run is present — inconsistent canonical state"
+                    .to_owned(),
+            ),
+            // All other combinations are valid:
+            // NotStarted + None, Running/Paused + Some, Completed/Failed + None/Some
+            _ => Ok(()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -70,6 +94,19 @@ pub enum RunStatus {
     Paused,
     Completed,
     Failed,
+}
+
+impl RunStatus {
+    /// Human-readable status string for CLI output.
+    pub fn display_str(self) -> &'static str {
+        match self {
+            Self::NotStarted => "not started",
+            Self::Running => "running",
+            Self::Paused => "paused",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+        }
+    }
 }
 
 /// A single entry in the cycle history tracking progression through work cycles.
