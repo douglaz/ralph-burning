@@ -18,3 +18,12 @@ mod stage_contract_test;
 
 #[path = "unit/renderer_test.rs"]
 mod renderer_test;
+
+#[path = "unit/project_run_record_test.rs"]
+mod project_run_record_test;
+
+#[path = "unit/journal_test.rs"]
+mod journal_test;
+
+#[path = "unit/query_test.rs"]
+mod query_test;

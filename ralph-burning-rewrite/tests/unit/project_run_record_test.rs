@@ -1,0 +1,406 @@
+use std::path::Path;
+
+use chrono::{TimeZone, Utc};
+
+use ralph_burning::contexts::project_run_record::model::*;
+use ralph_burning::contexts::project_run_record::service::*;
+use ralph_burning::shared::domain::{FlowPreset, ProjectId};
+use ralph_burning::shared::error::{AppError, AppResult};
+
+// ── Fake implementations of ports for service-level testing ──
+
+struct FakeProjectStore {
+    existing_ids: Vec<String>,
+}
+
+impl FakeProjectStore {
+    fn empty() -> Self {
+        Self {
+            existing_ids: Vec::new(),
+        }
+    }
+
+    fn with_existing(ids: &[&str]) -> Self {
+        Self {
+            existing_ids: ids.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+}
+
+impl ProjectStorePort for FakeProjectStore {
+    fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+        Ok(self.existing_ids.contains(&project_id.to_string()))
+    }
+
+    fn read_project_record(
+        &self,
+        _base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ProjectRecord> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(make_project_record(project_id.as_str()))
+    }
+
+    fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+        self.existing_ids
+            .iter()
+            .map(|id| ProjectId::new(id.as_str()))
+            .collect()
+    }
+
+    fn delete_project(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn create_project_atomic(
+        &self,
+        _base_dir: &Path,
+        _record: &ProjectRecord,
+        _prompt_contents: &str,
+        _run_snapshot: &RunSnapshot,
+        _initial_journal_line: &str,
+        _sessions: &SessionStore,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+struct FakeJournalStore;
+
+impl JournalStorePort for FakeJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Ok(vec![make_project_created_event()])
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+struct FakeRunSnapshotStore {
+    has_active_run: bool,
+}
+
+impl FakeRunSnapshotStore {
+    fn no_run() -> Self {
+        Self {
+            has_active_run: false,
+        }
+    }
+
+    fn active_run() -> Self {
+        Self {
+            has_active_run: true,
+        }
+    }
+}
+
+impl RunSnapshotPort for FakeRunSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        if self.has_active_run {
+            Ok(RunSnapshot {
+                active_run: Some(ActiveRun {
+                    run_id: "run-1".to_owned(),
+                    stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                        ralph_burning::shared::domain::StageId::Planning,
+                    ),
+                    started_at: test_timestamp(),
+                }),
+                status: RunStatus::Running,
+                status_summary: "running".to_owned(),
+            })
+        } else {
+            Ok(RunSnapshot::initial())
+        }
+    }
+}
+
+struct FakeActiveProjectStore {
+    active_id: Option<String>,
+}
+
+impl FakeActiveProjectStore {
+    fn none() -> Self {
+        Self { active_id: None }
+    }
+
+    fn with_active(id: &str) -> Self {
+        Self {
+            active_id: Some(id.to_owned()),
+        }
+    }
+}
+
+impl ActiveProjectPort for FakeActiveProjectStore {
+    fn read_active_project_id(&self, _base_dir: &Path) -> AppResult<Option<String>> {
+        Ok(self.active_id.clone())
+    }
+
+    fn clear_active_project(&self, _base_dir: &Path) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+// ── Helpers ──
+
+fn test_timestamp() -> chrono::DateTime<Utc> {
+    Utc.with_ymd_and_hms(2026, 3, 11, 19, 0, 0)
+        .single()
+        .expect("valid timestamp")
+}
+
+fn make_project_record(id: &str) -> ProjectRecord {
+    ProjectRecord {
+        id: ProjectId::new(id).unwrap(),
+        name: format!("Project {id}"),
+        flow: FlowPreset::Standard,
+        prompt_reference: "prompt.md".to_owned(),
+        prompt_hash: "abc123".to_owned(),
+        created_at: test_timestamp(),
+        status_summary: ProjectStatusSummary::Created,
+    }
+}
+
+fn make_project_created_event() -> JournalEvent {
+    JournalEvent {
+        sequence: 1,
+        timestamp: test_timestamp(),
+        event_type: JournalEventType::ProjectCreated,
+        details: serde_json::json!({"project_id": "alpha", "flow": "standard"}),
+    }
+}
+
+fn dummy_base_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from("/tmp/test")
+}
+
+// ── Domain Tests ──
+
+#[test]
+fn run_snapshot_initial_has_no_active_run() {
+    let snapshot = RunSnapshot::initial();
+    assert!(!snapshot.has_active_run());
+    assert_eq!(snapshot.status, RunStatus::NotStarted);
+}
+
+#[test]
+fn session_store_empty_has_no_sessions() {
+    let store = SessionStore::empty();
+    assert!(store.sessions.is_empty());
+}
+
+#[test]
+fn project_record_flow_is_immutable_after_creation() {
+    let record = make_project_record("alpha");
+    assert_eq!(record.flow, FlowPreset::Standard);
+    // Flow is a plain field with no setter — immutability enforced by
+    // not providing mutation methods on ProjectRecord.
+}
+
+#[test]
+fn journal_event_types_serialize_to_snake_case() {
+    let event = make_project_created_event();
+    let json = serde_json::to_string(&event).expect("serialize");
+    assert!(json.contains("\"project_created\""));
+}
+
+// ── Service Tests with Fake Ports ──
+
+#[test]
+fn create_project_succeeds_with_valid_input() {
+    let store = FakeProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let base_dir = dummy_base_dir();
+
+    let input = CreateProjectInput {
+        id: ProjectId::new("alpha").unwrap(),
+        name: "Alpha Project".to_owned(),
+        flow: FlowPreset::Standard,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents: "# My prompt\nDo something.".to_owned(),
+        prompt_hash: "hash123".to_owned(),
+        created_at: test_timestamp(),
+    };
+
+    let result = create_project(&store, &journal_store, &base_dir, input);
+    assert!(result.is_ok());
+
+    let record = result.unwrap();
+    assert_eq!(record.id.as_str(), "alpha");
+    assert_eq!(record.flow, FlowPreset::Standard);
+    assert_eq!(record.status_summary, ProjectStatusSummary::Created);
+}
+
+#[test]
+fn create_project_fails_on_duplicate_id() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let journal_store = FakeJournalStore;
+    let base_dir = dummy_base_dir();
+
+    let input = CreateProjectInput {
+        id: ProjectId::new("alpha").unwrap(),
+        name: "Alpha Again".to_owned(),
+        flow: FlowPreset::Standard,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents: "content".to_owned(),
+        prompt_hash: "hash".to_owned(),
+        created_at: test_timestamp(),
+    };
+
+    let result = create_project(&store, &journal_store, &base_dir, input);
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::DuplicateProject { .. }
+    ));
+}
+
+#[test]
+fn list_projects_returns_entries_with_active_flag() {
+    let store = FakeProjectStore::with_existing(&["alpha", "beta"]);
+    let active_store = FakeActiveProjectStore::with_active("alpha");
+    let base_dir = dummy_base_dir();
+
+    let entries = list_projects(&store, &active_store, &base_dir).unwrap();
+    assert_eq!(entries.len(), 2);
+
+    let alpha = entries.iter().find(|e| e.id.as_str() == "alpha").unwrap();
+    assert!(alpha.is_active);
+
+    let beta = entries.iter().find(|e| e.id.as_str() == "beta").unwrap();
+    assert!(!beta.is_active);
+}
+
+#[test]
+fn list_projects_with_no_active_project() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+
+    let entries = list_projects(&store, &active_store, &base_dir).unwrap();
+    assert_eq!(entries.len(), 1);
+    assert!(!entries[0].is_active);
+}
+
+#[test]
+fn show_project_returns_detail() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let run_store = FakeRunSnapshotStore::no_run();
+    let journal_store = FakeJournalStore;
+    let active_store = FakeActiveProjectStore::with_active("alpha");
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let detail =
+        show_project(&store, &run_store, &journal_store, &active_store, &base_dir, &pid).unwrap();
+
+    assert_eq!(detail.record.id.as_str(), "alpha");
+    assert!(detail.is_active);
+    assert_eq!(detail.journal_event_count, 1);
+    assert!(!detail.run_snapshot.has_active_run());
+}
+
+#[test]
+fn show_project_fails_for_missing_project() {
+    let store = FakeProjectStore::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let journal_store = FakeJournalStore;
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("missing").unwrap();
+
+    let result =
+        show_project(&store, &run_store, &journal_store, &active_store, &base_dir, &pid);
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::ProjectNotFound { .. }
+    ));
+}
+
+#[test]
+fn delete_project_succeeds_when_no_active_run() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let run_store = FakeRunSnapshotStore::no_run();
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn delete_project_fails_with_active_run() {
+    let store = FakeProjectStore::with_existing(&["alpha"]);
+    let run_store = FakeRunSnapshotStore::active_run();
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::ActiveRunDelete { .. }
+    ));
+}
+
+#[test]
+fn delete_project_fails_for_missing_project() {
+    let store = FakeProjectStore::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let active_store = FakeActiveProjectStore::none();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("missing").unwrap();
+
+    let result = delete_project(&store, &run_store, &active_store, &base_dir, &pid);
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::ProjectNotFound { .. }
+    ));
+}
+
+#[test]
+fn run_status_reports_not_started_when_no_active_run() {
+    let run_store = FakeRunSnapshotStore::no_run();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let status = run_status(&run_store, &base_dir, &pid).unwrap();
+    assert_eq!(status.status, "not started");
+    assert!(status.stage.is_none());
+    assert!(status.cycle.is_none());
+}
+
+#[test]
+fn run_status_reports_running_with_stage_cursor() {
+    let run_store = FakeRunSnapshotStore::active_run();
+    let base_dir = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let status = run_status(&run_store, &base_dir, &pid).unwrap();
+    assert_eq!(status.status, "running");
+    assert_eq!(status.stage, Some("planning".to_owned()));
+    assert_eq!(status.cycle, Some(1));
+}

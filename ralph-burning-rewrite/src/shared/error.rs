@@ -42,6 +42,16 @@ pub enum AppError {
     ProjectNotFound { project_id: String },
     #[error("editor '{editor}' failed{details}")]
     EditorFailed { editor: String, details: String },
+    #[error("project '{project_id}' already exists")]
+    DuplicateProject { project_id: String },
+    #[error("corrupt record in {file}: {details}")]
+    CorruptRecord { file: String, details: String },
+    #[error("invalid prompt file '{path}': {reason}")]
+    InvalidPrompt { path: String, reason: String },
+    #[error("cannot delete project '{project_id}': it has an active run")]
+    ActiveRunDelete { project_id: String },
+    #[error("journal sequence error: {details}")]
+    JournalSequence { details: String },
     #[error("{command} is not yet implemented")]
     NotYetImplemented { command: String },
     #[error(transparent)]
@@ -52,6 +62,8 @@ pub enum AppError {
     TomlSerialize(#[from] toml::ser::Error),
     #[error(transparent)]
     TomlEdit(#[from] toml_edit::TomlError),
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
 }
 
 /// Errors specific to stage contract evaluation.
