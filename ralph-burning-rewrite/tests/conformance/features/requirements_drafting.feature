@@ -143,3 +143,28 @@ Feature: Requirements Drafting and Project Seed Handoff
     When the user runs "requirements answer <run-id>"
     Then an invalid requirements state error is returned
     And the run state remains unchanged
+
+  # RD-019
+  Scenario: Quick-mode run persists answers.toml and answers.json
+    Given a workspace with an initialized project
+    When the user runs "requirements quick --idea 'Build a REST API'"
+    Then the run directory contains "answers.toml"
+    And the run directory contains "answers.json"
+    And the run status is "completed"
+
+  # RD-020
+  Scenario: Empty-question draft persists answers.toml and answers.json
+    Given a workspace with an initialized project
+    When the user runs "requirements draft --idea 'Simple change'"
+    And the backend returns an empty question set
+    Then the run directory contains "answers.toml"
+    And the run directory contains "answers.json"
+    And the run status is "completed"
+
+  # RD-021
+  Scenario: Failed run at question boundary reports pending question count via show
+    Given a requirements run in "failed" status at the committed question boundary
+    And the run has a pending_question_count recorded in run.json
+    When the user runs "requirements show <run-id>"
+    Then the output includes the pending question count
+    And the output includes the failure summary

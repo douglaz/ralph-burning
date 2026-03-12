@@ -2846,6 +2846,25 @@ fn requirements_quick_creates_completed_run() {
         .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
         .collect();
     assert_eq!(entries.len(), 1, "should have exactly one requirements run");
+
+    // Regression: verify the required file layout includes answers.toml and answers.json
+    let run_dir = entries[0].path();
+    assert!(
+        run_dir.join("answers.toml").exists(),
+        "quick run must have answers.toml"
+    );
+    assert!(
+        run_dir.join("answers.json").exists(),
+        "quick run must have answers.json"
+    );
+    assert!(
+        run_dir.join("journal.ndjson").exists(),
+        "quick run must have journal.ndjson"
+    );
+    assert!(
+        run_dir.join("run.json").exists(),
+        "quick run must have run.json"
+    );
 }
 
 #[test]

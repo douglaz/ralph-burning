@@ -1089,6 +1089,165 @@ mod service_integration {
         );
     }
 
+    /// Regression: quick-mode runs must persist answers.toml and answers.json
+    /// even though question generation is skipped entirely.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn quick_run_persists_answers_toml_and_answers_json() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .quick(temp_dir.path(), "Quick file layout test", now)
+            .await
+            .expect("quick should succeed");
+
+        let run_dir = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id);
+
+        assert!(
+            run_dir.join("answers.toml").exists(),
+            "quick run must have answers.toml"
+        );
+        assert!(
+            run_dir.join("answers.json").exists(),
+            "quick run must have answers.json"
+        );
+    }
+
+    /// Regression: draft-mode runs with empty questions must persist
+    /// answers.toml and answers.json in the run directory.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn draft_with_empty_questions_persists_answers_files() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Empty questions file layout test", now)
+            .await
+            .expect("draft should succeed");
+
+        let run_dir = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id);
+
+        assert!(
+            run_dir.join("answers.toml").exists(),
+            "empty-question draft run must have answers.toml"
+        );
+        assert!(
+            run_dir.join("answers.json").exists(),
+            "empty-question draft run must have answers.json"
+        );
+    }
+
+    /// Regression: failed run at question boundary should expose
+    /// pending_question_count via show().
+    #[tokio::test(flavor = "multi_thread")]
+    async fn show_reports_pending_question_count_for_failed_run_at_question_boundary() {
+        use ralph_burning::contexts::requirements_drafting::model::{
+            RequirementsJournalEvent, RequirementsJournalEventType,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Create a draft run with questions that transitions to awaiting_answers
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    },
+                    {
+                        "id": "q2",
+                        "prompt": "What language?",
+                        "rationale": "Testing",
+                        "required": false
+                    }
+                ]
+            }),
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Question boundary failure test", now)
+            .await
+            .expect("draft should succeed");
+
+        // Manually transition to failed state at the question boundary
+        let store = FsRequirementsStore;
+        let mut run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+        assert_eq!(run.pending_question_count, Some(2));
+
+        run.status = RequirementsStatus::Failed;
+        run.status_summary = "failed: simulated failure at question boundary".to_owned();
+        run.updated_at = chrono::Utc::now();
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write failed run");
+
+        let fail_event = RequirementsJournalEvent {
+            sequence: 10,
+            timestamp: chrono::Utc::now(),
+            event_type: RequirementsJournalEventType::RunFailed,
+            details: json!({
+                "run_id": run_id,
+                "status": "failed",
+                "status_summary": "failed: simulated failure",
+            }),
+        };
+        store
+            .append_journal_event(temp_dir.path(), &run_id, &fail_event)
+            .expect("append fail event");
+
+        // Now show() should report pending_question_count for the failed run
+        let adapter2 = StubBackendAdapter::default();
+        let agent_service2 =
+            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
+
+        let result = service2
+            .show(temp_dir.path(), &run_id)
+            .expect("show should succeed");
+
+        assert_eq!(result.run.status, RequirementsStatus::Failed);
+        assert_eq!(
+            result.pending_question_count,
+            Some(2),
+            "show should report pending_question_count for failed run at question boundary"
+        );
+        assert!(
+            result.failure_summary.is_some(),
+            "show should report failure summary"
+        );
+    }
+
     /// Regression: draft-mode runs with empty questions must still persist
     /// `latest_question_set_id` and a QuestionsGenerated journal entry.
     #[tokio::test(flavor = "multi_thread")]

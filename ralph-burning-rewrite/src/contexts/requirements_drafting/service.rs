@@ -178,11 +178,19 @@ where
                     &bundle.artifact,
                 ) {
                     // State invariant: if payload/artifact pair fails, run must not
-                    // transition and no partial files remain (handled by atomic write)
+                    // transition and no partial files remain (handled by atomic write).
+                    // Durably journal the failure so show() can report it.
                     run.status = RequirementsStatus::Failed;
                     run.status_summary = format!("failed: could not persist question set: {e}");
                     run.updated_at = Utc::now();
                     let _ = self.store.write_run(base_dir, &run_id, &run);
+                    let fail_event = journal_event(
+                        2,
+                        Utc::now(),
+                        RequirementsJournalEventType::RunFailed,
+                        &run,
+                    );
+                    let _ = self.store.append_journal_event(base_dir, &run_id, &fail_event);
                     return Err(e);
                 }
 
@@ -203,6 +211,12 @@ where
                 self.store
                     .append_journal_event(base_dir, &run_id, &qs_event)?;
 
+                // Record the pending question count in canonical state for all
+                // paths (including failure), so show() can report it without
+                // scanning artifacts.
+                let question_count = qs.questions.len() as u32;
+                run.pending_question_count = Some(question_count);
+
                 if qs.questions.is_empty() {
                     // No questions needed — continue directly
                     self.continue_after_answers(base_dir, &mut run, idea, &[], 3, now)
@@ -213,16 +227,22 @@ where
                     if let Err(e) = self.store.write_answers_toml(base_dir, &run_id, &template) {
                         // Question payload/artifact and question-set boundary are already
                         // committed; fail the run but retain the committed question set.
+                        // Durably journal the failure.
                         run.status = RequirementsStatus::Failed;
                         run.status_summary =
                             format!("failed: could not write answers template: {e}");
                         run.updated_at = Utc::now();
                         let _ = self.store.write_run(base_dir, &run_id, &run);
+                        let fail_event = journal_event(
+                            3,
+                            Utc::now(),
+                            RequirementsJournalEventType::RunFailed,
+                            &run,
+                        );
+                        let _ = self.store.append_journal_event(base_dir, &run_id, &fail_event);
                         return Err(e);
                     }
 
-                    let question_count = qs.questions.len() as u32;
-                    run.pending_question_count = Some(question_count);
                     run.status = RequirementsStatus::AwaitingAnswers;
                     run.status_summary = format!(
                         "awaiting answers: {} question(s), round 1",
@@ -287,11 +307,14 @@ where
         let run = self.store.read_run(base_dir, run_id)?;
         let journal = self.store.read_journal(base_dir, run_id)?;
 
-        // Pending question count from canonical run state
-        let pending_question_count = if run.status == RequirementsStatus::AwaitingAnswers {
-            run.pending_question_count
-        } else {
-            None
+        // Pending question count from canonical run state.
+        // Exposed for AwaitingAnswers runs and for Failed runs at the question
+        // boundary (where run.pending_question_count was set before the failure).
+        let pending_question_count = match run.status {
+            RequirementsStatus::AwaitingAnswers | RequirementsStatus::Failed => {
+                run.pending_question_count
+            }
+            _ => None,
         };
 
         let failure_summary = if run.status == RequirementsStatus::Failed {

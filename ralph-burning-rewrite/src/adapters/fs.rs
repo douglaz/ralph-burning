@@ -699,7 +699,9 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
         // Rename artifact staging into canonical location
         if let Err(e) = fs::rename(&artifact_staging, &artifact_final) {
             // Roll back the payload that was already moved to canonical location
+            // and remove the orphaned staged artifact file
             let _ = fs::remove_file(&payload_final);
+            let _ = fs::remove_file(&artifact_staging);
             return Err(e.into());
         }
 
@@ -905,6 +907,25 @@ impl RequirementsStorePort for FsRequirementsStore {
             )?;
             FileSystem::write_atomic(&sessions_path, &empty)?;
         }
+
+        // Spec requires every requirements run to persist answers.toml and
+        // answers.json, even when questions are skipped (quick mode) or answers
+        // have not yet been submitted.
+        let answers_toml_path = run_root.join("answers.toml");
+        if !answers_toml_path.exists() {
+            FileSystem::write_atomic(
+                &answers_toml_path,
+                "# No clarifying questions for this run.\n",
+            )?;
+        }
+        let answers_json_path = run_root.join("answers.json");
+        if !answers_json_path.exists() {
+            let empty_answers = serde_json::to_string_pretty(&PersistedAnswers {
+                answers: Vec::new(),
+            })?;
+            FileSystem::write_atomic(&answers_json_path, &empty_answers)?;
+        }
+
         Ok(())
     }
 
@@ -1057,7 +1078,9 @@ impl RequirementsStorePort for FsRequirementsStore {
         // Rename artifact staging into canonical location
         if let Err(e) = fs::rename(&artifact_staging, &artifact_final) {
             // Roll back the payload that was already moved to canonical location
+            // and remove the orphaned staged artifact file
             let _ = fs::remove_file(&payload_final);
+            let _ = fs::remove_file(&artifact_staging);
             return Err(e.into());
         }
 
