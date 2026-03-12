@@ -18,10 +18,11 @@ use ralph_burning::contexts::agent_execution::model::{
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
 use ralph_burning::contexts::project_run_record::model::{
-    JournalEvent, JournalEventType, RunSnapshot, RunStatus,
+    JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    RuntimeLogWritePort,
 };
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
@@ -1142,6 +1143,40 @@ impl AgentExecutionPort for CancelDuringRetryAdapter {
     }
 }
 
+#[derive(Clone)]
+struct CancelBetweenRetryAttemptsLogWriter {
+    cancellation: CancellationToken,
+    cancellation_count: Arc<AtomicU32>,
+}
+
+impl CancelBetweenRetryAttemptsLogWriter {
+    fn new(cancellation: CancellationToken) -> Self {
+        Self {
+            cancellation,
+            cancellation_count: Arc::new(AtomicU32::new(0)),
+        }
+    }
+}
+
+impl RuntimeLogWritePort for CancelBetweenRetryAttemptsLogWriter {
+    fn append_runtime_log(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        entry: &RuntimeLogEntry,
+    ) -> AppResult<()> {
+        if entry.source == "engine"
+            && entry.message.contains("stage_failed: implementation")
+            && entry.message.contains("retry=true")
+            && self.cancellation_count.fetch_add(1, Ordering::SeqCst) == 0
+        {
+            self.cancellation.cancel();
+        }
+
+        Ok(())
+    }
+}
+
 fn request_changes_payload(follow_ups: &[&str]) -> Value {
     json!({
         "outcome": "request_changes",
@@ -1700,6 +1735,62 @@ async fn cancellation_halts_retry_loop() {
         stage_events(&events, JournalEventType::StageFailed, "implementation");
     assert_eq!(implementation_failed.len(), 1);
     assert_eq!(implementation_failed[0].details["will_retry"], false);
+}
+
+#[tokio::test]
+async fn cancellation_between_retry_attempts_does_not_start_next_attempt() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cancel-between-retries");
+
+    let cancellation = CancellationToken::new();
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 1),
+    );
+    let log_writer = CancelBetweenRetryAttemptsLogWriter::new(cancellation.clone());
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run_with_retry(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &log_writer,
+        base_dir,
+        &pid,
+        &config,
+        &ralph_burning::contexts::workflow_composition::retry_policy::RetryPolicy::default_policy(),
+        cancellation,
+    )
+    .await;
+
+    assert!(result.is_err());
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+    assert!(snapshot.active_run.is_none());
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
+    assert_eq!(implementation_entered.len(), 1);
+
+    let implementation_failed =
+        stage_events(&events, JournalEventType::StageFailed, "implementation");
+    assert_eq!(implementation_failed.len(), 1);
+    assert_eq!(implementation_failed[0].details["will_retry"], true);
+
+    let run_failed = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == JournalEventType::RunFailed)
+        .expect("run_failed");
+    assert_eq!(run_failed.details["failure_class"], "cancellation");
 }
 
 #[tokio::test]

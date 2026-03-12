@@ -810,6 +810,25 @@ where
     let mut cursor = starting_cursor.clone();
 
     loop {
+        if cancellation_token.is_cancelled() {
+            return fail_run_result(
+                &AppError::InvocationCancelled {
+                    backend: stage_entry.target.backend.family.to_string(),
+                    stage_id,
+                },
+                stage_id,
+                run_id,
+                seq,
+                snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+                origin,
+            )
+            .await;
+        }
+
         *seq += 1;
         let stage_entered = journal::stage_entered_event(
             *seq,
