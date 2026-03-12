@@ -130,7 +130,7 @@ Feature: Run Queries
   # SC-RUN-018
   Scenario: Project delete fails for semantically inconsistent paused snapshot
     Given an initialized workspace with project "alpha"
-    And "run.json" for project "alpha" contains status "paused" with active_run null
+    And "run.json" for project "alpha" contains status "paused" with an active run
     When the user runs "project delete alpha"
     Then the command fails with error referencing "run.json" and "inconsistent"
 

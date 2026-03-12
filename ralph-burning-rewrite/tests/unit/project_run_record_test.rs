@@ -838,7 +838,10 @@ fn failed_stage_summary_serializes_correctly() {
     assert!(json.contains("QaReviewOutcomeFailure"));
 
     let roundtrip: FailedStageSummary = serde_json::from_str(&json).unwrap();
-    assert_eq!(roundtrip.stage_id, ralph_burning::shared::domain::StageId::Qa);
+    assert_eq!(
+        roundtrip.stage_id,
+        ralph_burning::shared::domain::StageId::Qa
+    );
 }
 
 #[test]

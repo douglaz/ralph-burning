@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore,
-    FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore,
-    FsRuntimeLogWriteStore, FsSessionStore,
+    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
+    FsSessionStore,
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;

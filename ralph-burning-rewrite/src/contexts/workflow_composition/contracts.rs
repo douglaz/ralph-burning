@@ -48,8 +48,10 @@ pub struct StageContract {
 /// Bundle of a validated payload and its rendered Markdown artifact.
 ///
 /// Callers receive either a `ValidatedBundle` or an error — never one without
-/// the other. On any failure (schema, domain, or QA/review outcome), no bundle
-/// is returned.
+/// the other. Schema and domain failures still prevent bundle creation. Review
+/// outcomes are enforced separately by [`StageContract::evaluate`], while
+/// [`StageContract::evaluate_permissive`] may return a bundle for non-passing
+/// validation payloads so the engine can persist them before remediation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ValidatedBundle {
     pub payload: StagePayload,
@@ -109,8 +111,8 @@ impl StageContract {
     /// Schema validation → semantic validation → outcome check → rendering.
     ///
     /// Returns [`ValidatedBundle`] on success or a [`ContractError`] on any
-    /// failure. Non-passing QA/review outcomes are errors classified as
-    /// [`FailureClass::QaReviewOutcomeFailure`] — no success bundle is returned.
+    /// failure. Non-passing QA/review outcomes are still errors here and are
+    /// classified as [`FailureClass::QaReviewOutcomeFailure`].
     pub fn evaluate(&self, raw_json: &serde_json::Value) -> Result<ValidatedBundle, ContractError> {
         let bundle = self.evaluate_permissive(raw_json)?;
 

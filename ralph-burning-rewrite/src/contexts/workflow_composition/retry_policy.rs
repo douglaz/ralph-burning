@@ -33,10 +33,7 @@ pub struct RetryPolicy {
 impl RetryPolicy {
     pub fn default_policy() -> Self {
         let mut rules = HashMap::new();
-        rules.insert(
-            FailureClass::TransportFailure,
-            RetryRule::retryable(3),
-        );
+        rules.insert(FailureClass::TransportFailure, RetryRule::retryable(3));
         rules.insert(
             FailureClass::SchemaValidationFailure,
             RetryRule::retryable(2),
@@ -47,10 +44,7 @@ impl RetryPolicy {
         );
         rules.insert(FailureClass::Timeout, RetryRule::retryable(2));
         rules.insert(FailureClass::Cancellation, RetryRule::terminal());
-        rules.insert(
-            FailureClass::QaReviewOutcomeFailure,
-            RetryRule::terminal(),
-        );
+        rules.insert(FailureClass::QaReviewOutcomeFailure, RetryRule::terminal());
 
         Self {
             rules,

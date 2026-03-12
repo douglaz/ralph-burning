@@ -819,7 +819,8 @@ fn payload_artifact_remove_pair_not_found_is_ok() {
     let store = FsPayloadArtifactWriteStore;
 
     // Removing non-existent files should succeed (NotFound is not an error)
-    let result = store.remove_payload_artifact_pair(tmp.path(), &pid, "nonexistent", "nonexistent-artifact");
+    let result =
+        store.remove_payload_artifact_pair(tmp.path(), &pid, "nonexistent", "nonexistent-artifact");
     assert!(result.is_ok(), "removing non-existent pair should succeed");
 }
 
@@ -905,7 +906,10 @@ fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
     fs::write(&artifacts_dir, "not a directory").unwrap();
 
     let result = store.write_payload_artifact_pair(tmp.path(), &pid, &payload, &artifact);
-    assert!(result.is_err(), "write should fail when artifact dir is a file");
+    assert!(
+        result.is_err(),
+        "write should fail when artifact dir is a file"
+    );
 
     // Payload should have been cleaned up — no leaked file
     let payload_path = tmp

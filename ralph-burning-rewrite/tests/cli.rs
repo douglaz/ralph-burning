@@ -2208,8 +2208,14 @@ fn run_start_persists_journal_events() {
     .expect("read journal");
 
     // Should have project_created + run_started + stage events + run_completed
-    assert!(journal.contains("\"run_started\""), "journal should contain run_started");
-    assert!(journal.contains("\"stage_entered\""), "journal should contain stage_entered");
+    assert!(
+        journal.contains("\"run_started\""),
+        "journal should contain run_started"
+    );
+    assert!(
+        journal.contains("\"stage_entered\""),
+        "journal should contain stage_entered"
+    );
     assert!(
         journal.contains("\"stage_completed\""),
         "journal should contain stage_completed"
@@ -2513,7 +2519,10 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
         .output()
         .expect("run start");
 
-    assert!(!output.status.success(), "run start should fail with bad workspace version");
+    assert!(
+        !output.status.success(),
+        "run start should fail with bad workspace version"
+    );
 
     // Verify NO state mutation occurred
     let post_run_json = fs::read_to_string(
@@ -2545,7 +2554,10 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
         .count();
-    assert_eq!(payload_count, 0, "no payloads should exist after preflight failure");
+    assert_eq!(
+        payload_count, 0,
+        "no payloads should exist after preflight failure"
+    );
 }
 
 #[test]
@@ -2615,7 +2627,10 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
         .count();
-    assert_eq!(payload_count, 0, "no payloads should exist after preflight failure");
+    assert_eq!(
+        payload_count, 0,
+        "no payloads should exist after preflight failure"
+    );
 
     let artifacts_dir = temp_dir
         .path()
@@ -2624,7 +2639,10 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
         .expect("read artifacts dir")
         .filter_map(|e| e.ok())
         .count();
-    assert_eq!(artifact_count, 0, "no artifacts should exist after preflight failure");
+    assert_eq!(
+        artifact_count, 0,
+        "no artifacts should exist after preflight failure"
+    );
 }
 
 #[test]

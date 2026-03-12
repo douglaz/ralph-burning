@@ -15,19 +15,19 @@ use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
     CancellationToken, InvocationEnvelope, InvocationRequest,
 };
-use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
 use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus,
 };
 use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
 };
-use ralph_burning::shared::error::{AppError, AppResult};
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
 use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, StageId};
+use ralph_burning::shared::error::{AppError, AppResult};
 
 fn setup_workspace(base_dir: &Path) {
     workspace_governance::initialize_workspace(base_dir, Utc::now()).unwrap();
@@ -58,8 +58,8 @@ fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
     pid
 }
 
-fn build_agent_service() -> AgentExecutionService<StubBackendAdapter, FsRawOutputStore, FsSessionStore>
-{
+fn build_agent_service(
+) -> AgentExecutionService<StubBackendAdapter, FsRawOutputStore, FsSessionStore> {
     AgentExecutionService::new(
         StubBackendAdapter::default(),
         FsRawOutputStore,
@@ -95,14 +95,38 @@ fn stage_plan_with_prompt_review_disabled() {
 #[test]
 fn role_mapping_is_deterministic() {
     use ralph_burning::shared::domain::BackendRole;
-    assert_eq!(engine::role_for_stage(StageId::PromptReview), BackendRole::Planner);
-    assert_eq!(engine::role_for_stage(StageId::Planning), BackendRole::Planner);
-    assert_eq!(engine::role_for_stage(StageId::Implementation), BackendRole::Implementer);
-    assert_eq!(engine::role_for_stage(StageId::Qa), BackendRole::QaValidator);
-    assert_eq!(engine::role_for_stage(StageId::Review), BackendRole::Reviewer);
-    assert_eq!(engine::role_for_stage(StageId::CompletionPanel), BackendRole::CompletionJudge);
-    assert_eq!(engine::role_for_stage(StageId::AcceptanceQa), BackendRole::QaValidator);
-    assert_eq!(engine::role_for_stage(StageId::FinalReview), BackendRole::CompletionJudge);
+    assert_eq!(
+        engine::role_for_stage(StageId::PromptReview),
+        BackendRole::Planner
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::Planning),
+        BackendRole::Planner
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::Implementation),
+        BackendRole::Implementer
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::Qa),
+        BackendRole::QaValidator
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::Review),
+        BackendRole::Reviewer
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::CompletionPanel),
+        BackendRole::CompletionJudge
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::AcceptanceQa),
+        BackendRole::QaValidator
+    );
+    assert_eq!(
+        engine::role_for_stage(StageId::FinalReview),
+        BackendRole::CompletionJudge
+    );
 }
 
 // ── Happy path tests ────────────────────────────────────────────────────────
@@ -131,10 +155,16 @@ async fn happy_path_standard_run_completes() {
     )
     .await;
 
-    assert!(result.is_ok(), "execute_standard_run failed: {:?}", result.err());
+    assert!(
+        result.is_ok(),
+        "execute_standard_run failed: {:?}",
+        result.err()
+    );
 
     // Verify final run snapshot
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert!(snapshot.active_run.is_none());
     assert_eq!(snapshot.completion_rounds, 1);
@@ -144,20 +174,25 @@ async fn happy_path_standard_run_completes() {
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     // project_created + run_started + (8 * (stage_entered + stage_completed)) + run_completed
     // = 1 + 1 + 16 + 1 = 19 events (with prompt_review enabled by default)
-    assert!(events.len() >= 19, "expected >= 19 events, got {}", events.len());
+    assert!(
+        events.len() >= 19,
+        "expected >= 19 events, got {}",
+        events.len()
+    );
 
     // First event should be project_created, second run_started
     assert_eq!(events[0].event_type, JournalEventType::ProjectCreated);
     assert_eq!(events[1].event_type, JournalEventType::RunStarted);
 
     // Last event should be run_completed
-    assert_eq!(events.last().unwrap().event_type, JournalEventType::RunCompleted);
+    assert_eq!(
+        events.last().unwrap().event_type,
+        JournalEventType::RunCompleted
+    );
 
     // Verify payloads and artifacts were written
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/happy-test/history/payloads");
-    let artifacts_dir = base_dir
-        .join(".ralph-burning/projects/happy-test/history/artifacts");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/happy-test/history/payloads");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/happy-test/history/artifacts");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(payload_count, 8, "expected 8 payloads");
@@ -197,10 +232,12 @@ async fn happy_path_prompt_review_disabled() {
     assert!(result.is_ok());
 
     // Verify 7 stages completed (no prompt_review)
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/no-pr-test/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/no-pr-test/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
-    assert_eq!(payload_count, 7, "expected 7 payloads without prompt_review");
+    assert_eq!(
+        payload_count, 7,
+        "expected 7 payloads without prompt_review"
+    );
 
     // Verify no prompt_review stage_entered in journal
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
@@ -214,7 +251,10 @@ async fn happy_path_prompt_review_disabled() {
             }
         })
         .collect();
-    assert!(pr_events.is_empty(), "prompt_review stage should not appear");
+    assert!(
+        pr_events.is_empty(),
+        "prompt_review stage should not appear"
+    );
 }
 
 // ── Precondition failure tests ──────────────────────────────────────────────
@@ -229,11 +269,15 @@ async fn run_start_rejects_already_running() {
 
     // Manually set status to running
     let snapshot = RunSnapshot {
-        active_run: Some(ralph_burning::contexts::project_run_record::model::ActiveRun {
-            run_id: "run-fake".to_owned(),
-            stage_cursor: ralph_burning::shared::domain::StageCursor::initial(StageId::Planning),
-            started_at: Utc::now(),
-        }),
+        active_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: "run-fake".to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                    StageId::Planning,
+                ),
+                started_at: Utc::now(),
+            },
+        ),
         status: RunStatus::Running,
         cycle_history: vec![],
         completion_rounds: 0,
@@ -340,7 +384,9 @@ async fn preflight_failure_leaves_state_unchanged() {
     assert!(result.is_err());
 
     // Verify run.json is still not_started
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::NotStarted);
     assert!(snapshot.active_run.is_none());
 
@@ -350,8 +396,7 @@ async fn preflight_failure_leaves_state_unchanged() {
     assert_eq!(events[0].event_type, JournalEventType::ProjectCreated);
 
     // Verify no payloads or artifacts created
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/preflight-test/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/preflight-test/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0);
 }
@@ -510,10 +555,15 @@ async fn stage_entered_journal_failure_persists_failed_state() {
     )
     .await;
 
-    assert!(result.is_err(), "run should fail on stage_entered journal failure");
+    assert!(
+        result.is_err(),
+        "run should fail on stage_entered journal failure"
+    );
 
     // Run must be in failed state, not left in running
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
@@ -530,8 +580,7 @@ async fn stage_entered_journal_failure_persists_failed_state() {
     );
 
     // No payload/artifact should exist
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/stage-entry-fail/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/stage-entry-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "no payloads should exist");
 }
@@ -567,16 +616,20 @@ async fn run_started_journal_failure_persists_failed_state() {
     )
     .await;
 
-    assert!(result.is_err(), "run should fail on run_started journal failure");
+    assert!(
+        result.is_err(),
+        "run should fail on run_started journal failure"
+    );
 
     // Run must be in failed state, not left in running
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     // No payloads or artifacts should exist
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/run-started-fail/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/run-started-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "no payloads should exist");
 }
@@ -617,19 +670,19 @@ async fn journal_failure_after_payload_rolls_back_and_fails_run() {
     assert!(result.is_err(), "run should fail on journal failure");
 
     // Run must be in failed state
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     // No payload/artifact should be visible for the first stage since it was
     // rolled back after journal failure
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/journal-fail/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/journal-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "payload should have been rolled back");
 
-    let artifacts_dir = base_dir
-        .join(".ralph-burning/projects/journal-fail/history/artifacts");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/journal-fail/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(artifact_count, 0, "artifact should have been rolled back");
 
@@ -684,20 +737,26 @@ async fn snapshot_failure_during_stage_commit_rolls_back_without_journal_leak() 
     // The run must end in failed state. Since the failing store only fails
     // on call 3, the fail_run recovery can still write the failed snapshot
     // (calls 4+).
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     // The completed first stage remains durable so resume can skip it.
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/snap-fail/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/snap-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
-    assert_eq!(payload_count, 1, "completed stage payload should remain durable");
+    assert_eq!(
+        payload_count, 1,
+        "completed stage payload should remain durable"
+    );
 
-    let artifacts_dir = base_dir
-        .join(".ralph-burning/projects/snap-fail/history/artifacts");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/snap-fail/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
-    assert_eq!(artifact_count, 1, "completed stage artifact should remain durable");
+    assert_eq!(
+        artifact_count, 1,
+        "completed stage artifact should remain durable"
+    );
 
     // The completed stage must remain visible in the journal.
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
@@ -744,7 +803,8 @@ impl PayloadArtifactWritePort for FailingPayloadArtifactWriteStore {
                 "simulated payload/artifact write failure",
             )));
         }
-        FsPayloadArtifactWriteStore.write_payload_artifact_pair(base_dir, project_id, payload, artifact)
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(base_dir, project_id, payload, artifact)
     }
 
     fn remove_payload_artifact_pair(
@@ -754,7 +814,12 @@ impl PayloadArtifactWritePort for FailingPayloadArtifactWriteStore {
         payload_id: &str,
         artifact_id: &str,
     ) -> AppResult<()> {
-        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(base_dir, project_id, payload_id, artifact_id)
+        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            payload_id,
+            artifact_id,
+        )
     }
 }
 
@@ -801,7 +866,8 @@ impl PayloadArtifactWritePort for LeakingPayloadArtifactWriteStore {
                 "simulated artifact write failure with leaked payload",
             )));
         }
-        FsPayloadArtifactWriteStore.write_payload_artifact_pair(base_dir, project_id, payload, artifact)
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(base_dir, project_id, payload, artifact)
     }
 
     fn remove_payload_artifact_pair(
@@ -811,7 +877,12 @@ impl PayloadArtifactWritePort for LeakingPayloadArtifactWriteStore {
         payload_id: &str,
         artifact_id: &str,
     ) -> AppResult<()> {
-        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(base_dir, project_id, payload_id, artifact_id)
+        FsPayloadArtifactWriteStore.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            payload_id,
+            artifact_id,
+        )
     }
 }
 
@@ -848,14 +919,15 @@ async fn leaked_payload_cleanup_on_write_failure() {
     assert!(result.is_err(), "run should fail on write failure");
 
     // Run must be in failed state
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     // CRITICAL: No leaked payload should remain in canonical location.
     // The engine's defense-in-depth cleanup should have removed it.
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/leak-cleanup/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/leak-cleanup/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(
         payload_count, 0,
@@ -863,8 +935,7 @@ async fn leaked_payload_cleanup_on_write_failure() {
         payload_count
     );
 
-    let artifacts_dir = base_dir
-        .join(".ralph-burning/projects/leak-cleanup/history/artifacts");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/leak-cleanup/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     assert_eq!(artifact_count, 0, "no artifacts should exist");
 
@@ -910,23 +981,32 @@ async fn payload_artifact_write_failure_persists_failed_state() {
     )
     .await;
 
-    assert!(result.is_err(), "run should fail on payload/artifact write failure");
+    assert!(
+        result.is_err(),
+        "run should fail on payload/artifact write failure"
+    );
 
     // Run must be in failed state, not left in running
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     // No payload/artifact should exist since the write failed
-    let payloads_dir = base_dir
-        .join(".ralph-burning/projects/pa-write-fail/history/payloads");
+    let payloads_dir = base_dir.join(".ralph-burning/projects/pa-write-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
-    assert_eq!(payload_count, 0, "no payloads should exist after write failure");
+    assert_eq!(
+        payload_count, 0,
+        "no payloads should exist after write failure"
+    );
 
-    let artifacts_dir = base_dir
-        .join(".ralph-burning/projects/pa-write-fail/history/artifacts");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/pa-write-fail/history/artifacts");
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
-    assert_eq!(artifact_count, 0, "no artifacts should exist after write failure");
+    assert_eq!(
+        artifact_count, 0,
+        "no artifacts should exist after write failure"
+    );
 
     // No stage_completed event should exist
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
@@ -995,7 +1075,10 @@ impl AgentExecutionPort for RecordingAdapter {
         self.requests
             .lock()
             .expect("recording adapter lock poisoned")
-            .push((request.stage_contract.stage_id, request.payload.context.clone()));
+            .push((
+                request.stage_contract.stage_id,
+                request.payload.context.clone(),
+            ));
         self.inner.invoke(request).await
     }
 
@@ -1039,10 +1122,7 @@ impl AgentExecutionPort for CancelDuringRetryAdapter {
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         if request.stage_contract.stage_id == StageId::Implementation {
-            let attempt = self
-                .implementation_attempts
-                .fetch_add(1, Ordering::SeqCst)
-                + 1;
+            let attempt = self.implementation_attempts.fetch_add(1, Ordering::SeqCst) + 1;
             if attempt == 1 {
                 self.cancellation.cancel();
                 return Err(AppError::InvocationFailed {
@@ -1107,12 +1187,20 @@ fn prompt_review_payload(ready: bool) -> Value {
     })
 }
 
-fn stage_events<'a>(events: &'a [JournalEvent], event_type: JournalEventType, stage_id: &str) -> Vec<&'a JournalEvent> {
+fn stage_events<'a>(
+    events: &'a [JournalEvent],
+    event_type: JournalEventType,
+    stage_id: &str,
+) -> Vec<&'a JournalEvent> {
     events
         .iter()
         .filter(|event| {
             event.event_type == event_type
-                && event.details.get("stage_id").and_then(|value| value.as_str()) == Some(stage_id)
+                && event
+                    .details
+                    .get("stage_id")
+                    .and_then(|value| value.as_str())
+                    == Some(stage_id)
         })
         .collect()
 }
@@ -1145,15 +1233,19 @@ async fn retry_exhaustion_transitions_run_to_failed_state() {
 
     assert!(result.is_err());
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let implementation_entered = stage_events(&events, JournalEventType::StageEntered, "implementation");
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
     assert_eq!(implementation_entered.len(), 3);
 
-    let implementation_failed = stage_events(&events, JournalEventType::StageFailed, "implementation");
+    let implementation_failed =
+        stage_events(&events, JournalEventType::StageFailed, "implementation");
     assert_eq!(implementation_failed.len(), 3);
     assert_eq!(implementation_failed[0].details["will_retry"], true);
     assert_eq!(implementation_failed[1].details["will_retry"], true);
@@ -1188,18 +1280,23 @@ async fn retry_success_on_second_attempt_completes_run() {
 
     assert!(result.is_ok(), "{result:?}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let implementation_entered = stage_events(&events, JournalEventType::StageEntered, "implementation");
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
     assert_eq!(implementation_entered.len(), 2);
 
-    let implementation_failed = stage_events(&events, JournalEventType::StageFailed, "implementation");
+    let implementation_failed =
+        stage_events(&events, JournalEventType::StageFailed, "implementation");
     assert_eq!(implementation_failed.len(), 1);
     assert_eq!(implementation_failed[0].details["will_retry"], true);
 
-    let implementation_completed = stage_events(&events, JournalEventType::StageCompleted, "implementation");
+    let implementation_completed =
+        stage_events(&events, JournalEventType::StageCompleted, "implementation");
     assert_eq!(implementation_completed.len(), 1);
     assert_eq!(implementation_completed[0].details["attempt"], 2);
 }
@@ -1212,15 +1309,13 @@ async fn remediation_cycle_is_triggered_by_qa_request_changes() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "remediation-cycle");
 
-    let adapter = RecordingAdapter::new(
-        StubBackendAdapter::default().with_stage_payload_sequence(
-            StageId::Qa,
-            vec![
-                request_changes_payload(&["add missing regression test"]),
-                approved_validation_payload(),
-            ],
-        ),
-    );
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::Qa,
+        vec![
+            request_changes_payload(&["add missing regression test"]),
+            approved_validation_payload(),
+        ],
+    ));
     let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
@@ -1240,11 +1335,14 @@ async fn remediation_cycle_is_triggered_by_qa_request_changes() {
 
     assert!(result.is_ok(), "{result:?}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let implementation_entered = stage_events(&events, JournalEventType::StageEntered, "implementation");
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
     assert_eq!(implementation_entered.len(), 2);
 
     let cycle_advanced: Vec<_> = events
@@ -1299,7 +1397,9 @@ async fn remediation_limit_exceeded_fails_the_run() {
     let error = result.unwrap_err().to_string();
     assert!(error.contains("remediation exhausted"), "{error}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
@@ -1309,6 +1409,94 @@ async fn remediation_limit_exceeded_fails_the_run() {
         .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
         .collect();
     assert_eq!(cycle_advanced.len(), 2);
+}
+
+#[tokio::test]
+async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "resume-remediation-boundary");
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let adapter = StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::Qa,
+        vec![
+            request_changes_payload(&["carry remediation into cycle two"]),
+            approved_validation_payload(),
+        ],
+    );
+    let agent_service = build_agent_service_with_adapter(adapter.clone());
+
+    // Append order before the remediation handoff:
+    //   1 run_started
+    //   2 stage_entered(prompt_review)
+    //   3 stage_completed(prompt_review)
+    //   4 stage_entered(planning)
+    //   5 stage_completed(planning)
+    //   6 stage_entered(implementation)
+    //   7 stage_completed(implementation)
+    //   8 stage_entered(qa)
+    //   9 stage_completed(qa)
+    //  10 cycle_advanced -> fail here
+    let failing_journal = FailingJournalStore::new(10);
+
+    let first_result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err());
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert!(failed_snapshot.active_run.is_none());
+    assert_eq!(failed_snapshot.cycle_history.last().unwrap().cycle, 2);
+
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
+    assert_eq!(
+        implementation_entered.len(),
+        2,
+        "resume must loop back through implementation for remediation"
+    );
+
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "implementation");
+    assert_eq!(run_resumed.details["cycle"], 2);
 }
 
 #[tokio::test]
@@ -1352,14 +1540,21 @@ async fn resume_from_failed_run_skips_completed_stages() {
     .await;
     assert!(resume_result.is_ok(), "{resume_result:?}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     let planning_entered = stage_events(&events, JournalEventType::StageEntered, "planning");
-    assert_eq!(planning_entered.len(), 1, "planning should not rerun on resume");
+    assert_eq!(
+        planning_entered.len(),
+        1,
+        "planning should not rerun on resume"
+    );
 
-    let implementation_entered = stage_events(&events, JournalEventType::StageEntered, "implementation");
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
     assert_eq!(implementation_entered.len(), 4);
 
     let run_started = events
@@ -1384,7 +1579,8 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let paused_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_stage_payload(StageId::PromptReview, prompt_review_payload(false)),
+        StubBackendAdapter::default()
+            .with_stage_payload(StageId::PromptReview, prompt_review_payload(false)),
     );
     let first_result = engine::execute_standard_run(
         &paused_agent_service,
@@ -1400,7 +1596,9 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
     .await;
     assert!(first_result.is_ok(), "{first_result:?}");
 
-    let paused_snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let paused_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(paused_snapshot.status, RunStatus::Paused);
     assert!(paused_snapshot.active_run.is_none());
     assert!(paused_snapshot.status_summary.contains("run resume"));
@@ -1420,12 +1618,20 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
     .await;
     assert!(resume_result.is_ok(), "{resume_result:?}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    assert_eq!(stage_events(&events, JournalEventType::StageEntered, "prompt_review").len(), 1);
-    assert_eq!(stage_events(&events, JournalEventType::StageEntered, "planning").len(), 1);
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "prompt_review").len(),
+        1
+    );
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "planning").len(),
+        1
+    );
 
     let run_resumed = events
         .iter()
@@ -1443,9 +1649,8 @@ async fn cancellation_halts_retry_loop() {
     let pid = create_standard_project(base_dir, "cancel-retry");
 
     let cancellation = CancellationToken::new();
-    let agent_service = build_agent_service_with_adapter(CancelDuringRetryAdapter::new(
-        cancellation.clone(),
-    ));
+    let agent_service =
+        build_agent_service_with_adapter(CancelDuringRetryAdapter::new(cancellation.clone()));
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let result = engine::execute_standard_run_with_retry(
@@ -1465,15 +1670,19 @@ async fn cancellation_halts_retry_loop() {
 
     assert!(result.is_err());
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
     assert!(snapshot.active_run.is_none());
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let implementation_entered = stage_events(&events, JournalEventType::StageEntered, "implementation");
+    let implementation_entered =
+        stage_events(&events, JournalEventType::StageEntered, "implementation");
     assert_eq!(implementation_entered.len(), 1);
 
-    let implementation_failed = stage_events(&events, JournalEventType::StageFailed, "implementation");
+    let implementation_failed =
+        stage_events(&events, JournalEventType::StageFailed, "implementation");
     assert_eq!(implementation_failed.len(), 1);
     assert_eq!(implementation_failed[0].details["will_retry"], false);
 }
@@ -1486,12 +1695,11 @@ async fn conditionally_approved_queues_amendments_and_proceeds() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "conditional-review");
 
-    let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_stage_payload(
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
             StageId::Review,
             conditionally_approved_payload(&["tighten the acceptance note", "add one QA case"]),
-        ),
-    );
+        ));
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let result = engine::execute_standard_run(
@@ -1509,7 +1717,9 @@ async fn conditionally_approved_queues_amendments_and_proceeds() {
 
     assert!(result.is_ok(), "{result:?}");
 
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(base_dir, &pid).unwrap();
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert_eq!(
         snapshot.amendment_queue.pending,

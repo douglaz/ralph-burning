@@ -24,8 +24,8 @@ use crate::contexts::project_run_record::service::{
 use crate::contexts::workflow_composition::payloads::{ReviewOutcome, StagePayload};
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::domain::{
-    BackendRole, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
-    SessionPolicy, StageCursor, StageId,
+    BackendRole, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
+    StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -384,11 +384,14 @@ where
     )?;
     let resume_state = derive_resume_state(&events, &snapshot, &stage_plan)?;
 
-    preflight_check(agent_service.adapter(), &stage_plan[resume_state.stage_index..])
-        .await
-        .map_err(|error| AppError::ResumeFailed {
-            reason: error.to_string(),
-        })?;
+    preflight_check(
+        agent_service.adapter(),
+        &stage_plan[resume_state.stage_index..],
+    )
+    .await
+    .map_err(|error| AppError::ResumeFailed {
+        reason: error.to_string(),
+    })?;
 
     let mut seq = journal::last_sequence(&events);
     snapshot.status = RunStatus::Running;
@@ -397,7 +400,9 @@ where
         stage_cursor: resume_state.cursor.clone(),
         started_at: resume_state.started_at,
     });
-    snapshot.completion_rounds = snapshot.completion_rounds.max(resume_state.cursor.completion_round);
+    snapshot.completion_rounds = snapshot
+        .completion_rounds
+        .max(resume_state.cursor.completion_round);
     snapshot.status_summary = format!("running: {}", resume_state.cursor.stage.display_name());
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
 
@@ -599,42 +604,6 @@ where
                     let next_stage_index = stage_index_for(stage_plan, StageId::Implementation)?;
                     let next_cursor = cursor.advance_cycle(StageId::Implementation);
                     record_cycle_advance(snapshot, next_cursor.cycle);
-                    snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: next_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                    });
-                    snapshot.status_summary = format!(
-                        "running: remediation cycle {} -> {}",
-                        next_cursor.cycle,
-                        next_cursor.stage.display_name()
-                    );
-                    if let Err(error) =
-                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
-                    {
-                        return fail_run_result(
-                            &AppError::StageCommitFailed {
-                                stage_id,
-                                details: format!(
-                                    "failed to persist remediation cursor for {}: {}",
-                                    stage_id.as_str(),
-                                    error
-                                ),
-                            },
-                            stage_id,
-                            run_id,
-                            seq,
-                            snapshot,
-                            journal_store,
-                            run_snapshot_write,
-                            base_dir,
-                            project_id,
-                            origin,
-                        )
-                        .await;
-                    }
-
                     *seq += 1;
                     let cycle_advanced = journal::cycle_advanced_event(
                         *seq,
@@ -672,7 +641,44 @@ where
                         .await;
                     }
 
-                    implementation_context = Some(remediation_context(stage_id, next_cursor.cycle, &bundle));
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: next_cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: remediation cycle {} -> {}",
+                        next_cursor.cycle,
+                        next_cursor.stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist remediation cursor for {}: {}",
+                                    stage_id.as_str(),
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    implementation_context =
+                        Some(remediation_context(stage_id, next_cursor.cycle, &bundle));
                     stage_index = next_stage_index;
                     cursor = next_cursor;
                     continue;
@@ -833,9 +839,7 @@ where
             started_at: snapshot_started_at(snapshot)?,
         });
         snapshot.status_summary = format!("running: {}", stage_id.display_name());
-        if let Err(error) =
-            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
-        {
+        if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
             return fail_run_result(
                 &AppError::StageCommitFailed {
                     stage_id,
@@ -1062,8 +1066,12 @@ async fn persist_stage_success(
         &payload_record,
         &artifact_record,
     ) {
-        let _ =
-            artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &payload_id,
+            &artifact_id,
+        );
         return fail_run(
             &AppError::StageCommitFailed {
                 stage_id,
@@ -1095,8 +1103,12 @@ async fn persist_stage_success(
     );
     let stage_completed_line = journal::serialize_event(&stage_completed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
-        let _ =
-            artifact_write.remove_payload_artifact_pair(base_dir, project_id, &payload_id, &artifact_id);
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &payload_id,
+            &artifact_id,
+        );
         *seq -= 1;
         return fail_run(
             &AppError::StageCommitFailed {
@@ -1146,7 +1158,8 @@ fn complete_run(
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
 
     *seq += 1;
-    let run_completed = journal::run_completed_event(*seq, Utc::now(), run_id, snapshot.completion_rounds);
+    let run_completed =
+        journal::run_completed_event(*seq, Utc::now(), run_id, snapshot.completion_rounds);
     let run_completed_line = journal::serialize_event(&run_completed)?;
     journal_store.append_event(base_dir, project_id, &run_completed_line)?;
     Ok(())
@@ -1194,11 +1207,7 @@ async fn fail_run(
         let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
     }
 
-    Err(origin.error(format!(
-        "stage {} failed: {}",
-        stage_id.as_str(),
-        message
-    )))
+    Err(origin.error(format!("stage {} failed: {}", stage_id.as_str(), message)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1306,7 +1315,10 @@ fn stage_index_for(stage_plan: &[StagePlan], stage_id: StageId) -> AppResult<usi
         .position(|entry| entry.stage_id == stage_id)
         .ok_or_else(|| AppError::CorruptRecord {
             file: "journal.ndjson".to_owned(),
-            details: format!("stage '{}' is not part of the standard stage plan", stage_id),
+            details: format!(
+                "stage '{}' is not part of the standard stage plan",
+                stage_id
+            ),
         })
 }
 
@@ -1319,6 +1331,20 @@ fn record_cycle_advance(snapshot: &mut RunSnapshot, next_cycle: u32) {
     });
 }
 
+fn pending_remediation_cycle(
+    snapshot: &RunSnapshot,
+    current_cycle: u32,
+    last_completed_stage: Option<StageId>,
+) -> Option<u32> {
+    let last_entry = snapshot.cycle_history.last()?;
+    if !matches!(last_completed_stage, Some(stage_id) if is_remediation_stage(stage_id)) {
+        return None;
+    }
+
+    (last_entry.stage_id == StageId::Implementation && last_entry.cycle > current_cycle)
+        .then_some(last_entry.cycle)
+}
+
 fn standard_stage_plan_for_resume(
     events: &[JournalEvent],
     effective_config: &EffectiveConfig,
@@ -1326,7 +1352,10 @@ fn standard_stage_plan_for_resume(
     let run_started = events
         .iter()
         .rev()
-        .find(|event| event.event_type == crate::contexts::project_run_record::model::JournalEventType::RunStarted)
+        .find(|event| {
+            event.event_type
+                == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+        })
         .ok_or_else(|| AppError::ResumeFailed {
             reason: "run journal does not contain a run_started event".to_owned(),
         })?;
@@ -1335,7 +1364,9 @@ fn standard_stage_plan_for_resume(
     match first_stage {
         StageId::PromptReview => Ok(standard_stage_plan(true)),
         StageId::Planning => Ok(standard_stage_plan(false)),
-        _ => Ok(standard_stage_plan(effective_config.prompt_review_enabled())),
+        _ => Ok(standard_stage_plan(
+            effective_config.prompt_review_enabled(),
+        )),
     }
 }
 
@@ -1347,7 +1378,10 @@ fn derive_resume_state(
     let run_started = events
         .iter()
         .rev()
-        .find(|event| event.event_type == crate::contexts::project_run_record::model::JournalEventType::RunStarted)
+        .find(|event| {
+            event.event_type
+                == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+        })
         .ok_or_else(|| AppError::ResumeFailed {
             reason: "run journal does not contain a run_started event".to_owned(),
         })?;
@@ -1360,6 +1394,7 @@ fn derive_resume_state(
         .map(|entry| entry.cycle)
         .unwrap_or(1);
     let mut next_stage_index = 0usize;
+    let mut last_completed_stage = None;
 
     for event in events {
         match event.event_type {
@@ -1367,6 +1402,7 @@ fn derive_resume_state(
                 let stage_id = detail_stage_id(event, "stage_id")?;
                 current_cycle = detail_u32(event, "cycle").unwrap_or(current_cycle);
                 next_stage_index = stage_index_for(stage_plan, stage_id)? + 1;
+                last_completed_stage = Some(stage_id);
             }
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
                 current_cycle = detail_u32(event, "to_cycle").unwrap_or(current_cycle + 1);
@@ -1377,6 +1413,13 @@ fn derive_resume_state(
             }
             _ => {}
         }
+    }
+
+    if let Some(pending_cycle) =
+        pending_remediation_cycle(snapshot, current_cycle, last_completed_stage)
+    {
+        current_cycle = pending_cycle;
+        next_stage_index = implementation_stage_index;
     }
 
     if next_stage_index >= stage_plan.len() {

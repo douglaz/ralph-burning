@@ -6,8 +6,14 @@ fn default_retry_policy_matches_specified_attempt_limits() {
     let policy = RetryPolicy::default_policy();
 
     assert_eq!(policy.max_attempts(FailureClass::TransportFailure), 3);
-    assert_eq!(policy.max_attempts(FailureClass::SchemaValidationFailure), 2);
-    assert_eq!(policy.max_attempts(FailureClass::DomainValidationFailure), 2);
+    assert_eq!(
+        policy.max_attempts(FailureClass::SchemaValidationFailure),
+        2
+    );
+    assert_eq!(
+        policy.max_attempts(FailureClass::DomainValidationFailure),
+        2
+    );
     assert_eq!(policy.max_attempts(FailureClass::Timeout), 2);
     assert_eq!(policy.max_attempts(FailureClass::Cancellation), 1);
     assert_eq!(policy.max_attempts(FailureClass::QaReviewOutcomeFailure), 1);

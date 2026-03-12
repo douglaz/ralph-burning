@@ -89,8 +89,8 @@ pub fn last_sequence(events: &[JournalEvent]) -> u64 {
 
 // ── Lifecycle event builders ────────────────────────────────────────────────
 
-use chrono::{DateTime, Utc};
 use crate::shared::domain::{FailureClass, RunId, StageId};
+use chrono::{DateTime, Utc};
 
 /// Build a `run_started` journal event.
 pub fn run_started_event(
