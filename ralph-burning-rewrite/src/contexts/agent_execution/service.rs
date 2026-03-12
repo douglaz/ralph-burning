@@ -5,10 +5,10 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::contexts::agent_execution::model::{
-    CapabilityCheck, InvocationEnvelope, InvocationRequest, RawOutputReference,
+    CapabilityCheck, InvocationContract, InvocationEnvelope, InvocationRequest,
+    RawOutputReference,
 };
 use crate::contexts::agent_execution::session::{SessionManager, SessionStorePort};
-use crate::contexts::workflow_composition::contracts::StageContract;
 use crate::contexts::workspace_governance::EffectiveConfig;
 use crate::shared::domain::{
     BackendFamily, BackendRole, BackendSpec, FailureClass, ModelSpec, ResolvedBackendTarget,
@@ -105,7 +105,7 @@ pub trait AgentExecutionPort {
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,
-        stage_contract: &StageContract,
+        contract: &InvocationContract,
     ) -> AppResult<()>;
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()>;
@@ -157,10 +157,10 @@ where
     S: SessionStorePort,
 {
     pub async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        let _ = CapabilityCheck::success(&request.resolved_target, request.stage_contract);
+        let _ = CapabilityCheck::success(&request.resolved_target, &request.contract);
 
         self.adapter
-            .check_capability(&request.resolved_target, &request.stage_contract)
+            .check_capability(&request.resolved_target, &request.contract)
             .await
             .map_err(|error| map_capability_error(error, &request))?;
 
@@ -182,7 +182,7 @@ where
         if request.cancellation_token.is_cancelled() {
             return Err(AppError::InvocationCancelled {
                 backend: request.resolved_target.backend.family.to_string(),
-                stage_id: request.stage_contract.stage_id,
+                contract_id: request.contract.label(),
             });
         }
 
@@ -199,7 +199,7 @@ where
                 let _ = self.adapter.cancel(&invocation_id).await;
                 return Err(AppError::InvocationCancelled {
                     backend: request.resolved_target.backend.family.to_string(),
-                    stage_id: request.stage_contract.stage_id,
+                    contract_id: request.contract.label(),
                 });
             }
             result = tokio::time::timeout(request.timeout, &mut invoke_future) => {
@@ -209,7 +209,7 @@ where
                         let _ = self.adapter.cancel(&invocation_id).await;
                         return Err(AppError::InvocationTimeout {
                             backend: request.resolved_target.backend.family.to_string(),
-                            stage_id: request.stage_contract.stage_id,
+                            contract_id: request.contract.label(),
                             timeout_ms,
                         });
                     }
@@ -234,10 +234,13 @@ where
         let parsed_payload =
             extract_structured_payload(&request, envelope.parsed_payload, &raw_output)?;
 
-        request
-            .stage_contract
-            .evaluate_permissive(&parsed_payload)
-            .map_err(|error| map_contract_error(error, &request))?;
+        // Only validate stage contracts within agent execution;
+        // requirements contracts are validated by the caller.
+        if let Some(stage_contract) = request.contract.stage_contract() {
+            stage_contract
+                .evaluate_permissive(&parsed_payload)
+                .map_err(|error| map_contract_error(error, &request))?;
+        }
 
         envelope.raw_output_reference = stored_reference;
         envelope.parsed_payload = parsed_payload;
@@ -287,7 +290,7 @@ fn extract_structured_payload(
 
     serde_json::from_str(raw_output).map_err(|error| AppError::InvocationFailed {
         backend: request.resolved_target.backend.family.to_string(),
-        stage_id: request.stage_contract.stage_id,
+        contract_id: request.contract.label(),
         failure_class: FailureClass::SchemaValidationFailure,
         details: error.to_string(),
     })
@@ -298,7 +301,7 @@ fn map_capability_error(error: AppError, request: &InvocationRequest) -> AppErro
         AppError::CapabilityMismatch { .. } => error,
         other => AppError::CapabilityMismatch {
             backend: request.resolved_target.backend.family.to_string(),
-            stage_id: request.stage_contract.stage_id,
+            contract_id: request.contract.label(),
             details: other.to_string(),
         },
     }
@@ -321,7 +324,7 @@ fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
         | AppError::InvocationCancelled { .. } => error,
         other => AppError::InvocationFailed {
             backend: request.resolved_target.backend.family.to_string(),
-            stage_id: request.stage_contract.stage_id,
+            contract_id: request.contract.label(),
             failure_class: FailureClass::TransportFailure,
             details: other.to_string(),
         },
@@ -331,7 +334,7 @@ fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
 fn map_contract_error(error: ContractError, request: &InvocationRequest) -> AppError {
     AppError::InvocationFailed {
         backend: request.resolved_target.backend.family.to_string(),
-        stage_id: request.stage_contract.stage_id,
+        contract_id: request.contract.label(),
         failure_class: error.failure_class(),
         details: error.to_string(),
     }

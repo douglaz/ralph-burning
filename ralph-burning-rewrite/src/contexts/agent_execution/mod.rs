@@ -5,8 +5,8 @@ pub mod session;
 pub const CONTEXT_NAME: &str = "agent_execution";
 
 pub use model::{
-    CancellationToken, CapabilityCheck, InvocationEnvelope, InvocationMetadata, InvocationPayload,
-    InvocationRequest, RawOutputReference, TokenCounts,
+    CancellationToken, CapabilityCheck, InvocationContract, InvocationEnvelope,
+    InvocationMetadata, InvocationPayload, InvocationRequest, RawOutputReference, TokenCounts,
 };
 pub use service::{
     AgentExecutionPort, AgentExecutionService, BackendResolver, BackendSelectionConfig,

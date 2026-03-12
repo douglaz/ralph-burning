@@ -1,6 +1,10 @@
 use clap::{Args, Subcommand};
 
-use crate::shared::error::{AppError, AppResult};
+use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+use crate::adapters::stub_backend::StubBackendAdapter;
+use crate::contexts::agent_execution::service::AgentExecutionService;
+use crate::contexts::requirements_drafting::service::RequirementsService;
+use crate::shared::error::AppResult;
 
 #[derive(Debug, Args)]
 pub struct RequirementsCommand {
@@ -27,14 +31,71 @@ pub enum RequirementsSubcommand {
 }
 
 pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
-    let command_name = match command.command {
-        RequirementsSubcommand::Draft { .. } => "requirements draft",
-        RequirementsSubcommand::Quick { .. } => "requirements quick",
-        RequirementsSubcommand::Show { .. } => "requirements show",
-        RequirementsSubcommand::Answer { .. } => "requirements answer",
-    };
+    let base_dir = std::env::current_dir()?;
 
-    Err(AppError::NotYetImplemented {
-        command: command_name.to_owned(),
-    })
+    // Ensure workspace exists
+    let _ = crate::contexts::workspace_governance::load_workspace_config(&base_dir)?;
+
+    let adapter = StubBackendAdapter::default();
+    let raw_output_store = FsRawOutputStore;
+    let session_store = FsSessionStore;
+    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
+    let requirements_store = FsRequirementsStore;
+    let service = RequirementsService::new(agent_service, requirements_store);
+
+    match command.command {
+        RequirementsSubcommand::Draft { idea } => {
+            let now = chrono::Utc::now();
+            let run_id = service.draft(&base_dir, &idea, now).await?;
+            println!("Requirements run created: {run_id}");
+        }
+        RequirementsSubcommand::Quick { idea } => {
+            let now = chrono::Utc::now();
+            let run_id = service.quick(&base_dir, &idea, now).await?;
+            println!("Requirements run completed: {run_id}");
+        }
+        RequirementsSubcommand::Show { run_id } => {
+            let result = service.show(&base_dir, &run_id)?;
+            println!("Run ID:           {}", result.run.run_id);
+            println!("Mode:             {}", result.run.mode);
+            println!("Status:           {}", result.run.status);
+            println!("Question Round:   {}", result.run.question_round);
+            if let Some(ref summary) = result.failure_summary {
+                println!("Last Failure:     {summary}");
+            }
+            if let Some(count) = result.pending_question_count {
+                println!("Pending Questions: {count}");
+            }
+            if let Some(ref draft_id) = result.run.latest_draft_id {
+                let draft_payload = result.run.latest_draft_id.as_deref().unwrap_or("none");
+                println!("Recommended Flow: (see draft payload {draft_payload})");
+                let _ = draft_id;
+            }
+            if let Some(ref path) = result.seed_prompt_path {
+                println!("Seed Prompt:      {}", path.display());
+                // Print suggested create command from seed
+                // Read seed/project.json if available
+                let seed_project_path = path.parent().unwrap().join("project.json");
+                if let Ok(raw) = std::fs::read_to_string(&seed_project_path) {
+                    if let Ok(seed) = serde_json::from_str::<crate::contexts::requirements_drafting::model::ProjectSeedPayload>(&raw) {
+                        println!();
+                        println!("Suggested command:");
+                        println!(
+                            "  ralph-burning project create --id {} --name \"{}\" --flow {} --prompt {}",
+                            seed.project_id,
+                            seed.project_name,
+                            seed.flow,
+                            path.display()
+                        );
+                    }
+                }
+            }
+        }
+        RequirementsSubcommand::Answer { run_id } => {
+            service.answer(&base_dir, &run_id).await?;
+            println!("Answers submitted for run: {run_id}");
+        }
+    }
+
+    Ok(())
 }

@@ -8,8 +8,8 @@ use tempfile::tempdir;
 use ralph_burning::adapters::fs::{FsRawOutputStore, FsSessionStore};
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
-    CancellationToken, InvocationEnvelope, InvocationMetadata, InvocationPayload,
-    InvocationRequest, RawOutputReference, TokenCounts,
+    CancellationToken, InvocationContract, InvocationEnvelope, InvocationMetadata,
+    InvocationPayload, InvocationRequest, RawOutputReference, TokenCounts,
 };
 use ralph_burning::contexts::agent_execution::service::{
     AgentExecutionPort, AgentExecutionService, BackendResolver, BackendSelectionConfig,
@@ -45,7 +45,7 @@ fn request_fixture(
     InvocationRequest {
         invocation_id: invocation_id.to_owned(),
         project_root: project_root.to_path_buf(),
-        stage_contract: contract_for_stage(stage_id),
+        contract: InvocationContract::Stage(contract_for_stage(stage_id)),
         role,
         resolved_target,
         payload: InvocationPayload {
@@ -79,7 +79,7 @@ impl AgentExecutionPort for MalformedOutputAdapter {
     async fn check_capability(
         &self,
         _backend: &ResolvedBackendTarget,
-        _stage_contract: &ralph_burning::contexts::workflow_composition::contracts::StageContract,
+        _contract: &InvocationContract,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -108,7 +108,7 @@ impl AgentExecutionPort for DomainInvalidAdapter {
     async fn check_capability(
         &self,
         _backend: &ResolvedBackendTarget,
-        _stage_contract: &ralph_burning::contexts::workflow_composition::contracts::StageContract,
+        _contract: &InvocationContract,
     ) -> AppResult<()> {
         Ok(())
     }
@@ -146,7 +146,7 @@ impl AgentExecutionPort for TransportErrorAdapter {
     async fn check_capability(
         &self,
         _backend: &ResolvedBackendTarget,
-        _stage_contract: &ralph_burning::contexts::workflow_composition::contracts::StageContract,
+        _contract: &InvocationContract,
     ) -> AppResult<()> {
         Ok(())
     }

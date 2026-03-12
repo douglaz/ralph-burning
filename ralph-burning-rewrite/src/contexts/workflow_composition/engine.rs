@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 
 use crate::contexts::agent_execution::model::{
-    CancellationToken, InvocationPayload, InvocationRequest,
+    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
 use crate::contexts::agent_execution::service::{
     AgentExecutionPort, BackendSelectionConfig, RawOutputPort,
@@ -81,7 +81,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
 ) -> AppResult<()> {
     for entry in plan {
         adapter
-            .check_capability(&entry.target, &entry.contract)
+            .check_capability(&entry.target, &InvocationContract::Stage(entry.contract.clone()))
             .await
             .map_err(|e| AppError::PreflightFailed {
                 stage_id: entry.stage_id,
@@ -1091,7 +1091,7 @@ where
                 ReviewOutcome::RequestChanges | ReviewOutcome::Rejected => {
                     let failure = AppError::InvocationFailed {
                         backend: stage_entry.target.backend.family.to_string(),
-                        stage_id,
+                        contract_id: stage_id.to_string(),
                         failure_class: FailureClass::QaReviewOutcomeFailure,
                         details: format!("non-passing QA/review outcome: {}", outcome),
                     };
@@ -1311,7 +1311,7 @@ where
             return fail_run_result(
                 &AppError::InvocationCancelled {
                     backend: stage_entry.target.backend.family.to_string(),
-                    stage_id,
+                    contract_id: stage_id.to_string(),
                 },
                 stage_id,
                 run_id,
@@ -1416,7 +1416,7 @@ where
                 cursor.attempt
             ),
             project_root: project_root.to_path_buf(),
-            stage_contract: stage_entry.contract,
+            contract: InvocationContract::Stage(stage_entry.contract),
             role: stage_entry.role,
             resolved_target: stage_entry.target.clone(),
             payload: InvocationPayload {
@@ -1436,7 +1436,7 @@ where
                 .evaluate_permissive(&envelope.parsed_payload)
                 .map_err(|contract_error| AppError::InvocationFailed {
                     backend: stage_entry.target.backend.family.to_string(),
-                    stage_id,
+                    contract_id: stage_id.to_string(),
                     failure_class: contract_error.failure_class(),
                     details: contract_error.to_string(),
                 })

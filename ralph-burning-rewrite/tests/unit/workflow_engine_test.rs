@@ -1554,9 +1554,9 @@ impl AgentExecutionPort for RecordingAdapter {
     async fn check_capability(
         &self,
         backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
-        stage_contract: &ralph_burning::contexts::workflow_composition::contracts::StageContract,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
     ) -> AppResult<()> {
-        self.inner.check_capability(backend, stage_contract).await
+        self.inner.check_capability(backend, contract).await
     }
 
     async fn check_availability(
@@ -1571,7 +1571,7 @@ impl AgentExecutionPort for RecordingAdapter {
             .lock()
             .expect("recording adapter lock poisoned")
             .push((
-                request.stage_contract.stage_id,
+                request.contract.stage_id().expect("stage id"),
                 request.payload.context.clone(),
             ));
         self.inner.invoke(request).await
@@ -1603,9 +1603,9 @@ impl AgentExecutionPort for CancelDuringRetryAdapter {
     async fn check_capability(
         &self,
         backend: &ralph_burning::shared::domain::ResolvedBackendTarget,
-        stage_contract: &ralph_burning::contexts::workflow_composition::contracts::StageContract,
+        contract: &ralph_burning::contexts::agent_execution::model::InvocationContract,
     ) -> AppResult<()> {
-        self.inner.check_capability(backend, stage_contract).await
+        self.inner.check_capability(backend, contract).await
     }
 
     async fn check_availability(
@@ -1616,13 +1616,13 @@ impl AgentExecutionPort for CancelDuringRetryAdapter {
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        if request.stage_contract.stage_id == StageId::Implementation {
+        if request.contract.stage_id() == Some(StageId::Implementation) {
             let attempt = self.implementation_attempts.fetch_add(1, Ordering::SeqCst) + 1;
             if attempt == 1 {
                 self.cancellation.cancel();
                 return Err(AppError::InvocationFailed {
                     backend: request.resolved_target.backend.family.to_string(),
-                    stage_id: StageId::Implementation,
+                    contract_id: StageId::Implementation.to_string(),
                     failure_class: FailureClass::TransportFailure,
                     details: "cancelled between implementation retries".to_owned(),
                 });

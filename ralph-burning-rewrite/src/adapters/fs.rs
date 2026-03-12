@@ -165,7 +165,7 @@ impl FileSystem {
 
     // ── Helpers for project filesystem layout ──
 
-    fn workspace_root_path(base_dir: &Path) -> PathBuf {
+    pub(crate) fn workspace_root_path(base_dir: &Path) -> PathBuf {
         base_dir.join(WORKSPACE_DIR)
     }
 
@@ -866,4 +866,208 @@ impl RuntimeLogWritePort for FsRuntimeLogWriteStore {
         let line = serde_json::to_string(entry)?;
         FileSystem::append_line(&path, &line)
     }
+}
+
+// ── Requirements drafting filesystem store ──────────────────────────────────
+
+use crate::contexts::requirements_drafting::model::{
+    PersistedAnswers, RequirementsJournalEvent, RequirementsRun,
+};
+use crate::contexts::requirements_drafting::service::RequirementsStorePort;
+
+const REQUIREMENTS_DIR: &str = "requirements";
+
+/// Required subdirectories inside a requirements run.
+const REQUIREMENTS_RUN_SUBDIRS: &[&str] = &[
+    "history/payloads",
+    "history/artifacts",
+    "runtime/logs",
+    "runtime/backend",
+    "seed",
+];
+
+/// Filesystem-backed implementation of `RequirementsStorePort`.
+pub struct FsRequirementsStore;
+
+impl RequirementsStorePort for FsRequirementsStore {
+    fn create_run_dir(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+        let run_root = requirements_run_root(base_dir, run_id);
+        fs::create_dir_all(&run_root)?;
+        for subdir in REQUIREMENTS_RUN_SUBDIRS {
+            fs::create_dir_all(run_root.join(subdir))?;
+        }
+        // Agent execution expects sessions.json in the project root (run root).
+        let sessions_path = run_root.join(SESSIONS_FILE);
+        if !sessions_path.exists() {
+            let empty = serde_json::to_string_pretty(
+                &crate::contexts::agent_execution::session::PersistedSessions::empty(),
+            )?;
+            FileSystem::write_atomic(&sessions_path, &empty)?;
+        }
+        Ok(())
+    }
+
+    fn write_run(&self, base_dir: &Path, run_id: &str, run: &RequirementsRun) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id).join("run.json");
+        let contents = serde_json::to_string_pretty(run)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+
+    fn read_run(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsRun> {
+        let path = requirements_run_root(base_dir, run_id).join("run.json");
+        match fs::read_to_string(&path) {
+            Ok(raw) => serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+                file: format!("requirements/{}/run.json", run_id),
+                details: e.to_string(),
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Err(AppError::InvalidRequirementsState {
+                    run_id: run_id.to_owned(),
+                    details: "requirements run not found".to_owned(),
+                })
+            }
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn append_journal_event(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        event: &RequirementsJournalEvent,
+    ) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id).join("journal.ndjson");
+        let line = serde_json::to_string(event)?;
+        FileSystem::append_line(&path, &line)
+    }
+
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+    ) -> AppResult<Vec<RequirementsJournalEvent>> {
+        let path = requirements_run_root(base_dir, run_id).join("journal.ndjson");
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let mut events = Vec::new();
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let event: RequirementsJournalEvent =
+                        serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                            file: format!("requirements/{}/journal.ndjson", run_id),
+                            details: e.to_string(),
+                        })?;
+                    events.push(event);
+                }
+                Ok(events)
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn write_payload(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+        payload: &serde_json::Value,
+    ) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id)
+            .join("history/payloads")
+            .join(format!("{payload_id}.json"));
+        let contents = serde_json::to_string_pretty(payload)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+
+    fn write_artifact(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        artifact_id: &str,
+        content: &str,
+    ) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id)
+            .join("history/artifacts")
+            .join(format!("{artifact_id}.md"));
+        FileSystem::write_atomic(&path, content)
+    }
+
+    fn write_answers_toml(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        template: &str,
+    ) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id).join("answers.toml");
+        FileSystem::write_atomic(&path, template)
+    }
+
+    fn read_answers_toml(&self, base_dir: &Path, run_id: &str) -> AppResult<String> {
+        let path = requirements_run_root(base_dir, run_id).join("answers.toml");
+        FileSystem::read_to_string(&path)
+    }
+
+    fn write_answers_json(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        answers: &PersistedAnswers,
+    ) -> AppResult<()> {
+        let path = requirements_run_root(base_dir, run_id).join("answers.json");
+        let contents = serde_json::to_string_pretty(answers)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+
+    fn write_seed_pair(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        project_json: &serde_json::Value,
+        prompt_md: &str,
+    ) -> AppResult<()> {
+        let seed_dir = requirements_run_root(base_dir, run_id).join("seed");
+        fs::create_dir_all(&seed_dir)?;
+
+        let project_path = seed_dir.join("project.json");
+        let prompt_path = seed_dir.join("prompt.md");
+
+        // Write project.json first
+        let project_contents = serde_json::to_string_pretty(project_json)?;
+        FileSystem::write_atomic(&project_path, &project_contents)?;
+
+        // Write prompt.md — if this fails, remove project.json too
+        if let Err(e) = FileSystem::write_atomic(&prompt_path, prompt_md) {
+            let _ = fs::remove_file(&project_path);
+            return Err(e);
+        }
+
+        Ok(())
+    }
+
+    fn remove_seed_pair(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+        let seed_dir = requirements_run_root(base_dir, run_id).join("seed");
+        let _ = fs::remove_file(seed_dir.join("project.json"));
+        let _ = fs::remove_file(seed_dir.join("prompt.md"));
+        Ok(())
+    }
+
+    fn answers_toml_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+        requirements_run_root(base_dir, run_id).join("answers.toml")
+    }
+
+    fn seed_prompt_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+        requirements_run_root(base_dir, run_id)
+            .join("seed")
+            .join("prompt.md")
+    }
+}
+
+fn requirements_run_root(base_dir: &Path, run_id: &str) -> PathBuf {
+    FileSystem::workspace_root_path(base_dir)
+        .join(REQUIREMENTS_DIR)
+        .join(run_id)
 }

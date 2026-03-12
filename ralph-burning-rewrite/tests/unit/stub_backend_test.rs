@@ -6,7 +6,7 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
-    CancellationToken, InvocationPayload, InvocationRequest,
+    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::session::SessionMetadata;
@@ -19,7 +19,7 @@ fn request_fixture(stage_id: StageId) -> InvocationRequest {
     InvocationRequest {
         invocation_id: format!("stub-{}", stage_id.as_str()),
         project_root: temp_dir.path().to_path_buf(),
-        stage_contract: contract_for_stage(stage_id),
+        contract: InvocationContract::Stage(contract_for_stage(stage_id)),
         role: BackendRole::for_stage(stage_id),
         resolved_target: BackendRole::for_stage(stage_id).default_target(),
         payload: InvocationPayload {
@@ -41,7 +41,7 @@ async fn stub_backend_satisfies_agent_execution_port_for_all_stage_contracts() {
     for stage_id in StageId::ALL {
         let request = request_fixture(stage_id);
         adapter
-            .check_capability(&request.resolved_target, &request.stage_contract)
+            .check_capability(&request.resolved_target, &request.contract)
             .await
             .expect("capability check");
         adapter
@@ -57,7 +57,9 @@ async fn stub_backend_satisfies_agent_execution_port_for_all_stage_contracts() {
         let parsed: Value = serde_json::from_str(raw).expect("parse canned JSON");
 
         request
-            .stage_contract
+            .contract
+            .stage_contract()
+            .expect("stage contract")
             .evaluate(&parsed)
             .expect("stage contract must accept stub payload");
     }
@@ -69,7 +71,7 @@ async fn stub_backend_reports_capability_failure_for_disabled_stage() {
     let request = request_fixture(StageId::Planning);
 
     let error = adapter
-        .check_capability(&request.resolved_target, &request.stage_contract)
+        .check_capability(&request.resolved_target, &request.contract)
         .await
         .expect_err("capability failure");
 

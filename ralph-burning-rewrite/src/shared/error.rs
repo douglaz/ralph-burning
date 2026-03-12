@@ -66,29 +66,38 @@ pub enum AppError {
     NotYetImplemented { command: String },
     #[error("backend '{backend}' is unavailable: {details}")]
     BackendUnavailable { backend: String, details: String },
-    #[error("backend '{backend}' cannot satisfy stage '{stage_id}': {details}")]
+    #[error("backend '{backend}' cannot satisfy contract '{contract_id}': {details}")]
     CapabilityMismatch {
         backend: String,
-        stage_id: StageId,
+        contract_id: String,
         details: String,
     },
-    #[error("backend invocation failed for stage '{stage_id}' via '{backend}': {details}")]
+    #[error("backend invocation failed for contract '{contract_id}' via '{backend}': {details}")]
     InvocationFailed {
         backend: String,
-        stage_id: StageId,
+        contract_id: String,
         failure_class: FailureClass,
         details: String,
     },
     #[error(
-        "backend invocation timed out for stage '{stage_id}' via '{backend}' after {timeout_ms} ms"
+        "backend invocation timed out for contract '{contract_id}' via '{backend}' after {timeout_ms} ms"
     )]
     InvocationTimeout {
         backend: String,
-        stage_id: StageId,
+        contract_id: String,
         timeout_ms: u64,
     },
-    #[error("backend invocation cancelled for stage '{stage_id}' via '{backend}'")]
-    InvocationCancelled { backend: String, stage_id: StageId },
+    #[error("backend invocation cancelled for contract '{contract_id}' via '{backend}'")]
+    InvocationCancelled {
+        backend: String,
+        contract_id: String,
+    },
+    #[error("invalid requirements state for run '{run_id}': {details}")]
+    InvalidRequirementsState { run_id: String, details: String },
+    #[error("answer validation failed for run '{run_id}': {details}")]
+    AnswerValidationFailed { run_id: String, details: String },
+    #[error("seed persistence failed for run '{run_id}': {details}")]
+    SeedPersistenceFailed { run_id: String, details: String },
     #[error("remediation exhausted at cycle {cycle}; maximum supported cycles is {max}")]
     RemediationExhausted { cycle: u32, max: u32 },
     #[error("amendment queue error: {details}")]

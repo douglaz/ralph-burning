@@ -7,7 +7,8 @@ use chrono::Utc;
 use serde_json::{json, Value};
 
 use crate::contexts::agent_execution::model::{
-    InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
+    InvocationContract, InvocationEnvelope, InvocationMetadata, InvocationRequest,
+    RawOutputReference, TokenCounts,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::shared::domain::{FailureClass, SessionPolicy, StageId};
@@ -24,6 +25,9 @@ pub struct StubBackendAdapter {
     transient_failure_counters: HashMap<StageId, Arc<AtomicU32>>,
     stage_payload_overrides: Arc<Mutex<HashMap<StageId, Vec<Value>>>>,
     stage_payload_counters: HashMap<StageId, Arc<AtomicU32>>,
+    /// Contract-label-keyed payload overrides for non-stage contracts.
+    label_payload_overrides: Arc<Mutex<HashMap<String, Vec<Value>>>>,
+    label_payload_counters: HashMap<String, Arc<AtomicU32>>,
     cancelled_invocations: Arc<Mutex<Vec<String>>>,
 }
 
@@ -38,6 +42,8 @@ impl Default for StubBackendAdapter {
             transient_failure_counters: HashMap::new(),
             stage_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
             stage_payload_counters: HashMap::new(),
+            label_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
+            label_payload_counters: HashMap::new(),
             cancelled_invocations: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -87,6 +93,27 @@ impl StubBackendAdapter {
         self
     }
 
+    /// Configure a contract-label-keyed payload for non-stage invocations (e.g. requirements).
+    pub fn with_label_payload(self, label: impl Into<String>, payload: Value) -> Self {
+        self.with_label_payload_sequence(label, vec![payload])
+    }
+
+    /// Configure a contract-label-keyed payload sequence for non-stage invocations.
+    pub fn with_label_payload_sequence(
+        mut self,
+        label: impl Into<String>,
+        payloads: Vec<Value>,
+    ) -> Self {
+        let label = label.into();
+        self.label_payload_overrides
+            .lock()
+            .expect("label payload override lock poisoned")
+            .insert(label.clone(), payloads);
+        self.label_payload_counters
+            .insert(label, Arc::new(AtomicU32::new(0)));
+        self
+    }
+
     pub fn cancelled_invocations(&self) -> Vec<String> {
         self.cancelled_invocations
             .lock()
@@ -115,22 +142,58 @@ impl StubBackendAdapter {
             .or_else(|| payloads.last().cloned())
             .unwrap_or_else(|| canned_payload_for_stage(stage_id))
     }
+
+    fn payload_for_label(&self, label: &str) -> Value {
+        let overrides = self
+            .label_payload_overrides
+            .lock()
+            .expect("label payload override lock poisoned");
+        let Some(payloads) = overrides.get(label) else {
+            return canned_requirements_payload(label);
+        };
+        let Some(counter) = self.label_payload_counters.get(label) else {
+            return payloads
+                .last()
+                .cloned()
+                .unwrap_or_else(|| canned_requirements_payload(label));
+        };
+        let idx = counter.fetch_add(1, Ordering::SeqCst) as usize;
+        payloads
+            .get(idx)
+            .cloned()
+            .or_else(|| payloads.last().cloned())
+            .unwrap_or_else(|| canned_requirements_payload(label))
+    }
+
+    fn payload_for_contract(&self, contract: &InvocationContract) -> Value {
+        match contract {
+            InvocationContract::Stage(sc) => self.payload_for_stage(sc.stage_id),
+            InvocationContract::Requirements { label } => self.payload_for_label(label),
+        }
+    }
 }
 
 impl AgentExecutionPort for StubBackendAdapter {
     async fn check_capability(
         &self,
         backend: &crate::shared::domain::ResolvedBackendTarget,
-        stage_contract: &crate::contexts::workflow_composition::contracts::StageContract,
+        contract: &InvocationContract,
     ) -> AppResult<()> {
-        if self.unsupported_stages.contains(&stage_contract.stage_id)
-            || !backend.supports_stage(stage_contract.stage_id)
-        {
-            return Err(AppError::CapabilityMismatch {
-                backend: backend.backend.family.to_string(),
-                stage_id: stage_contract.stage_id,
-                details: "stub adapter does not support the requested stage".to_owned(),
-            });
+        match contract {
+            InvocationContract::Stage(sc) => {
+                if self.unsupported_stages.contains(&sc.stage_id)
+                    || !backend.supports_stage(sc.stage_id)
+                {
+                    return Err(AppError::CapabilityMismatch {
+                        backend: backend.backend.family.to_string(),
+                        contract_id: sc.stage_id.to_string(),
+                        details: "stub adapter does not support the requested stage".to_owned(),
+                    });
+                }
+            }
+            InvocationContract::Requirements { .. } => {
+                // Requirements contracts are always supported by the stub.
+            }
         }
 
         Ok(())
@@ -151,44 +214,43 @@ impl AgentExecutionPort for StubBackendAdapter {
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        let contract_label = request.contract.label();
+
         if request.cancellation_token.is_cancelled() {
             return Err(AppError::InvocationCancelled {
                 backend: request.resolved_target.backend.family.to_string(),
-                stage_id: request.stage_contract.stage_id,
+                contract_id: contract_label,
             });
         }
 
-        if let Some(limit) = self
-            .transient_failure_limits
-            .get(&request.stage_contract.stage_id)
-        {
-            let counter = self
-                .transient_failure_counters
-                .get(&request.stage_contract.stage_id)
-                .expect("transient failure counter missing");
-            let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            if attempt <= *limit {
+        // Transient failure simulation (stage contracts only)
+        if let Some(stage_id) = request.contract.stage_id() {
+            if let Some(limit) = self.transient_failure_limits.get(&stage_id) {
+                let counter = self
+                    .transient_failure_counters
+                    .get(&stage_id)
+                    .expect("transient failure counter missing");
+                let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt <= *limit {
+                    return Err(AppError::InvocationFailed {
+                        backend: request.resolved_target.backend.family.to_string(),
+                        contract_id: contract_label,
+                        failure_class: FailureClass::TransportFailure,
+                        details: format!(
+                            "stub adapter configured to fail invocation {attempt}/{limit} for this stage"
+                        ),
+                    });
+                }
+            }
+
+            if self.fail_invoke_stages.contains(&stage_id) {
                 return Err(AppError::InvocationFailed {
                     backend: request.resolved_target.backend.family.to_string(),
-                    stage_id: request.stage_contract.stage_id,
+                    contract_id: contract_label,
                     failure_class: FailureClass::TransportFailure,
-                    details: format!(
-                        "stub adapter configured to fail invocation {attempt}/{limit} for this stage"
-                    ),
+                    details: "stub adapter configured to fail invocation for this stage".to_owned(),
                 });
             }
-        }
-
-        if self
-            .fail_invoke_stages
-            .contains(&request.stage_contract.stage_id)
-        {
-            return Err(AppError::InvocationFailed {
-                backend: request.resolved_target.backend.family.to_string(),
-                stage_id: request.stage_contract.stage_id,
-                failure_class: FailureClass::TransportFailure,
-                details: "stub adapter configured to fail invocation for this stage".to_owned(),
-            });
         }
 
         if self.delay > Duration::from_millis(0) {
@@ -196,14 +258,14 @@ impl AgentExecutionPort for StubBackendAdapter {
                 _ = request.cancellation_token.cancelled() => {
                     return Err(AppError::InvocationCancelled {
                         backend: request.resolved_target.backend.family.to_string(),
-                        stage_id: request.stage_contract.stage_id,
+                        contract_id: contract_label,
                     });
                 }
                 _ = tokio::time::sleep(self.delay) => {}
             }
         }
 
-        let payload = self.payload_for_stage(request.stage_contract.stage_id);
+        let payload = self.payload_for_contract(&request.contract);
         let raw_output = serde_json::to_string_pretty(&payload)?;
         let prompt_token_count = count_tokens(&request.payload.prompt);
         let completion_token_count = count_tokens(&raw_output);
@@ -222,13 +284,7 @@ impl AgentExecutionPort for StubBackendAdapter {
                 .as_ref()
                 .map(|session| session.session_id.clone())
                 .filter(|_| session_reused)
-                .or_else(|| {
-                    Some(format!(
-                        "stub-{}-{}",
-                        request.role.as_str(),
-                        request.stage_contract.stage_id.as_str()
-                    ))
-                })
+                .or_else(|| Some(format!("stub-{}-{}", request.role.as_str(), contract_label)))
         } else {
             None
         };
@@ -314,5 +370,45 @@ fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
             "findings_or_gaps": [],
             "follow_up_or_amendments": []
         }),
+    }
+}
+
+/// Deterministic canned payloads for requirements contracts.
+fn canned_requirements_payload(label: &str) -> serde_json::Value {
+    if label.contains("question_set") {
+        json!({
+            "questions": []
+        })
+    } else if label.contains("requirements_draft") {
+        json!({
+            "problem_summary": "Stub requirements draft",
+            "goals": ["Deliver the feature"],
+            "non_goals": [],
+            "constraints": [],
+            "acceptance_criteria": ["Feature works as specified"],
+            "risks_or_open_questions": [],
+            "recommended_flow": "standard"
+        })
+    } else if label.contains("requirements_review") {
+        json!({
+            "outcome": "approved",
+            "evidence": ["Stub review evidence"],
+            "findings": [],
+            "follow_ups": []
+        })
+    } else if label.contains("project_seed") {
+        json!({
+            "project_id": "stub-project",
+            "project_name": "Stub Project",
+            "flow": "standard",
+            "prompt_body": "Stub prompt body for the project.",
+            "handoff_summary": "Stub handoff summary.",
+            "follow_ups": []
+        })
+    } else {
+        json!({
+            "stub": true,
+            "label": label
+        })
     }
 }

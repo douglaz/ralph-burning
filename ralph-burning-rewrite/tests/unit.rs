@@ -45,3 +45,6 @@ mod workflow_engine_test;
 
 #[path = "unit/retry_policy_test.rs"]
 mod retry_policy_test;
+
+#[path = "unit/requirements_drafting_test.rs"]
+mod requirements_drafting_test;

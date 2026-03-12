@@ -11,7 +11,7 @@ use tokio::sync::Notify;
 use crate::contexts::agent_execution::session::SessionMetadata;
 use crate::contexts::workflow_composition::contracts::StageContract;
 use crate::shared::domain::{
-    BackendRole, BackendSpec, ModelSpec, ResolvedBackendTarget, SessionPolicy,
+    BackendRole, BackendSpec, ModelSpec, ResolvedBackendTarget, SessionPolicy, StageId,
 };
 
 #[derive(Clone)]
@@ -66,11 +66,50 @@ pub struct InvocationPayload {
     pub context: Value,
 }
 
+// ── Domain-neutral contract identifier ──────────────────────────────────────
+
+/// A domain-neutral invocation contract. Wraps either a workflow `StageContract`
+/// or a requirements-specific contract label. This generalizes agent execution
+/// away from workflow-only `StageContract` coupling.
+#[derive(Debug, Clone)]
+pub enum InvocationContract {
+    /// Workflow stage contract — validated by agent execution.
+    Stage(StageContract),
+    /// Requirements or other domain contract — caller validates after invocation.
+    Requirements { label: String },
+}
+
+impl InvocationContract {
+    /// Human-readable label for error messages and logging.
+    pub fn label(&self) -> String {
+        match self {
+            Self::Stage(c) => c.stage_id.as_str().to_owned(),
+            Self::Requirements { label } => label.clone(),
+        }
+    }
+
+    /// Returns the `StageId` if this is a workflow stage contract.
+    pub fn stage_id(&self) -> Option<StageId> {
+        match self {
+            Self::Stage(c) => Some(c.stage_id),
+            Self::Requirements { .. } => None,
+        }
+    }
+
+    /// Returns the `StageContract` if this is a workflow stage contract.
+    pub fn stage_contract(&self) -> Option<&StageContract> {
+        match self {
+            Self::Stage(c) => Some(c),
+            Self::Requirements { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct InvocationRequest {
     pub invocation_id: String,
     pub project_root: PathBuf,
-    pub stage_contract: StageContract,
+    pub contract: InvocationContract,
     pub role: BackendRole,
     pub resolved_target: ResolvedBackendTarget,
     pub payload: InvocationPayload,
@@ -85,17 +124,17 @@ pub struct InvocationRequest {
 pub struct CapabilityCheck {
     pub backend: BackendSpec,
     pub model: ModelSpec,
-    pub stage_id: crate::shared::domain::StageId,
+    pub contract_id: String,
     pub supported: bool,
     pub details: Option<String>,
 }
 
 impl CapabilityCheck {
-    pub fn success(target: &ResolvedBackendTarget, stage_contract: StageContract) -> Self {
+    pub fn success(target: &ResolvedBackendTarget, contract: &InvocationContract) -> Self {
         Self {
             backend: target.backend.clone(),
             model: target.model.clone(),
-            stage_id: stage_contract.stage_id,
+            contract_id: contract.label(),
             supported: true,
             details: None,
         }
@@ -103,13 +142,13 @@ impl CapabilityCheck {
 
     pub fn failure(
         target: &ResolvedBackendTarget,
-        stage_contract: StageContract,
+        contract: &InvocationContract,
         details: impl Into<String>,
     ) -> Self {
         Self {
             backend: target.backend.clone(),
             model: target.model.clone(),
-            stage_id: stage_contract.stage_id,
+            contract_id: contract.label(),
             supported: false,
             details: Some(details.into()),
         }
