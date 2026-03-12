@@ -973,6 +973,23 @@ fn make_amendment(id: &str, stage: ralph_burning::shared::domain::StageId) -> Qu
         source_completion_round: 1,
         body: format!("Fix issue from {id}"),
         created_at: test_timestamp(),
+        batch_sequence: 1,
+    }
+}
+
+fn make_amendment_with_seq(
+    id: &str,
+    stage: ralph_burning::shared::domain::StageId,
+    seq: u32,
+) -> QueuedAmendment {
+    QueuedAmendment {
+        amendment_id: id.to_owned(),
+        source_stage: stage,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: format!("Fix issue from {id}"),
+        created_at: test_timestamp(),
+        batch_sequence: seq,
     }
 }
 
@@ -1106,4 +1123,30 @@ fn amendment_queue_corrupt_json_returns_error() {
     let pid = ProjectId::new("alpha").unwrap();
     let err = store.list_pending_amendments(tmp.path(), &pid).unwrap_err();
     assert!(matches!(err, AppError::CorruptRecord { .. }));
+}
+
+#[test]
+fn amendment_queue_batch_sequence_provides_deterministic_ordering() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Write 3 amendments with the same timestamp but different batch_sequence values.
+    // Write them in reverse order to verify sort uses batch_sequence, not insertion order.
+    let a3 = make_amendment_with_seq("amd-003", ralph_burning::shared::domain::StageId::CompletionPanel, 3);
+    let a1 = make_amendment_with_seq("amd-001", ralph_burning::shared::domain::StageId::CompletionPanel, 1);
+    let a2 = make_amendment_with_seq("amd-002", ralph_burning::shared::domain::StageId::CompletionPanel, 2);
+
+    store.write_amendment(tmp.path(), &pid, &a3).unwrap();
+    store.write_amendment(tmp.path(), &pid, &a1).unwrap();
+    store.write_amendment(tmp.path(), &pid, &a2).unwrap();
+
+    let pending = store.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(pending.len(), 3);
+    assert_eq!(pending[0].amendment_id, "amd-001");
+    assert_eq!(pending[1].amendment_id, "amd-002");
+    assert_eq!(pending[2].amendment_id, "amd-003");
 }

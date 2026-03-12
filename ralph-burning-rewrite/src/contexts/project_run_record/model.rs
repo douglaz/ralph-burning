@@ -148,6 +148,10 @@ pub struct QueuedAmendment {
     pub source_completion_round: u32,
     pub body: String,
     pub created_at: DateTime<Utc>,
+    /// Stable ordering key within a batch. Amendments created in the same batch
+    /// share a `created_at` timestamp; `batch_sequence` distinguishes their order.
+    #[serde(default)]
+    pub batch_sequence: u32,
 }
 
 /// Amendment queue state tracked in the canonical run snapshot.

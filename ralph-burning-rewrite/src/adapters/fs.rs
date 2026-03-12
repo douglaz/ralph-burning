@@ -792,7 +792,11 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
             }
         }
 
-        amendments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        amendments.sort_by(|a, b| {
+            a.created_at
+                .cmp(&b.created_at)
+                .then_with(|| a.batch_sequence.cmp(&b.batch_sequence))
+        });
         Ok(amendments)
     }
 

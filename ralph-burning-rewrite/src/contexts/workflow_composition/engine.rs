@@ -631,12 +631,20 @@ where
                     );
 
                     // Persist amendment files atomically to disk first.
+                    // Track written IDs so we can roll back on partial failure.
+                    let mut written_ids: Vec<String> = Vec::new();
                     for amendment in &amendments {
                         if let Err(error) = amendment_queue_port.write_amendment(
                             base_dir,
                             project_id,
                             amendment,
                         ) {
+                            // Roll back already-written amendment files from this batch.
+                            for id in &written_ids {
+                                let _ = amendment_queue_port.remove_amendment(
+                                    base_dir, project_id, id,
+                                );
+                            }
                             // Failure invariant: if amendment persistence fails, no queue
                             // entry becomes visible in run.json.
                             return fail_run_result(
@@ -658,6 +666,7 @@ where
                             )
                             .await;
                         }
+                        written_ids.push(amendment.amendment_id.clone());
                     }
 
                     // Emit amendment_queued journal events.
@@ -1486,7 +1495,17 @@ fn complete_run(
     seq: &mut u64,
 ) -> AppResult<()> {
     // Completion guard: block completion if pending amendments remain.
-    completion_guard(snapshot, amendment_queue_port, base_dir, project_id)?;
+    // On CompletionBlocked, persist a resumable (Failed, active_run=None) snapshot
+    // so that `run resume` can pick the run back up.
+    if let Err(e) = completion_guard(snapshot, amendment_queue_port, base_dir, project_id) {
+        if matches!(&e, AppError::CompletionBlocked { .. }) {
+            snapshot.status = RunStatus::Failed;
+            snapshot.active_run = None;
+            snapshot.status_summary = format!("blocked: {}", e);
+            let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+        }
+        return Err(e);
+    }
 
     snapshot.status = RunStatus::Completed;
     snapshot.active_run = None;
@@ -1646,6 +1665,7 @@ fn build_queued_amendments(
             source_completion_round,
             body: body.clone(),
             created_at: now,
+            batch_sequence: (idx + 1) as u32,
         })
         .collect()
 }
@@ -1703,11 +1723,12 @@ fn reconcile_amendments_from_disk(
         }
     }
 
-    // Sort by created_at for deterministic ordering.
-    snapshot
-        .amendment_queue
-        .pending
-        .sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    // Sort by (created_at, batch_sequence) for deterministic ordering.
+    snapshot.amendment_queue.pending.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.batch_sequence.cmp(&b.batch_sequence))
+    });
 
     Ok(())
 }

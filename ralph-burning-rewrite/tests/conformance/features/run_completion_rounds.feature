@@ -106,9 +106,28 @@ Feature: Completion Rounds, Late-Stage Acceptance, and Durable Amendments
     And amendment_queue.processed_count is incremented
 
   # SC-CR-012
-  Scenario: Amendment persistence is atomic
+  Scenario: Amendment persistence is atomic with batch rollback
     Given a late stage returns conditionally_approved with follow_ups
     When the engine persists amendment files
     Then each amendment file is written atomically (temp + rename)
-    And if any amendment write fails, the run fails without partial amendments visible
+    And if any amendment write fails, already-written files from the same batch are rolled back
+    And the run fails without partial amendments visible
     And the failure invariant holds: no queue entry becomes visible without a matching file
+
+  # SC-CR-013
+  Scenario: Completion guard leaves snapshot in resumable state
+    Given an initialized workspace with project "cr-lambda" using flow "standard"
+    And a durable amendment file exists under projects/cr-lambda/amendments/
+    When the user runs "run start" and all stages return approved
+    Then the completion guard fires because pending amendment files exist on disk
+    And the run snapshot shows status "failed" with active_run == null
+    And the amendment files remain untouched on disk
+    And the user can run "run resume" after removing orphaned amendments
+
+  # SC-CR-014
+  Scenario: Same-batch amendments are ordered deterministically by batch_sequence
+    Given a late stage returns conditionally_approved with multiple follow_ups
+    When the engine persists amendments
+    Then each amendment has a stable batch_sequence field
+    And list_pending_amendments returns them sorted by (created_at, batch_sequence)
+    And the planning invocation receives amendments in deterministic order

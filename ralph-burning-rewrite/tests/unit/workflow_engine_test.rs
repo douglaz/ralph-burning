@@ -2155,3 +2155,128 @@ async fn cycle_advanced_emitted_when_entering_implementation_from_completion_rou
         "cycle_advanced should be emitted when entering implementation from completion round"
     );
 }
+
+// ── Completion Guard Resumability Regression ─────────────────────────────────
+
+#[tokio::test]
+async fn completion_guard_produces_resumable_snapshot_when_disk_amendments_remain() {
+    // Scenario: orphaned amendment files exist on disk when completion is attempted.
+    // The completion guard must leave the snapshot in Failed state with active_run == None,
+    // so `run resume` can pick it up.
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "guard-resume");
+
+    // Place an orphaned amendment file on disk before running.
+    let amendments_dir = base_dir.join(".ralph-burning/projects/guard-resume/amendments");
+    fs::create_dir_all(&amendments_dir).unwrap();
+    let orphaned = serde_json::json!({
+        "amendment_id": "orphaned-amd-001",
+        "source_stage": "completion_panel",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "orphaned amendment from prior crash",
+        "created_at": "2026-03-10T00:00:00Z",
+        "batch_sequence": 1
+    });
+    fs::write(
+        amendments_dir.join("orphaned-amd-001.json"),
+        serde_json::to_string_pretty(&orphaned).unwrap(),
+    )
+    .unwrap();
+
+    // All stages return approved, so the engine will reach complete_run().
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    // The run must fail with CompletionBlocked.
+    assert!(result.is_err(), "run should fail when completion guard fires");
+    let err = result.unwrap_err();
+    assert!(
+        err.to_string().contains("completion blocked"),
+        "error should be CompletionBlocked, got: {err}"
+    );
+
+    // The snapshot must be Failed with active_run == None (resumable).
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(
+        snapshot.status,
+        RunStatus::Failed,
+        "snapshot must be Failed for resumability"
+    );
+    assert!(
+        snapshot.active_run.is_none(),
+        "active_run must be None so resume can pick it up"
+    );
+    assert!(
+        snapshot.status_summary.contains("blocked"),
+        "status_summary should mention blocked: {}",
+        snapshot.status_summary
+    );
+
+    // The orphaned amendment file must still be on disk (not deleted by the guard).
+    assert!(
+        amendments_dir.join("orphaned-amd-001.json").exists(),
+        "amendment file must not be deleted by the completion guard"
+    );
+
+    // Resume with the orphaned amendment still on disk.
+    // The engine should reconcile it, restart from planning, process through all stages,
+    // drain the amendment, and complete successfully.
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should succeed with orphaned amendments reconciled: {resume_result:?}"
+    );
+
+    let resumed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(resumed_snapshot.status, RunStatus::Completed);
+
+    // Amendment file should be drained after planning commit.
+    let remaining: Vec<_> = std::fs::read_dir(&amendments_dir)
+        .ok()
+        .map(|entries| {
+            entries
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+                .collect()
+        })
+        .unwrap_or_default();
+    assert!(
+        remaining.is_empty(),
+        "amendment files should be drained after successful resume"
+    );
+}
