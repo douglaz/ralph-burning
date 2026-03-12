@@ -56,8 +56,6 @@ pub enum AppError {
     RunStartFailed { reason: String },
     #[error("cannot resume run: {reason}")]
     ResumeFailed { reason: String },
-    #[error("flow '{flow_id}' is not yet supported for run execution; 'quick_dev' is deferred to a later loop")]
-    UnsupportedFlow { flow_id: String },
     #[error("preflight check failed for stage '{stage_id}': {details}")]
     PreflightFailed { stage_id: StageId, details: String },
     #[error("stage commit failed for stage '{stage_id}': {details}")]

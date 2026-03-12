@@ -743,6 +743,352 @@ async fn resume_from_failed_ci_improvement_run_skips_completed_stages() {
     assert_eq!(run_resumed.details["resume_stage"], "ci_update");
 }
 
+// ── Quick Dev flow tests ────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn happy_path_quick_dev_run_completes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-happy", FlowPreset::QuickDev);
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.active_run.is_none());
+    assert_eq!(snapshot.completion_rounds, 1);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["plan_and_implement", "review", "apply_fixes", "final_review"],
+        entered
+    );
+
+    let payload_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-happy/history/payloads"))
+            .unwrap()
+            .count();
+    let artifact_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-happy/history/artifacts"))
+            .unwrap()
+            .count();
+    assert_eq!(payload_count, 4);
+    assert_eq!(artifact_count, 4);
+}
+
+#[tokio::test]
+async fn quick_dev_review_request_changes_restarts_from_apply_fixes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-remediation", FlowPreset::QuickDev);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::Review,
+        vec![
+            request_changes_payload(&["fix the identified issues"]),
+            approved_validation_payload(),
+        ],
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+
+    // In quick_dev, the execution stage (apply_fixes) comes AFTER the trigger
+    // stage (review), so apply_fixes is entered once: only after the cycle
+    // advance, not before the review that triggered remediation.
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "apply_fixes").len(),
+        1
+    );
+
+    let cycle_advanced: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
+        .collect();
+    assert_eq!(cycle_advanced.len(), 1);
+    assert_eq!(cycle_advanced[0].details["resume_stage"], "apply_fixes");
+
+    // apply_fixes is invoked once (after cycle advance) with remediation context
+    let apply_fixes_contexts = adapter_handle.contexts_for(StageId::ApplyFixes);
+    assert_eq!(apply_fixes_contexts.len(), 1);
+    assert_eq!(
+        apply_fixes_contexts[0]["remediation"]["follow_up_or_amendments"][0],
+        "fix the identified issues"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_review_rejected_fails_run() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-rejected", FlowPreset::QuickDev);
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload(StageId::Review, rejected_validation_payload()),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err());
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_failed = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == JournalEventType::RunFailed)
+        .expect("run_failed");
+    assert_eq!(
+        run_failed.details["failure_class"],
+        "qa_review_outcome_failure"
+    );
+}
+
+#[tokio::test]
+async fn quick_dev_final_review_conditionally_approved_triggers_completion_round() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-cr", FlowPreset::QuickDev);
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::FinalReview,
+            vec![
+                conditionally_approved_payload(&["polish the edge cases"]),
+                approved_validation_payload(),
+            ],
+        ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1);
+
+    // Verify the run restarted at plan_and_implement
+    let plan_entries = stage_events(&events, JournalEventType::StageEntered, "plan_and_implement");
+    assert_eq!(plan_entries.len(), 2, "plan_and_implement should run twice across completion rounds");
+}
+
+#[tokio::test]
+async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-resume", FlowPreset::QuickDev);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let failing_agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::Review, 3),
+    );
+    let first_result = engine::execute_run(
+        &failing_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err());
+
+    let resume_agent_service = build_agent_service();
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "plan_and_implement").len(),
+        1
+    );
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "review").len(),
+        4
+    );
+
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "review");
+}
+
+#[tokio::test]
+async fn quick_dev_preflight_failure_leaves_state_unchanged() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "qd-preflight", FlowPreset::QuickDev);
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().unavailable(),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let pre_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(pre_snapshot.status, RunStatus::NotStarted);
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::QuickDev,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        format!("{err}").contains("preflight") || format!("{err}").contains("unavailable"),
+        "expected preflight failure, got: {err}"
+    );
+
+    let post_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(post_snapshot.status, RunStatus::NotStarted);
+    assert!(post_snapshot.active_run.is_none());
+
+    let payload_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/qd-preflight/history/payloads"))
+            .unwrap()
+            .count();
+    assert_eq!(payload_count, 0);
+}
+
 // ── Precondition failure tests ──────────────────────────────────────────────
 
 #[tokio::test]

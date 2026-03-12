@@ -1,7 +1,7 @@
-Feature: Resume for Docs and CI Presets
-  The `run resume` command reconstructs docs_change and ci_improvement runs
-  from durable stage boundaries using the same shared engine semantics as
-  standard-flow resume.
+Feature: Resume for Non-Standard Presets
+  The `run resume` command reconstructs quick_dev, docs_change, and
+  ci_improvement runs from durable stage boundaries using the same shared
+  engine semantics as standard-flow resume.
 
   # SC-NONSTD-RESUME-001
   Scenario: Resume a failed docs_change run from docs_update
@@ -44,3 +44,24 @@ Feature: Resume for Docs and CI Presets
     Then the command exits successfully
     And the first resumed stage is "ci_plan" with attempt 1
     And the pending amendment is drained after ci_plan completes
+
+  # SC-NONSTD-RESUME-005
+  Scenario: Resume a failed quick_dev run from review
+    Given an initialized workspace with project "qd-resume" using flow "quick_dev"
+    And project "qd-resume" is selected as active
+    And a previous "run start" failed after "plan_and_implement" completed and "review" exhausted retries
+    When the user runs "run resume"
+    Then the command exits successfully
+    And the resumed run keeps the original run_id
+    And the plan_and_implement stage is not re-executed
+    And the first resumed stage is "review" with attempt 1
+
+  # SC-NONSTD-RESUME-006
+  Scenario: Resume a paused quick_dev snapshot with pending amendments
+    Given an initialized workspace with project "qd-paused" using flow "quick_dev"
+    And project "qd-paused" is selected as active
+    And the run snapshot is "paused" with a durable pending amendment for the planning stage
+    When the user runs "run resume"
+    Then the command exits successfully
+    And the first resumed stage is "plan_and_implement" with attempt 1
+    And the pending amendment is drained after plan_and_implement completes

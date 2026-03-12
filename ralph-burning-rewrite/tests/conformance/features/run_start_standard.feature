@@ -16,12 +16,15 @@ Feature: Standard Preset Run Start Orchestration
     And payload and artifact records exist for all 8 standard stages
 
   # SC-START-002
-  Scenario: Run start rejects quick_dev flow preset
+  Scenario: Run start succeeds for quick_dev flow preset
     Given an initialized workspace with project "beta" using flow "quick_dev"
     And project "beta" is selected as active
+    And the run snapshot shows status "not_started" with no active run
     When the user runs "run start"
-    Then the command fails with error containing "not yet supported"
-    And the run snapshot is unchanged (still "not_started")
+    Then the command exits successfully
+    And the run snapshot shows status "completed" with no active run
+    And the journal records "plan_and_implement", "review", "apply_fixes", and "final_review" in sequence
+    And payload and artifact records exist for all 4 quick_dev stages
 
   # SC-START-003
   Scenario: Run start rejects already-running project
@@ -137,11 +140,10 @@ Feature: Standard Preset Run Start Orchestration
     Then the output includes all stage events and payload/artifact records
 
   # SC-START-017
-  Scenario: Run start supports standard, docs_change, and ci_improvement while quick_dev remains deferred
+  Scenario: Run start supports all four built-in flow presets
     Given an initialized workspace with projects using flows "standard", "quick_dev", "docs_change", "ci_improvement"
     When the user runs "run start" for each project
-    Then "standard", "docs_change", and "ci_improvement" succeed
-    And "quick_dev" fails with "not yet supported" error
+    Then all four flow presets complete successfully
 
   # SC-START-018
   Scenario: Prompt-review-disabled run start completes with 7 stages

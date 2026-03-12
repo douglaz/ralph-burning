@@ -91,6 +91,26 @@ fn standard_stage_plan_for_flow_honors_prompt_review_toggle() {
 }
 
 #[test]
+fn quick_dev_stage_plan_ignores_prompt_review_toggle() {
+    let plan_enabled = stage_plan_for_flow(FlowPreset::QuickDev, true);
+    let plan_disabled = stage_plan_for_flow(FlowPreset::QuickDev, false);
+    assert_eq!(plan_enabled, plan_disabled);
+    assert_eq!(
+        plan_enabled,
+        vec![
+            StageId::PlanAndImplement,
+            StageId::Review,
+            StageId::ApplyFixes,
+            StageId::FinalReview,
+        ]
+    );
+    assert!(
+        !plan_enabled.contains(&StageId::PromptReview),
+        "quick_dev must never include prompt_review regardless of config"
+    );
+}
+
+#[test]
 fn non_standard_stage_plans_ignore_prompt_review_toggle() {
     assert_eq!(
         stage_plan_for_flow(FlowPreset::DocsChange, true),
@@ -99,5 +119,9 @@ fn non_standard_stage_plans_ignore_prompt_review_toggle() {
     assert_eq!(
         stage_plan_for_flow(FlowPreset::CiImprovement, true),
         stage_plan_for_flow(FlowPreset::CiImprovement, false)
+    );
+    assert_eq!(
+        stage_plan_for_flow(FlowPreset::QuickDev, true),
+        stage_plan_for_flow(FlowPreset::QuickDev, false)
     );
 }

@@ -2885,32 +2885,9 @@ fn run_start_status_shows_completed_after_run() {
 }
 
 #[test]
-fn run_start_rejects_quick_dev_flow() {
+fn run_start_completes_quick_dev_flow_end_to_end() {
     let temp_dir = initialize_workspace_fixture();
-    let prompt = write_prompt_fixture(temp_dir.path());
-
-    Command::new(binary())
-        .args([
-            "project",
-            "create",
-            "--id",
-            "quickdev",
-            "--name",
-            "Quick Dev",
-            "--prompt",
-            prompt.to_str().unwrap(),
-            "--flow",
-            "quick_dev",
-        ])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("create project");
-
-    Command::new(binary())
-        .args(["project", "select", "quickdev"])
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("select project");
+    setup_project(&temp_dir, "qd-run", "quick_dev");
 
     let output = Command::new(binary())
         .args(["run", "start"])
@@ -2918,11 +2895,99 @@ fn run_start_rejects_quick_dev_flow() {
         .output()
         .expect("run start");
 
-    assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("not yet supported"),
-        "should reject quick_dev flow, got: {stderr}"
+        output.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload_files: Vec<_> = fs::read_dir(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/qd-run/history/payloads"),
+    )
+    .expect("read payloads dir")
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+    .collect();
+    assert_eq!(payload_files.len(), 4);
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/qd-run/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(journal.contains("\"plan_and_implement\""));
+    assert!(journal.contains("\"review\""));
+    assert!(journal.contains("\"apply_fixes\""));
+    assert!(journal.contains("\"final_review\""));
+}
+
+#[test]
+fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_project(&temp_dir, "qd-status", "quick_dev");
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(start.status.success());
+
+    let status = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(status.status.success());
+    let stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(
+        stdout.contains("Status: completed"),
+        "run status should show completed after successful quick_dev run, got: {stdout}"
+    );
+}
+
+#[test]
+fn run_resume_quick_dev_from_failed_state() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_project(&temp_dir, "qd-resume", "quick_dev");
+
+    // First run fails at review stage
+    let first = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("first run start");
+    assert!(
+        !first.status.success(),
+        "first run should fail at review stage"
+    );
+
+    // Resume should succeed
+    let resume = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(
+        resume.status.success(),
+        "run resume failed: {}",
+        String::from_utf8_lossy(&resume.stderr)
+    );
+
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/qd-resume/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        run_json.contains("\"completed\""),
+        "quick_dev run should be completed after resume, got: {run_json}"
     );
 }
 

@@ -12,7 +12,7 @@ use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSn
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::{FlowPreset, StageId};
+use crate::shared::domain::StageId;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -83,12 +83,6 @@ async fn handle_start() -> AppResult<()> {
     // Validate canonical project record
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
-
-    if matches!(project_record.flow, FlowPreset::QuickDev) {
-        return Err(AppError::UnsupportedFlow {
-            flow_id: project_record.flow.as_str().to_owned(),
-        });
-    }
 
     // Validate run snapshot integrity
     let run_snapshot_read = FsRunSnapshotStore;
@@ -166,12 +160,6 @@ async fn handle_resume() -> AppResult<()> {
 
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
-    if matches!(project_record.flow, FlowPreset::QuickDev) {
-        return Err(AppError::UnsupportedFlow {
-            flow_id: project_record.flow.as_str().to_owned(),
-        });
-    }
-
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match run_snapshot.status {
