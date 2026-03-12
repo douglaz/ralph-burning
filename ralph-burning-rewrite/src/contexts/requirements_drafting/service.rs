@@ -333,7 +333,22 @@ where
         // (AnswersSubmitted in journal), the question set is no longer the latest
         // boundary and `answer` must be rejected.
         match run.status {
-            RequirementsStatus::AwaitingAnswers => {}
+            RequirementsStatus::AwaitingAnswers => {
+                // Defense-in-depth: verify answers haven't already been
+                // durably submitted even in AwaitingAnswers state (can happen
+                // if write_run() failed after AnswersSubmitted was journaled
+                // in a prior implementation).
+                let journal = self.store.read_journal(base_dir, run_id)?;
+                let answers_already_submitted = journal.iter().any(|e| {
+                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
+                });
+                if answers_already_submitted {
+                    return Err(AppError::InvalidRequirementsState {
+                        run_id: run_id.to_owned(),
+                        details: "cannot answer: answers already durably submitted past question boundary".to_owned(),
+                    });
+                }
+            }
             RequirementsStatus::Failed
                 if run.latest_question_set_id.is_some()
                     && run.latest_draft_id.is_none() =>
@@ -379,16 +394,6 @@ where
         self.store
             .write_answers_json(base_dir, run_id, &answers)?;
 
-        let seq = self.next_sequence(base_dir, run_id)?;
-        let event = journal_event(
-            seq,
-            Utc::now(),
-            RequirementsJournalEventType::AnswersSubmitted,
-            &run,
-        );
-        self.store
-            .append_journal_event(base_dir, run_id, &event)?;
-
         // Resume from answers boundary
         let answer_entries: Vec<(String, String)> = answers
             .answers
@@ -401,6 +406,20 @@ where
         run.status_summary = "drafting: generating requirements from answers".to_owned();
         run.updated_at = Utc::now();
         self.store.write_run(base_dir, run_id, &run)?;
+
+        // Append AnswersSubmitted AFTER the run transition is durably committed.
+        // This ensures that if write_run() fails, the journal does not contain
+        // AnswersSubmitted while the run still appears resumable from the question
+        // boundary.
+        let seq = self.next_sequence(base_dir, run_id)?;
+        let event = journal_event(
+            seq,
+            Utc::now(),
+            RequirementsJournalEventType::AnswersSubmitted,
+            &run,
+        );
+        self.store
+            .append_journal_event(base_dir, run_id, &event)?;
 
         let idea = run.idea.clone();
         self.continue_after_answers(base_dir, &mut run, &idea, &answer_entries, seq + 1, Utc::now())

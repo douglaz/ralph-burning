@@ -127,3 +127,19 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then the run.json contains a non-null latest_question_set_id
     And the journal contains a "questions_generated" event
     And the run status is "completed"
+
+  # RD-017
+  Scenario: Conditional approval with empty follow-ups fails contract validation
+    Given a requirements review payload with "conditionally_approved" outcome
+    And the payload has an empty follow_ups list
+    When the payload is validated through the requirements_review contract
+    Then a domain validation error is returned
+    And the error mentions "conditionally_approved requires at least one follow-up"
+
+  # RD-018
+  Scenario: Answer durable-boundary gating prevents double submission
+    Given a requirements run in "awaiting_answers" status
+    And the journal already contains an "answers_submitted" event
+    When the user runs "requirements answer <run-id>"
+    Then an invalid requirements state error is returned
+    And the run state remains unchanged

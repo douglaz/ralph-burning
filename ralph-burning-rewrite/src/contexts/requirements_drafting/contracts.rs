@@ -13,8 +13,8 @@ use crate::shared::domain::FlowPreset;
 use crate::shared::error::ContractError;
 
 use super::model::{
-    ProjectSeedPayload, QuestionSetPayload, RequirementsDraftPayload, RequirementsReviewPayload,
-    RequirementsStageId,
+    ProjectSeedPayload, QuestionSetPayload, RequirementsDraftPayload,
+    RequirementsReviewOutcome, RequirementsReviewPayload, RequirementsStageId,
 };
 use super::renderers;
 
@@ -84,7 +84,7 @@ impl RequirementsContract {
             RequirementsStageId::QuestionSet => {
                 let p: QuestionSetPayload =
                     serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: crate::shared::domain::StageId::Planning, // placeholder for display
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("question_set: {e}"),
                     })?;
                 Ok(RequirementsPayload::QuestionSet(p))
@@ -92,7 +92,7 @@ impl RequirementsContract {
             RequirementsStageId::RequirementsDraft => {
                 let p: RequirementsDraftPayload =
                     serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("requirements_draft: {e}"),
                     })?;
                 Ok(RequirementsPayload::Draft(p))
@@ -100,7 +100,7 @@ impl RequirementsContract {
             RequirementsStageId::RequirementsReview => {
                 let p: RequirementsReviewPayload =
                     serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("requirements_review: {e}"),
                     })?;
                 Ok(RequirementsPayload::Review(p))
@@ -108,7 +108,7 @@ impl RequirementsContract {
             RequirementsStageId::ProjectSeed => {
                 let p: ProjectSeedPayload =
                     serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("project_seed: {e}"),
                     })?;
                 Ok(RequirementsPayload::Seed(p))
@@ -134,7 +134,7 @@ impl RequirementsContract {
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("question_set: {}", errors.join("; ")),
                     });
                 }
@@ -162,7 +162,7 @@ impl RequirementsContract {
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("requirements_draft: {}", errors.join("; ")),
                     });
                 }
@@ -170,8 +170,17 @@ impl RequirementsContract {
             RequirementsPayload::Review(p) => {
                 if !p.outcome.allows_completion() && p.findings.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: "requirements_review: findings required for non-approval outcome"
+                            .to_string(),
+                    });
+                }
+                if p.outcome == RequirementsReviewOutcome::ConditionallyApproved
+                    && p.follow_ups.is_empty()
+                {
+                    return Err(ContractError::DomainValidation {
+                        stage_id: self.stage_id.as_str().to_owned(),
+                        details: "requirements_review: conditionally_approved requires at least one follow-up"
                             .to_string(),
                     });
                 }
@@ -192,7 +201,7 @@ impl RequirementsContract {
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: crate::shared::domain::StageId::Planning,
+                        stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("project_seed: {}", errors.join("; ")),
                     });
                 }

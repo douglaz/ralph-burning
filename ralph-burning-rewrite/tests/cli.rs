@@ -2947,6 +2947,136 @@ fn requirements_show_on_nonexistent_run_fails() {
 }
 
 #[test]
+fn requirements_answer_happy_path_completes_run() {
+    let temp_dir = initialize_workspace_fixture();
+    let run_id = "req-20260312-120000";
+    let run_dir = temp_dir
+        .path()
+        .join(".ralph-burning/requirements")
+        .join(run_id);
+
+    // Create required directory structure
+    for subdir in &[
+        "",
+        "history/payloads",
+        "history/artifacts",
+        "seed",
+        "runtime/logs",
+        "runtime/backend",
+        "runtime/temp",
+    ] {
+        fs::create_dir_all(run_dir.join(subdir)).expect("create subdir");
+    }
+
+    // Write sessions.json (PersistedSessions requires { sessions: [] })
+    fs::write(
+        run_dir.join("sessions.json"),
+        r#"{"sessions":[]}"#,
+    )
+    .expect("write sessions");
+
+    // Write run.json in awaiting_answers state
+    let run_json = serde_json::json!({
+        "run_id": run_id,
+        "idea": "Build a REST API",
+        "mode": "draft",
+        "status": "awaiting_answers",
+        "question_round": 1,
+        "latest_question_set_id": format!("{run_id}-qs-1"),
+        "latest_draft_id": null,
+        "latest_review_id": null,
+        "latest_seed_id": null,
+        "pending_question_count": 1,
+        "created_at": "2026-03-12T12:00:00Z",
+        "updated_at": "2026-03-12T12:00:00Z",
+        "status_summary": "awaiting answers: 1 question(s), round 1"
+    });
+    fs::write(
+        run_dir.join("run.json"),
+        serde_json::to_string_pretty(&run_json).unwrap(),
+    )
+    .expect("write run.json");
+
+    // Write question set payload
+    let qs_payload = serde_json::json!({
+        "questions": [
+            {
+                "id": "q1",
+                "prompt": "What framework?",
+                "rationale": "Determines architecture",
+                "required": true
+            }
+        ]
+    });
+    fs::write(
+        run_dir.join(format!("history/payloads/{run_id}-qs-1.json")),
+        serde_json::to_string(&qs_payload).unwrap(),
+    )
+    .expect("write question payload");
+
+    // Write journal with RunCreated and QuestionsGenerated
+    let journal = format!(
+        "{}\n{}\n",
+        serde_json::json!({
+            "sequence": 1,
+            "timestamp": "2026-03-12T12:00:00Z",
+            "event_type": "run_created",
+            "details": { "run_id": run_id, "status": "drafting", "status_summary": "drafting" }
+        }),
+        serde_json::json!({
+            "sequence": 2,
+            "timestamp": "2026-03-12T12:00:00Z",
+            "event_type": "questions_generated",
+            "details": { "run_id": run_id, "status": "awaiting_answers", "status_summary": "awaiting answers" }
+        }),
+    );
+    fs::write(run_dir.join("journal.ndjson"), journal).expect("write journal");
+
+    // Write valid answers.toml
+    fs::write(
+        run_dir.join("answers.toml"),
+        "q1 = \"Use Actix Web\"\n",
+    )
+    .expect("write answers.toml");
+
+    // Run requirements answer with EDITOR=true (no-op editor)
+    let output = Command::new(binary())
+        .args(["requirements", "answer", run_id])
+        .env("EDITOR", "true")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements answer");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "requirements answer should succeed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+
+    // Verify run completed
+    let run_data: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(run_dir.join("run.json")).expect("read run.json"),
+    )
+    .expect("parse run.json");
+    assert_eq!(
+        run_data["status"], "completed",
+        "run should be completed after answer"
+    );
+
+    // Verify seed files exist
+    assert!(
+        run_dir.join("seed/project.json").exists(),
+        "seed/project.json should exist"
+    );
+    assert!(
+        run_dir.join("seed/prompt.md").exists(),
+        "seed/prompt.md should exist"
+    );
+}
+
+#[test]
 fn requirements_answer_on_nonexistent_run_fails() {
     let temp_dir = initialize_workspace_fixture();
 

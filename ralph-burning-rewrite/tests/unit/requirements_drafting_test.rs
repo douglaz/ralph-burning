@@ -270,6 +270,71 @@ fn review_with_request_changes_and_empty_findings_fails_domain_validation() {
 }
 
 #[test]
+fn review_conditionally_approved_with_empty_follow_ups_fails_domain_validation() {
+    let bad_review = json!({
+        "outcome": "conditionally_approved",
+        "evidence": ["Mostly looks good."],
+        "findings": [],
+        "follow_ups": []
+    });
+
+    let err = RequirementsContract::review()
+        .evaluate(&bad_review)
+        .expect_err("conditionally_approved with empty follow_ups should fail");
+    assert!(
+        matches!(err, ContractError::DomainValidation { .. }),
+        "expected DomainValidation, got: {err:?}"
+    );
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("conditionally_approved requires at least one follow-up"),
+        "error should mention follow-up requirement: {err_msg}"
+    );
+}
+
+#[test]
+fn review_conditionally_approved_with_follow_ups_passes() {
+    let valid = json!({
+        "outcome": "conditionally_approved",
+        "evidence": ["Mostly looks good."],
+        "findings": [],
+        "follow_ups": ["Address error handling"]
+    });
+
+    let bundle = RequirementsContract::review()
+        .evaluate(&valid)
+        .expect("conditionally_approved with follow_ups should pass");
+    assert!(!bundle.artifact.is_empty());
+}
+
+#[test]
+fn requirements_contract_errors_report_domain_neutral_stage_ids() {
+    // Verify that requirements contract errors use requirements stage IDs,
+    // not workflow StageId::Planning placeholders.
+    let bad_seed = json!({
+        "project_id": "   ",
+        "project_name": "My Project",
+        "flow": "standard",
+        "prompt_body": "Body text.",
+        "handoff_summary": "Summary.",
+        "follow_ups": []
+    });
+
+    let err = RequirementsContract::seed()
+        .evaluate(&bad_seed)
+        .expect_err("empty project_id should fail");
+    let err_msg = err.to_string();
+    assert!(
+        err_msg.contains("project_seed"),
+        "error should report project_seed stage, not planning: {err_msg}"
+    );
+    assert!(
+        !err_msg.contains("planning"),
+        "error should NOT contain 'planning' placeholder: {err_msg}"
+    );
+}
+
+#[test]
 fn seed_contract_accepts_valid_json() {
     let valid = json!({
         "project_id": "my-project",
@@ -912,6 +977,115 @@ mod service_integration {
         assert!(
             err_msg.contains("already durably submitted"),
             "error should mention durable boundary: {err_msg}"
+        );
+    }
+
+    /// Regression: `answer` must reject AwaitingAnswers runs that already have
+    /// an AnswersSubmitted journal event (defense-in-depth for prior ordering bug).
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_rejects_awaiting_answers_run_with_answers_already_in_journal() {
+        use ralph_burning::contexts::requirements_drafting::model::{
+            RequirementsJournalEvent, RequirementsJournalEventType,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Create a draft run with questions that transitions to awaiting_answers
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }),
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Test defense in depth", now)
+            .await
+            .expect("draft should succeed");
+
+        // Verify run is in AwaitingAnswers
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+
+        // Manually inject an AnswersSubmitted journal event (simulating a prior
+        // implementation bug where AnswersSubmitted was journaled before write_run)
+        let answers_event = RequirementsJournalEvent {
+            sequence: 10,
+            timestamp: chrono::Utc::now(),
+            event_type: RequirementsJournalEventType::AnswersSubmitted,
+            details: json!({
+                "run_id": run_id,
+                "status": "drafting",
+                "status_summary": "drafting: generating requirements from answers",
+            }),
+        };
+        store
+            .append_journal_event(temp_dir.path(), &run_id, &answers_event)
+            .expect("append answers event");
+
+        // Attempt to answer — should be rejected even though status is AwaitingAnswers
+        let adapter2 = StubBackendAdapter::default();
+        let agent_service2 =
+            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
+
+        let result = service2.answer(temp_dir.path(), &run_id).await;
+        assert!(
+            result.is_err(),
+            "answer should be rejected for AwaitingAnswers run with AnswersSubmitted in journal"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("already durably submitted"),
+            "error should mention durable boundary: {err_msg}"
+        );
+    }
+
+    /// Regression: conditionally_approved reviews with empty follow-ups must
+    /// fail contract validation, preventing completion without conditions.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn conditional_approval_without_follow_ups_fails() {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "conditionally_approved",
+                    "evidence": ["Looks good overall"],
+                    "findings": [],
+                    "follow_ups": []
+                }),
+            );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let result = service
+            .quick(temp_dir.path(), "Build a widget", now)
+            .await;
+
+        assert!(
+            result.is_err(),
+            "quick should fail when conditionally_approved has no follow-ups"
         );
     }
 

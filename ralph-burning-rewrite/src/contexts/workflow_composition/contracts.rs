@@ -150,7 +150,7 @@ impl StageContract {
             ContractFamily::Planning => {
                 let p: PlanningPayload = serde_json::from_value(raw.clone()).map_err(|e| {
                     ContractError::SchemaValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: e.to_string(),
                     }
                 })?;
@@ -159,7 +159,7 @@ impl StageContract {
             ContractFamily::Execution => {
                 let p: ExecutionPayload = serde_json::from_value(raw.clone()).map_err(|e| {
                     ContractError::SchemaValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: e.to_string(),
                     }
                 })?;
@@ -168,7 +168,7 @@ impl StageContract {
             ContractFamily::Validation => {
                 let p: ValidationPayload = serde_json::from_value(raw.clone()).map_err(|e| {
                     ContractError::SchemaValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: e.to_string(),
                     }
                 })?;
@@ -194,7 +194,7 @@ impl StageContract {
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: errors.join("; "),
                     });
                 }
@@ -214,7 +214,7 @@ impl StageContract {
                 }
                 if !errors.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: errors.join("; "),
                     });
                 }
@@ -222,7 +222,7 @@ impl StageContract {
             StagePayload::Validation(p) => {
                 if !p.outcome.is_passing() && p.follow_up_or_amendments.is_empty() {
                     return Err(ContractError::DomainValidation {
-                        stage_id: self.stage_id,
+                        stage_id: self.stage_id.to_string(),
                         details: "follow_up_or_amendments required when outcome is not approved"
                             .to_string(),
                     });
@@ -244,7 +244,7 @@ impl StageContract {
         if let StagePayload::Validation(p) = payload {
             if !p.outcome.is_passing() {
                 return Err(ContractError::QaReviewOutcome {
-                    stage_id: self.stage_id,
+                    stage_id: self.stage_id.to_string(),
                     outcome: p.outcome.to_string(),
                 });
             }

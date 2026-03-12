@@ -121,19 +121,21 @@ pub enum AppError {
 /// Errors specific to stage contract evaluation.
 ///
 /// Each variant maps to a distinct [`FailureClass`] for retry/terminal policy.
+/// The `stage_id` field is a domain-neutral string identifier, supporting both
+/// workflow stage IDs and requirements stage IDs.
 #[derive(Debug, Error)]
 pub enum ContractError {
     #[error("schema validation failed for stage '{stage_id}': {details}")]
-    SchemaValidation { stage_id: StageId, details: String },
+    SchemaValidation { stage_id: String, details: String },
 
     #[error("domain validation failed for stage '{stage_id}': {details}")]
-    DomainValidation { stage_id: StageId, details: String },
+    DomainValidation { stage_id: String, details: String },
 
     #[error("rendering failed for stage '{stage_id}': {details}")]
-    RenderError { stage_id: StageId, details: String },
+    RenderError { stage_id: String, details: String },
 
     #[error("non-passing QA/review outcome for stage '{stage_id}': {outcome}")]
-    QaReviewOutcome { stage_id: StageId, outcome: String },
+    QaReviewOutcome { stage_id: String, outcome: String },
 }
 
 impl ContractError {
@@ -147,12 +149,12 @@ impl ContractError {
         }
     }
 
-    pub fn stage_id(&self) -> StageId {
+    pub fn stage_id(&self) -> &str {
         match self {
             Self::SchemaValidation { stage_id, .. }
             | Self::DomainValidation { stage_id, .. }
             | Self::RenderError { stage_id, .. }
-            | Self::QaReviewOutcome { stage_id, .. } => *stage_id,
+            | Self::QaReviewOutcome { stage_id, .. } => stage_id,
         }
     }
 }
