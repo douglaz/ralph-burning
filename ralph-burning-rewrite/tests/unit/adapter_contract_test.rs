@@ -8,8 +8,8 @@ use chrono::{TimeZone, Utc};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FileSystem, FsActiveProjectStore, FsArtifactStore, FsJournalStore, FsProjectStore,
-    FsRunSnapshotStore, FsRuntimeLogStore,
+    FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
+    FsProjectStore, FsRunSnapshotStore, FsRuntimeLogStore,
 };
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::*;
@@ -959,4 +959,151 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
     let pid = ProjectId::new("alpha").unwrap();
     let loaded = store.read_project_record(tmp.path(), &pid).unwrap();
     assert_eq!(loaded.prompt_reference, "prompt.md");
+}
+
+// ── FsAmendmentQueueStore ──
+
+use ralph_burning::contexts::project_run_record::service::AmendmentQueuePort;
+
+fn make_amendment(id: &str, stage: ralph_burning::shared::domain::StageId) -> QueuedAmendment {
+    QueuedAmendment {
+        amendment_id: id.to_owned(),
+        source_stage: stage,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: format!("Fix issue from {id}"),
+        created_at: test_timestamp(),
+    }
+}
+
+#[test]
+fn amendment_queue_write_and_list_round_trip() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let amendment = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
+
+    store.write_amendment(tmp.path(), &pid, &amendment).unwrap();
+
+    let pending = store.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].amendment_id, "amend-001");
+    assert_eq!(pending[0].body, "Fix issue from amend-001");
+}
+
+#[test]
+fn amendment_queue_empty_returns_empty_list() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let pending = store.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert!(pending.is_empty());
+    assert!(!store.has_pending_amendments(tmp.path(), &pid).unwrap());
+}
+
+#[test]
+fn amendment_queue_has_pending_returns_true_when_present() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let amendment = make_amendment("amend-001", ralph_burning::shared::domain::StageId::AcceptanceQa);
+
+    store.write_amendment(tmp.path(), &pid, &amendment).unwrap();
+    assert!(store.has_pending_amendments(tmp.path(), &pid).unwrap());
+}
+
+#[test]
+fn amendment_queue_remove_deletes_single_amendment() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let a1 = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
+    let mut a2 = make_amendment("amend-002", ralph_burning::shared::domain::StageId::CompletionPanel);
+    // Offset timestamp so sort is deterministic
+    a2.created_at = test_timestamp() + chrono::Duration::seconds(1);
+
+    store.write_amendment(tmp.path(), &pid, &a1).unwrap();
+    store.write_amendment(tmp.path(), &pid, &a2).unwrap();
+
+    store.remove_amendment(tmp.path(), &pid, "amend-001").unwrap();
+
+    let pending = store.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].amendment_id, "amend-002");
+}
+
+#[test]
+fn amendment_queue_remove_nonexistent_is_ok() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Removing non-existent amendment should succeed
+    store.remove_amendment(tmp.path(), &pid, "nonexistent").unwrap();
+}
+
+#[test]
+fn amendment_queue_drain_removes_all_and_returns_count() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let a1 = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
+    let a2 = make_amendment("amend-002", ralph_burning::shared::domain::StageId::AcceptanceQa);
+    store.write_amendment(tmp.path(), &pid, &a1).unwrap();
+    store.write_amendment(tmp.path(), &pid, &a2).unwrap();
+
+    let drained = store.drain_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(drained, 2);
+
+    assert!(!store.has_pending_amendments(tmp.path(), &pid).unwrap());
+    assert!(store.list_pending_amendments(tmp.path(), &pid).unwrap().is_empty());
+}
+
+#[test]
+fn amendment_queue_drain_empty_returns_zero() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let drained = store.drain_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(drained, 0);
+}
+
+#[test]
+fn amendment_queue_corrupt_json_returns_error() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let amendments_dir = tmp.path().join(".ralph-burning/projects/alpha/amendments");
+    fs::create_dir_all(&amendments_dir).unwrap();
+    fs::write(amendments_dir.join("bad.json"), "not valid json").unwrap();
+
+    let store = FsAmendmentQueueStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let err = store.list_pending_amendments(tmp.path(), &pid).unwrap_err();
+    assert!(matches!(err, AppError::CorruptRecord { .. }));
 }

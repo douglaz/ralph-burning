@@ -747,6 +747,113 @@ impl PayloadArtifactWritePort for FsPayloadArtifactWriteStore {
     }
 }
 
+/// Filesystem-backed implementation of `AmendmentQueuePort`.
+pub struct FsAmendmentQueueStore;
+
+impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmendmentQueueStore {
+    fn write_amendment(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        amendment: &crate::contexts::project_run_record::model::QueuedAmendment,
+    ) -> AppResult<()> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("{}.json", amendment.amendment_id));
+        let contents = serde_json::to_string_pretty(amendment)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+
+    fn list_pending_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<crate::contexts::project_run_record::model::QueuedAmendment>> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut amendments = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let raw = fs::read_to_string(&path)?;
+                let amendment: crate::contexts::project_run_record::model::QueuedAmendment =
+                    serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+                        file: format!(
+                            "amendments/{}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        details: e.to_string(),
+                    })?;
+                amendments.push(amendment);
+            }
+        }
+
+        amendments.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+        Ok(amendments)
+    }
+
+    fn remove_amendment(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("amendments")
+            .join(format!("{}.json", amendment_id));
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        if !dir.is_dir() {
+            return Ok(0);
+        }
+
+        let mut count = 0u32;
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                fs::remove_file(&path)?;
+                count += 1;
+            }
+        }
+        Ok(count)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
+        if !dir.is_dir() {
+            return Ok(false);
+        }
+
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            if entry.path().extension().is_some_and(|ext| ext == "json") {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+}
+
 /// Filesystem-backed implementation of `RuntimeLogWritePort`.
 pub struct FsRuntimeLogWriteStore;
 

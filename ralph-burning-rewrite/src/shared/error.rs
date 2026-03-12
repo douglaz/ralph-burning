@@ -91,6 +91,10 @@ pub enum AppError {
     InvocationCancelled { backend: String, stage_id: StageId },
     #[error("remediation exhausted at cycle {cycle}; maximum supported cycles is {max}")]
     RemediationExhausted { cycle: u32, max: u32 },
+    #[error("amendment queue error: {details}")]
+    AmendmentQueueError { details: String },
+    #[error("completion blocked: {details}")]
+    CompletionBlocked { details: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

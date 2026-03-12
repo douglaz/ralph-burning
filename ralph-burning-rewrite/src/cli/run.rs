@@ -1,9 +1,9 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsSessionStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
+    FsProjectStore, FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+    FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
@@ -131,6 +131,8 @@ async fn handle_start() -> AppResult<()> {
 
     println!("Starting run for project '{}'...", project_id);
 
+    let amendment_queue = FsAmendmentQueueStore;
+
     engine::execute_standard_run(
         &agent_service,
         &run_snapshot_read,
@@ -138,6 +140,7 @@ async fn handle_start() -> AppResult<()> {
         &journal_store,
         &artifact_write,
         &log_write,
+        &amendment_queue,
         &current_dir,
         &project_id,
         &effective_config,
@@ -205,6 +208,8 @@ async fn handle_resume() -> AppResult<()> {
 
     println!("Resuming run for project '{}'...", project_id);
 
+    let amendment_queue = FsAmendmentQueueStore;
+
     engine::resume_standard_run(
         &agent_service,
         &run_snapshot_read,
@@ -213,6 +218,7 @@ async fn handle_resume() -> AppResult<()> {
         &FsArtifactStore,
         &artifact_write,
         &log_write,
+        &amendment_queue,
         &current_dir,
         &project_id,
         &effective_config,

@@ -219,3 +219,45 @@ fn run_resumed_event_builder_serializes_resume_cursor() {
     assert_eq!(event.details["resume_stage"], "planning");
     assert_eq!(event.details["cycle"], 2);
 }
+
+#[test]
+fn completion_round_advanced_event_builder_serializes_round_metadata() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::completion_round_advanced_event(
+        4,
+        test_timestamp(),
+        &run_id,
+        StageId::CompletionPanel,
+        1,
+        2,
+        3,
+    );
+
+    assert_eq!(event.event_type, JournalEventType::CompletionRoundAdvanced);
+    assert_eq!(event.sequence, 4);
+    assert_eq!(event.details["run_id"], "run-1");
+    assert_eq!(event.details["source_stage"], "completion_panel");
+    assert_eq!(event.details["from_round"], 1);
+    assert_eq!(event.details["to_round"], 2);
+    assert_eq!(event.details["amendment_count"], 3);
+}
+
+#[test]
+fn amendment_queued_event_builder_serializes_amendment_metadata() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::amendment_queued_event(
+        5,
+        test_timestamp(),
+        &run_id,
+        "amend-001",
+        StageId::AcceptanceQa,
+        "fix the widget alignment",
+    );
+
+    assert_eq!(event.event_type, JournalEventType::AmendmentQueued);
+    assert_eq!(event.sequence, 5);
+    assert_eq!(event.details["run_id"], "run-1");
+    assert_eq!(event.details["amendment_id"], "amend-001");
+    assert_eq!(event.details["source_stage"], "acceptance_qa");
+    assert_eq!(event.details["body"], "fix the widget alignment");
+}

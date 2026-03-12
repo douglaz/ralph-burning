@@ -122,6 +122,46 @@ pub trait RuntimeLogWritePort {
     ) -> AppResult<()>;
 }
 
+/// Port for durable amendment queue persistence under `projects/<id>/amendments/`.
+pub trait AmendmentQueuePort {
+    /// Write a single amendment file atomically.
+    fn write_amendment(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        amendment: &super::model::QueuedAmendment,
+    ) -> AppResult<()>;
+
+    /// List all pending amendment files from disk.
+    fn list_pending_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<super::model::QueuedAmendment>>;
+
+    /// Remove a single amendment file by ID.
+    fn remove_amendment(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()>;
+
+    /// Remove all pending amendment files. Returns count removed.
+    fn drain_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<u32>;
+
+    /// Check if any amendment files exist on disk.
+    fn has_pending_amendments(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<bool>;
+}
+
 /// Port for reading/writing/clearing the active project pointer.
 pub trait ActiveProjectPort {
     fn read_active_project_id(&self, base_dir: &Path) -> AppResult<Option<String>>;

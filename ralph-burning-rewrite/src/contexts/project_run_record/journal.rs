@@ -250,6 +250,53 @@ pub fn run_completed_event(
     }
 }
 
+/// Build a `completion_round_advanced` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn completion_round_advanced_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    source_stage: StageId,
+    from_round: u32,
+    to_round: u32,
+    amendment_count: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::CompletionRoundAdvanced,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "source_stage": source_stage.as_str(),
+            "from_round": from_round,
+            "to_round": to_round,
+            "amendment_count": amendment_count,
+        }),
+    }
+}
+
+/// Build an `amendment_queued` journal event.
+pub fn amendment_queued_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    amendment_id: &str,
+    source_stage: StageId,
+    body: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::AmendmentQueued,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "amendment_id": amendment_id,
+            "source_stage": source_stage.as_str(),
+            "body": body,
+        }),
+    }
+}
+
 /// Build a `run_failed` journal event.
 pub fn run_failed_event(
     sequence: u64,

@@ -139,10 +139,21 @@ pub struct RollbackPointMeta {
     pub rollback_count: u32,
 }
 
+/// A typed queued amendment record for durable persistence.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct QueuedAmendment {
+    pub amendment_id: String,
+    pub source_stage: StageId,
+    pub source_cycle: u32,
+    pub source_completion_round: u32,
+    pub body: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Amendment queue state tracked in the canonical run snapshot.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AmendmentQueueState {
-    pub pending: Vec<serde_json::Value>,
+    pub pending: Vec<QueuedAmendment>,
     pub processed_count: u32,
 }
 

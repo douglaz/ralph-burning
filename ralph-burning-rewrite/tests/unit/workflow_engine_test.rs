@@ -8,8 +8,9 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
+    FsProjectStore, FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+    FsRuntimeLogWriteStore, FsSessionStore,
 };
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
@@ -150,6 +151,7 @@ async fn happy_path_standard_run_completes() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -224,6 +226,7 @@ async fn happy_path_prompt_review_disabled() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -300,6 +303,7 @@ async fn run_start_rejects_already_running() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -342,6 +346,7 @@ async fn run_start_rejects_completed_project() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -376,6 +381,7 @@ async fn preflight_failure_leaves_state_unchanged() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -550,6 +556,7 @@ async fn stage_entered_journal_failure_persists_failed_state() {
         &failing_journal,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -611,6 +618,7 @@ async fn run_started_journal_failure_persists_failed_state() {
         &failing_journal,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -662,6 +670,7 @@ async fn journal_failure_after_payload_rolls_back_and_fails_run() {
         &failing_journal,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -727,6 +736,7 @@ async fn snapshot_failure_during_stage_commit_rolls_back_without_journal_leak() 
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -911,6 +921,7 @@ async fn leaked_payload_cleanup_on_write_failure() {
         &FsJournalStore,
         &leaking_store,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -976,6 +987,7 @@ async fn payload_artifact_write_failure_persists_failed_state() {
         &FsJournalStore,
         &failing_artifact,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1260,6 +1272,7 @@ async fn retry_exhaustion_transitions_run_to_failed_state() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1307,6 +1320,7 @@ async fn retry_success_on_second_attempt_completes_run() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1362,6 +1376,7 @@ async fn remediation_cycle_is_triggered_by_qa_request_changes() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1422,6 +1437,7 @@ async fn remediation_limit_exceeded_fails_the_run() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1485,6 +1501,7 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
         &failing_journal,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1507,6 +1524,7 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
         &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1566,6 +1584,7 @@ async fn resume_from_failed_run_skips_completed_stages() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1582,6 +1601,7 @@ async fn resume_from_failed_run_skips_completed_stages() {
         &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1638,6 +1658,7 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1661,6 +1682,7 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
         &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1710,6 +1732,7 @@ async fn cancellation_halts_retry_loop() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1759,6 +1782,7 @@ async fn cancellation_between_retry_attempts_does_not_start_next_attempt() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &log_writer,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1815,6 +1839,7 @@ async fn conditionally_approved_queues_amendments_and_proceeds() {
         &FsJournalStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
         base_dir,
         &pid,
         &config,
@@ -1827,11 +1852,306 @@ async fn conditionally_approved_queues_amendments_and_proceeds() {
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
+    // Non-late-stage ConditionallyApproved does not queue amendments (SC-CR-005).
+    assert!(
+        snapshot.amendment_queue.pending.is_empty(),
+        "non-late-stage ConditionallyApproved should not queue amendments"
+    );
+}
+
+// ── Completion Round Tests ──────────────────────────────────────────────────
+
+fn rejected_validation_payload() -> Value {
+    json!({
+        "outcome": "rejected",
+        "evidence": ["failed review"],
+        "findings_or_gaps": ["critical issue"],
+        "follow_up_or_amendments": [],
+    })
+}
+
+#[tokio::test]
+async fn late_stage_conditionally_approved_triggers_completion_round_advancement() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-alpha");
+
+    // CompletionPanel returns conditionally_approved on first call, approved on second.
+    // AcceptanceQa and FinalReview return approved.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::CompletionPanel,
+                vec![
+                    conditionally_approved_payload(&["tighten the acceptance note"]),
+                    approved_validation_payload(),
+                ],
+            ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2, "should be completion round 2");
+    assert!(
+        snapshot.amendment_queue.pending.is_empty(),
+        "amendments should be drained after planning commit"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let amendment_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::AmendmentQueued)
+        .collect();
+    assert!(
+        !amendment_events.is_empty(),
+        "should have amendment_queued events"
+    );
     assert_eq!(
-        snapshot.amendment_queue.pending,
-        vec![
-            json!("tighten the acceptance note"),
-            json!("add one QA case")
-        ]
+        amendment_events[0].details["body"],
+        "tighten the acceptance note"
+    );
+
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1, "should have one completion_round_advanced event");
+    assert_eq!(round_events[0].details["from_round"], 1);
+    assert_eq!(round_events[0].details["to_round"], 2);
+    assert_eq!(round_events[0].details["source_stage"], "completion_panel");
+
+    // Planning should be entered twice (once for initial, once for round 2).
+    let planning_entered =
+        stage_events(&events, JournalEventType::StageEntered, "planning");
+    assert_eq!(planning_entered.len(), 2, "planning entered twice");
+
+    // Check that no amendment files remain on disk.
+    let amendments_dir = base_dir
+        .join(".ralph-burning/projects/cr-alpha/amendments");
+    if amendments_dir.is_dir() {
+        let files: Vec<_> = std::fs::read_dir(&amendments_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        assert!(files.is_empty(), "amendment files should be drained from disk");
+    }
+}
+
+#[tokio::test]
+async fn late_stage_rejected_causes_terminal_failure() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-gamma");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload(StageId::CompletionPanel, rejected_validation_payload()),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err(), "run should fail on rejected");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert!(
+        round_events.is_empty(),
+        "no completion_round_advanced event should exist on rejection"
+    );
+}
+
+#[tokio::test]
+async fn late_stage_approved_advances_to_next_late_stage() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-delta");
+
+    // All stages return approved (default behavior of StubBackendAdapter).
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 1, "should complete in round 1");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    // Verify completion_panel -> acceptance_qa -> final_review progression.
+    let cp_completed = stage_events(&events, JournalEventType::StageCompleted, "completion_panel");
+    let aq_completed = stage_events(&events, JournalEventType::StageCompleted, "acceptance_qa");
+    let fr_completed = stage_events(&events, JournalEventType::StageCompleted, "final_review");
+    assert_eq!(cp_completed.len(), 1);
+    assert_eq!(aq_completed.len(), 1);
+    assert_eq!(fr_completed.len(), 1);
+}
+
+#[tokio::test]
+async fn late_stage_request_changes_triggers_completion_round_like_conditional() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-beta");
+
+    // AcceptanceQa returns request_changes on first invocation, approved on second.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::AcceptanceQa,
+                vec![
+                    request_changes_payload(&["fix acceptance criteria"]),
+                    approved_validation_payload(),
+                ],
+            ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1);
+    assert_eq!(round_events[0].details["source_stage"], "acceptance_qa");
+}
+
+#[tokio::test]
+async fn cycle_advanced_emitted_when_entering_implementation_from_completion_round() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-kappa");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::CompletionPanel,
+                vec![
+                    conditionally_approved_payload(&["minor fix"]),
+                    approved_validation_payload(),
+                ],
+            ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+
+    // Should have completion_round_advanced followed by cycle_advanced.
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1);
+
+    let cycle_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CycleAdvanced)
+        .collect();
+    assert!(
+        !cycle_events.is_empty(),
+        "cycle_advanced should be emitted when entering implementation from completion round"
     );
 }

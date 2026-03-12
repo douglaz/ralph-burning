@@ -15,11 +15,11 @@ use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, LogLevel, PayloadRecord,
-    RunSnapshot, RunStatus, RuntimeLogEntry,
+    QueuedAmendment, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use crate::contexts::project_run_record::service::{
-    ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort, RunSnapshotPort,
-    RunSnapshotWritePort, RuntimeLogWritePort,
+    AmendmentQueuePort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
+    RunSnapshotPort, RunSnapshotWritePort, RuntimeLogWritePort,
 };
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
@@ -151,6 +151,7 @@ pub async fn execute_standard_run<A, R, S>(
     journal_store: &dyn JournalStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     effective_config: &EffectiveConfig,
@@ -167,6 +168,7 @@ where
         journal_store,
         artifact_write,
         log_write,
+        amendment_queue_port,
         base_dir,
         project_id,
         effective_config,
@@ -184,6 +186,7 @@ pub async fn execute_standard_run_with_retry<A, R, S>(
     journal_store: &dyn JournalStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     effective_config: &EffectiveConfig,
@@ -280,6 +283,7 @@ where
         journal_store,
         artifact_write,
         log_write,
+        amendment_queue_port,
         base_dir,
         project_id,
         &run_id,
@@ -292,6 +296,7 @@ where
         cancellation_token,
         ExecutionOrigin::Start,
         None,
+        effective_config,
     )
     .await?;
 
@@ -307,6 +312,7 @@ pub async fn resume_standard_run<A, R, S>(
     artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     effective_config: &EffectiveConfig,
@@ -324,6 +330,7 @@ where
         artifact_store,
         artifact_write,
         log_write,
+        amendment_queue_port,
         base_dir,
         project_id,
         effective_config,
@@ -342,6 +349,7 @@ pub async fn resume_standard_run_with_retry<A, R, S>(
     artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     effective_config: &EffectiveConfig,
@@ -387,6 +395,9 @@ where
         agent_service.resolver(),
         Some(&workspace_defaults),
     )?;
+    // Reconcile amendments from disk into snapshot before deriving resume state.
+    reconcile_amendments_from_disk(&mut snapshot, amendment_queue_port, base_dir, project_id)?;
+
     let resume_state = derive_resume_state(&events, &snapshot, &stage_plan)?;
     let implementation_context = derive_resume_implementation_context(
         artifact_store,
@@ -452,6 +463,7 @@ where
         journal_store,
         artifact_write,
         log_write,
+        amendment_queue_port,
         base_dir,
         project_id,
         &resume_state.run_id,
@@ -464,6 +476,7 @@ where
         cancellation_token,
         ExecutionOrigin::Resume,
         implementation_context,
+        effective_config,
     )
     .await?;
 
@@ -477,6 +490,7 @@ async fn execute_standard_run_internal<A, R, S>(
     journal_store: &dyn JournalStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
@@ -489,6 +503,7 @@ async fn execute_standard_run_internal<A, R, S>(
     cancellation_token: CancellationToken,
     origin: ExecutionOrigin,
     mut implementation_context: Option<Value>,
+    effective_config: &EffectiveConfig,
 ) -> AppResult<RunOutcome>
 where
     A: AgentExecutionPort,
@@ -498,6 +513,7 @@ where
     let project_root = project_root_path(base_dir, project_id);
     let mut stage_index = start_stage_index;
     let mut cursor = start_cursor;
+    let _ = effective_config;
 
     while stage_index < stage_plan.len() {
         let stage_entry = &stage_plan[stage_index];
@@ -508,6 +524,14 @@ where
             cursor.attempt,
             cursor.completion_round,
         )?;
+
+        // Inject pending amendments into planning invocation context.
+        let planning_amendments: Option<Vec<QueuedAmendment>> =
+            if stage_id == StageId::Planning && !snapshot.amendment_queue.pending.is_empty() {
+                Some(snapshot.amendment_queue.pending.clone())
+            } else {
+                None
+            };
 
         let (completed_cursor, bundle) = execute_stage_with_retry(
             agent_service,
@@ -527,6 +551,9 @@ where
             implementation_context
                 .as_ref()
                 .filter(|_| stage_id == StageId::Implementation),
+            planning_amendments
+                .as_deref()
+                .filter(|_| stage_id == StageId::Planning),
             &project_root,
         )
         .await?;
@@ -589,8 +616,178 @@ where
         if let Some(outcome) = validation_outcome(&bundle.payload) {
             match outcome {
                 ReviewOutcome::Approved => {}
+                ReviewOutcome::ConditionallyApproved | ReviewOutcome::RequestChanges
+                    if is_late_stage(stage_id) =>
+                {
+                    // Late-stage conditional approval or request changes:
+                    // Queue durable amendments, advance completion round, restart from planning.
+                    let follow_ups = validation_follow_ups(&bundle.payload);
+                    let amendments = build_queued_amendments(
+                        follow_ups,
+                        stage_id,
+                        cursor.cycle,
+                        cursor.completion_round,
+                        run_id,
+                    );
+
+                    // Persist amendment files atomically to disk first.
+                    for amendment in &amendments {
+                        if let Err(error) = amendment_queue_port.write_amendment(
+                            base_dir,
+                            project_id,
+                            amendment,
+                        ) {
+                            // Failure invariant: if amendment persistence fails, no queue
+                            // entry becomes visible in run.json.
+                            return fail_run_result(
+                                &AppError::AmendmentQueueError {
+                                    details: format!(
+                                        "failed to persist amendment '{}': {}",
+                                        amendment.amendment_id, error
+                                    ),
+                                },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                    }
+
+                    // Emit amendment_queued journal events.
+                    for amendment in &amendments {
+                        *seq += 1;
+                        let amendment_event = journal::amendment_queued_event(
+                            *seq,
+                            Utc::now(),
+                            run_id,
+                            &amendment.amendment_id,
+                            amendment.source_stage,
+                            &amendment.body,
+                        );
+                        let event_line = journal::serialize_event(&amendment_event)?;
+                        if let Err(error) =
+                            journal_store.append_event(base_dir, project_id, &event_line)
+                        {
+                            *seq -= 1;
+                            return fail_run_result(
+                                &AppError::AmendmentQueueError {
+                                    details: format!(
+                                        "failed to persist amendment_queued event: {}",
+                                        error
+                                    ),
+                                },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                    }
+
+                    // Add amendments to snapshot queue.
+                    snapshot.amendment_queue.pending.extend(amendments);
+
+                    // Emit completion_round_advanced event.
+                    let from_round = cursor.completion_round;
+                    let to_round = from_round + 1;
+                    let amendment_count = snapshot.amendment_queue.pending.len() as u32;
+                    *seq += 1;
+                    let round_event = journal::completion_round_advanced_event(
+                        *seq,
+                        Utc::now(),
+                        run_id,
+                        stage_id,
+                        from_round,
+                        to_round,
+                        amendment_count,
+                    );
+                    let round_event_line = journal::serialize_event(&round_event)?;
+                    if let Err(error) =
+                        journal_store.append_event(base_dir, project_id, &round_event_line)
+                    {
+                        *seq -= 1;
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist completion_round_advanced event: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Advance completion round and restart from planning.
+                    let planning_index = stage_index_for(stage_plan, StageId::Planning)?;
+                    let next_cursor = cursor.advance_completion_round(StageId::Planning);
+                    snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: next_cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: completion round {} -> {}",
+                        from_round,
+                        next_cursor.stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist completion round cursor: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    implementation_context = None;
+                    stage_index = planning_index;
+                    cursor = next_cursor;
+                    continue;
+                }
                 ReviewOutcome::ConditionallyApproved => {
-                    append_amendments(snapshot, validation_follow_ups(&bundle.payload));
+                    // Non-late-stage ConditionallyApproved: accumulate amendments
+                    // in snapshot but do NOT trigger completion round advancement.
+                    // These are informational and do not block progression.
                 }
                 ReviewOutcome::RequestChanges if is_remediation_stage(stage_id) => {
                     let next_cycle = cursor.cycle + 1;
@@ -719,11 +916,114 @@ where
             }
         }
 
+        // After planning commit succeeds, drain pending amendments.
+        if stage_id == StageId::Planning && !snapshot.amendment_queue.pending.is_empty() {
+            let drained = snapshot.amendment_queue.pending.len() as u32;
+            // Drain from disk first.
+            if let Err(error) = amendment_queue_port.drain_amendments(base_dir, project_id) {
+                return fail_run_result(
+                    &AppError::AmendmentQueueError {
+                        details: format!("failed to drain amendment files from disk: {}", error),
+                    },
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+            // Clear from snapshot.
+            snapshot.amendment_queue.processed_count += drained;
+            snapshot.amendment_queue.pending.clear();
+            if let Err(error) =
+                run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+            {
+                return fail_run_result(
+                    &AppError::StageCommitFailed {
+                        stage_id,
+                        details: format!(
+                            "failed to persist snapshot after amendment drain: {}",
+                            error
+                        ),
+                    },
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+        }
+
+        // When entering implementation from a completion round restart,
+        // emit cycle_advanced since we're starting new implementation work.
+        if stage_id == StageId::Planning
+            && cursor.completion_round > 1
+            && stage_index + 1 < stage_plan.len()
+            && stage_plan[stage_index + 1].stage_id == StageId::Implementation
+        {
+            let next_cycle = cursor.cycle + 1;
+            record_cycle_advance(snapshot, next_cycle);
+            *seq += 1;
+            let cycle_event = journal::cycle_advanced_event(
+                *seq,
+                Utc::now(),
+                run_id,
+                StageId::Planning,
+                cursor.cycle,
+                next_cycle,
+                StageId::Implementation,
+            );
+            let cycle_event_line = journal::serialize_event(&cycle_event)?;
+            if let Err(error) =
+                journal_store.append_event(base_dir, project_id, &cycle_event_line)
+            {
+                *seq -= 1;
+                return fail_run_result(
+                    &AppError::StageCommitFailed {
+                        stage_id,
+                        details: format!(
+                            "failed to persist cycle_advanced event for completion round: {}",
+                            error
+                        ),
+                    },
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+            // Update cursor cycle for subsequent stages.
+            cursor = StageCursor::new(
+                cursor.stage,
+                next_cycle,
+                cursor.attempt,
+                cursor.completion_round,
+            )?;
+        }
+
         if stage_index + 1 == stage_plan.len() {
             complete_run(
                 snapshot,
                 run_snapshot_write,
                 journal_store,
+                amendment_queue_port,
                 base_dir,
                 project_id,
                 run_id,
@@ -774,6 +1074,7 @@ where
         snapshot,
         run_snapshot_write,
         journal_store,
+        amendment_queue_port,
         base_dir,
         project_id,
         run_id,
@@ -799,6 +1100,7 @@ async fn execute_stage_with_retry<A, R, S>(
     cancellation_token: CancellationToken,
     origin: ExecutionOrigin,
     implementation_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
     project_root: &Path,
 ) -> AppResult<(StageCursor, ValidatedBundle)>
 where
@@ -924,7 +1226,7 @@ where
             resolved_target: stage_entry.target.clone(),
             payload: InvocationPayload {
                 prompt: format!("Execute stage: {}", stage_id.display_name()),
-                context: invocation_context(&cursor, implementation_context),
+                context: invocation_context(&cursor, implementation_context, pending_amendments),
             },
             timeout: Duration::from_secs(300),
             cancellation_token: cancellation_token.clone(),
@@ -1177,11 +1479,15 @@ fn complete_run(
     snapshot: &mut RunSnapshot,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
 ) -> AppResult<()> {
+    // Completion guard: block completion if pending amendments remain.
+    completion_guard(snapshot, amendment_queue_port, base_dir, project_id)?;
+
     snapshot.status = RunStatus::Completed;
     snapshot.active_run = None;
     snapshot.completion_rounds = snapshot.completion_rounds.max(1);
@@ -1303,15 +1609,107 @@ fn validation_follow_ups(payload: &StagePayload) -> &[String] {
     }
 }
 
-fn append_amendments(snapshot: &mut RunSnapshot, amendments: &[String]) {
+fn is_remediation_stage(stage_id: StageId) -> bool {
+    matches!(stage_id, StageId::Qa | StageId::Review)
+}
+
+/// Returns true if this is a late stage (completion_panel, acceptance_qa, final_review).
+fn is_late_stage(stage_id: StageId) -> bool {
+    matches!(
+        stage_id,
+        StageId::CompletionPanel | StageId::AcceptanceQa | StageId::FinalReview
+    )
+}
+
+/// Build typed QueuedAmendment records from follow-up strings.
+fn build_queued_amendments(
+    follow_ups: &[String],
+    source_stage: StageId,
+    source_cycle: u32,
+    source_completion_round: u32,
+    run_id: &RunId,
+) -> Vec<QueuedAmendment> {
+    let now = Utc::now();
+    follow_ups
+        .iter()
+        .enumerate()
+        .map(|(idx, body)| QueuedAmendment {
+            amendment_id: format!(
+                "{}-{}-cr{}-amd{}",
+                run_id.as_str(),
+                source_stage.as_str(),
+                source_completion_round,
+                idx + 1
+            ),
+            source_stage,
+            source_cycle,
+            source_completion_round,
+            body: body.clone(),
+            created_at: now,
+        })
+        .collect()
+}
+
+/// Completion guard: blocks run_completed when pending amendments remain.
+fn completion_guard(
+    snapshot: &RunSnapshot,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    // Check snapshot queue.
+    if !snapshot.amendment_queue.pending.is_empty() {
+        return Err(AppError::CompletionBlocked {
+            details: format!(
+                "completion blocked: {} pending amendments remain in snapshot queue",
+                snapshot.amendment_queue.pending.len()
+            ),
+        });
+    }
+
+    // Check disk.
+    if amendment_queue_port.has_pending_amendments(base_dir, project_id)? {
+        return Err(AppError::CompletionBlocked {
+            details: "completion blocked: pending amendment files exist on disk".to_owned(),
+        });
+    }
+
+    Ok(())
+}
+
+/// Reconcile amendments from disk into the snapshot during resume.
+fn reconcile_amendments_from_disk(
+    snapshot: &mut RunSnapshot,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    let disk_amendments = amendment_queue_port.list_pending_amendments(base_dir, project_id)?;
+    if disk_amendments.is_empty() {
+        return Ok(());
+    }
+
+    // Merge disk amendments into snapshot, avoiding duplicates by ID.
+    let existing_ids: std::collections::HashSet<String> = snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .map(|a| a.amendment_id.clone())
+        .collect();
+
+    for amendment in disk_amendments {
+        if !existing_ids.contains(&amendment.amendment_id) {
+            snapshot.amendment_queue.pending.push(amendment);
+        }
+    }
+
+    // Sort by created_at for deterministic ordering.
     snapshot
         .amendment_queue
         .pending
-        .extend(amendments.iter().cloned().map(Value::String));
-}
+        .sort_by(|a, b| a.created_at.cmp(&b.created_at));
 
-fn is_remediation_stage(stage_id: StageId) -> bool {
-    matches!(stage_id, StageId::Qa | StageId::Review)
+    Ok(())
 }
 
 fn remediation_context(stage_id: StageId, next_cycle: u32, bundle: &ValidatedBundle) -> Value {
@@ -1336,7 +1734,11 @@ fn remediation_context_from_validation(
     })
 }
 
-fn invocation_context(cursor: &StageCursor, implementation_context: Option<&Value>) -> Value {
+fn invocation_context(
+    cursor: &StageCursor,
+    implementation_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
+) -> Value {
     let mut context = json!({
         "cycle": cursor.cycle,
         "attempt": cursor.attempt,
@@ -1345,6 +1747,13 @@ fn invocation_context(cursor: &StageCursor, implementation_context: Option<&Valu
 
     if let Some(implementation_context) = implementation_context {
         context["remediation"] = implementation_context.clone();
+    }
+
+    if let Some(amendments) = pending_amendments {
+        if !amendments.is_empty() {
+            let amendment_bodies: Vec<&str> = amendments.iter().map(|a| a.body.as_str()).collect();
+            context["pending_amendments"] = json!(amendment_bodies);
+        }
     }
 
     context
@@ -1521,11 +1930,13 @@ fn derive_resume_state(
     let run_id = RunId::new(detail_string(run_started, "run_id")?.to_owned())?;
     let started_at = run_started.timestamp;
     let implementation_stage_index = stage_index_for(stage_plan, StageId::Implementation)?;
+    let planning_stage_index = stage_index_for(stage_plan, StageId::Planning)?;
     let mut current_cycle = snapshot
         .cycle_history
         .last()
         .map(|entry| entry.cycle)
         .unwrap_or(1);
+    let mut current_completion_round = snapshot.completion_rounds.max(1);
     let mut next_stage_index = 0usize;
     let mut last_completed_stage = None;
 
@@ -1541,6 +1952,11 @@ fn derive_resume_state(
                 current_cycle = detail_u32(event, "to_cycle").unwrap_or(current_cycle + 1);
                 next_stage_index = implementation_stage_index;
             }
+            crate::contexts::project_run_record::model::JournalEventType::CompletionRoundAdvanced => {
+                current_completion_round = detail_u32(event, "to_round")
+                    .unwrap_or(current_completion_round + 1);
+                next_stage_index = planning_stage_index;
+            }
             crate::contexts::project_run_record::model::JournalEventType::RunCompleted => {
                 next_stage_index = stage_plan.len();
             }
@@ -1555,6 +1971,11 @@ fn derive_resume_state(
         next_stage_index = implementation_stage_index;
     }
 
+    // If pending amendments exist, resume from planning to process them.
+    if !snapshot.amendment_queue.pending.is_empty() && next_stage_index > planning_stage_index {
+        next_stage_index = planning_stage_index;
+    }
+
     if next_stage_index >= stage_plan.len() {
         return Err(AppError::ResumeFailed {
             reason: "all standard-flow stages are already complete; there is nothing to resume"
@@ -1562,7 +1983,7 @@ fn derive_resume_state(
         });
     }
 
-    let completion_round = snapshot.completion_rounds.max(1);
+    let completion_round = current_completion_round;
     let cursor = StageCursor::new(
         stage_plan[next_stage_index].stage_id,
         current_cycle.max(1),
