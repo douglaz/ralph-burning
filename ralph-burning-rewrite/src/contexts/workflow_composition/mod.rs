@@ -22,6 +22,15 @@ pub struct FlowDefinition {
     pub validation_profile: ValidationProfile,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FlowSemantics {
+    pub planning_stage: StageId,
+    pub execution_stage: StageId,
+    pub remediation_trigger_stages: &'static [StageId],
+    pub late_stages: &'static [StageId],
+    pub prompt_review_stage: Option<StageId>,
+}
+
 const STANDARD_STAGES: [StageId; 8] = [
     StageId::PromptReview,
     StageId::Planning,
@@ -53,6 +62,19 @@ const CI_IMPROVEMENT_STAGES: [StageId; 4] = [
     StageId::CiValidation,
     StageId::Review,
 ];
+
+const STANDARD_REMEDIATION_TRIGGER_STAGES: [StageId; 2] = [StageId::Qa, StageId::Review];
+const STANDARD_LATE_STAGES: [StageId; 3] = [
+    StageId::CompletionPanel,
+    StageId::AcceptanceQa,
+    StageId::FinalReview,
+];
+const QUICK_DEV_REMEDIATION_TRIGGER_STAGES: [StageId; 1] = [StageId::Review];
+const QUICK_DEV_LATE_STAGES: [StageId; 1] = [StageId::FinalReview];
+const DOCS_CHANGE_REMEDIATION_TRIGGER_STAGES: [StageId; 2] =
+    [StageId::DocsValidation, StageId::Review];
+const CI_IMPROVEMENT_REMEDIATION_TRIGGER_STAGES: [StageId; 2] =
+    [StageId::CiValidation, StageId::Review];
 
 const FLOW_DEFINITIONS: [FlowDefinition; 4] = [
     FlowDefinition {
@@ -114,4 +136,51 @@ pub fn flow_definition(preset: FlowPreset) -> &'static FlowDefinition {
 pub fn flow_definition_by_id(flow_id: &str) -> AppResult<&'static FlowDefinition> {
     let preset = flow_id.parse::<FlowPreset>()?;
     Ok(flow_definition(preset))
+}
+
+pub fn flow_semantics(preset: FlowPreset) -> FlowSemantics {
+    match preset {
+        FlowPreset::Standard => FlowSemantics {
+            planning_stage: StageId::Planning,
+            execution_stage: StageId::Implementation,
+            remediation_trigger_stages: &STANDARD_REMEDIATION_TRIGGER_STAGES,
+            late_stages: &STANDARD_LATE_STAGES,
+            prompt_review_stage: Some(StageId::PromptReview),
+        },
+        FlowPreset::QuickDev => FlowSemantics {
+            planning_stage: StageId::PlanAndImplement,
+            execution_stage: StageId::ApplyFixes,
+            remediation_trigger_stages: &QUICK_DEV_REMEDIATION_TRIGGER_STAGES,
+            late_stages: &QUICK_DEV_LATE_STAGES,
+            prompt_review_stage: None,
+        },
+        FlowPreset::DocsChange => FlowSemantics {
+            planning_stage: StageId::DocsPlan,
+            execution_stage: StageId::DocsUpdate,
+            remediation_trigger_stages: &DOCS_CHANGE_REMEDIATION_TRIGGER_STAGES,
+            late_stages: &[],
+            prompt_review_stage: None,
+        },
+        FlowPreset::CiImprovement => FlowSemantics {
+            planning_stage: StageId::CiPlan,
+            execution_stage: StageId::CiUpdate,
+            remediation_trigger_stages: &CI_IMPROVEMENT_REMEDIATION_TRIGGER_STAGES,
+            late_stages: &[],
+            prompt_review_stage: None,
+        },
+    }
+}
+
+pub fn stage_plan_for_flow(preset: FlowPreset, prompt_review_enabled: bool) -> Vec<StageId> {
+    let flow_def = flow_definition(preset);
+    let semantics = flow_semantics(preset);
+
+    flow_def
+        .stages
+        .iter()
+        .copied()
+        .filter(|stage_id| {
+            prompt_review_enabled || Some(*stage_id) != semantics.prompt_review_stage
+        })
+        .collect()
 }

@@ -2101,7 +2101,7 @@ fn delete_with_unremovable_active_pointer_restores_project() {
 
 // ── Run Start ──
 
-fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
+fn setup_project(temp_dir: &tempfile::TempDir, project_id: &str, flow: &str) {
     let prompt = write_prompt_fixture(temp_dir.path());
     let create = Command::new(binary())
         .args([
@@ -2114,7 +2114,7 @@ fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
             "--prompt",
             prompt.to_str().unwrap(),
             "--flow",
-            "standard",
+            flow,
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -2131,6 +2131,10 @@ fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
         .output()
         .expect("select project");
     assert!(select.status.success());
+}
+
+fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
+    setup_project(temp_dir, project_id, "standard");
 }
 
 #[test]
@@ -2153,6 +2157,84 @@ fn run_start_completes_standard_flow_end_to_end() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Starting run for project"));
     assert!(stdout.contains("Run completed successfully"));
+}
+
+#[test]
+fn run_start_completes_docs_change_flow_end_to_end() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_project(&temp_dir, "docs-run", "docs_change");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        output.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload_files: Vec<_> = fs::read_dir(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/docs-run/history/payloads"),
+    )
+    .expect("read payloads dir")
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+    .collect();
+    assert_eq!(payload_files.len(), 4);
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/docs-run/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(journal.contains("\"docs_plan\""));
+    assert!(journal.contains("\"docs_update\""));
+    assert!(journal.contains("\"docs_validation\""));
+}
+
+#[test]
+fn run_start_completes_ci_improvement_flow_end_to_end() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_project(&temp_dir, "ci-run", "ci_improvement");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        output.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload_files: Vec<_> = fs::read_dir(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/ci-run/history/payloads"),
+    )
+    .expect("read payloads dir")
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+    .collect();
+    assert_eq!(payload_files.len(), 4);
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/ci-run/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(journal.contains("\"ci_plan\""));
+    assert!(journal.contains("\"ci_update\""));
+    assert!(journal.contains("\"ci_validation\""));
 }
 
 #[test]
@@ -2298,7 +2380,7 @@ fn run_start_status_shows_completed_after_run() {
 }
 
 #[test]
-fn run_start_rejects_non_standard_flow() {
+fn run_start_rejects_quick_dev_flow() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
 
@@ -2335,7 +2417,7 @@ fn run_start_rejects_non_standard_flow() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("not yet supported"),
-        "should reject non-standard flow, got: {stderr}"
+        "should reject quick_dev flow, got: {stderr}"
     );
 }
 

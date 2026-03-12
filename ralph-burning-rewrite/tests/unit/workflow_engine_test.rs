@@ -35,7 +35,7 @@ fn setup_workspace(base_dir: &Path) {
     workspace_governance::initialize_workspace(base_dir, Utc::now()).unwrap();
 }
 
-fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
+fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset) -> ProjectId {
     let pid = ProjectId::new(project_id).unwrap();
     let store = FsProjectStore;
     let journal_store = FsJournalStore;
@@ -46,7 +46,7 @@ fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
         CreateProjectInput {
             id: pid.clone(),
             name: format!("Test {}", project_id),
-            flow: FlowPreset::Standard,
+            flow,
             prompt_path: "prompt.md".to_owned(),
             prompt_contents: "# Test prompt".to_owned(),
             prompt_hash: "testhash123".to_owned(),
@@ -58,6 +58,10 @@ fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
     // Select as active
     workspace_governance::set_active_project(base_dir, &pid).unwrap();
     pid
+}
+
+fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
+    create_project_with_flow(base_dir, project_id, FlowPreset::Standard)
 }
 
 fn build_agent_service(
@@ -259,6 +263,294 @@ async fn happy_path_prompt_review_disabled() {
         pr_events.is_empty(),
         "prompt_review stage should not appear"
     );
+}
+
+#[tokio::test]
+async fn happy_path_docs_change_run_completes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "docs-happy", FlowPreset::DocsChange);
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.active_run.is_none());
+    assert_eq!(snapshot.completion_rounds, 1);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["docs_plan", "docs_update", "docs_validation", "review"],
+        entered
+    );
+
+    let payload_count = fs::read_dir(
+        base_dir.join(".ralph-burning/projects/docs-happy/history/payloads"),
+    )
+    .unwrap()
+    .count();
+    let artifact_count = fs::read_dir(
+        base_dir.join(".ralph-burning/projects/docs-happy/history/artifacts"),
+    )
+    .unwrap()
+    .count();
+    assert_eq!(payload_count, 4);
+    assert_eq!(artifact_count, 4);
+}
+
+#[tokio::test]
+async fn happy_path_ci_improvement_run_completes() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "ci-happy", FlowPreset::CiImprovement);
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::CiImprovement,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.active_run.is_none());
+    assert_eq!(snapshot.completion_rounds, 1);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::StageEntered)
+        .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
+        .collect();
+    assert_eq!(
+        vec!["ci_plan", "ci_update", "ci_validation", "review"],
+        entered
+    );
+
+    let payload_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/ci-happy/history/payloads"))
+            .unwrap()
+            .count();
+    let artifact_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/ci-happy/history/artifacts"))
+            .unwrap()
+            .count();
+    assert_eq!(payload_count, 4);
+    assert_eq!(artifact_count, 4);
+}
+
+#[tokio::test]
+async fn docs_change_remediation_restarts_from_docs_update() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "docs-remediation", FlowPreset::DocsChange);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::DocsValidation,
+        vec![
+            request_changes_payload(&["fix the broken link targets"]),
+            approved_validation_payload(),
+        ],
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "docs_update").len(),
+        2
+    );
+
+    let cycle_advanced: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
+        .collect();
+    assert_eq!(cycle_advanced.len(), 1);
+    assert_eq!(cycle_advanced[0].details["resume_stage"], "docs_update");
+
+    let docs_update_contexts = adapter_handle.contexts_for(StageId::DocsUpdate);
+    assert_eq!(docs_update_contexts.len(), 2);
+    assert_eq!(
+        docs_update_contexts[1]["remediation"]["follow_up_or_amendments"][0],
+        "fix the broken link targets"
+    );
+}
+
+#[tokio::test]
+async fn ci_improvement_rejected_validation_fails_run() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "ci-rejected", FlowPreset::CiImprovement);
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload(StageId::CiValidation, rejected_validation_payload()),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::CiImprovement,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_err());
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Failed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_failed = events
+        .iter()
+        .rev()
+        .find(|event| event.event_type == JournalEventType::RunFailed)
+        .expect("run_failed");
+    assert_eq!(run_failed.details["failure_class"], "qa_review_outcome_failure");
+}
+
+#[tokio::test]
+async fn resume_from_failed_docs_change_run_skips_completed_stages() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "docs-resume", FlowPreset::DocsChange);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let failing_agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::DocsUpdate, 3),
+    );
+    let first_result = engine::execute_run(
+        &failing_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err());
+
+    let resume_agent_service = build_agent_service();
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "docs_plan").len(),
+        1
+    );
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "docs_update").len(),
+        4
+    );
+
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "docs_update");
 }
 
 // ── Precondition failure tests ──────────────────────────────────────────────
@@ -1866,7 +2158,7 @@ fn rejected_validation_payload() -> Value {
         "outcome": "rejected",
         "evidence": ["failed review"],
         "findings_or_gaps": ["critical issue"],
-        "follow_up_or_amendments": [],
+        "follow_up_or_amendments": ["rework the rejected stage output"],
     })
 }
 

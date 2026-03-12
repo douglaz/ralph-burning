@@ -33,20 +33,11 @@ use crate::shared::error::{AppError, AppResult};
 
 use super::contracts::{self, ValidatedBundle};
 use super::retry_policy::RetryPolicy;
+use super::{flow_semantics, stage_plan_for_flow, FlowSemantics};
 
-/// Derives the executable stage plan for the standard flow given prompt_review config.
+/// Compatibility wrapper for the legacy standard-flow helper.
 pub fn standard_stage_plan(prompt_review_enabled: bool) -> Vec<StageId> {
-    let flow_def = super::flow_definition(FlowPreset::Standard);
-    if prompt_review_enabled {
-        flow_def.stages.to_vec()
-    } else {
-        flow_def
-            .stages
-            .iter()
-            .copied()
-            .filter(|s| *s != StageId::PromptReview)
-            .collect()
-    }
+    stage_plan_for_flow(FlowPreset::Standard, prompt_review_enabled)
 }
 
 /// Deterministic stage-to-role mapping per spec.
@@ -142,9 +133,8 @@ struct ResumeState {
     cursor: StageCursor,
 }
 
-/// The standard-flow orchestration engine.
 #[allow(clippy::too_many_arguments)]
-pub async fn execute_standard_run<A, R, S>(
+pub async fn execute_run<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
@@ -154,6 +144,7 @@ pub async fn execute_standard_run<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
+    preset: FlowPreset,
     effective_config: &EffectiveConfig,
 ) -> AppResult<()>
 where
@@ -161,7 +152,7 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    execute_standard_run_with_retry(
+    execute_run_with_retry(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -171,6 +162,7 @@ where
         amendment_queue_port,
         base_dir,
         project_id,
+        preset,
         effective_config,
         &RetryPolicy::default_policy(),
         CancellationToken::new(),
@@ -179,7 +171,7 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn execute_standard_run_with_retry<A, R, S>(
+pub async fn execute_run_with_retry<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
@@ -189,6 +181,7 @@ pub async fn execute_standard_run_with_retry<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
+    preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
@@ -225,7 +218,8 @@ where
         });
     }
 
-    let stage_ids = standard_stage_plan(effective_config.prompt_review_enabled());
+    let stage_ids = stage_plan_for_flow(preset, effective_config.prompt_review_enabled());
+    let semantics = flow_semantics(preset);
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let stage_plan = resolve_stage_plan(
         stage_ids.as_slice(),
@@ -277,7 +271,7 @@ where
         .await;
     }
 
-    execute_standard_run_internal(
+    execute_run_internal(
         agent_service,
         run_snapshot_write,
         journal_store,
@@ -289,6 +283,7 @@ where
         &run_id,
         &mut seq,
         &mut current_snapshot,
+        semantics,
         &stage_plan,
         0,
         initial_cursor,
@@ -304,12 +299,11 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_standard_run<A, R, S>(
+pub async fn execute_standard_run<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
-    artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
@@ -322,26 +316,62 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    resume_standard_run_with_retry(
+    execute_run(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
         journal_store,
-        artifact_store,
         artifact_write,
         log_write,
         amendment_queue_port,
         base_dir,
         project_id,
+        FlowPreset::Standard,
         effective_config,
-        &RetryPolicy::default_policy(),
-        CancellationToken::new(),
     )
     .await
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn resume_standard_run_with_retry<A, R, S>(
+pub async fn execute_standard_run_with_retry<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    execute_run_with_retry(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+        FlowPreset::Standard,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_run<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
@@ -352,6 +382,46 @@ pub async fn resume_standard_run_with_retry<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
+    preset: FlowPreset,
+    effective_config: &EffectiveConfig,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    resume_run_with_retry(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+        preset,
+        effective_config,
+        &RetryPolicy::default_policy(),
+        CancellationToken::new(),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_run_with_retry<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    preset: FlowPreset,
     effective_config: &EffectiveConfig,
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
@@ -388,7 +458,8 @@ where
     }
 
     let events = journal_store.read_journal(base_dir, project_id)?;
-    let stage_ids = standard_stage_plan_for_resume(&events, effective_config)?;
+    let stage_ids = stage_plan_for_resume(preset, &events, effective_config)?;
+    let semantics = flow_semantics(preset);
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let stage_plan = resolve_stage_plan(
         stage_ids.as_slice(),
@@ -398,13 +469,14 @@ where
     // Reconcile amendments from disk into snapshot before deriving resume state.
     reconcile_amendments_from_disk(&mut snapshot, amendment_queue_port, base_dir, project_id)?;
 
-    let resume_state = derive_resume_state(&events, &snapshot, &stage_plan)?;
-    let implementation_context = derive_resume_implementation_context(
+    let resume_state = derive_resume_state(&events, &snapshot, &stage_plan, semantics)?;
+    let execution_context = derive_resume_execution_context(
         artifact_store,
         base_dir,
         project_id,
         &resume_state.cursor,
         &events,
+        semantics,
     )?;
 
     preflight_check(
@@ -457,7 +529,7 @@ where
         .await;
     }
 
-    execute_standard_run_internal(
+    execute_run_internal(
         agent_service,
         run_snapshot_write,
         journal_store,
@@ -469,13 +541,14 @@ where
         &resume_state.run_id,
         &mut seq,
         &mut snapshot,
+        semantics,
         &stage_plan,
         resume_state.stage_index,
         resume_state.cursor,
         retry_policy,
         cancellation_token,
         ExecutionOrigin::Resume,
-        implementation_context,
+        execution_context,
         effective_config,
     )
     .await?;
@@ -484,7 +557,83 @@ where
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_standard_run_internal<A, R, S>(
+pub async fn resume_standard_run<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    effective_config: &EffectiveConfig,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    resume_run(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+        FlowPreset::Standard,
+        effective_config,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn resume_standard_run_with_retry<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    resume_run_with_retry(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+        FlowPreset::Standard,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_run_internal<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
@@ -496,13 +645,14 @@ async fn execute_standard_run_internal<A, R, S>(
     run_id: &RunId,
     seq: &mut u64,
     snapshot: &mut RunSnapshot,
+    semantics: FlowSemantics,
     stage_plan: &[StagePlan],
     start_stage_index: usize,
     start_cursor: StageCursor,
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
     origin: ExecutionOrigin,
-    mut implementation_context: Option<Value>,
+    mut execution_context: Option<Value>,
     effective_config: &EffectiveConfig,
 ) -> AppResult<RunOutcome>
 where
@@ -527,7 +677,8 @@ where
 
         // Inject pending amendments into planning invocation context.
         let planning_amendments: Option<Vec<QueuedAmendment>> =
-            if stage_id == StageId::Planning && !snapshot.amendment_queue.pending.is_empty() {
+            if stage_id == semantics.planning_stage && !snapshot.amendment_queue.pending.is_empty()
+            {
                 Some(snapshot.amendment_queue.pending.clone())
             } else {
                 None
@@ -548,12 +699,12 @@ where
             retry_policy,
             cancellation_token.clone(),
             origin,
-            implementation_context
+            execution_context
                 .as_ref()
-                .filter(|_| stage_id == StageId::Implementation),
+                .filter(|_| stage_id == semantics.execution_stage),
             planning_amendments
                 .as_deref()
-                .filter(|_| stage_id == StageId::Planning),
+                .filter(|_| stage_id == semantics.planning_stage),
             &project_root,
         )
         .await?;
@@ -577,11 +728,13 @@ where
 
         cursor = completed_cursor;
 
-        if stage_id == StageId::Implementation {
-            implementation_context = None;
+        if stage_id == semantics.execution_stage {
+            execution_context = None;
         }
 
-        if stage_id == StageId::PromptReview && prompt_review_requires_pause(&bundle.payload) {
+        if Some(stage_id) == semantics.prompt_review_stage
+            && prompt_review_requires_pause(&bundle.payload)
+        {
             if let Err(error) = pause_run(
                 snapshot,
                 run_snapshot_write,
@@ -617,7 +770,7 @@ where
             match outcome {
                 ReviewOutcome::Approved => {}
                 ReviewOutcome::ConditionallyApproved | ReviewOutcome::RequestChanges
-                    if is_late_stage(stage_id) =>
+                    if semantics.late_stages.contains(&stage_id) =>
                 {
                     // Late-stage conditional approval or request changes:
                     // Queue durable amendments, advance completion round, restart from planning.
@@ -749,9 +902,9 @@ where
                         .await;
                     }
 
-                    // Advance completion round and restart from planning.
-                    let planning_index = stage_index_for(stage_plan, StageId::Planning)?;
-                    let next_cursor = cursor.advance_completion_round(StageId::Planning);
+                    // Advance completion round and restart from the flow's planning stage.
+                    let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
+                    let next_cursor = cursor.advance_completion_round(semantics.planning_stage);
                     snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
@@ -788,7 +941,7 @@ where
                         .await;
                     }
 
-                    implementation_context = None;
+                    execution_context = None;
                     stage_index = planning_index;
                     cursor = next_cursor;
                     continue;
@@ -798,7 +951,9 @@ where
                     // in snapshot but do NOT trigger completion round advancement.
                     // These are informational and do not block progression.
                 }
-                ReviewOutcome::RequestChanges if is_remediation_stage(stage_id) => {
+                ReviewOutcome::RequestChanges
+                    if semantics.remediation_trigger_stages.contains(&stage_id) =>
+                {
                     let next_cycle = cursor.cycle + 1;
                     if next_cycle > retry_policy.max_remediation_cycles() {
                         return fail_run_result(
@@ -819,9 +974,10 @@ where
                         .await;
                     }
 
-                    let next_stage_index = stage_index_for(stage_plan, StageId::Implementation)?;
-                    let next_cursor = cursor.advance_cycle(StageId::Implementation);
-                    record_cycle_advance(snapshot, next_cursor.cycle);
+                    let next_stage_index =
+                        stage_index_for(stage_plan, semantics.execution_stage)?;
+                    let next_cursor = cursor.advance_cycle(semantics.execution_stage);
+                    record_cycle_advance(snapshot, next_cursor.cycle, semantics.execution_stage);
                     *seq += 1;
                     let cycle_advanced = journal::cycle_advanced_event(
                         *seq,
@@ -830,7 +986,7 @@ where
                         stage_id,
                         cursor.cycle,
                         next_cursor.cycle,
-                        StageId::Implementation,
+                        semantics.execution_stage,
                     );
                     let cycle_advanced_line = journal::serialize_event(&cycle_advanced)?;
                     if let Err(error) =
@@ -895,7 +1051,7 @@ where
                         .await;
                     }
 
-                    implementation_context =
+                    execution_context =
                         Some(remediation_context(stage_id, next_cursor.cycle, &bundle));
                     stage_index = next_stage_index;
                     cursor = next_cursor;
@@ -926,7 +1082,7 @@ where
         }
 
         // After planning commit succeeds, drain pending amendments.
-        if stage_id == StageId::Planning && !snapshot.amendment_queue.pending.is_empty() {
+        if stage_id == semantics.planning_stage && !snapshot.amendment_queue.pending.is_empty() {
             let drained = snapshot.amendment_queue.pending.len() as u32;
             // Drain from disk first.
             if let Err(error) = amendment_queue_port.drain_amendments(base_dir, project_id) {
@@ -976,22 +1132,22 @@ where
 
         // When entering implementation from a completion round restart,
         // emit cycle_advanced since we're starting new implementation work.
-        if stage_id == StageId::Planning
+        if stage_id == semantics.planning_stage
             && cursor.completion_round > 1
             && stage_index + 1 < stage_plan.len()
-            && stage_plan[stage_index + 1].stage_id == StageId::Implementation
+            && stage_plan[stage_index + 1].stage_id == semantics.execution_stage
         {
             let next_cycle = cursor.cycle + 1;
-            record_cycle_advance(snapshot, next_cycle);
+            record_cycle_advance(snapshot, next_cycle, semantics.execution_stage);
             *seq += 1;
             let cycle_event = journal::cycle_advanced_event(
                 *seq,
                 Utc::now(),
                 run_id,
-                StageId::Planning,
+                semantics.planning_stage,
                 cursor.cycle,
                 next_cycle,
-                StageId::Implementation,
+                semantics.execution_stage,
             );
             let cycle_event_line = journal::serialize_event(&cycle_event)?;
             if let Err(error) =
@@ -1108,7 +1264,7 @@ async fn execute_stage_with_retry<A, R, S>(
     retry_policy: &RetryPolicy,
     cancellation_token: CancellationToken,
     origin: ExecutionOrigin,
-    implementation_context: Option<&Value>,
+    execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
     project_root: &Path,
 ) -> AppResult<(StageCursor, ValidatedBundle)>
@@ -1235,7 +1391,7 @@ where
             resolved_target: stage_entry.target.clone(),
             payload: InvocationPayload {
                 prompt: format!("Execute stage: {}", stage_id.display_name()),
-                context: invocation_context(&cursor, implementation_context, pending_amendments),
+                context: invocation_context(&cursor, execution_context, pending_amendments),
             },
             timeout: Duration::from_secs(300),
             cancellation_token: cancellation_token.clone(),
@@ -1635,18 +1791,6 @@ fn validation_follow_ups(payload: &StagePayload) -> &[String] {
     }
 }
 
-fn is_remediation_stage(stage_id: StageId) -> bool {
-    matches!(stage_id, StageId::Qa | StageId::Review)
-}
-
-/// Returns true if this is a late stage (completion_panel, acceptance_qa, final_review).
-fn is_late_stage(stage_id: StageId) -> bool {
-    matches!(
-        stage_id,
-        StageId::CompletionPanel | StageId::AcceptanceQa | StageId::FinalReview
-    )
-}
-
 /// Build typed QueuedAmendment records from follow-up strings.
 fn build_queued_amendments(
     follow_ups: &[String],
@@ -1764,7 +1908,7 @@ fn remediation_context_from_validation(
 
 fn invocation_context(
     cursor: &StageCursor,
-    implementation_context: Option<&Value>,
+    execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
 ) -> Value {
     let mut context = json!({
@@ -1773,8 +1917,8 @@ fn invocation_context(
         "completion_round": cursor.completion_round,
     });
 
-    if let Some(implementation_context) = implementation_context {
-        context["remediation"] = implementation_context.clone();
+    if let Some(execution_context) = execution_context {
+        context["remediation"] = execution_context.clone();
     }
 
     if let Some(amendments) = pending_amendments {
@@ -1794,16 +1938,16 @@ fn stage_index_for(stage_plan: &[StagePlan], stage_id: StageId) -> AppResult<usi
         .ok_or_else(|| AppError::CorruptRecord {
             file: "journal.ndjson".to_owned(),
             details: format!(
-                "stage '{}' is not part of the standard stage plan",
+                "stage '{}' is not part of the active stage plan",
                 stage_id
             ),
         })
 }
 
-fn record_cycle_advance(snapshot: &mut RunSnapshot, next_cycle: u32) {
+fn record_cycle_advance(snapshot: &mut RunSnapshot, next_cycle: u32, execution_stage: StageId) {
     snapshot.cycle_history.push(CycleHistoryEntry {
         cycle: next_cycle,
-        stage_id: StageId::Implementation,
+        stage_id: execution_stage,
         started_at: Utc::now(),
         completed_at: None,
     });
@@ -1813,28 +1957,34 @@ fn pending_remediation_cycle(
     snapshot: &RunSnapshot,
     current_cycle: u32,
     last_completed_stage: Option<StageId>,
+    semantics: FlowSemantics,
 ) -> Option<u32> {
     let last_entry = snapshot.cycle_history.last()?;
-    if !matches!(last_completed_stage, Some(stage_id) if is_remediation_stage(stage_id)) {
+    if !matches!(
+        last_completed_stage,
+        Some(stage_id) if semantics.remediation_trigger_stages.contains(&stage_id)
+    ) {
         return None;
     }
 
-    (last_entry.stage_id == StageId::Implementation && last_entry.cycle > current_cycle)
+    (last_entry.stage_id == semantics.execution_stage && last_entry.cycle > current_cycle)
         .then_some(last_entry.cycle)
 }
 
-fn derive_resume_implementation_context(
+fn derive_resume_execution_context(
     artifact_store: &dyn ArtifactStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
     cursor: &StageCursor,
     events: &[JournalEvent],
+    semantics: FlowSemantics,
 ) -> AppResult<Option<Value>> {
-    if cursor.stage != StageId::Implementation || cursor.cycle <= 1 {
+    if cursor.stage != semantics.execution_stage || cursor.cycle <= 1 {
         return Ok(None);
     }
 
     let prior_cycle = cursor.cycle - 1;
+    let execution_label = semantics.execution_stage.as_str();
     let mut remediation_source = None;
     for event in events.iter().rev() {
         if event.event_type
@@ -1844,7 +1994,7 @@ fn derive_resume_implementation_context(
         }
 
         let stage_id = detail_stage_id(event, "stage_id")?;
-        if !is_remediation_stage(stage_id) {
+        if !semantics.remediation_trigger_stages.contains(&stage_id) {
             continue;
         }
 
@@ -1859,8 +2009,8 @@ fn derive_resume_implementation_context(
     let Some((stage_id, payload_id)) = remediation_source else {
         return Err(AppError::ResumeFailed {
             reason: format!(
-                "failed to reconstruct remediation context for implementation cycle {}; no durable qa/review payload was found for cycle {}",
-                cursor.cycle, prior_cycle
+                "failed to reconstruct remediation context for {} cycle {}; no durable validation payload was found for cycle {}",
+                execution_label, cursor.cycle, prior_cycle
             ),
         });
     };
@@ -1878,8 +2028,8 @@ fn derive_resume_implementation_context(
         .find(|record| record.payload_id == payload_id)
         .ok_or_else(|| AppError::ResumeFailed {
             reason: format!(
-                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' is missing from durable history",
-                cursor.cycle, payload_id
+                "failed to reconstruct remediation context for {} cycle {}; payload '{}' is missing from durable history",
+                execution_label, cursor.cycle, payload_id
             ),
         })?;
     let payload: StagePayload =
@@ -1902,39 +2052,49 @@ fn derive_resume_implementation_context(
         }
         StagePayload::Validation(validation) => Err(AppError::ResumeFailed {
             reason: format!(
-                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' recorded outcome '{}' instead of 'Request Changes'",
-                cursor.cycle, payload_id, validation.outcome
+                "failed to reconstruct remediation context for {} cycle {}; payload '{}' recorded outcome '{}' instead of 'Request Changes'",
+                execution_label, cursor.cycle, payload_id, validation.outcome
             ),
         }),
         _ => Err(AppError::ResumeFailed {
             reason: format!(
-                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' is not a validation payload",
-                cursor.cycle, payload_id
+                "failed to reconstruct remediation context for {} cycle {}; payload '{}' is not a validation payload",
+                execution_label, cursor.cycle, payload_id
             ),
         }),
     }
 }
 
-fn standard_stage_plan_for_resume(
+fn stage_plan_for_resume(
+    preset: FlowPreset,
     events: &[JournalEvent],
     effective_config: &EffectiveConfig,
 ) -> AppResult<Vec<StageId>> {
-    let run_started = events
-        .iter()
-        .rev()
-        .find(|event| {
-            event.event_type
-                == crate::contexts::project_run_record::model::JournalEventType::RunStarted
-        })
-        .ok_or_else(|| AppError::ResumeFailed {
-            reason: "run journal does not contain a run_started event".to_owned(),
-        })?;
+    match preset {
+        FlowPreset::Standard => {
+            let run_started = events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.event_type
+                        == crate::contexts::project_run_record::model::JournalEventType::RunStarted
+                })
+                .ok_or_else(|| AppError::ResumeFailed {
+                    reason: "run journal does not contain a run_started event".to_owned(),
+                })?;
 
-    let first_stage = detail_stage_id(run_started, "first_stage")?;
-    match first_stage {
-        StageId::PromptReview => Ok(standard_stage_plan(true)),
-        StageId::Planning => Ok(standard_stage_plan(false)),
-        _ => Ok(standard_stage_plan(
+            let first_stage = detail_stage_id(run_started, "first_stage")?;
+            match first_stage {
+                StageId::PromptReview => Ok(stage_plan_for_flow(FlowPreset::Standard, true)),
+                StageId::Planning => Ok(stage_plan_for_flow(FlowPreset::Standard, false)),
+                _ => Ok(stage_plan_for_flow(
+                    FlowPreset::Standard,
+                    effective_config.prompt_review_enabled(),
+                )),
+            }
+        }
+        _ => Ok(stage_plan_for_flow(
+            preset,
             effective_config.prompt_review_enabled(),
         )),
     }
@@ -1944,6 +2104,7 @@ fn derive_resume_state(
     events: &[JournalEvent],
     snapshot: &RunSnapshot,
     stage_plan: &[StagePlan],
+    semantics: FlowSemantics,
 ) -> AppResult<ResumeState> {
     let run_started = events
         .iter()
@@ -1957,8 +2118,8 @@ fn derive_resume_state(
         })?;
     let run_id = RunId::new(detail_string(run_started, "run_id")?.to_owned())?;
     let started_at = run_started.timestamp;
-    let implementation_stage_index = stage_index_for(stage_plan, StageId::Implementation)?;
-    let planning_stage_index = stage_index_for(stage_plan, StageId::Planning)?;
+    let execution_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
+    let planning_stage_index = stage_index_for(stage_plan, semantics.planning_stage)?;
     let mut current_cycle = snapshot
         .cycle_history
         .last()
@@ -1978,7 +2139,7 @@ fn derive_resume_state(
             }
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
                 current_cycle = detail_u32(event, "to_cycle").unwrap_or(current_cycle + 1);
-                next_stage_index = implementation_stage_index;
+                next_stage_index = execution_stage_index;
             }
             crate::contexts::project_run_record::model::JournalEventType::CompletionRoundAdvanced => {
                 current_completion_round = detail_u32(event, "to_round")
@@ -1992,11 +2153,14 @@ fn derive_resume_state(
         }
     }
 
-    if let Some(pending_cycle) =
-        pending_remediation_cycle(snapshot, current_cycle, last_completed_stage)
-    {
+    if let Some(pending_cycle) = pending_remediation_cycle(
+        snapshot,
+        current_cycle,
+        last_completed_stage,
+        semantics,
+    ) {
         current_cycle = pending_cycle;
-        next_stage_index = implementation_stage_index;
+        next_stage_index = execution_stage_index;
     }
 
     // If pending amendments exist, resume from planning to process them.
@@ -2006,7 +2170,7 @@ fn derive_resume_state(
 
     if next_stage_index >= stage_plan.len() {
         return Err(AppError::ResumeFailed {
-            reason: "all standard-flow stages are already complete; there is nothing to resume"
+            reason: "all stages in the current flow are already complete; there is nothing to resume"
                 .to_owned(),
         });
     }

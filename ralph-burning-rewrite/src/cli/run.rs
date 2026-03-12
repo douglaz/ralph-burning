@@ -84,8 +84,7 @@ async fn handle_start() -> AppResult<()> {
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
 
-    // Only standard flow is supported in this slice
-    if project_record.flow != FlowPreset::Standard {
+    if matches!(project_record.flow, FlowPreset::QuickDev) {
         return Err(AppError::UnsupportedFlow {
             flow_id: project_record.flow.as_str().to_owned(),
         });
@@ -133,7 +132,7 @@ async fn handle_start() -> AppResult<()> {
 
     let amendment_queue = FsAmendmentQueueStore;
 
-    engine::execute_standard_run(
+    engine::execute_run(
         &agent_service,
         &run_snapshot_read,
         &run_snapshot_write,
@@ -143,6 +142,7 @@ async fn handle_start() -> AppResult<()> {
         &amendment_queue,
         &current_dir,
         &project_id,
+        project_record.flow,
         &effective_config,
     )
     .await?;
@@ -166,7 +166,7 @@ async fn handle_resume() -> AppResult<()> {
 
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
-    if project_record.flow != FlowPreset::Standard {
+    if matches!(project_record.flow, FlowPreset::QuickDev) {
         return Err(AppError::UnsupportedFlow {
             flow_id: project_record.flow.as_str().to_owned(),
         });
@@ -210,7 +210,7 @@ async fn handle_resume() -> AppResult<()> {
 
     let amendment_queue = FsAmendmentQueueStore;
 
-    engine::resume_standard_run(
+    engine::resume_run(
         &agent_service,
         &run_snapshot_read,
         &run_snapshot_write,
@@ -221,6 +221,7 @@ async fn handle_resume() -> AppResult<()> {
         &amendment_queue,
         &current_dir,
         &project_id,
+        project_record.flow,
         &effective_config,
     )
     .await?;
