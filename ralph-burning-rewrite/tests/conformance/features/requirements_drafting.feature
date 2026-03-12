@@ -201,3 +201,17 @@ Feature: Requirements Drafting and Project Seed Handoff
     When the seed file write fails
     Then the run transitions to "failed" status before seed files are removed
     And canonical state is terminal even if cleanup is incomplete
+
+  # RD-026
+  Scenario: Contract validation rejects question IDs with non-bare-key characters
+    Given a question set payload with an ID containing spaces or dots
+    When the payload is validated through the question_set contract
+    Then a domain validation error is returned
+    And the error mentions "TOML bare keys"
+
+  # RD-027
+  Scenario: Answers template round-trips with special characters in prompts and defaults
+    Given a question set payload with prompts and defaults containing quotes and newlines
+    When the answers.toml template is generated from the question set
+    Then the template is valid TOML
+    And parsing the template produces the original default values

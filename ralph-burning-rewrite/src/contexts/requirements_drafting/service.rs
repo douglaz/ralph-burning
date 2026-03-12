@@ -925,17 +925,63 @@ fn generate_answers_template(qs: &QuestionSetPayload) -> String {
 
     for q in &qs.questions {
         let required = if q.required { " (required)" } else { "" };
-        out.push_str(&format!("# {}{}\n", q.prompt, required));
-        if !q.rationale.is_empty() {
-            out.push_str(&format!("# Rationale: {}\n", q.rationale));
+        // Write prompt as comment lines, handling embedded newlines so each
+        // continuation line starts with `# `.
+        let mut first_prompt_line = true;
+        for line in q.prompt.lines() {
+            if first_prompt_line {
+                out.push_str(&format!("# {}{}\n", line, required));
+                first_prompt_line = false;
+            } else {
+                out.push_str(&format!("# {}\n", line));
+            }
         }
+        // If prompt was empty or had no lines iterator output, ensure at least
+        // one comment line is emitted.
+        if first_prompt_line {
+            out.push_str(&format!("# {}\n", required.trim()));
+        }
+
+        if !q.rationale.is_empty() {
+            // Handle multi-line rationale in comments.
+            let mut first = true;
+            for line in q.rationale.lines() {
+                if first {
+                    out.push_str(&format!("# Rationale: {}\n", line));
+                    first = false;
+                } else {
+                    out.push_str(&format!("#   {}\n", line));
+                }
+            }
+        }
+
         let default_value = q
             .suggested_default
             .as_deref()
             .unwrap_or("");
-        out.push_str(&format!("{} = \"{}\"\n\n", q.id, default_value));
+        // Escape the default value for TOML basic string safety.
+        let escaped = toml_escape_basic_string(default_value);
+        out.push_str(&format!("{} = \"{}\"\n\n", q.id, escaped));
     }
 
+    out
+}
+
+/// Escape a string value for safe embedding in a TOML basic string (double-quoted).
+fn toml_escape_basic_string(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            '\u{0008}' => out.push_str("\\b"),
+            '\u{000C}' => out.push_str("\\f"),
+            _ => out.push(c),
+        }
+    }
     out
 }
 

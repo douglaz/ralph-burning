@@ -124,6 +124,12 @@ impl RequirementsContract {
                 for (i, q) in p.questions.iter().enumerate() {
                     if q.id.trim().is_empty() {
                         errors.push(format!("questions[{i}].id must not be empty"));
+                    } else if !q.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                        errors.push(format!(
+                            "questions[{i}].id '{}' contains characters not allowed in TOML bare keys \
+                             (only ASCII alphanumeric, underscore, and hyphen permitted)",
+                            q.id
+                        ));
                     }
                     if !seen_ids.insert(&q.id) {
                         errors.push(format!("questions[{i}].id '{}' is duplicate", q.id));

@@ -177,6 +177,84 @@ fn question_set_with_empty_prompt_fails_domain_validation() {
 }
 
 #[test]
+fn question_set_with_space_in_id_fails_domain_validation() {
+    let space_id = json!({
+        "questions": [
+            {
+                "id": "team name",
+                "prompt": "What is the team name?",
+                "rationale": "Needed for naming",
+                "required": true
+            }
+        ]
+    });
+
+    let err = RequirementsContract::question_set()
+        .evaluate(&space_id)
+        .expect_err("ID with spaces should fail");
+    match &err {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(
+                details.contains("TOML bare keys"),
+                "error should mention TOML bare keys, got: {details}"
+            );
+        }
+        _ => panic!("expected DomainValidation, got: {err:?}"),
+    }
+}
+
+#[test]
+fn question_set_with_dot_in_id_fails_domain_validation() {
+    let dot_id = json!({
+        "questions": [
+            {
+                "id": "api.version",
+                "prompt": "Which API version?",
+                "rationale": "Determines compatibility",
+                "required": false
+            }
+        ]
+    });
+
+    let err = RequirementsContract::question_set()
+        .evaluate(&dot_id)
+        .expect_err("ID with dots should fail");
+    match &err {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(
+                details.contains("TOML bare keys"),
+                "error should mention TOML bare keys, got: {details}"
+            );
+        }
+        _ => panic!("expected DomainValidation, got: {err:?}"),
+    }
+}
+
+#[test]
+fn question_set_with_valid_bare_key_ids_passes_validation() {
+    let valid = json!({
+        "questions": [
+            {
+                "id": "team-name",
+                "prompt": "What is the team name?",
+                "rationale": "Needed",
+                "required": true
+            },
+            {
+                "id": "api_version_2",
+                "prompt": "Which API version?",
+                "rationale": "Compat",
+                "required": false
+            }
+        ]
+    });
+
+    RequirementsContract::question_set()
+        .evaluate(&valid)
+        .expect("IDs with alphanumeric, underscore, hyphen should pass");
+}
+
+#[test]
 fn draft_contract_accepts_valid_json() {
     let valid = json!({
         "problem_summary": "We need a caching layer.",
@@ -1669,6 +1747,83 @@ mod service_integration {
         assert!(
             seed_payload_path.exists(),
             "completed run should have seed history payload"
+        );
+    }
+
+    /// Regression: question prompts and defaults containing quotes, newlines, or
+    /// backslashes must produce a valid answers.toml that TOML-parses and
+    /// round-trips through `requirements answer`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn draft_with_special_chars_in_prompts_and_defaults_produces_valid_toml() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "team-name",
+                        "prompt": "What is the team's \"official\" name?\nInclude the division.",
+                        "rationale": "Needed for project naming.\nSee policy doc\\appendix.",
+                        "required": true,
+                        "suggested_default": "Engineering \"Platform\"\nTeam"
+                    },
+                    {
+                        "id": "api_version",
+                        "prompt": "Which API version? (e.g. v2\\v3)",
+                        "rationale": "Determines compat",
+                        "required": false,
+                        "suggested_default": "v2"
+                    }
+                ]
+            }),
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Test special chars", now)
+            .await
+            .expect("draft should succeed");
+
+        assert_eq!(
+            service.show(temp_dir.path(), &run_id).unwrap().run.status,
+            RequirementsStatus::AwaitingAnswers,
+        );
+
+        // Read the generated answers.toml and verify it parses as valid TOML.
+        let store = FsRequirementsStore;
+        let raw_toml = store
+            .read_answers_toml(temp_dir.path(), &run_id)
+            .expect("read answers.toml");
+
+        let parsed: toml::Table =
+            toml::from_str(&raw_toml).expect("generated answers.toml must be valid TOML");
+
+        // Verify both question IDs are present as keys.
+        assert!(
+            parsed.contains_key("team-name"),
+            "TOML should contain 'team-name' key"
+        );
+        assert!(
+            parsed.contains_key("api_version"),
+            "TOML should contain 'api_version' key"
+        );
+
+        // Verify the default value for team-name round-trips correctly:
+        // the TOML value should decode back to the original string with quotes and newline.
+        let team_val = parsed
+            .get("team-name")
+            .and_then(|v| v.as_str())
+            .expect("team-name should be a string");
+        assert_eq!(
+            team_val, "Engineering \"Platform\"\nTeam",
+            "default value with quotes and newlines should round-trip through TOML"
         );
     }
 }
