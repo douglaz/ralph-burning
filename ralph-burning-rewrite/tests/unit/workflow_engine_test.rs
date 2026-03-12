@@ -2280,3 +2280,150 @@ async fn completion_guard_produces_resumable_snapshot_when_disk_amendments_remai
         "amendment files should be drained after successful resume"
     );
 }
+
+// ── Final-Review Continuation Coverage ───────────────────────────────────────
+
+#[tokio::test]
+async fn final_review_conditionally_approved_triggers_completion_round_advancement() {
+    // When final_review returns conditionally_approved, the engine should queue amendments,
+    // advance the completion round, restart from planning, and complete on the next pass.
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "fr-cond");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::FinalReview,
+                vec![
+                    conditionally_approved_payload(&["tighten final wording"]),
+                    approved_validation_payload(),
+                ],
+            ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete after final_review continuation: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2, "should advance to completion round 2");
+    assert!(
+        snapshot.amendment_queue.pending.is_empty(),
+        "amendments should be drained after planning commit"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+
+    // Amendment event with the follow-up body.
+    let amendment_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::AmendmentQueued)
+        .collect();
+    assert!(
+        !amendment_events.is_empty(),
+        "should have amendment_queued events"
+    );
+    assert_eq!(
+        amendment_events[0].details["body"],
+        "tighten final wording"
+    );
+
+    // Completion round advanced with source_stage = final_review.
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1, "should have one completion_round_advanced event");
+    assert_eq!(round_events[0].details["source_stage"], "final_review");
+    assert_eq!(round_events[0].details["from_round"], 1);
+    assert_eq!(round_events[0].details["to_round"], 2);
+
+    // Planning should be entered twice (initial + restart from final_review).
+    let planning_entered =
+        stage_events(&events, JournalEventType::StageEntered, "planning");
+    assert_eq!(planning_entered.len(), 2, "planning entered twice");
+
+    // No amendment files remain on disk.
+    let amendments_dir = base_dir
+        .join(".ralph-burning/projects/fr-cond/amendments");
+    if amendments_dir.is_dir() {
+        let files: Vec<_> = std::fs::read_dir(&amendments_dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+            .collect();
+        assert!(files.is_empty(), "amendment files should be drained from disk");
+    }
+}
+
+#[tokio::test]
+async fn final_review_request_changes_triggers_completion_round_advancement() {
+    // When final_review returns request_changes, the engine should follow the same
+    // completion-round path as conditionally_approved.
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "fr-reqch");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::FinalReview,
+                vec![
+                    request_changes_payload(&["fix final review finding"]),
+                    approved_validation_payload(),
+                ],
+            ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete after final_review request_changes: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(round_events.len(), 1);
+    assert_eq!(round_events[0].details["source_stage"], "final_review");
+}

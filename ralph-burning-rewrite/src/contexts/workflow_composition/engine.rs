@@ -1502,7 +1502,14 @@ fn complete_run(
             snapshot.status = RunStatus::Failed;
             snapshot.active_run = None;
             snapshot.status_summary = format!("blocked: {}", e);
-            let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+            run_snapshot_write
+                .write_run_snapshot(base_dir, project_id, snapshot)
+                .map_err(|write_err| AppError::CompletionGuardSnapshotFailed {
+                    details: format!(
+                        "completion guard fired ({}) but resumable snapshot could not be persisted: {}",
+                        e, write_err
+                    ),
+                })?;
         }
         return Err(e);
     }

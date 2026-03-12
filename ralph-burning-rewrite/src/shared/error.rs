@@ -95,6 +95,8 @@ pub enum AppError {
     AmendmentQueueError { details: String },
     #[error("completion blocked: {details}")]
     CompletionBlocked { details: String },
+    #[error("completion guard snapshot commit failed: {details}")]
+    CompletionGuardSnapshotFailed { details: String },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

@@ -131,3 +131,24 @@ Feature: Completion Rounds, Late-Stage Acceptance, and Durable Amendments
     Then each amendment has a stable batch_sequence field
     And list_pending_amendments returns them sorted by (created_at, batch_sequence)
     And the planning invocation receives amendments in deterministic order
+
+  # SC-CR-015
+  Scenario: Final-review conditionally_approved triggers completion round advancement
+    Given an initialized workspace with project "fr-cond" using flow "standard"
+    And project "fr-cond" is selected as active
+    When the user starts a run where final_review returns "conditionally_approved" with amendments
+    Then the engine queues durable amendment files under projects/fr-cond/amendments/
+    And the journal contains an "amendment_queued" event with the amendment body
+    And the journal contains a "completion_round_advanced" event with source_stage="final_review"
+    And the engine restarts from planning (stage_entered for planning appears a second time)
+    And the run completes with completion_rounds=2 after the restarted round succeeds
+    And the run snapshot amendment_queue is empty
+
+  # SC-CR-016
+  Scenario: Final-review request_changes triggers completion round advancement
+    Given an initialized workspace with project "fr-reqch" using flow "standard"
+    And project "fr-reqch" is selected as active
+    When the user starts a run where final_review returns "request_changes" with amendments
+    Then the engine follows the same completion-round path as conditionally_approved
+    And the journal contains a "completion_round_advanced" event with source_stage="final_review"
+    And the run completes with completion_rounds=2
