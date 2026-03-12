@@ -106,6 +106,31 @@ pub enum AppError {
     CompletionBlocked { details: String },
     #[error("completion guard snapshot commit failed: {details}")]
     CompletionGuardSnapshotFailed { details: String },
+    #[error("routing resolution failed for '{input}': {details}")]
+    RoutingResolutionFailed { input: String, details: String },
+    #[error("ambiguous routing labels resolved to multiple flows: {labels:?}")]
+    AmbiguousRouting { labels: Vec<String> },
+    #[error("task for issue '{issue_ref}' already exists with non-terminal status")]
+    DuplicateTaskForIssue { issue_ref: String },
+    #[error("project writer lock is already held for '{project_id}'")]
+    ProjectWriterLockHeld { project_id: String },
+    #[error("failed to create worktree for task '{task_id}': {details}")]
+    WorktreeCreationFailed { task_id: String, details: String },
+    #[error("failed to remove worktree for task '{task_id}': {details}")]
+    WorktreeRemovalFailed { task_id: String, details: String },
+    #[error("lease '{lease_id}' is stale")]
+    LeaseStale { lease_id: String },
+    #[error("invalid task state transition for '{task_id}': {from} -> {to}")]
+    TaskStateTransitionInvalid {
+        task_id: String,
+        from: String,
+        to: String,
+    },
+    #[error("rebase conflict for branch '{branch_name}': {details}")]
+    RebaseConflict {
+        branch_name: String,
+        details: String,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

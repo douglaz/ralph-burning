@@ -13,8 +13,8 @@ use crate::shared::domain::FlowPreset;
 use crate::shared::error::ContractError;
 
 use super::model::{
-    ProjectSeedPayload, QuestionSetPayload, RequirementsDraftPayload,
-    RequirementsReviewOutcome, RequirementsReviewPayload, RequirementsStageId,
+    ProjectSeedPayload, QuestionSetPayload, RequirementsDraftPayload, RequirementsReviewOutcome,
+    RequirementsReviewPayload, RequirementsStageId,
 };
 use super::renderers;
 
@@ -82,35 +82,41 @@ impl RequirementsContract {
     ) -> Result<RequirementsPayload, ContractError> {
         match self.stage_id {
             RequirementsStageId::QuestionSet => {
-                let p: QuestionSetPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
+                let p: QuestionSetPayload = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
                         stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("question_set: {e}"),
-                    })?;
+                    }
+                })?;
                 Ok(RequirementsPayload::QuestionSet(p))
             }
             RequirementsStageId::RequirementsDraft => {
                 let p: RequirementsDraftPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: self.stage_id.as_str().to_owned(),
-                        details: format!("requirements_draft: {e}"),
+                    serde_json::from_value(raw.clone()).map_err(|e| {
+                        ContractError::SchemaValidation {
+                            stage_id: self.stage_id.as_str().to_owned(),
+                            details: format!("requirements_draft: {e}"),
+                        }
                     })?;
                 Ok(RequirementsPayload::Draft(p))
             }
             RequirementsStageId::RequirementsReview => {
                 let p: RequirementsReviewPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
-                        stage_id: self.stage_id.as_str().to_owned(),
-                        details: format!("requirements_review: {e}"),
+                    serde_json::from_value(raw.clone()).map_err(|e| {
+                        ContractError::SchemaValidation {
+                            stage_id: self.stage_id.as_str().to_owned(),
+                            details: format!("requirements_review: {e}"),
+                        }
                     })?;
                 Ok(RequirementsPayload::Review(p))
             }
             RequirementsStageId::ProjectSeed => {
-                let p: ProjectSeedPayload =
-                    serde_json::from_value(raw.clone()).map_err(|e| ContractError::SchemaValidation {
+                let p: ProjectSeedPayload = serde_json::from_value(raw.clone()).map_err(|e| {
+                    ContractError::SchemaValidation {
                         stage_id: self.stage_id.as_str().to_owned(),
                         details: format!("project_seed: {e}"),
-                    })?;
+                    }
+                })?;
                 Ok(RequirementsPayload::Seed(p))
             }
         }
@@ -124,7 +130,11 @@ impl RequirementsContract {
                 for (i, q) in p.questions.iter().enumerate() {
                     if q.id.trim().is_empty() {
                         errors.push(format!("questions[{i}].id must not be empty"));
-                    } else if !q.id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-') {
+                    } else if !q
+                        .id
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+                    {
                         errors.push(format!(
                             "questions[{i}].id '{}' contains characters not allowed in TOML bare keys \
                              (only ASCII alphanumeric, underscore, and hyphen permitted)",

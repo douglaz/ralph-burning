@@ -48,3 +48,6 @@ mod retry_policy_test;
 
 #[path = "unit/requirements_drafting_test.rs"]
 mod requirements_drafting_test;
+
+#[path = "unit/automation_runtime_test.rs"]
+mod automation_runtime_test;

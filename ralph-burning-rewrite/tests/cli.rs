@@ -2,6 +2,11 @@ use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::process::Command;
 
+use chrono::{Duration, Utc};
+use ralph_burning::contexts::automation_runtime::model::{
+    DaemonTask, RoutingSource, TaskStatus, WorktreeLease,
+};
+use ralph_burning::shared::domain::FlowPreset;
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -74,6 +79,76 @@ fn write_editor_script(
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("set script permissions");
     script_path
+}
+
+fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
+    let path = base_dir
+        .join(".ralph-burning/daemon/tasks")
+        .join(format!("{}.json", task.task_id));
+    fs::create_dir_all(path.parent().expect("task parent")).expect("create task dir");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(task).expect("serialize daemon task"),
+    )
+    .expect("write daemon task");
+}
+
+fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
+    let path = base_dir
+        .join(".ralph-burning/daemon/leases")
+        .join(format!("{}.json", lease.lease_id));
+    fs::create_dir_all(path.parent().expect("lease parent")).expect("create lease dir");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(lease).expect("serialize daemon lease"),
+    )
+    .expect("write daemon lease");
+}
+
+fn init_git_repo(base_dir: &std::path::Path) {
+    let init = Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(base_dir)
+        .output()
+        .expect("git init");
+    assert!(
+        init.status.success(),
+        "{}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let name = Command::new("git")
+        .args(["config", "user.name", "Test User"])
+        .current_dir(base_dir)
+        .output()
+        .expect("git config user.name");
+    assert!(name.status.success());
+
+    let email = Command::new("git")
+        .args(["config", "user.email", "test@example.com"])
+        .current_dir(base_dir)
+        .output()
+        .expect("git config user.email");
+    assert!(email.status.success());
+
+    fs::write(base_dir.join("README.md"), "# fixture\n").expect("write readme");
+    let add = Command::new("git")
+        .args(["add", "README.md"])
+        .current_dir(base_dir)
+        .output()
+        .expect("git add");
+    assert!(add.status.success());
+
+    let commit = Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(base_dir)
+        .output()
+        .expect("git commit");
+    assert!(
+        commit.status.success(),
+        "{}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
 }
 
 #[test]
@@ -184,6 +259,303 @@ fn config_show_prints_effective_values_and_sources() {
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
     assert!(stdout.contains("default_flow = \"standard\" # source: default"));
     assert!(stdout.contains("default_backend = \"<unset>\" # source: default"));
+}
+
+#[test]
+fn daemon_status_lists_non_terminal_tasks_first() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-active".to_owned(),
+            issue_ref: "repo#2".to_owned(),
+            project_id: "demo-active".to_owned(),
+            project_name: Some("Active".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-active".to_owned()),
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+    write_worktree_lease(
+        temp_dir.path(),
+        &WorktreeLease {
+            lease_id: "lease-active".to_owned(),
+            task_id: "task-active".to_owned(),
+            project_id: "demo-active".to_owned(),
+            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-active"),
+            branch_name: "rb/task/task-active".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        },
+    );
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-completed".to_owned(),
+            issue_ref: "repo#3".to_owned(),
+            project_id: "demo-completed".to_owned(),
+            project_name: Some("Completed".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon status");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let active_idx = stdout.find("task-active").expect("active task");
+    let completed_idx = stdout.find("task-completed").expect("completed task");
+    assert!(active_idx < completed_idx);
+    assert!(stdout.contains("lease=lease-active"));
+}
+
+#[test]
+fn daemon_retry_transitions_failed_task_to_pending() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-failed".to_owned(),
+            issue_ref: "repo#4".to_owned(),
+            project_id: "demo-failed".to_owned(),
+            project_name: Some("Failed".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Failed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: Some("daemon_dispatch_failed".to_owned()),
+            failure_message: Some("boom".to_owned()),
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "retry", "task-failed"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon retry");
+    assert!(output.status.success());
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-failed.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Pending, task.status);
+    assert_eq!(1, task.attempt_count);
+}
+
+#[test]
+fn daemon_abort_claimed_task_releases_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+    let missing_worktree = temp_dir.path().join(".ralph-burning/worktrees/missing");
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-claimed".to_owned(),
+            issue_ref: "repo#5".to_owned(),
+            project_id: "demo-claimed".to_owned(),
+            project_name: Some("Claimed".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Claimed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-claimed".to_owned()),
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+    write_worktree_lease(
+        temp_dir.path(),
+        &WorktreeLease {
+            lease_id: "lease-claimed".to_owned(),
+            task_id: "task-claimed".to_owned(),
+            project_id: "demo-claimed".to_owned(),
+            worktree_path: missing_worktree,
+            branch_name: "rb/task/task-claimed".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "abort", "task-claimed"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon abort");
+    assert!(output.status.success());
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-claimed.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Aborted, task.status);
+    assert!(task.lease_id.is_none());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/lease-claimed.json")
+        .exists());
+}
+
+#[test]
+fn daemon_reconcile_fails_stale_claimed_task() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-stale".to_owned(),
+            issue_ref: "repo#6".to_owned(),
+            project_id: "demo-stale".to_owned(),
+            project_name: Some("Stale".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Claimed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-stale".to_owned()),
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+    write_worktree_lease(
+        temp_dir.path(),
+        &WorktreeLease {
+            lease_id: "lease-stale".to_owned(),
+            task_id: "task-stale".to_owned(),
+            project_id: "demo-stale".to_owned(),
+            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-stale"),
+            branch_name: "rb/task/task-stale".to_owned(),
+            acquired_at: now - Duration::minutes(10),
+            ttl_seconds: 300,
+            last_heartbeat: now - Duration::minutes(10),
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "reconcile", "--ttl-seconds", "1"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon reconcile");
+    assert!(output.status.success());
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-stale.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Failed, task.status);
+    assert_eq!(
+        Some("reconciliation_timeout"),
+        task.failure_class.as_deref()
+    );
+}
+
+#[test]
+fn daemon_start_single_iteration_processes_pending_task() {
+    let temp_dir = initialize_workspace_fixture();
+    init_git_repo(temp_dir.path());
+
+    let now = Utc::now();
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-run".to_owned(),
+            issue_ref: "repo#7".to_owned(),
+            project_id: "demo-run".to_owned(),
+            project_name: Some("Daemon Run".to_owned()),
+            prompt: Some("Implement the daemon task".to_owned()),
+            routing_command: Some("/rb flow docs_change".to_owned()),
+            routing_labels: vec![String::from("rb:flow:standard")],
+            resolved_flow: Some(FlowPreset::DocsChange),
+            routing_source: Some(RoutingSource::Command),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "start", "--single-iteration"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon start");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("claimed task task-run"));
+    assert!(stdout.contains("completed task task-run"));
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-run.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Completed, task.status);
+    assert!(task.lease_id.is_none());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/lease-task-run.json")
+        .exists());
 }
 
 #[test]
@@ -2988,11 +3360,7 @@ fn requirements_answer_happy_path_completes_run() {
     }
 
     // Write sessions.json (PersistedSessions requires { sessions: [] })
-    fs::write(
-        run_dir.join("sessions.json"),
-        r#"{"sessions":[]}"#,
-    )
-    .expect("write sessions");
+    fs::write(run_dir.join("sessions.json"), r#"{"sessions":[]}"#).expect("write sessions");
 
     // Write run.json in awaiting_answers state
     let run_json = serde_json::json!({
@@ -3052,11 +3420,8 @@ fn requirements_answer_happy_path_completes_run() {
     fs::write(run_dir.join("journal.ndjson"), journal).expect("write journal");
 
     // Write valid answers.toml
-    fs::write(
-        run_dir.join("answers.toml"),
-        "q1 = \"Use Actix Web\"\n",
-    )
-    .expect("write answers.toml");
+    fs::write(run_dir.join("answers.toml"), "q1 = \"Use Actix Web\"\n")
+        .expect("write answers.toml");
 
     // Run requirements answer with EDITOR=true (no-op editor)
     let output = Command::new(binary())
@@ -3075,10 +3440,9 @@ fn requirements_answer_happy_path_completes_run() {
     );
 
     // Verify run completed
-    let run_data: serde_json::Value = serde_json::from_str(
-        &fs::read_to_string(run_dir.join("run.json")).expect("read run.json"),
-    )
-    .expect("parse run.json");
+    let run_data: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(run_dir.join("run.json")).expect("read run.json"))
+            .expect("parse run.json");
     assert_eq!(
         run_data["status"], "completed",
         "run should be completed after answer"

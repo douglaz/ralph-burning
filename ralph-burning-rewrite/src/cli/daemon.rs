@@ -1,6 +1,21 @@
 use clap::{Args, Subcommand};
 
+use crate::adapters::fs::{
+    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+    FsRuntimeLogWriteStore,
+};
+use crate::adapters::worktree::WorktreeAdapter;
+use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
+use crate::contexts::automation_runtime::lease_service::LeaseService;
+use crate::contexts::automation_runtime::model::TaskStatus;
+use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::workspace_governance;
+use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
+
+use super::run::build_agent_execution_service;
 
 #[derive(Debug, Args)]
 pub struct DaemonCommand {
@@ -10,23 +25,175 @@ pub struct DaemonCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonSubcommand {
-    Start,
+    Start {
+        #[arg(long, default_value_t = 10)]
+        poll_seconds: u64,
+        #[arg(long)]
+        single_iteration: bool,
+    },
     Status,
-    Abort { task_id: String },
-    Retry { task_id: String },
-    Reconcile,
+    Abort {
+        task_id: String,
+    },
+    Retry {
+        task_id: String,
+    },
+    Reconcile {
+        #[arg(long)]
+        ttl_seconds: Option<u64>,
+    },
 }
 
 pub async fn handle(command: DaemonCommand) -> AppResult<()> {
-    let command_name = match command.command {
-        DaemonSubcommand::Start => "daemon start",
-        DaemonSubcommand::Status => "daemon status",
-        DaemonSubcommand::Abort { .. } => "daemon abort",
-        DaemonSubcommand::Retry { .. } => "daemon retry",
-        DaemonSubcommand::Reconcile => "daemon reconcile",
+    match command.command {
+        DaemonSubcommand::Start {
+            poll_seconds,
+            single_iteration,
+        } => handle_start(poll_seconds, single_iteration).await,
+        DaemonSubcommand::Status => handle_status().await,
+        DaemonSubcommand::Abort { task_id } => handle_abort(&task_id).await,
+        DaemonSubcommand::Retry { task_id } => handle_retry(&task_id).await,
+        DaemonSubcommand::Reconcile { ttl_seconds } => handle_reconcile(ttl_seconds).await,
+    }
+}
+
+async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+    let _ = EffectiveConfig::load(&current_dir)?;
+
+    let agent_service = build_agent_execution_service();
+    let daemon_store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let project_store = FsProjectStore;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_store = FsArtifactStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+    let amendment_queue = FsAmendmentQueueStore;
+
+    let daemon_loop = DaemonLoop::new(
+        &daemon_store,
+        &worktree,
+        &project_store,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_store,
+        &artifact_write,
+        &log_write,
+        &amendment_queue,
+        &agent_service,
+    );
+    let loop_config = DaemonLoopConfig {
+        poll_interval: std::time::Duration::from_secs(poll_seconds),
+        single_iteration,
+        ..DaemonLoopConfig::default()
     };
 
-    Err(AppError::NotYetImplemented {
-        command: command_name.to_owned(),
-    })
+    daemon_loop.run(&current_dir, &loop_config).await
+}
+
+async fn handle_status() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let store = FsDaemonStore;
+    let tasks = DaemonTaskService::list_tasks(&store, &current_dir)?;
+    let leases = store.list_leases(&current_dir)?;
+
+    if tasks.is_empty() {
+        println!("No daemon tasks found.");
+        return Ok(());
+    }
+
+    for task in tasks {
+        let lease = leases.iter().find(|lease| lease.task_id == task.task_id);
+        let lease_id = lease
+            .map(|lease| lease.lease_id.as_str())
+            .or(task.lease_id.as_deref())
+            .unwrap_or("-");
+        let heartbeat = lease
+            .map(|lease| lease.last_heartbeat.to_rfc3339())
+            .unwrap_or_else(|| "-".to_owned());
+        println!(
+            "{}  {}  lease={}  heartbeat={}  issue={}",
+            task.task_id, task.status, lease_id, heartbeat, task.issue_ref
+        );
+    }
+
+    Ok(())
+}
+
+async fn handle_abort(task_id: &str) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let task = store.read_task(&current_dir, task_id)?;
+    if task.status.is_terminal() {
+        return Err(AppError::TaskStateTransitionInvalid {
+            task_id: task.task_id,
+            from: task.status.as_str().to_owned(),
+            to: TaskStatus::Aborted.as_str().to_owned(),
+        });
+    }
+
+    let original_status = task.status;
+    DaemonTaskService::mark_aborted(&store, &current_dir, task_id)?;
+
+    if original_status == TaskStatus::Claimed {
+        if let Some(lease) = LeaseService::find_lease_for_task(&store, &current_dir, task_id)? {
+            let _ = LeaseService::release(&store, &worktree, &current_dir, &current_dir, &lease);
+            let _ = DaemonTaskService::clear_lease_reference(&store, &current_dir, task_id);
+        }
+    }
+
+    println!("Aborted task {task_id}");
+    Ok(())
+}
+
+async fn handle_retry(task_id: &str) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let store = FsDaemonStore;
+    let task = DaemonTaskService::retry_task(&store, &current_dir, task_id)?;
+    println!(
+        "Retried task {} (attempt_count={})",
+        task.task_id, task.attempt_count
+    );
+    Ok(())
+}
+
+async fn handle_reconcile(ttl_seconds: Option<u64>) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree,
+        &current_dir,
+        &current_dir,
+        ttl_seconds,
+        chrono::Utc::now(),
+    )?;
+
+    println!(
+        "reconciled stale_leases={} failed_tasks={} released_leases={}",
+        report.stale_lease_ids.len(),
+        report.failed_task_ids.len(),
+        report.released_lease_ids.len()
+    );
+    Ok(())
 }

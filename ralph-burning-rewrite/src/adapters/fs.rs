@@ -8,6 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::contexts::agent_execution::model::RawOutputReference;
 use crate::contexts::agent_execution::service::RawOutputPort;
 use crate::contexts::agent_execution::session::{PersistedSessions, SessionStorePort};
+use crate::contexts::automation_runtime::model::{DaemonJournalEvent, DaemonTask, WorktreeLease};
+use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RunSnapshot, RuntimeLogEntry,
@@ -169,6 +171,10 @@ impl FileSystem {
         base_dir.join(WORKSPACE_DIR)
     }
 
+    pub(crate) fn daemon_root(base_dir: &Path) -> PathBuf {
+        Self::workspace_root_path(base_dir).join("daemon")
+    }
+
     fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         Self::workspace_root_path(base_dir)
             .join(PROJECTS_DIR)
@@ -194,6 +200,48 @@ impl FileSystem {
         writeln!(file, "{}", line)?;
         file.sync_all()?;
         Ok(())
+    }
+
+    fn write_create_new(path: &Path, contents: &str) -> AppResult<()> {
+        let parent = path.parent().ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("path '{}' has no parent directory", path.display()),
+            ))
+        })?;
+        fs::create_dir_all(parent)?;
+
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp_path = parent.join(format!(
+            ".{}.{}.{}.tmp",
+            path.file_name()
+                .and_then(|value| value.to_str())
+                .unwrap_or("workspace"),
+            std::process::id(),
+            timestamp
+        ));
+
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)?;
+        file.write_all(contents.as_bytes())?;
+        file.sync_all()?;
+        drop(file);
+
+        match fs::hard_link(&temp_path, path) {
+            Ok(()) => {
+                let _ = fs::remove_file(&temp_path);
+                Ok(())
+            }
+            Err(error) => {
+                let _ = fs::remove_file(&temp_path);
+                Err(error.into())
+            }
+        }
     }
 }
 
@@ -870,6 +918,208 @@ impl RuntimeLogWritePort for FsRuntimeLogWriteStore {
     }
 }
 
+// ── Automation runtime filesystem store ────────────────────────────────────
+
+const DAEMON_TASKS_DIR: &str = "tasks";
+const DAEMON_LEASES_DIR: &str = "leases";
+const DAEMON_JOURNAL_FILE: &str = "journal.ndjson";
+
+pub struct FsDaemonStore;
+
+impl FsDaemonStore {
+    fn tasks_dir(base_dir: &Path) -> PathBuf {
+        FileSystem::daemon_root(base_dir).join(DAEMON_TASKS_DIR)
+    }
+
+    fn leases_dir(base_dir: &Path) -> PathBuf {
+        FileSystem::daemon_root(base_dir).join(DAEMON_LEASES_DIR)
+    }
+
+    fn task_path(base_dir: &Path, task_id: &str) -> PathBuf {
+        Self::tasks_dir(base_dir).join(format!("{task_id}.json"))
+    }
+
+    fn lease_path(base_dir: &Path, lease_id: &str) -> PathBuf {
+        Self::leases_dir(base_dir).join(format!("{lease_id}.json"))
+    }
+
+    fn writer_lock_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::leases_dir(base_dir).join(format!("writer-{}.lock", project_id.as_str()))
+    }
+
+    fn daemon_journal_path(base_dir: &Path) -> PathBuf {
+        FileSystem::daemon_root(base_dir).join(DAEMON_JOURNAL_FILE)
+    }
+
+    fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path, file: String) -> AppResult<T> {
+        let raw = fs::read_to_string(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::CorruptRecord {
+                    file: file.clone(),
+                    details: "canonical file is missing".to_owned(),
+                }
+            } else {
+                error.into()
+            }
+        })?;
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file,
+            details: error.to_string(),
+        })
+    }
+}
+
+impl DaemonStorePort for FsDaemonStore {
+    fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>> {
+        let dir = Self::tasks_dir(base_dir);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut tasks = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            let file = format!(
+                "daemon/tasks/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            tasks.push(Self::read_json_file(&path, file)?);
+        }
+
+        tasks.sort_by(|a: &DaemonTask, b: &DaemonTask| {
+            a.status
+                .is_terminal()
+                .cmp(&b.status.is_terminal())
+                .then_with(|| a.created_at.cmp(&b.created_at))
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(tasks)
+    }
+
+    fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask> {
+        Self::read_json_file(
+            &Self::task_path(base_dir, task_id),
+            format!("daemon/tasks/{task_id}.json"),
+        )
+    }
+
+    fn create_task(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(task)?;
+        FileSystem::write_create_new(&Self::task_path(base_dir, &task.task_id), &contents)
+    }
+
+    fn write_task(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(task)?;
+        FileSystem::write_atomic(&Self::task_path(base_dir, &task.task_id), &contents)
+    }
+
+    fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>> {
+        let dir = Self::leases_dir(base_dir);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut leases = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            let file = format!(
+                "daemon/leases/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            leases.push(Self::read_json_file(&path, file)?);
+        }
+        leases.sort_by_key(|lease: &WorktreeLease| lease.acquired_at);
+        Ok(leases)
+    }
+
+    fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease> {
+        Self::read_json_file(
+            &Self::lease_path(base_dir, lease_id),
+            format!("daemon/leases/{lease_id}.json"),
+        )
+    }
+
+    fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(lease)?;
+        FileSystem::write_atomic(&Self::lease_path(base_dir, &lease.lease_id), &contents)
+    }
+
+    fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<()> {
+        match fs::remove_file(Self::lease_path(base_dir, lease_id)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_daemon_journal(&self, base_dir: &Path) -> AppResult<Vec<DaemonJournalEvent>> {
+        let path = Self::daemon_journal_path(base_dir);
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let mut events = Vec::new();
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let event: DaemonJournalEvent =
+                        serde_json::from_str(trimmed).map_err(|error| AppError::CorruptRecord {
+                            file: "daemon/journal.ndjson".to_owned(),
+                            details: error.to_string(),
+                        })?;
+                    events.push(event);
+                }
+                Ok(events)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &Path,
+        event: &DaemonJournalEvent,
+    ) -> AppResult<()> {
+        let line = serde_json::to_string(event)?;
+        FileSystem::append_line(&Self::daemon_journal_path(base_dir), &line)
+    }
+
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        lease_id: &str,
+    ) -> AppResult<()> {
+        let path = Self::writer_lock_path(base_dir, project_id);
+        match FileSystem::write_create_new(&path, lease_id) {
+            Ok(()) => Ok(()),
+            Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(AppError::ProjectWriterLockHeld {
+                    project_id: project_id.to_string(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn release_writer_lock(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        match fs::remove_file(Self::writer_lock_path(base_dir, project_id)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 // ── Requirements drafting filesystem store ──────────────────────────────────
 
 use crate::contexts::requirements_drafting::model::{
@@ -1029,7 +1279,10 @@ impl RequirementsStorePort for FsRequirementsStore {
             .join(format!("{payload_id}.json"));
         let contents = FileSystem::read_to_string(&path)?;
         serde_json::from_str(&contents).map_err(|e| AppError::CorruptRecord {
-            file: format!("requirements/{}/history/payloads/{}.json", run_id, payload_id),
+            file: format!(
+                "requirements/{}/history/payloads/{}.json",
+                run_id, payload_id
+            ),
             details: e.to_string(),
         })
     }
@@ -1087,12 +1340,7 @@ impl RequirementsStorePort for FsRequirementsStore {
         Ok(())
     }
 
-    fn write_answers_toml(
-        &self,
-        base_dir: &Path,
-        run_id: &str,
-        template: &str,
-    ) -> AppResult<()> {
+    fn write_answers_toml(&self, base_dir: &Path, run_id: &str, template: &str) -> AppResult<()> {
         let path = requirements_run_root(base_dir, run_id).join("answers.toml");
         FileSystem::write_atomic(&path, template)
     }

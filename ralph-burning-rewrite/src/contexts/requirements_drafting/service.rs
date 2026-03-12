@@ -26,8 +26,8 @@ use crate::shared::error::{AppError, AppResult};
 use super::contracts::{RequirementsContract, RequirementsPayload};
 use super::model::{
     AnswerEntry, PersistedAnswers, QuestionSetPayload, RequirementsJournalEvent,
-    RequirementsJournalEventType, RequirementsReviewOutcome, RequirementsRun,
-    RequirementsStageId, RequirementsStatus,
+    RequirementsJournalEventType, RequirementsReviewOutcome, RequirementsRun, RequirementsStageId,
+    RequirementsStatus,
 };
 use super::renderers;
 
@@ -64,12 +64,7 @@ pub trait RequirementsStorePort {
         artifact_id: &str,
         content: &str,
     ) -> AppResult<()>;
-    fn read_payload(
-        &self,
-        base_dir: &Path,
-        run_id: &str,
-        payload_id: &str,
-    ) -> AppResult<Value>;
+    fn read_payload(&self, base_dir: &Path, run_id: &str, payload_id: &str) -> AppResult<Value>;
     fn write_payload_artifact_pair_atomic(
         &self,
         base_dir: &Path,
@@ -79,12 +74,7 @@ pub trait RequirementsStorePort {
         artifact_id: &str,
         artifact: &str,
     ) -> AppResult<()>;
-    fn write_answers_toml(
-        &self,
-        base_dir: &Path,
-        run_id: &str,
-        template: &str,
-    ) -> AppResult<()>;
+    fn write_answers_toml(&self, base_dir: &Path, run_id: &str, template: &str) -> AppResult<()>;
     fn read_answers_toml(&self, base_dir: &Path, run_id: &str) -> AppResult<String>;
     fn write_answers_json(
         &self,
@@ -143,7 +133,12 @@ where
     Q: RequirementsStorePort,
 {
     /// Execute `requirements draft --idea "<text>"`.
-    pub async fn draft(&self, base_dir: &Path, idea: &str, now: DateTime<Utc>) -> AppResult<String> {
+    pub async fn draft(
+        &self,
+        base_dir: &Path,
+        idea: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<String> {
         let run_id = generate_run_id(now);
         let mut run = RequirementsRun::new_draft(run_id.clone(), idea.to_owned(), now);
 
@@ -203,13 +198,11 @@ where
                     run.status_summary = format!("failed: could not persist question set: {e}");
                     run.updated_at = Utc::now();
                     let _ = self.store.write_run(base_dir, &run_id, &run);
-                    let fail_event = journal_event(
-                        2,
-                        Utc::now(),
-                        RequirementsJournalEventType::RunFailed,
-                        &run,
-                    );
-                    let _ = self.store.append_journal_event(base_dir, &run_id, &fail_event);
+                    let fail_event =
+                        journal_event(2, Utc::now(), RequirementsJournalEventType::RunFailed, &run);
+                    let _ = self
+                        .store
+                        .append_journal_event(base_dir, &run_id, &fail_event);
                     return Err(e);
                 }
 
@@ -279,15 +272,15 @@ where
                             RequirementsJournalEventType::RunFailed,
                             &run,
                         );
-                        let _ = self.store.append_journal_event(base_dir, &run_id, &fail_event);
+                        let _ = self
+                            .store
+                            .append_journal_event(base_dir, &run_id, &fail_event);
                         return Err(e);
                     }
 
                     run.status = RequirementsStatus::AwaitingAnswers;
-                    run.status_summary = format!(
-                        "awaiting answers: {} question(s), round 1",
-                        question_count
-                    );
+                    run.status_summary =
+                        format!("awaiting answers: {} question(s), round 1", question_count);
                     run.updated_at = Utc::now();
                     self.store.write_run(base_dir, &run_id, &run)?;
 
@@ -305,14 +298,9 @@ where
                 run.updated_at = Utc::now();
                 self.store.write_run(base_dir, &run_id, &run)?;
 
-                let event = journal_event(
-                    2,
-                    Utc::now(),
-                    RequirementsJournalEventType::RunFailed,
-                    &run,
-                );
-                self.store
-                    .append_journal_event(base_dir, &run_id, &event)?;
+                let event =
+                    journal_event(2, Utc::now(), RequirementsJournalEventType::RunFailed, &run);
+                self.store.append_journal_event(base_dir, &run_id, &event)?;
                 return Err(e);
             }
         }
@@ -321,7 +309,12 @@ where
     }
 
     /// Execute `requirements quick --idea "<text>"`.
-    pub async fn quick(&self, base_dir: &Path, idea: &str, now: DateTime<Utc>) -> AppResult<String> {
+    pub async fn quick(
+        &self,
+        base_dir: &Path,
+        idea: &str,
+        now: DateTime<Utc>,
+    ) -> AppResult<String> {
         let run_id = generate_run_id(now);
         let mut run = RequirementsRun::new_quick(run_id.clone(), idea.to_owned(), now);
 
@@ -370,9 +363,10 @@ where
                 // boundary, questions are no longer pending.
                 if run.latest_draft_id.is_some() {
                     None
-                } else if journal.iter().any(|e| {
-                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
-                }) {
+                } else if journal
+                    .iter()
+                    .any(|e| e.event_type == RequirementsJournalEventType::AnswersSubmitted)
+                {
                     // Answers were durably submitted — the question boundary
                     // has been crossed even though the run later failed.
                     None
@@ -435,8 +429,7 @@ where
                 }
             }
             RequirementsStatus::Failed
-                if run.latest_question_set_id.is_some()
-                    && run.latest_draft_id.is_none() =>
+                if run.latest_question_set_id.is_some() && run.latest_draft_id.is_none() =>
             {
                 // Additional check: verify answers haven't already been
                 // durably submitted past the question boundary.
@@ -472,8 +465,7 @@ where
         let answers = parse_and_validate_answers(&answers_raw, base_dir, run_id, &self.store)?;
 
         // Persist answers.json
-        self.store
-            .write_answers_json(base_dir, run_id, &answers)?;
+        self.store.write_answers_json(base_dir, run_id, &answers)?;
 
         // Resume from answers boundary
         let answer_entries: Vec<(String, String)> = answers
@@ -499,10 +491,7 @@ where
             RequirementsJournalEventType::AnswersSubmitted,
             &run,
         );
-        if let Err(e) = self
-            .store
-            .append_journal_event(base_dir, run_id, &event)
-        {
+        if let Err(e) = self.store.append_journal_event(base_dir, run_id, &event) {
             self.fail_run(
                 base_dir,
                 &mut run,
@@ -514,8 +503,15 @@ where
         }
 
         let idea = run.idea.clone();
-        self.continue_after_answers(base_dir, &mut run, &idea, &answer_entries, seq + 1, Utc::now())
-            .await?;
+        self.continue_after_answers(
+            base_dir,
+            &mut run,
+            &idea,
+            &answer_entries,
+            seq + 1,
+            Utc::now(),
+        )
+        .await?;
 
         Ok(())
     }
@@ -588,10 +584,7 @@ where
             RequirementsJournalEventType::DraftGenerated,
             run,
         );
-        if let Err(e) = self
-            .store
-            .append_journal_event(base_dir, &run_id, &event)
-        {
+        if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
             // Roll back draft payload/artifact and boundary marker
             let _ = self.store.remove_payload_artifact_pair(
                 base_dir,
@@ -666,10 +659,7 @@ where
             RequirementsJournalEventType::ReviewCompleted,
             run,
         );
-        if let Err(e) = self
-            .store
-            .append_journal_event(base_dir, &run_id, &event)
-        {
+        if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
             // Roll back review payload/artifact and boundary marker
             let _ = self.store.remove_payload_artifact_pair(
                 base_dir,
@@ -691,7 +681,8 @@ where
 
         // Check review outcome
         match review_payload.outcome {
-            RequirementsReviewOutcome::Approved | RequirementsReviewOutcome::ConditionallyApproved => {
+            RequirementsReviewOutcome::Approved
+            | RequirementsReviewOutcome::ConditionallyApproved => {
                 // Continue to seed generation
             }
             RequirementsReviewOutcome::RequestChanges | RequirementsReviewOutcome::Rejected => {
@@ -710,11 +701,12 @@ where
         }
 
         // ── Seed ────────────────────────────────────────────────────────
-        let follow_ups = if review_payload.outcome == RequirementsReviewOutcome::ConditionallyApproved {
-            review_payload.follow_ups.clone()
-        } else {
-            Vec::new()
-        };
+        let follow_ups =
+            if review_payload.outcome == RequirementsReviewOutcome::ConditionallyApproved {
+                review_payload.follow_ups.clone()
+            } else {
+                Vec::new()
+            };
 
         let seed_prompt = format!(
             "Generate a project seed from the following requirements:\n\n{}\n\nFollow-ups: {}",
@@ -780,9 +772,9 @@ where
         // writes fail, no orphaned seed history payload/artifact remains.
         // Only the already committed draft/review history survives.
         let project_json = serde_json::to_value(&seed_payload)?;
-        if let Err(e) = self
-            .store
-            .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
+        if let Err(e) =
+            self.store
+                .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
         {
             // Terminal-transition ordering: persist the failed state BEFORE
             // cleaning up external side effects. This ensures that if the
@@ -809,8 +801,13 @@ where
             // Terminal-transition ordering: persist the failed state BEFORE
             // cleaning up seed files, so canonical state is terminal even if
             // the process crashes between cleanup and state persistence.
-            self.fail_run(base_dir, run, seq, &format!("seed history persistence: {e}"))
-                .await?;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("seed history persistence: {e}"),
+            )
+            .await?;
             let _ = self.store.remove_seed_pair(base_dir, &run_id);
             return Err(e);
         }
@@ -827,10 +824,7 @@ where
             RequirementsJournalEventType::SeedGenerated,
             run,
         );
-        if let Err(e) = self
-            .store
-            .append_journal_event(base_dir, &run_id, &event)
-        {
+        if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
             // Roll back seed payload/artifact, boundary marker, and seed files.
             // Persist Failed state BEFORE cleanup (terminal-transition ordering).
             let _ = self.store.remove_payload_artifact_pair(
@@ -861,9 +855,7 @@ where
         // Best-effort: the run is already durably complete in run.json with all
         // seed files and history committed. A missing RunCompleted journal event
         // is non-ideal but does not affect run state consistency.
-        let _ = self
-            .store
-            .append_journal_event(base_dir, &run_id, &event);
+        let _ = self.store.append_journal_event(base_dir, &run_id, &event);
 
         let seed_path = self.store.seed_prompt_path(base_dir, &run_id);
         println!("Requirements completed. Seed files at:");
@@ -927,12 +919,12 @@ where
             RequirementsStageId::ProjectSeed => RequirementsContract::seed(),
         };
 
-        let bundle = contract
-            .evaluate(&envelope.parsed_payload)
-            .map_err(|e| AppError::InvalidRequirementsState {
+        let bundle = contract.evaluate(&envelope.parsed_payload).map_err(|e| {
+            AppError::InvalidRequirementsState {
                 run_id: "".to_owned(),
                 details: format!("contract validation failed for {}: {e}", stage_id),
-            })?;
+            }
+        })?;
 
         Ok(bundle)
     }
@@ -958,7 +950,8 @@ where
         // Best-effort journal append: if the journal is failing, the run.json
         // Failed state is already committed and is the authoritative record.
         // This matches the workflow engine's fail_run() pattern (engine.rs:1755).
-        let _ = self.store
+        let _ = self
+            .store
             .append_journal_event(base_dir, &run.run_id, &event);
         Ok(())
     }
@@ -970,9 +963,10 @@ where
     fn answers_already_durably_stored(&self, base_dir: &Path, run_id: &str) -> AppResult<bool> {
         // Check journal first — authoritative event source.
         let journal = self.store.read_journal(base_dir, run_id)?;
-        if journal.iter().any(|e| {
-            e.event_type == RequirementsJournalEventType::AnswersSubmitted
-        }) {
+        if journal
+            .iter()
+            .any(|e| e.event_type == RequirementsJournalEventType::AnswersSubmitted)
+        {
             return Ok(true);
         }
 
@@ -1076,10 +1070,7 @@ fn generate_answers_template(qs: &QuestionSetPayload) -> String {
             }
         }
 
-        let default_value = q
-            .suggested_default
-            .as_deref()
-            .unwrap_or("");
+        let default_value = q.suggested_default.as_deref().unwrap_or("");
         // Escape the default value for TOML basic string safety.
         let escaped = toml_escape_basic_string(default_value);
         out.push_str(&format!("{} = \"{}\"\n\n", q.id, escaped));
@@ -1117,29 +1108,28 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
     store: &Q,
 ) -> AppResult<PersistedAnswers> {
     // Parse TOML
-    let table: toml::Table = toml::from_str(answers_raw).map_err(|e| {
-        AppError::AnswerValidationFailed {
+    let table: toml::Table =
+        toml::from_str(answers_raw).map_err(|e| AppError::AnswerValidationFailed {
             run_id: run_id.to_owned(),
             details: format!("invalid TOML: {e}"),
-        }
-    })?;
+        })?;
 
     // Load the committed question set payload
     let run = store.read_run(base_dir, run_id)?;
-    let qs_id = run.latest_question_set_id.as_ref().ok_or_else(|| {
-        AppError::InvalidRequirementsState {
-            run_id: run_id.to_owned(),
-            details: "no question set committed".to_owned(),
-        }
-    })?;
+    let qs_id =
+        run.latest_question_set_id
+            .as_ref()
+            .ok_or_else(|| AppError::InvalidRequirementsState {
+                run_id: run_id.to_owned(),
+                details: "no question set committed".to_owned(),
+            })?;
 
     let qs_json = store.read_payload(base_dir, run_id, qs_id)?;
-    let qs: QuestionSetPayload = serde_json::from_value(qs_json).map_err(|e| {
-        AppError::InvalidRequirementsState {
+    let qs: QuestionSetPayload =
+        serde_json::from_value(qs_json).map_err(|e| AppError::InvalidRequirementsState {
             run_id: run_id.to_owned(),
             details: format!("corrupt question set payload: {e}"),
-        }
-    })?;
+        })?;
 
     // Build valid question ID set
     let valid_ids: HashSet<&str> = qs.questions.iter().map(|q| q.id.as_str()).collect();
@@ -1169,10 +1159,7 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
                     if text.trim().is_empty() {
                         return Err(AppError::AnswerValidationFailed {
                             run_id: run_id.to_owned(),
-                            details: format!(
-                                "required question '{}' has an empty answer",
-                                q.id
-                            ),
+                            details: format!("required question '{}' has an empty answer", q.id),
                         });
                     }
                 }

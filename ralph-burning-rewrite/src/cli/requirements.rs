@@ -80,7 +80,10 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
                 // Read seed/project.json for the suggested create command
                 let seed_project_path = path.parent().unwrap().join("project.json");
                 if let Ok(raw) = std::fs::read_to_string(&seed_project_path) {
-                    if let Ok(seed) = serde_json::from_str::<crate::contexts::requirements_drafting::model::ProjectSeedPayload>(&raw) {
+                    if let Ok(seed) = serde_json::from_str::<
+                        crate::contexts::requirements_drafting::model::ProjectSeedPayload,
+                    >(&raw)
+                    {
                         println!();
                         println!("Suggested command:");
                         println!(

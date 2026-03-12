@@ -1,0 +1,185 @@
+use std::path::PathBuf;
+
+use chrono::{DateTime, Duration, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::shared::domain::FlowPreset;
+use crate::shared::error::{AppError, AppResult};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DaemonTask {
+    pub task_id: String,
+    pub issue_ref: String,
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing_labels: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_flow: Option<FlowPreset>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub routing_source: Option<RoutingSource>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub routing_warnings: Vec<String>,
+    pub status: TaskStatus,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_class: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_message: Option<String>,
+}
+
+impl DaemonTask {
+    pub fn is_terminal(&self) -> bool {
+        self.status.is_terminal()
+    }
+
+    pub fn transition_to(&mut self, next: TaskStatus, now: DateTime<Utc>) -> AppResult<()> {
+        if !self.status.can_transition_to(next) {
+            return Err(AppError::TaskStateTransitionInvalid {
+                task_id: self.task_id.clone(),
+                from: self.status.as_str().to_owned(),
+                to: next.as_str().to_owned(),
+            });
+        }
+
+        self.status = next;
+        self.updated_at = now;
+        Ok(())
+    }
+
+    pub fn attach_lease(&mut self, lease_id: impl Into<String>) {
+        self.lease_id = Some(lease_id.into());
+    }
+
+    pub fn clear_lease(&mut self) {
+        self.lease_id = None;
+    }
+
+    pub fn clear_failure(&mut self) {
+        self.failure_class = None;
+        self.failure_message = None;
+    }
+
+    pub fn set_failure(
+        &mut self,
+        failure_class: impl Into<String>,
+        failure_message: impl Into<String>,
+    ) {
+        self.failure_class = Some(failure_class.into());
+        self.failure_message = Some(failure_message.into());
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskStatus {
+    Pending,
+    Claimed,
+    Active,
+    Completed,
+    Failed,
+    Aborted,
+}
+
+impl TaskStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Claimed => "claimed",
+            Self::Active => "active",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Aborted => "aborted",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Aborted)
+    }
+
+    pub fn can_transition_to(self, next: Self) -> bool {
+        match (self, next) {
+            (Self::Pending, Self::Claimed | Self::Failed) => true,
+            (Self::Claimed, Self::Active | Self::Failed | Self::Aborted) => true,
+            (Self::Active, Self::Completed | Self::Failed | Self::Aborted) => true,
+            (Self::Failed, Self::Pending) => true,
+            _ if self == next => true,
+            _ => false,
+        }
+    }
+}
+
+impl std::fmt::Display for TaskStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorktreeLease {
+    pub lease_id: String,
+    pub task_id: String,
+    pub project_id: String,
+    pub worktree_path: PathBuf,
+    pub branch_name: String,
+    pub acquired_at: DateTime<Utc>,
+    pub ttl_seconds: u64,
+    pub last_heartbeat: DateTime<Utc>,
+}
+
+impl WorktreeLease {
+    pub fn heartbeat_deadline(&self) -> DateTime<Utc> {
+        self.last_heartbeat + Duration::seconds(self.ttl_seconds.min(i64::MAX as u64) as i64)
+    }
+
+    pub fn is_stale_at(&self, now: DateTime<Utc>) -> bool {
+        now > self.heartbeat_deadline()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutingSource {
+    Command,
+    Label,
+    DefaultFlow,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoutingResolution {
+    pub flow: FlowPreset,
+    pub source: RoutingSource,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct DaemonJournalEvent {
+    pub sequence: u64,
+    pub timestamp: DateTime<Utc>,
+    pub event_type: DaemonJournalEventType,
+    pub details: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DaemonJournalEventType {
+    TaskCreated,
+    TaskClaimed,
+    TaskCompleted,
+    TaskFailed,
+    TaskAborted,
+    LeaseAcquired,
+    LeaseReleased,
+    ReconciliationRun,
+}

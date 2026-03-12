@@ -81,7 +81,10 @@ pub async fn preflight_check<A: AgentExecutionPort>(
 ) -> AppResult<()> {
     for entry in plan {
         adapter
-            .check_capability(&entry.target, &InvocationContract::Stage(entry.contract.clone()))
+            .check_capability(
+                &entry.target,
+                &InvocationContract::Stage(entry.contract.clone()),
+            )
             .await
             .map_err(|e| AppError::PreflightFailed {
                 stage_id: entry.stage_id,

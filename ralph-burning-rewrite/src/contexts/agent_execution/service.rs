@@ -5,8 +5,7 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::contexts::agent_execution::model::{
-    CapabilityCheck, InvocationContract, InvocationEnvelope, InvocationRequest,
-    RawOutputReference,
+    CapabilityCheck, InvocationContract, InvocationEnvelope, InvocationRequest, RawOutputReference,
 };
 use crate::contexts::agent_execution::session::{SessionManager, SessionStorePort};
 use crate::contexts::workspace_governance::EffectiveConfig;

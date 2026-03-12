@@ -58,10 +58,7 @@ fn requirements_run_is_terminal_returns_true_for_completed_and_failed() {
     assert!(!run.is_terminal(), "Drafting should not be terminal");
 
     run.status = RequirementsStatus::AwaitingAnswers;
-    assert!(
-        !run.is_terminal(),
-        "AwaitingAnswers should not be terminal"
-    );
+    assert!(!run.is_terminal(), "AwaitingAnswers should not be terminal");
 
     run.status = RequirementsStatus::Completed;
     assert!(run.is_terminal(), "Completed should be terminal");
@@ -493,9 +490,7 @@ fn render_question_set_produces_deterministic_markdown_with_questions() {
 fn render_question_set_with_empty_questions_produces_no_questions_message() {
     use ralph_burning::contexts::requirements_drafting::model::QuestionSetPayload;
 
-    let payload = QuestionSetPayload {
-        questions: vec![],
-    };
+    let payload = QuestionSetPayload { questions: vec![] };
 
     let md = renderers::render_question_set(&payload);
     assert!(md.contains("No clarifying questions needed."));
@@ -613,8 +608,7 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -635,8 +629,7 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -665,8 +658,7 @@ mod service_integration {
 
         // Default stub returns empty questions for question_set
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -705,8 +697,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -741,8 +732,7 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -786,8 +776,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -802,8 +791,7 @@ mod service_integration {
             .join(".ralph-burning/requirements")
             .join(&run_id)
             .join("answers.toml");
-        std::fs::write(&answers_path, "unknown_key = \"some value\"\n")
-            .expect("write answers");
+        std::fs::write(&answers_path, "unknown_key = \"some value\"\n").expect("write answers");
 
         // Directly test parse_and_validate_answers via the store
         let store = FsRequirementsStore;
@@ -841,8 +829,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -870,18 +857,16 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload(
-                "requirements:requirements_review",
-                json!({
-                    "outcome": "conditionally_approved",
-                    "evidence": ["Looks good overall"],
-                    "findings": [],
-                    "follow_ups": ["Add error handling", "Document edge cases"]
-                }),
-            );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:requirements_review",
+            json!({
+                "outcome": "conditionally_approved",
+                "evidence": ["Looks good overall"],
+                "findings": [],
+                "follow_ups": ["Add error handling", "Document edge cases"]
+            }),
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -915,7 +900,8 @@ mod service_integration {
             "seed should contain merged follow-up 'Document edge cases'"
         );
         assert!(
-            seed.handoff_summary.contains("Follow-ups from conditional approval"),
+            seed.handoff_summary
+                .contains("Follow-ups from conditional approval"),
             "handoff summary should mention conditional approval follow-ups"
         );
     }
@@ -925,24 +911,20 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload(
-                "requirements:requirements_review",
-                json!({
-                    "outcome": "request_changes",
-                    "evidence": ["Requirements incomplete"],
-                    "findings": ["Missing acceptance criteria details"],
-                    "follow_ups": []
-                }),
-            );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:requirements_review",
+            json!({
+                "outcome": "request_changes",
+                "evidence": ["Requirements incomplete"],
+                "findings": ["Missing acceptance criteria details"],
+                "follow_ups": []
+            }),
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service
-            .quick(temp_dir.path(), "Build something", now)
-            .await;
+        let result = service.quick(temp_dir.path(), "Build something", now).await;
 
         assert!(result.is_err(), "quick should fail on request_changes");
 
@@ -993,8 +975,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1007,9 +988,7 @@ mod service_integration {
         // before any draft was committed. Seed the journal with AnswersSubmitted
         // and set status to Failed.
         let store = FsRequirementsStore;
-        let mut run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
 
         // Append AnswersSubmitted event to journal
@@ -1042,8 +1021,7 @@ mod service_integration {
         // Now attempt to answer — should be rejected because answers were
         // already durably submitted past the question boundary
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2.answer(temp_dir.path(), &run_id).await;
@@ -1084,8 +1062,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1096,9 +1073,7 @@ mod service_integration {
 
         // Verify run is in AwaitingAnswers
         let store = FsRequirementsStore;
-        let run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
 
         // Manually inject an AnswersSubmitted journal event (simulating a prior
@@ -1119,8 +1094,7 @@ mod service_integration {
 
         // Attempt to answer — should be rejected even though status is AwaitingAnswers
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2.answer(temp_dir.path(), &run_id).await;
@@ -1142,24 +1116,20 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload(
-                "requirements:requirements_review",
-                json!({
-                    "outcome": "conditionally_approved",
-                    "evidence": ["Looks good overall"],
-                    "findings": [],
-                    "follow_ups": []
-                }),
-            );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:requirements_review",
+            json!({
+                "outcome": "conditionally_approved",
+                "evidence": ["Looks good overall"],
+                "findings": [],
+                "follow_ups": []
+            }),
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service
-            .quick(temp_dir.path(), "Build a widget", now)
-            .await;
+        let result = service.quick(temp_dir.path(), "Build a widget", now).await;
 
         assert!(
             result.is_err(),
@@ -1175,8 +1145,7 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1208,8 +1177,7 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1265,8 +1233,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1277,9 +1244,7 @@ mod service_integration {
 
         // Manually transition to failed state at the question boundary
         let store = FsRequirementsStore;
-        let mut run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
         assert_eq!(run.pending_question_count, Some(2));
 
@@ -1306,8 +1271,7 @@ mod service_integration {
 
         // Now show() should report pending_question_count for the failed run
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2
@@ -1353,8 +1317,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1365,9 +1328,7 @@ mod service_integration {
 
         // Verify run is in AwaitingAnswers
         let store = FsRequirementsStore;
-        let run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
 
         // Simulate the scenario: answers.json was durably written with real
@@ -1386,8 +1347,7 @@ mod service_integration {
         // Attempt to answer — should be rejected because answers.json has
         // non-empty content, meaning the question boundary was already crossed.
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2.answer(temp_dir.path(), &run_id).await;
@@ -1414,8 +1374,7 @@ mod service_integration {
 
         // Use a stub that returns valid payloads for all stages
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         // First, run a successful quick-mode run to get a baseline
@@ -1426,9 +1385,7 @@ mod service_integration {
             .expect("quick should succeed");
 
         let store = FsRequirementsStore;
-        let run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::Completed);
 
         // Verify the seed history payload exists in the successful run
@@ -1472,8 +1429,7 @@ mod service_integration {
 
         // Default stub returns empty questions for question_set
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1484,9 +1440,7 @@ mod service_integration {
 
         // Check run.json has latest_question_set_id set
         let store = FsRequirementsStore;
-        let run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         assert_eq!(run.status, RequirementsStatus::Completed);
         assert!(
@@ -1534,8 +1488,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1546,9 +1499,7 @@ mod service_integration {
 
         // Verify initial state: AwaitingAnswers with pending questions
         let store = FsRequirementsStore;
-        let mut run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
         assert_eq!(run.pending_question_count, Some(1));
 
@@ -1594,8 +1545,7 @@ mod service_integration {
         // Now show() must NOT report pending questions — the answer boundary
         // has been crossed.
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2
@@ -1638,20 +1588,21 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Draft-committed pending questions test", now)
+            .draft(
+                temp_dir.path(),
+                "Draft-committed pending questions test",
+                now,
+            )
             .await
             .expect("draft should succeed");
 
         let store = FsRequirementsStore;
-        let mut run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let mut run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         // Simulate: run progressed past answers, draft was committed, then
         // the run failed during review.
@@ -1679,8 +1630,7 @@ mod service_integration {
             .expect("append fail event");
 
         let adapter2 = StubBackendAdapter::default();
-        let agent_service2 =
-            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
         let result = service2
@@ -1707,8 +1657,7 @@ mod service_integration {
 
         // Run a successful quick-mode run to verify the pipeline works
         let adapter = StubBackendAdapter::default();
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1718,9 +1667,7 @@ mod service_integration {
             .expect("quick should succeed");
 
         let store = FsRequirementsStore;
-        let run = store
-            .read_run(temp_dir.path(), &run_id)
-            .expect("read run");
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
         assert_eq!(run.status, RequirementsStatus::Completed);
 
         // Verify: if we manually fail the run and then remove seed pair,
@@ -1781,8 +1728,7 @@ mod service_integration {
                 ]
             }),
         );
-        let agent_service =
-            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
@@ -1837,9 +1783,7 @@ mod service_integration {
         use serde_json::Value;
         use tempfile::tempdir;
 
-        use ralph_burning::adapters::fs::{
-            FsRawOutputStore, FsRequirementsStore, FsSessionStore,
-        };
+        use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
         use ralph_burning::adapters::stub_backend::StubBackendAdapter;
         use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
         use ralph_burning::contexts::requirements_drafting::model::{
@@ -2046,7 +1990,10 @@ mod service_integration {
                 .draft(temp_dir.path(), "Test run_created failure", now)
                 .await;
 
-            assert!(result.is_err(), "draft should fail on run_created journal failure");
+            assert!(
+                result.is_err(),
+                "draft should fail on run_created journal failure"
+            );
 
             let run_id = find_single_run_id(temp_dir.path());
             let run = FsRequirementsStore
@@ -2077,7 +2024,10 @@ mod service_integration {
                 .quick(temp_dir.path(), "Test run_created failure in quick", now)
                 .await;
 
-            assert!(result.is_err(), "quick should fail on run_created journal failure");
+            assert!(
+                result.is_err(),
+                "quick should fail on run_created journal failure"
+            );
 
             let run_id = find_single_run_id(temp_dir.path());
             let run = FsRequirementsStore
