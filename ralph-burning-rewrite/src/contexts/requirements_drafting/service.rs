@@ -5,6 +5,7 @@
 //! Orchestrates `draft`, `quick`, `show`, and `answer` commands, including
 //! answer-template validation, seed rollback, and failure invariants.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
@@ -14,18 +15,21 @@ use crate::adapters::fs::FileSystem;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
-use crate::contexts::agent_execution::service::{AgentExecutionPort, AgentExecutionService};
+use crate::contexts::agent_execution::service::{
+    AgentExecutionPort, AgentExecutionService, BackendSelectionConfig,
+};
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
-use crate::shared::domain::{BackendRole, SessionPolicy};
+use crate::shared::domain::{BackendRole, FlowPreset, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
-use super::contracts::{RequirementsContract, RequirementsPayload, RequirementsValidatedBundle};
+use super::contracts::{RequirementsContract, RequirementsPayload};
 use super::model::{
     AnswerEntry, PersistedAnswers, QuestionSetPayload, RequirementsJournalEvent,
     RequirementsJournalEventType, RequirementsReviewOutcome, RequirementsRun,
     RequirementsStageId, RequirementsStatus,
 };
+use super::renderers;
 
 // ── Port traits ─────────────────────────────────────────────────────────────
 
@@ -60,6 +64,21 @@ pub trait RequirementsStorePort {
         artifact_id: &str,
         content: &str,
     ) -> AppResult<()>;
+    fn read_payload(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+    ) -> AppResult<Value>;
+    fn write_payload_artifact_pair_atomic(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+        payload: &Value,
+        artifact_id: &str,
+        artifact: &str,
+    ) -> AppResult<()>;
     fn write_answers_toml(
         &self,
         base_dir: &Path,
@@ -90,6 +109,7 @@ pub trait RequirementsStorePort {
 pub struct RequirementsService<A, R, S, Q> {
     agent_service: AgentExecutionService<A, R, S>,
     store: Q,
+    workspace_defaults: Option<BackendSelectionConfig>,
 }
 
 impl<A, R, S, Q> RequirementsService<A, R, S, Q> {
@@ -97,7 +117,13 @@ impl<A, R, S, Q> RequirementsService<A, R, S, Q> {
         Self {
             agent_service,
             store,
+            workspace_defaults: None,
         }
+    }
+
+    pub fn with_workspace_defaults(mut self, defaults: BackendSelectionConfig) -> Self {
+        self.workspace_defaults = Some(defaults);
+        self
     }
 }
 
@@ -143,7 +169,7 @@ where
 
                 // Persist payload and artifact atomically
                 let payload_json = serde_json::to_value(qs)?;
-                if let Err(e) = self.persist_payload_artifact_pair(
+                if let Err(e) = self.store.write_payload_artifact_pair_atomic(
                     base_dir,
                     &run_id,
                     &payload_id,
@@ -151,7 +177,8 @@ where
                     &artifact_id,
                     &bundle.artifact,
                 ) {
-                    // State invariant: if payload/artifact pair fails, run must not transition
+                    // State invariant: if payload/artifact pair fails, run must not
+                    // transition and no partial files remain (handled by atomic write)
                     run.status = RequirementsStatus::Failed;
                     run.status_summary = format!("failed: could not persist question set: {e}");
                     run.updated_at = Utc::now();
@@ -164,17 +191,28 @@ where
                     self.continue_after_answers(base_dir, &mut run, idea, &[], 2, now)
                         .await?;
                 } else {
-                    // Generate answers.toml template
+                    // Generate answers.toml template — rollback payload/artifact on failure
                     let template = generate_answers_template(qs);
-                    self.store
-                        .write_answers_toml(base_dir, &run_id, &template)?;
+                    if let Err(e) = self.store.write_answers_toml(base_dir, &run_id, &template) {
+                        // Rollback: question payload/artifact already committed but
+                        // the template failed, so no question/template files should be visible.
+                        // We leave the payload/artifact (they're valid) but fail the run.
+                        run.status = RequirementsStatus::Failed;
+                        run.status_summary =
+                            format!("failed: could not write answers template: {e}");
+                        run.updated_at = Utc::now();
+                        let _ = self.store.write_run(base_dir, &run_id, &run);
+                        return Err(e);
+                    }
 
+                    let question_count = qs.questions.len() as u32;
                     run.question_round = 1;
                     run.latest_question_set_id = Some(payload_id.clone());
+                    run.pending_question_count = Some(question_count);
                     run.status = RequirementsStatus::AwaitingAnswers;
                     run.status_summary = format!(
                         "awaiting answers: {} question(s), round 1",
-                        qs.questions.len()
+                        question_count
                     );
                     run.updated_at = Utc::now();
                     self.store.write_run(base_dir, &run_id, &run)?;
@@ -237,18 +275,16 @@ where
     }
 
     /// Execute `requirements show <run-id>`.
+    ///
+    /// Derives its read model from `run.json` and `journal.ndjson`, not by
+    /// scanning artifacts.
     pub fn show(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsShowResult> {
         let run = self.store.read_run(base_dir, run_id)?;
         let journal = self.store.read_journal(base_dir, run_id)?;
 
+        // Pending question count from canonical run state
         let pending_question_count = if run.status == RequirementsStatus::AwaitingAnswers {
-            // Count required questions from latest question set
-            if let Some(ref _qs_id) = run.latest_question_set_id {
-                // We derive count from the run state, not by scanning artifacts
-                Some(run.question_round)
-            } else {
-                None
-            }
+            run.pending_question_count
         } else {
             None
         };
@@ -265,29 +301,45 @@ where
             None
         };
 
+        // recommended_flow from canonical run state (set during draft generation)
+        let recommended_flow = run.recommended_flow;
+
         Ok(RequirementsShowResult {
             run,
             journal_event_count: journal.len() as u64,
             pending_question_count,
+            recommended_flow,
             failure_summary,
             seed_prompt_path,
         })
     }
 
     /// Execute `requirements answer <run-id>`.
+    ///
+    /// Valid only for runs in `awaiting_answers` status, or failed runs whose
+    /// latest durable boundary is a committed question set (no draft or review
+    /// has been committed past the question set).
     pub async fn answer(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
         let mut run = self.store.read_run(base_dir, run_id)?;
 
-        // Valid only for awaiting_answers or failed runs with a committed question set
+        // Durable-boundary gating: only allow answer when the latest committed
+        // boundary is the question set (no draft/review committed after it).
         match run.status {
             RequirementsStatus::AwaitingAnswers => {}
-            RequirementsStatus::Failed if run.latest_question_set_id.is_some() => {}
+            RequirementsStatus::Failed
+                if run.latest_question_set_id.is_some()
+                    && run.latest_draft_id.is_none() => {}
             _ => {
                 return Err(AppError::InvalidRequirementsState {
                     run_id: run_id.to_owned(),
                     details: format!(
-                        "cannot answer: run is in '{}' state",
-                        run.status
+                        "cannot answer: run is in '{}' state{}",
+                        run.status,
+                        if run.latest_draft_id.is_some() {
+                            " (draft already committed past question boundary)"
+                        } else {
+                            ""
+                        }
                     ),
                 });
             }
@@ -297,7 +349,7 @@ where
         let answers_path = self.store.answers_toml_path(base_dir, run_id);
         FileSystem::open_editor(&answers_path)?;
 
-        // Read and validate answers
+        // Read and validate answers against the committed question set
         let answers_raw = self.store.read_answers_toml(base_dir, run_id)?;
         let answers = parse_and_validate_answers(&answers_raw, base_dir, run_id, &self.store)?;
 
@@ -378,7 +430,7 @@ where
         let draft_artifact_id = format!("{run_id}-draft-art-1");
         let draft_json = serde_json::to_value(draft_payload)?;
 
-        if let Err(e) = self.persist_payload_artifact_pair(
+        if let Err(e) = self.store.write_payload_artifact_pair_atomic(
             base_dir,
             &run_id,
             &draft_payload_id,
@@ -392,6 +444,7 @@ where
         }
 
         run.latest_draft_id = Some(draft_payload_id.clone());
+        run.recommended_flow = Some(draft_payload.recommended_flow);
         run.status_summary = "drafting: reviewing requirements".to_owned();
         run.updated_at = Utc::now();
         self.store.write_run(base_dir, &run_id, run)?;
@@ -437,7 +490,7 @@ where
         let review_artifact_id = format!("{run_id}-review-art-1");
         let review_json = serde_json::to_value(review_payload)?;
 
-        if let Err(e) = self.persist_payload_artifact_pair(
+        if let Err(e) = self.store.write_payload_artifact_pair_atomic(
             base_dir,
             &run_id,
             &review_payload_id,
@@ -519,21 +572,45 @@ where
             }
         };
 
-        let RequirementsPayload::Seed(ref seed_payload) = seed_bundle.payload else {
-            unreachable!();
+        // Extract seed payload and merge review follow-ups for conditional approvals
+        let mut seed_payload = match seed_bundle.payload {
+            RequirementsPayload::Seed(p) => p,
+            _ => unreachable!(),
         };
+
+        if !follow_ups.is_empty() {
+            // Merge review follow-ups into canonical seed metadata
+            for fu in &follow_ups {
+                if !seed_payload.follow_ups.contains(fu) {
+                    seed_payload.follow_ups.push(fu.clone());
+                }
+            }
+            // Append follow-ups to the rendered handoff summary
+            seed_payload.handoff_summary = format!(
+                "{}\n\nFollow-ups from conditional approval:\n{}",
+                seed_payload.handoff_summary,
+                follow_ups
+                    .iter()
+                    .map(|f| format!("- {f}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            );
+        }
+
+        // Re-render seed artifact with merged follow-ups
+        let seed_artifact = renderers::render_project_seed(&seed_payload);
 
         let seed_payload_id = format!("{run_id}-seed-1");
         let seed_artifact_id = format!("{run_id}-seed-art-1");
-        let seed_json = serde_json::to_value(seed_payload)?;
+        let seed_json = serde_json::to_value(&seed_payload)?;
 
-        if let Err(e) = self.persist_payload_artifact_pair(
+        if let Err(e) = self.store.write_payload_artifact_pair_atomic(
             base_dir,
             &run_id,
             &seed_payload_id,
             &seed_json,
             &seed_artifact_id,
-            &seed_bundle.artifact,
+            &seed_artifact,
         ) {
             self.fail_run(base_dir, run, seq, &format!("seed persistence: {e}"))
                 .await?;
@@ -541,7 +618,7 @@ where
         }
 
         // Write seed files atomically
-        let project_json = serde_json::to_value(seed_payload)?;
+        let project_json = serde_json::to_value(&seed_payload)?;
         if let Err(e) = self
             .store
             .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
@@ -601,9 +678,14 @@ where
         stage_id: RequirementsStageId,
         role: BackendRole,
         prompt: &str,
-    ) -> AppResult<RequirementsValidatedBundle> {
+    ) -> AppResult<super::contracts::RequirementsValidatedBundle> {
         let contract_label = format!("requirements:{}", stage_id.as_str());
-        let target = self.agent_service.resolver().resolve(role, None, None, None)?;
+        let target = self.agent_service.resolver().resolve(
+            role,
+            None,
+            None,
+            self.workspace_defaults.as_ref(),
+        )?;
 
         let request = InvocationRequest {
             invocation_id: format!(
@@ -648,29 +730,6 @@ where
         Ok(bundle)
     }
 
-    fn persist_payload_artifact_pair(
-        &self,
-        base_dir: &Path,
-        run_id: &str,
-        payload_id: &str,
-        payload: &Value,
-        artifact_id: &str,
-        artifact: &str,
-    ) -> AppResult<()> {
-        self.store
-            .write_payload(base_dir, run_id, payload_id, payload)?;
-        if let Err(e) = self
-            .store
-            .write_artifact(base_dir, run_id, artifact_id, artifact)
-        {
-            // Rollback: payload was written but artifact failed — this is a
-            // partial failure. In practice the payload file should be cleaned up,
-            // but for now we propagate the error.
-            return Err(e);
-        }
-        Ok(())
-    }
-
     async fn fail_run(
         &self,
         base_dir: &Path,
@@ -708,6 +767,7 @@ pub struct RequirementsShowResult {
     pub run: RequirementsRun,
     pub journal_event_count: u64,
     pub pending_question_count: Option<u32>,
+    pub recommended_flow: Option<FlowPreset>,
     pub failure_summary: Option<String>,
     pub seed_prompt_path: Option<std::path::PathBuf>,
 }
@@ -764,6 +824,10 @@ fn generate_answers_template(qs: &QuestionSetPayload) -> String {
     out
 }
 
+/// Validate answers against the committed question set payload.
+///
+/// Loads the question set from persisted payloads, rejects unknown answer keys,
+/// and requires non-empty values for required questions.
 fn parse_and_validate_answers<Q: RequirementsStorePort>(
     answers_raw: &str,
     base_dir: &Path,
@@ -778,14 +842,61 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
         }
     })?;
 
-    // Read the question set to get required question IDs
+    // Load the committed question set payload
     let run = store.read_run(base_dir, run_id)?;
-    let _qs_id = run.latest_question_set_id.as_ref().ok_or_else(|| {
+    let qs_id = run.latest_question_set_id.as_ref().ok_or_else(|| {
         AppError::InvalidRequirementsState {
             run_id: run_id.to_owned(),
             details: "no question set committed".to_owned(),
         }
     })?;
+
+    let qs_json = store.read_payload(base_dir, run_id, qs_id)?;
+    let qs: QuestionSetPayload = serde_json::from_value(qs_json).map_err(|e| {
+        AppError::InvalidRequirementsState {
+            run_id: run_id.to_owned(),
+            details: format!("corrupt question set payload: {e}"),
+        }
+    })?;
+
+    // Build valid question ID set
+    let valid_ids: HashSet<&str> = qs.questions.iter().map(|q| q.id.as_str()).collect();
+
+    // Reject unknown answer keys
+    for key in table.keys() {
+        if !valid_ids.contains(key.as_str()) {
+            return Err(AppError::AnswerValidationFailed {
+                run_id: run_id.to_owned(),
+                details: format!("unknown question ID: '{key}'"),
+            });
+        }
+    }
+
+    // Require non-empty answers for required questions
+    for q in &qs.questions {
+        if q.required {
+            match table.get(&q.id) {
+                None => {
+                    return Err(AppError::AnswerValidationFailed {
+                        run_id: run_id.to_owned(),
+                        details: format!("required question '{}' has no answer", q.id),
+                    });
+                }
+                Some(v) => {
+                    let text = v.as_str().unwrap_or("");
+                    if text.trim().is_empty() {
+                        return Err(AppError::AnswerValidationFailed {
+                            run_id: run_id.to_owned(),
+                            details: format!(
+                                "required question '{}' has an empty answer",
+                                q.id
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+    }
 
     // Build answers from TOML keys
     let mut answers = Vec::new();
@@ -798,15 +909,6 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
             question_id: key.clone(),
             answer: answer_text,
         });
-    }
-
-    // Note: full validation against required question IDs would require
-    // reading the question set payload. For now we validate non-empty answers.
-    for entry in &answers {
-        if entry.answer.trim().is_empty() {
-            // We just skip empty answers; the required check would need the
-            // question set payload to determine which are required.
-        }
     }
 
     Ok(PersistedAnswers { answers })

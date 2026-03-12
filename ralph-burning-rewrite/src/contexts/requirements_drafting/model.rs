@@ -61,6 +61,10 @@ pub struct RequirementsRun {
     pub latest_draft_id: Option<String>,
     pub latest_review_id: Option<String>,
     pub latest_seed_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_question_count: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended_flow: Option<FlowPreset>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
     pub status_summary: String,
@@ -79,6 +83,8 @@ impl RequirementsRun {
             latest_draft_id: None,
             latest_review_id: None,
             latest_seed_id: None,
+            pending_question_count: None,
+            recommended_flow: None,
             created_at: now,
             updated_at: now,
             status_summary: "drafting: question generation".to_owned(),
@@ -97,6 +103,8 @@ impl RequirementsRun {
             latest_draft_id: None,
             latest_review_id: None,
             latest_seed_id: None,
+            pending_question_count: None,
+            recommended_flow: None,
             created_at: now,
             updated_at: now,
             status_summary: "drafting: generating requirements".to_owned(),

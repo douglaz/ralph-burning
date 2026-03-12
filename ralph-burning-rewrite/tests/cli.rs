@@ -2808,3 +2808,156 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
         "last journal event should be run_failed, got: {last_line}"
     );
 }
+
+// ── Requirements CLI tests ──────────────────────────────────────────────────
+
+#[test]
+fn requirements_quick_creates_completed_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements quick");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "requirements quick should succeed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Requirements completed"),
+        "stdout should contain completion message.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("ralph-burning project create"),
+        "stdout should contain suggested create command.\nstdout: {stdout}"
+    );
+
+    // Verify run directory exists
+    let req_dir = temp_dir.path().join(".ralph-burning/requirements");
+    assert!(req_dir.is_dir(), "requirements directory should exist");
+    let entries: Vec<_> = fs::read_dir(&req_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .collect();
+    assert_eq!(entries.len(), 1, "should have exactly one requirements run");
+}
+
+#[test]
+fn requirements_show_displays_completed_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // First create a quick run
+    let output = Command::new(binary())
+        .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements quick");
+    assert!(output.status.success());
+
+    // Find the run ID from the requirements directory
+    let req_dir = temp_dir.path().join(".ralph-burning/requirements");
+    let run_id = fs::read_dir(&req_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .next()
+        .expect("should have one run");
+
+    // Now show the run
+    let output = Command::new(binary())
+        .args(["requirements", "show", &run_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements show");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        output.status.success(),
+        "requirements show should succeed.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Status:           completed"),
+        "should show completed status.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Mode:             quick"),
+        "should show quick mode.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Recommended Flow: standard"),
+        "should show recommended flow.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Seed Prompt:"),
+        "should show seed prompt path.\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("Suggested command:"),
+        "should show suggested create command.\nstdout: {stdout}"
+    );
+}
+
+#[test]
+fn requirements_draft_with_empty_questions_completes() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["requirements", "draft", "--idea", "Simple refactoring"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements draft");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // Default stub returns empty question set, so draft should complete
+    assert!(
+        output.status.success(),
+        "requirements draft should succeed with empty questions.\nstdout: {stdout}\nstderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("Requirements completed"),
+        "should complete through pipeline.\nstdout: {stdout}"
+    );
+}
+
+#[test]
+fn requirements_show_on_nonexistent_run_fails() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["requirements", "show", "nonexistent-run"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements show");
+
+    assert!(
+        !output.status.success(),
+        "requirements show should fail for nonexistent run"
+    );
+}
+
+#[test]
+fn requirements_answer_on_nonexistent_run_fails() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["requirements", "answer", "nonexistent-run"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements answer");
+
+    assert!(
+        !output.status.success(),
+        "requirements answer should fail for nonexistent run"
+    );
+}

@@ -76,3 +76,36 @@ Feature: Requirements Drafting and Project Seed Handoff
     Given a requirements run in "failed" status with a committed question set
     When the user runs "requirements answer <run-id>"
     Then the pipeline resumes from the answer boundary
+
+  # RD-011
+  Scenario: Editor failure preserves run state
+    Given a requirements run in "awaiting_answers" status
+    When the user runs "requirements answer <run-id>"
+    And $EDITOR exits with a non-zero status
+    Then the run state remains "awaiting_answers"
+    And the journal has no new events
+    And answers.json is not replaced
+
+  # RD-012
+  Scenario: Answer validation rejects unknown question IDs
+    Given a requirements run in "awaiting_answers" status with a committed question set
+    When the user provides an answers.toml containing keys not in the question set
+    Then an answer validation error is returned
+    And answers.json is not replaced
+    And the run remains at the same committed question boundary
+
+  # RD-013
+  Scenario: Answer validation rejects empty required answers
+    Given a requirements run in "awaiting_answers" status with required questions
+    When the user provides an answers.toml with empty values for required questions
+    Then an answer validation error is returned
+    And answers.json is not replaced
+    And the run remains at the same committed question boundary
+
+  # RD-014
+  Scenario: Conditional approval includes follow-ups in seed
+    Given a requirements run whose review returns "conditionally_approved" with follow-ups
+    When the pipeline reaches seed generation
+    Then the persisted seed payload includes the review follow-ups
+    And the rendered handoff summary includes the follow-ups
+    And the run status is "completed"

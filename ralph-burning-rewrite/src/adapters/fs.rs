@@ -883,6 +883,7 @@ const REQUIREMENTS_RUN_SUBDIRS: &[&str] = &[
     "history/artifacts",
     "runtime/logs",
     "runtime/backend",
+    "runtime/temp",
     "seed",
 ];
 
@@ -994,6 +995,73 @@ impl RequirementsStorePort for FsRequirementsStore {
             .join("history/artifacts")
             .join(format!("{artifact_id}.md"));
         FileSystem::write_atomic(&path, content)
+    }
+
+    fn read_payload(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+    ) -> AppResult<serde_json::Value> {
+        let path = requirements_run_root(base_dir, run_id)
+            .join("history/payloads")
+            .join(format!("{payload_id}.json"));
+        let contents = FileSystem::read_to_string(&path)?;
+        serde_json::from_str(&contents).map_err(|e| AppError::CorruptRecord {
+            file: format!("requirements/{}/history/payloads/{}.json", run_id, payload_id),
+            details: e.to_string(),
+        })
+    }
+
+    fn write_payload_artifact_pair_atomic(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+        payload: &serde_json::Value,
+        artifact_id: &str,
+        artifact: &str,
+    ) -> AppResult<()> {
+        let run_root = requirements_run_root(base_dir, run_id);
+        let staging_dir = run_root.join("runtime/temp");
+        fs::create_dir_all(&staging_dir)?;
+
+        let payload_final = run_root
+            .join("history/payloads")
+            .join(format!("{payload_id}.json"));
+        let artifact_final = run_root
+            .join("history/artifacts")
+            .join(format!("{artifact_id}.md"));
+
+        let payload_staging = staging_dir.join(format!(".{payload_id}.payload.staging"));
+        let artifact_staging = staging_dir.join(format!(".{artifact_id}.artifact.staging"));
+
+        let payload_contents = serde_json::to_string_pretty(payload)?;
+
+        // Write payload to staging
+        FileSystem::write_atomic(&payload_staging, &payload_contents)?;
+
+        // Write artifact to staging — if this fails, clean up payload staging
+        if let Err(e) = FileSystem::write_atomic(&artifact_staging, artifact) {
+            let _ = fs::remove_file(&payload_staging);
+            return Err(e);
+        }
+
+        // Rename payload staging into canonical location
+        if let Err(e) = fs::rename(&payload_staging, &payload_final) {
+            let _ = fs::remove_file(&payload_staging);
+            let _ = fs::remove_file(&artifact_staging);
+            return Err(e.into());
+        }
+
+        // Rename artifact staging into canonical location
+        if let Err(e) = fs::rename(&artifact_staging, &artifact_final) {
+            // Roll back the payload that was already moved to canonical location
+            let _ = fs::remove_file(&payload_final);
+            return Err(e.into());
+        }
+
+        Ok(())
     }
 
     fn write_answers_toml(
