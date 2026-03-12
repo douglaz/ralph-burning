@@ -186,17 +186,33 @@ where
                     return Err(e);
                 }
 
+                // Record the committed question-set boundary in canonical state and
+                // journal immediately after the payload/artifact pair succeeds,
+                // before branching into any downstream path.
+                run.question_round = 1;
+                run.latest_question_set_id = Some(payload_id.clone());
+                run.updated_at = Utc::now();
+                self.store.write_run(base_dir, &run_id, &run)?;
+
+                let qs_event = journal_event(
+                    2,
+                    Utc::now(),
+                    RequirementsJournalEventType::QuestionsGenerated,
+                    &run,
+                );
+                self.store
+                    .append_journal_event(base_dir, &run_id, &qs_event)?;
+
                 if qs.questions.is_empty() {
                     // No questions needed — continue directly
-                    self.continue_after_answers(base_dir, &mut run, idea, &[], 2, now)
+                    self.continue_after_answers(base_dir, &mut run, idea, &[], 3, now)
                         .await?;
                 } else {
-                    // Generate answers.toml template — rollback payload/artifact on failure
+                    // Generate answers.toml template — fail run on write error
                     let template = generate_answers_template(qs);
                     if let Err(e) = self.store.write_answers_toml(base_dir, &run_id, &template) {
-                        // Rollback: question payload/artifact already committed but
-                        // the template failed, so no question/template files should be visible.
-                        // We leave the payload/artifact (they're valid) but fail the run.
+                        // Question payload/artifact and question-set boundary are already
+                        // committed; fail the run but retain the committed question set.
                         run.status = RequirementsStatus::Failed;
                         run.status_summary =
                             format!("failed: could not write answers template: {e}");
@@ -206,8 +222,6 @@ where
                     }
 
                     let question_count = qs.questions.len() as u32;
-                    run.question_round = 1;
-                    run.latest_question_set_id = Some(payload_id.clone());
                     run.pending_question_count = Some(question_count);
                     run.status = RequirementsStatus::AwaitingAnswers;
                     run.status_summary = format!(
@@ -216,15 +230,6 @@ where
                     );
                     run.updated_at = Utc::now();
                     self.store.write_run(base_dir, &run_id, &run)?;
-
-                    let event = journal_event(
-                        2,
-                        Utc::now(),
-                        RequirementsJournalEventType::QuestionsGenerated,
-                        &run,
-                    );
-                    self.store
-                        .append_journal_event(base_dir, &run_id, &event)?;
 
                     let answers_path = self.store.answers_toml_path(base_dir, &run_id);
                     println!(
@@ -318,17 +323,34 @@ where
     ///
     /// Valid only for runs in `awaiting_answers` status, or failed runs whose
     /// latest durable boundary is a committed question set (no draft or review
-    /// has been committed past the question set).
+    /// has been committed past the question set, and no answers have been
+    /// durably submitted).
     pub async fn answer(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
         let mut run = self.store.read_run(base_dir, run_id)?;
 
         // Durable-boundary gating: only allow answer when the latest committed
-        // boundary is the question set (no draft/review committed after it).
+        // boundary is the question set. Once answers have been durably recorded
+        // (AnswersSubmitted in journal), the question set is no longer the latest
+        // boundary and `answer` must be rejected.
         match run.status {
             RequirementsStatus::AwaitingAnswers => {}
             RequirementsStatus::Failed
                 if run.latest_question_set_id.is_some()
-                    && run.latest_draft_id.is_none() => {}
+                    && run.latest_draft_id.is_none() =>
+            {
+                // Additional check: verify answers haven't already been
+                // durably submitted past the question boundary.
+                let journal = self.store.read_journal(base_dir, run_id)?;
+                let answers_already_submitted = journal.iter().any(|e| {
+                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
+                });
+                if answers_already_submitted {
+                    return Err(AppError::InvalidRequirementsState {
+                        run_id: run_id.to_owned(),
+                        details: "cannot answer: answers already durably submitted past question boundary".to_owned(),
+                    });
+                }
+            }
             _ => {
                 return Err(AppError::InvalidRequirementsState {
                     run_id: run_id.to_owned(),

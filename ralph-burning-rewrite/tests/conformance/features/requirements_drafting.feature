@@ -109,3 +109,21 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then the persisted seed payload includes the review follow-ups
     And the rendered handoff summary includes the follow-ups
     And the run status is "completed"
+
+  # RD-015
+  Scenario: Answer rejected when answers already durably submitted
+    Given a requirements run in "failed" status with a committed question set
+    And the journal contains an "answers_submitted" event
+    When the user runs "requirements answer <run-id>"
+    Then an invalid requirements state error is returned
+    And the run state remains "failed"
+    And no new journal events are appended
+
+  # RD-016
+  Scenario: Empty-question draft still records question-set boundary
+    Given a workspace with an initialized project
+    When the user runs "requirements draft --idea 'Simple change'"
+    And the backend returns an empty question set
+    Then the run.json contains a non-null latest_question_set_id
+    And the journal contains a "questions_generated" event
+    And the run status is "completed"

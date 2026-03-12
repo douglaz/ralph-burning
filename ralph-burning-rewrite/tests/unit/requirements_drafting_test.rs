@@ -823,4 +823,142 @@ mod service_integration {
         );
         assert!(show_result.run.latest_seed_id.is_none());
     }
+
+    /// Regression: a failed run with an AnswersSubmitted journal event must
+    /// not be resumable via `requirements answer`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_rejects_failed_run_with_answers_already_submitted() {
+        use ralph_burning::contexts::requirements_drafting::model::{
+            RequirementsJournalEvent, RequirementsJournalEventType,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Create a draft run that transitions to awaiting_answers
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }),
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Test durable boundary", now)
+            .await
+            .expect("draft should succeed");
+
+        // Manually simulate the scenario: answers were submitted, then run failed
+        // before any draft was committed. Seed the journal with AnswersSubmitted
+        // and set status to Failed.
+        let store = FsRequirementsStore;
+        let mut run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+
+        // Append AnswersSubmitted event to journal
+        let answers_event = RequirementsJournalEvent {
+            sequence: 10,
+            timestamp: chrono::Utc::now(),
+            event_type: RequirementsJournalEventType::AnswersSubmitted,
+            details: json!({
+                "run_id": run_id,
+                "status": "drafting",
+                "status_summary": "drafting: generating requirements from answers",
+            }),
+        };
+        store
+            .append_journal_event(temp_dir.path(), &run_id, &answers_event)
+            .expect("append answers event");
+
+        // Transition run to Failed (simulating draft generation failure after answers)
+        run.status = RequirementsStatus::Failed;
+        run.status_summary = "failed: draft generation: simulated failure".to_owned();
+        run.updated_at = chrono::Utc::now();
+        store
+            .write_run(temp_dir.path(), &run_id, &run)
+            .expect("write failed run");
+
+        // Verify: latest_question_set_id is set, latest_draft_id is None
+        assert!(run.latest_question_set_id.is_some());
+        assert!(run.latest_draft_id.is_none());
+
+        // Now attempt to answer — should be rejected because answers were
+        // already durably submitted past the question boundary
+        let adapter2 = StubBackendAdapter::default();
+        let agent_service2 =
+            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
+
+        let result = service2.answer(temp_dir.path(), &run_id).await;
+        assert!(
+            result.is_err(),
+            "answer should be rejected for run with answers already submitted"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("already durably submitted"),
+            "error should mention durable boundary: {err_msg}"
+        );
+    }
+
+    /// Regression: draft-mode runs with empty questions must still persist
+    /// `latest_question_set_id` and a QuestionsGenerated journal entry.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn draft_with_empty_questions_persists_question_set_id_and_journal_event() {
+        use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Default stub returns empty questions for question_set
+        let adapter = StubBackendAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Empty questions regression test", now)
+            .await
+            .expect("draft should succeed");
+
+        // Check run.json has latest_question_set_id set
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert!(
+            run.latest_question_set_id.is_some(),
+            "empty-question run must still persist latest_question_set_id in run.json"
+        );
+
+        // Check journal has QuestionsGenerated event
+        let journal = store
+            .read_journal(temp_dir.path(), &run_id)
+            .expect("read journal");
+        let has_qs_event = journal
+            .iter()
+            .any(|e| e.event_type == RequirementsJournalEventType::QuestionsGenerated);
+        assert!(
+            has_qs_event,
+            "empty-question run must have QuestionsGenerated event in journal"
+        );
+    }
 }
