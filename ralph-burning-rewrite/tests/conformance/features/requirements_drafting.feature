@@ -185,3 +185,19 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then no seed payload or artifact exists in history/payloads or history/artifacts
     And the run transitions to "failed" status
     And only the draft and review history survive
+
+  # RD-024
+  Scenario: Show does not report stale pending questions after answer boundary
+    Given a requirements run in "failed" status at question_round 2
+    And the journal contains an "answers_submitted" event
+    And run.json still has a non-zero pending_question_count
+    When the user runs "requirements show <run-id>"
+    Then the output does not include pending questions
+    And the failure summary is displayed
+
+  # RD-025
+  Scenario: Seed rollback persists terminal state before cleanup
+    Given a requirements run that reached seed generation
+    When the seed file write fails
+    Then the run transitions to "failed" status before seed files are removed
+    And canonical state is terminal even if cleanup is incomplete

@@ -316,11 +316,26 @@ where
         let journal = self.store.read_journal(base_dir, run_id)?;
 
         // Pending question count from canonical run state.
-        // Exposed for AwaitingAnswers runs and for Failed runs at the question
-        // boundary (where run.pending_question_count was set before the failure).
+        // Only surface pending questions when the latest durable boundary is
+        // still the committed question set. Once answers are durably stored or
+        // downstream draft/review state exists, pending_question_count is
+        // cleared to avoid reporting stale values.
         let pending_question_count = match run.status {
-            RequirementsStatus::AwaitingAnswers | RequirementsStatus::Failed => {
-                run.pending_question_count
+            RequirementsStatus::AwaitingAnswers => run.pending_question_count,
+            RequirementsStatus::Failed => {
+                // If a draft has already been committed past the question
+                // boundary, questions are no longer pending.
+                if run.latest_draft_id.is_some() {
+                    None
+                } else if journal.iter().any(|e| {
+                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
+                }) {
+                    // Answers were durably submitted — the question boundary
+                    // has been crossed even though the run later failed.
+                    None
+                } else {
+                    run.pending_question_count
+                }
             }
             _ => None,
         };
@@ -676,11 +691,13 @@ where
             .store
             .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
         {
-            // Rollback: remove both seed outputs, keep draft/review.
-            // No seed history was committed, so nothing to roll back there.
-            let _ = self.store.remove_seed_pair(base_dir, &run_id);
+            // Terminal-transition ordering: persist the failed state BEFORE
+            // cleaning up external side effects. This ensures that if the
+            // process crashes after cleanup, canonical state is already
+            // terminal rather than appearing non-terminal with missing files.
             self.fail_run(base_dir, run, seq, &format!("seed file write: {e}"))
                 .await?;
+            let _ = self.store.remove_seed_pair(base_dir, &run_id);
             return Err(AppError::SeedPersistenceFailed {
                 run_id: run_id.clone(),
                 details: e.to_string(),
@@ -696,10 +713,12 @@ where
             &seed_artifact_id,
             &seed_artifact,
         ) {
-            // Rollback: remove seed files since history commit failed.
-            let _ = self.store.remove_seed_pair(base_dir, &run_id);
+            // Terminal-transition ordering: persist the failed state BEFORE
+            // cleaning up seed files, so canonical state is terminal even if
+            // the process crashes between cleanup and state persistence.
             self.fail_run(base_dir, run, seq, &format!("seed history persistence: {e}"))
                 .await?;
+            let _ = self.store.remove_seed_pair(base_dir, &run_id);
             return Err(e);
         }
 
