@@ -119,14 +119,13 @@ where
                 break;
             }
 
-            if !processed {
-                tokio::select! {
-                    _ = shutdown.cancelled() => {
-                        self.cleanup_active_leases(base_dir)?;
-                        break;
-                    }
-                    _ = tokio::time::sleep(config.poll_interval) => {}
+            let _ = processed;
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    self.cleanup_active_leases(base_dir)?;
+                    break;
                 }
+                _ = tokio::time::sleep(config.poll_interval) => {}
             }
         }
 
@@ -183,36 +182,44 @@ where
             &lease.worktree_path,
             &lease.branch_name,
         ) {
-            let _ = DaemonTaskService::mark_failed(
-                self.store,
+            let _ = self.fail_claimed_task(
                 base_dir,
+                repo_root,
                 &claimed_task.task_id,
+                &lease,
                 "rebase_conflict",
                 &error.to_string(),
             );
-            let _ = LeaseService::release(self.store, self.worktree, base_dir, repo_root, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(
-                self.store,
-                base_dir,
-                &claimed_task.task_id,
-            );
+            println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
         }
 
-        self.ensure_project(base_dir, &claimed_task)?;
+        if let Err(error) = self.ensure_project(base_dir, &claimed_task) {
+            self.handle_post_claim_failure(base_dir, repo_root, &claimed_task, &lease, &error)?;
+            println!("failed task {}: {}", claimed_task.task_id, error);
+            return Ok(());
+        }
         let task_on_disk = self.store.read_task(base_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
-            let _ = LeaseService::release(self.store, self.worktree, base_dir, repo_root, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(
-                self.store,
-                base_dir,
-                &task_on_disk.task_id,
-            );
+            let _ = self.release_task_lease(base_dir, repo_root, &task_on_disk.task_id, &lease);
             return Ok(());
         }
 
         let active_task =
-            DaemonTaskService::mark_active(self.store, base_dir, &claimed_task.task_id)?;
+            match DaemonTaskService::mark_active(self.store, base_dir, &claimed_task.task_id) {
+                Ok(task) => task,
+                Err(error) => {
+                    self.handle_post_claim_failure(
+                        base_dir,
+                        repo_root,
+                        &claimed_task,
+                        &lease,
+                        &error,
+                    )?;
+                    println!("failed task {}: {}", claimed_task.task_id, error);
+                    return Ok(());
+                }
+            };
         println!("active task {}", active_task.task_id);
 
         let task_cancel = CancellationToken::new();
@@ -230,12 +237,7 @@ where
 
         let latest_task = self.store.read_task(base_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            let _ = LeaseService::release(self.store, self.worktree, base_dir, repo_root, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(
-                self.store,
-                base_dir,
-                &active_task.task_id,
-            );
+            let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
             return Ok(());
         }
 
@@ -243,13 +245,7 @@ where
             Ok(()) => {
                 let _ =
                     DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
-                let _ =
-                    LeaseService::release(self.store, self.worktree, base_dir, repo_root, &lease);
-                let _ = DaemonTaskService::clear_lease_reference(
-                    self.store,
-                    base_dir,
-                    &active_task.task_id,
-                );
+                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -264,13 +260,7 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
-                let _ =
-                    LeaseService::release(self.store, self.worktree, base_dir, repo_root, &lease);
-                let _ = DaemonTaskService::clear_lease_reference(
-                    self.store,
-                    base_dir,
-                    &active_task.task_id,
-                );
+                let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -464,10 +454,83 @@ where
         let leases = self.store.list_leases(base_dir)?;
         for lease in leases {
             let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &lease.task_id);
-            let _ = LeaseService::release(self.store, self.worktree, base_dir, base_dir, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(self.store, base_dir, &lease.task_id);
+            let _ = self.release_task_lease(base_dir, base_dir, &lease.task_id, &lease);
         }
         Ok(())
+    }
+
+    fn handle_post_claim_failure(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        error: &AppError,
+    ) -> AppResult<()> {
+        let latest_task = self.store.read_task(base_dir, &task.task_id)?;
+        if latest_task.status == TaskStatus::Aborted {
+            return self.release_task_lease(base_dir, repo_root, &task.task_id, lease);
+        }
+
+        let failure_class = error
+            .failure_class()
+            .map(|class| class.as_str().to_owned())
+            .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
+        self.fail_claimed_task(
+            base_dir,
+            repo_root,
+            &task.task_id,
+            lease,
+            &failure_class,
+            &error.to_string(),
+        )
+    }
+
+    fn fail_claimed_task(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task_id: &str,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        failure_class: &str,
+        failure_message: &str,
+    ) -> AppResult<()> {
+        let mark_result = DaemonTaskService::mark_failed(
+            self.store,
+            base_dir,
+            task_id,
+            failure_class,
+            failure_message,
+        )
+        .map(|_| ());
+        let cleanup_result = self.release_task_lease(base_dir, repo_root, task_id, lease);
+
+        match (mark_result, cleanup_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(_)) => Err(error),
+        }
+    }
+
+    fn release_task_lease(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task_id: &str,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+    ) -> AppResult<()> {
+        let release_result =
+            LeaseService::release(self.store, self.worktree, base_dir, repo_root, lease);
+        let clear_result =
+            DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ());
+
+        match (release_result, clear_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(_)) => Err(error),
+        }
     }
 }
 

@@ -148,11 +148,8 @@ async fn handle_abort(task_id: &str) -> AppResult<()> {
     let original_status = task.status;
     DaemonTaskService::mark_aborted(&store, &current_dir, task_id)?;
 
-    if original_status == TaskStatus::Claimed {
-        if let Some(lease) = LeaseService::find_lease_for_task(&store, &current_dir, task_id)? {
-            let _ = LeaseService::release(&store, &worktree, &current_dir, &current_dir, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(&store, &current_dir, task_id);
-        }
+    if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
+        cleanup_aborted_task(&store, &worktree, &current_dir, task_id, original_status).await?;
     }
 
     println!("Aborted task {task_id}");
@@ -196,4 +193,41 @@ async fn handle_reconcile(ttl_seconds: Option<u64>) -> AppResult<()> {
         report.released_lease_ids.len()
     );
     Ok(())
+}
+
+async fn cleanup_aborted_task(
+    store: &dyn DaemonStorePort,
+    worktree: &WorktreeAdapter,
+    base_dir: &std::path::Path,
+    task_id: &str,
+    original_status: TaskStatus,
+) -> AppResult<()> {
+    let grace_deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    let await_daemon_cleanup = original_status == TaskStatus::Active;
+
+    loop {
+        let lease = LeaseService::find_lease_for_task(store, base_dir, task_id)?;
+        let Some(lease) = lease else {
+            let task = store.read_task(base_dir, task_id)?;
+            if task.lease_id.is_some() {
+                DaemonTaskService::clear_lease_reference(store, base_dir, task_id)?;
+            }
+            return Ok(());
+        };
+
+        if await_daemon_cleanup && std::time::Instant::now() < grace_deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            continue;
+        }
+
+        let release_result = LeaseService::release(store, worktree, base_dir, base_dir, &lease);
+        let clear_result =
+            DaemonTaskService::clear_lease_reference(store, base_dir, task_id).map(|_| ());
+        return match (release_result, clear_result) {
+            (Ok(()), Ok(())) => Ok(()),
+            (Err(error), Ok(())) => Err(error),
+            (Ok(()), Err(error)) => Err(error),
+            (Err(error), Err(_)) => Err(error),
+        };
+    }
 }

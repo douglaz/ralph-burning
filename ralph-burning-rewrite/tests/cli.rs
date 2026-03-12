@@ -443,6 +443,69 @@ fn daemon_abort_claimed_task_releases_lease() {
 }
 
 #[test]
+fn daemon_abort_active_task_releases_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+    let missing_worktree = temp_dir
+        .path()
+        .join(".ralph-burning/worktrees/missing-active");
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-active-abort".to_owned(),
+            issue_ref: "repo#5a".to_owned(),
+            project_id: "demo-active-abort".to_owned(),
+            project_name: Some("Active Abort".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-active-abort".to_owned()),
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+    write_worktree_lease(
+        temp_dir.path(),
+        &WorktreeLease {
+            lease_id: "lease-active-abort".to_owned(),
+            task_id: "task-active-abort".to_owned(),
+            project_id: "demo-active-abort".to_owned(),
+            worktree_path: missing_worktree,
+            branch_name: "rb/task/task-active-abort".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "abort", "task-active-abort"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon abort");
+    assert!(output.status.success());
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-active-abort.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Aborted, task.status);
+    assert!(task.lease_id.is_none());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/lease-active-abort.json")
+        .exists());
+}
+
+#[test]
 fn daemon_reconcile_fails_stale_claimed_task() {
     let temp_dir = initialize_workspace_fixture();
     let now = Utc::now();
@@ -499,6 +562,76 @@ fn daemon_reconcile_fails_stale_claimed_task() {
         Some("reconciliation_timeout"),
         task.failure_class.as_deref()
     );
+}
+
+#[test]
+fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
+    let temp_dir = initialize_workspace_fixture();
+    init_git_repo(temp_dir.path());
+    create_project_fixture(temp_dir.path(), "demo-conflict");
+
+    let now = Utc::now();
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-conflict".to_owned(),
+            issue_ref: "repo#6a".to_owned(),
+            project_id: "demo-conflict".to_owned(),
+            project_name: Some("Conflict".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: Some("/rb flow docs_change".to_owned()),
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::DocsChange),
+            routing_source: Some(RoutingSource::Command),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "start", "--single-iteration"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon start");
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("claimed task task-conflict"));
+    assert!(stdout.contains("failed task task-conflict"));
+
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-conflict.json");
+    let task: DaemonTask =
+        serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
+    assert_eq!(TaskStatus::Failed, task.status);
+    assert_eq!(
+        Some("daemon_dispatch_failed"),
+        task.failure_class.as_deref()
+    );
+    assert!(task.lease_id.is_none());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/lease-task-conflict.json")
+        .exists());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/writer-demo-conflict.lock")
+        .exists());
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/worktrees/task-conflict")
+        .exists());
 }
 
 #[test]
