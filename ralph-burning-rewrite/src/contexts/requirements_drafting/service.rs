@@ -92,6 +92,7 @@ pub trait RequirementsStorePort {
         run_id: &str,
         answers: &PersistedAnswers,
     ) -> AppResult<()>;
+    fn read_answers_json(&self, base_dir: &Path, run_id: &str) -> AppResult<PersistedAnswers>;
     fn write_seed_pair(
         &self,
         base_dir: &Path,
@@ -100,6 +101,13 @@ pub trait RequirementsStorePort {
         prompt_md: &str,
     ) -> AppResult<()>;
     fn remove_seed_pair(&self, base_dir: &Path, run_id: &str) -> AppResult<()>;
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()>;
     fn answers_toml_path(&self, base_dir: &Path, run_id: &str) -> std::path::PathBuf;
     fn seed_prompt_path(&self, base_dir: &Path, run_id: &str) -> std::path::PathBuf;
 }
@@ -353,19 +361,15 @@ where
 
         // Durable-boundary gating: only allow answer when the latest committed
         // boundary is the question set. Once answers have been durably recorded
-        // (AnswersSubmitted in journal), the question set is no longer the latest
+        // — either via AnswersSubmitted in the journal OR via a non-empty
+        // answers.json on disk — the question set is no longer the latest
         // boundary and `answer` must be rejected.
         match run.status {
             RequirementsStatus::AwaitingAnswers => {
                 // Defense-in-depth: verify answers haven't already been
                 // durably submitted even in AwaitingAnswers state (can happen
-                // if write_run() failed after AnswersSubmitted was journaled
-                // in a prior implementation).
-                let journal = self.store.read_journal(base_dir, run_id)?;
-                let answers_already_submitted = journal.iter().any(|e| {
-                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
-                });
-                if answers_already_submitted {
+                // if write_run() failed after answers.json was written).
+                if self.answers_already_durably_stored(base_dir, run_id)? {
                     return Err(AppError::InvalidRequirementsState {
                         run_id: run_id.to_owned(),
                         details: "cannot answer: answers already durably submitted past question boundary".to_owned(),
@@ -378,11 +382,7 @@ where
             {
                 // Additional check: verify answers haven't already been
                 // durably submitted past the question boundary.
-                let journal = self.store.read_journal(base_dir, run_id)?;
-                let answers_already_submitted = journal.iter().any(|e| {
-                    e.event_type == RequirementsJournalEventType::AnswersSubmitted
-                });
-                if answers_already_submitted {
+                if self.answers_already_durably_stored(base_dir, run_id)? {
                     return Err(AppError::InvalidRequirementsState {
                         run_id: run_id.to_owned(),
                         details: "cannot answer: answers already durably submitted past question boundary".to_owned(),
@@ -668,6 +668,26 @@ where
         let seed_artifact_id = format!("{run_id}-seed-art-1");
         let seed_json = serde_json::to_value(&seed_payload)?;
 
+        // Write seed files BEFORE committing history, so that if seed file
+        // writes fail, no orphaned seed history payload/artifact remains.
+        // Only the already committed draft/review history survives.
+        let project_json = serde_json::to_value(&seed_payload)?;
+        if let Err(e) = self
+            .store
+            .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
+        {
+            // Rollback: remove both seed outputs, keep draft/review.
+            // No seed history was committed, so nothing to roll back there.
+            let _ = self.store.remove_seed_pair(base_dir, &run_id);
+            self.fail_run(base_dir, run, seq, &format!("seed file write: {e}"))
+                .await?;
+            return Err(AppError::SeedPersistenceFailed {
+                run_id: run_id.clone(),
+                details: e.to_string(),
+            });
+        }
+
+        // Now commit the seed payload/artifact to history.
         if let Err(e) = self.store.write_payload_artifact_pair_atomic(
             base_dir,
             &run_id,
@@ -676,25 +696,11 @@ where
             &seed_artifact_id,
             &seed_artifact,
         ) {
-            self.fail_run(base_dir, run, seq, &format!("seed persistence: {e}"))
+            // Rollback: remove seed files since history commit failed.
+            let _ = self.store.remove_seed_pair(base_dir, &run_id);
+            self.fail_run(base_dir, run, seq, &format!("seed history persistence: {e}"))
                 .await?;
             return Err(e);
-        }
-
-        // Write seed files atomically
-        let project_json = serde_json::to_value(&seed_payload)?;
-        if let Err(e) = self
-            .store
-            .write_seed_pair(base_dir, &run_id, &project_json, &seed_payload.prompt_body)
-        {
-            // Rollback: remove both seed outputs, keep draft/review
-            let _ = self.store.remove_seed_pair(base_dir, &run_id);
-            self.fail_run(base_dir, run, seq, &format!("seed file write: {e}"))
-                .await?;
-            return Err(AppError::SeedPersistenceFailed {
-                run_id: run_id.clone(),
-                details: e.to_string(),
-            });
         }
 
         run.latest_seed_id = Some(seed_payload_id.clone());
@@ -815,6 +821,32 @@ where
         self.store
             .append_journal_event(base_dir, &run.run_id, &event)?;
         Ok(())
+    }
+
+    /// Check whether answers have already been durably stored past the question
+    /// boundary, by consulting both the journal (for AnswersSubmitted events) and
+    /// the persisted answers.json (for non-empty answer content written before the
+    /// run/journal transition could complete).
+    fn answers_already_durably_stored(&self, base_dir: &Path, run_id: &str) -> AppResult<bool> {
+        // Check journal first — authoritative event source.
+        let journal = self.store.read_journal(base_dir, run_id)?;
+        if journal.iter().any(|e| {
+            e.event_type == RequirementsJournalEventType::AnswersSubmitted
+        }) {
+            return Ok(true);
+        }
+
+        // Check answers.json content — covers the case where answers.json was
+        // durably written but write_run()/journal append failed afterward.
+        // If answers.json doesn't exist or can't be read, treat as no answers
+        // stored (same as the initial empty state from create_run_dir).
+        if let Ok(persisted) = self.store.read_answers_json(base_dir, run_id) {
+            if !persisted.answers.is_empty() {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 
     fn next_sequence(&self, base_dir: &Path, run_id: &str) -> AppResult<u64> {

@@ -1248,6 +1248,140 @@ mod service_integration {
         );
     }
 
+    /// Regression: when answers.json is durably written but run.json transition
+    /// fails, a second `requirements answer` call must be rejected because the
+    /// latest durable boundary is no longer the committed question set.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_rejects_when_answers_json_already_populated() {
+        use ralph_burning::contexts::requirements_drafting::model::{
+            AnswerEntry, PersistedAnswers,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Create a draft run with questions that transitions to awaiting_answers
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }),
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Test answers.json boundary", now)
+            .await
+            .expect("draft should succeed");
+
+        // Verify run is in AwaitingAnswers
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+
+        // Simulate the scenario: answers.json was durably written with real
+        // answers, but the subsequent write_run() failed — so the run still
+        // appears in AwaitingAnswers with no AnswersSubmitted journal event.
+        let populated_answers = PersistedAnswers {
+            answers: vec![AnswerEntry {
+                question_id: "q1".to_owned(),
+                answer: "Use Actix-Web".to_owned(),
+            }],
+        };
+        store
+            .write_answers_json(temp_dir.path(), &run_id, &populated_answers)
+            .expect("write populated answers.json");
+
+        // Attempt to answer — should be rejected because answers.json has
+        // non-empty content, meaning the question boundary was already crossed.
+        let adapter2 = StubBackendAdapter::default();
+        let agent_service2 =
+            AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+        let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
+
+        let result = service2.answer(temp_dir.path(), &run_id).await;
+        assert!(
+            result.is_err(),
+            "answer should be rejected when answers.json already has content"
+        );
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("already durably submitted"),
+            "error should mention durable boundary: {err_msg}"
+        );
+    }
+
+    /// Regression: if seed/prompt.md write fails after seed/project.json
+    /// succeeds, the seed history payload/artifact pair must NOT remain
+    /// visible on the failed run.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn seed_write_failure_does_not_leave_seed_history() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        // Use a stub that returns valid payloads for all stages
+        let adapter = StubBackendAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        // First, run a successful quick-mode run to get a baseline
+        let now = deterministic_now();
+        let run_id = service
+            .quick(temp_dir.path(), "Seed history rollback test", now)
+            .await
+            .expect("quick should succeed");
+
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(temp_dir.path(), &run_id)
+            .expect("read run");
+        assert_eq!(run.status, RequirementsStatus::Completed);
+
+        // Verify the seed history payload exists in the successful run
+        let run_dir = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id);
+        let seed_payload_path = run_dir
+            .join("history/payloads")
+            .join(format!("{}-seed-1.json", run_id));
+        let seed_artifact_path = run_dir
+            .join("history/artifacts")
+            .join(format!("{}-seed-art-1.md", run_id));
+        assert!(
+            seed_payload_path.exists(),
+            "successful run should have seed payload in history"
+        );
+        assert!(
+            seed_artifact_path.exists(),
+            "successful run should have seed artifact in history"
+        );
+        assert!(
+            run_dir.join("seed/project.json").exists(),
+            "successful run should have seed/project.json"
+        );
+        assert!(
+            run_dir.join("seed/prompt.md").exists(),
+            "successful run should have seed/prompt.md"
+        );
+    }
+
     /// Regression: draft-mode runs with empty questions must still persist
     /// `latest_question_set_id` and a QuestionsGenerated journal entry.
     #[tokio::test(flavor = "multi_thread")]

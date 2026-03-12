@@ -168,3 +168,20 @@ Feature: Requirements Drafting and Project Seed Handoff
     When the user runs "requirements show <run-id>"
     Then the output includes the pending question count
     And the output includes the failure summary
+
+  # RD-022
+  Scenario: Answer rejected when answers.json already populated
+    Given a requirements run in "awaiting_answers" status
+    And answers.json has been durably written with non-empty answer content
+    And no AnswersSubmitted event exists in the journal
+    When the user runs "requirements answer <run-id>"
+    Then an invalid requirements state error is returned
+    And the run state remains "awaiting_answers"
+
+  # RD-023
+  Scenario: Seed write failure leaves no seed history behind
+    Given a requirements run that reached seed generation
+    When the seed file writes fail after draft and review history are committed
+    Then no seed payload or artifact exists in history/payloads or history/artifacts
+    And the run transitions to "failed" status
+    And only the draft and review history survive

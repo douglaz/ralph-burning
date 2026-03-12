@@ -1113,6 +1113,15 @@ impl RequirementsStorePort for FsRequirementsStore {
         FileSystem::write_atomic(&path, &contents)
     }
 
+    fn read_answers_json(&self, base_dir: &Path, run_id: &str) -> AppResult<PersistedAnswers> {
+        let path = requirements_run_root(base_dir, run_id).join("answers.json");
+        let contents = FileSystem::read_to_string(&path)?;
+        serde_json::from_str(&contents).map_err(|e| AppError::CorruptRecord {
+            file: format!("requirements/{}/answers.json", run_id),
+            details: e.to_string(),
+        })
+    }
+
     fn write_seed_pair(
         &self,
         base_dir: &Path,
@@ -1143,6 +1152,27 @@ impl RequirementsStorePort for FsRequirementsStore {
         let seed_dir = requirements_run_root(base_dir, run_id).join("seed");
         let _ = fs::remove_file(seed_dir.join("project.json"));
         let _ = fs::remove_file(seed_dir.join("prompt.md"));
+        Ok(())
+    }
+
+    fn remove_payload_artifact_pair(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        payload_id: &str,
+        artifact_id: &str,
+    ) -> AppResult<()> {
+        let run_root = requirements_run_root(base_dir, run_id);
+        let _ = fs::remove_file(
+            run_root
+                .join("history/payloads")
+                .join(format!("{payload_id}.json")),
+        );
+        let _ = fs::remove_file(
+            run_root
+                .join("history/artifacts")
+                .join(format!("{artifact_id}.md")),
+        );
         Ok(())
     }
 
