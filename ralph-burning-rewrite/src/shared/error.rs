@@ -54,6 +54,8 @@ pub enum AppError {
     JournalSequence { details: String },
     #[error("cannot start run: {reason}")]
     RunStartFailed { reason: String },
+    #[error("cannot resume run: {reason}")]
+    ResumeFailed { reason: String },
     #[error("flow '{flow_id}' is not yet supported for `run start`; only 'standard' is supported in this slice")]
     UnsupportedFlow { flow_id: String },
     #[error("preflight check failed for stage '{stage_id}': {details}")]
@@ -87,6 +89,8 @@ pub enum AppError {
     },
     #[error("backend invocation cancelled for stage '{stage_id}' via '{backend}'")]
     InvocationCancelled { backend: String, stage_id: StageId },
+    #[error("remediation exhausted at cycle {cycle}; maximum supported cycles is {max}")]
+    RemediationExhausted { cycle: u32, max: u32 },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

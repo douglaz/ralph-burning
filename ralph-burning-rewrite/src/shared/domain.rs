@@ -21,6 +21,25 @@ pub enum FailureClass {
     QaReviewOutcomeFailure,
 }
 
+impl FailureClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TransportFailure => "transport_failure",
+            Self::SchemaValidationFailure => "schema_validation_failure",
+            Self::DomainValidationFailure => "domain_validation_failure",
+            Self::Timeout => "timeout",
+            Self::Cancellation => "cancellation",
+            Self::QaReviewOutcomeFailure => "qa_review_outcome_failure",
+        }
+    }
+}
+
+impl fmt::Display for FailureClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendFamily {

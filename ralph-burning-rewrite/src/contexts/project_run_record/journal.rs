@@ -90,7 +90,7 @@ pub fn last_sequence(events: &[JournalEvent]) -> u64 {
 // ── Lifecycle event builders ────────────────────────────────────────────────
 
 use chrono::{DateTime, Utc};
-use crate::shared::domain::{RunId, StageId};
+use crate::shared::domain::{FailureClass, RunId, StageId};
 
 /// Build a `run_started` journal event.
 pub fn run_started_event(
@@ -106,6 +106,26 @@ pub fn run_started_event(
         details: serde_json::json!({
             "run_id": run_id.as_str(),
             "first_stage": first_stage.as_str(),
+        }),
+    }
+}
+
+/// Build a `run_resumed` journal event.
+pub fn run_resumed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    resume_stage: StageId,
+    cycle: u32,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RunResumed,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "resume_stage": resume_stage.as_str(),
+            "cycle": cycle,
         }),
     }
 }
@@ -155,6 +175,59 @@ pub fn stage_completed_event(
             "attempt": attempt,
             "payload_id": payload_id,
             "artifact_id": artifact_id,
+        }),
+    }
+}
+
+/// Build a `stage_failed` journal event.
+#[allow(clippy::too_many_arguments)]
+pub fn stage_failed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    failure_class: FailureClass,
+    message: &str,
+    will_retry: bool,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::StageFailed,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "failure_class": failure_class,
+            "message": message,
+            "will_retry": will_retry,
+        }),
+    }
+}
+
+/// Build a `cycle_advanced` journal event.
+pub fn cycle_advanced_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    from_stage: StageId,
+    from_cycle: u32,
+    to_cycle: u32,
+    resume_stage: StageId,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::CycleAdvanced,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "from_stage": from_stage.as_str(),
+            "from_cycle": from_cycle,
+            "to_cycle": to_cycle,
+            "resume_stage": resume_stage.as_str(),
         }),
     }
 }

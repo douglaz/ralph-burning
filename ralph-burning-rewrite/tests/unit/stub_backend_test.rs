@@ -116,3 +116,20 @@ async fn stub_backend_cancel_is_callable() {
         vec!["stub-cancel".to_owned()]
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn stub_backend_transient_failure_succeeds_after_fail_count() {
+    let adapter = StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 1);
+    let request = request_fixture(StageId::Implementation);
+
+    let first = adapter.invoke(request.clone()).await.expect_err("first failure");
+    assert!(matches!(first, AppError::InvocationFailed { .. }));
+
+    let second = adapter.invoke(request).await.expect("second success");
+    let raw = second
+        .raw_output_reference
+        .inline_contents()
+        .expect("inline raw output");
+    let parsed: Value = serde_json::from_str(raw).expect("parse canned JSON");
+    assert_eq!(parsed["change_summary"].as_str(), Some("Stub execution output for Implementation"));
+}

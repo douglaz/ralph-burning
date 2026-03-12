@@ -2,6 +2,7 @@ pub mod contracts;
 pub mod engine;
 pub mod payloads;
 pub mod renderers;
+pub mod retry_policy;
 
 use crate::shared::domain::{FlowPreset, StageId};
 use crate::shared::error::AppResult;

@@ -236,7 +236,7 @@ where
 
         request
             .stage_contract
-            .evaluate(&parsed_payload)
+            .evaluate_permissive(&parsed_payload)
             .map_err(|error| map_contract_error(error, &request))?;
 
         envelope.raw_output_reference = stored_reference;

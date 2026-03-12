@@ -1529,9 +1529,18 @@ fn project_delete_fails_for_semantically_inconsistent_active_run() {
         .output()
         .expect("create project");
 
-    // Write a semantically inconsistent snapshot: paused with no active_run
+    // Write a semantically inconsistent snapshot: paused with an active_run
     let bad_snapshot = r#"{
-  "active_run": null,
+  "active_run": {
+    "run_id": "run-bad-state",
+    "stage_cursor": {
+      "stage": "planning",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 1
+    },
+    "started_at": "2026-03-11T19:00:00Z"
+  },
   "status": "paused",
   "cycle_history": [],
   "completion_rounds": 0,

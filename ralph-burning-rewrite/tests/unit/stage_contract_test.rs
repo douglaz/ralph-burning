@@ -293,6 +293,16 @@ fn conditionally_approved_maps_to_qa_review_outcome_failure() {
     assert_eq!(err.failure_class(), FailureClass::QaReviewOutcomeFailure);
 }
 
+#[test]
+fn evaluate_permissive_accepts_non_passing_validation_payloads() {
+    let contract = contract_for_stage(StageId::Review);
+    let bundle = contract
+        .evaluate_permissive(&valid_validation_rejected_json())
+        .expect("permissive evaluation");
+
+    assert!(bundle.artifact.contains("Rejected"));
+}
+
 // ── JSON Schema generation ──────────────────────────────────────────────────
 
 #[test]

@@ -1,9 +1,10 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use crate::contexts::agent_execution::model::{
     InvocationEnvelope, InvocationMetadata, InvocationRequest, RawOutputReference, TokenCounts,
@@ -19,6 +20,10 @@ pub struct StubBackendAdapter {
     unsupported_stages: HashSet<StageId>,
     /// Stages that pass preflight but fail during invocation (for testing).
     fail_invoke_stages: HashSet<StageId>,
+    transient_failure_limits: HashMap<StageId, u32>,
+    transient_failure_counters: HashMap<StageId, Arc<AtomicU32>>,
+    stage_payload_overrides: Arc<Mutex<HashMap<StageId, Vec<Value>>>>,
+    stage_payload_counters: HashMap<StageId, Arc<AtomicU32>>,
     cancelled_invocations: Arc<Mutex<Vec<String>>>,
 }
 
@@ -29,6 +34,10 @@ impl Default for StubBackendAdapter {
             available: true,
             unsupported_stages: HashSet::new(),
             fail_invoke_stages: HashSet::new(),
+            transient_failure_limits: HashMap::new(),
+            transient_failure_counters: HashMap::new(),
+            stage_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
+            stage_payload_counters: HashMap::new(),
             cancelled_invocations: Arc::new(Mutex::new(Vec::new())),
         }
     }
@@ -56,11 +65,55 @@ impl StubBackendAdapter {
         self
     }
 
+    /// Configure a stage to fail the first N invocations, then succeed.
+    pub fn with_transient_failure(mut self, stage_id: StageId, fail_count: u32) -> Self {
+        self.transient_failure_limits.insert(stage_id, fail_count);
+        self.transient_failure_counters
+            .insert(stage_id, Arc::new(AtomicU32::new(0)));
+        self
+    }
+
+    pub fn with_stage_payload(self, stage_id: StageId, payload: Value) -> Self {
+        self.with_stage_payload_sequence(stage_id, vec![payload])
+    }
+
+    pub fn with_stage_payload_sequence(mut self, stage_id: StageId, payloads: Vec<Value>) -> Self {
+        self.stage_payload_overrides
+            .lock()
+            .expect("stage payload override lock poisoned")
+            .insert(stage_id, payloads);
+        self.stage_payload_counters
+            .insert(stage_id, Arc::new(AtomicU32::new(0)));
+        self
+    }
+
     pub fn cancelled_invocations(&self) -> Vec<String> {
         self.cancelled_invocations
             .lock()
             .expect("cancelled invocation lock poisoned")
             .clone()
+    }
+
+    fn payload_for_stage(&self, stage_id: StageId) -> Value {
+        let overrides = self
+            .stage_payload_overrides
+            .lock()
+            .expect("stage payload override lock poisoned");
+        let Some(payloads) = overrides.get(&stage_id) else {
+            return canned_payload_for_stage(stage_id);
+        };
+        let Some(counter) = self.stage_payload_counters.get(&stage_id) else {
+            return payloads
+                .last()
+                .cloned()
+                .unwrap_or_else(|| canned_payload_for_stage(stage_id));
+        };
+        let idx = counter.fetch_add(1, Ordering::SeqCst) as usize;
+        payloads
+            .get(idx)
+            .cloned()
+            .or_else(|| payloads.last().cloned())
+            .unwrap_or_else(|| canned_payload_for_stage(stage_id))
     }
 }
 
@@ -105,6 +158,27 @@ impl AgentExecutionPort for StubBackendAdapter {
             });
         }
 
+        if let Some(limit) = self
+            .transient_failure_limits
+            .get(&request.stage_contract.stage_id)
+        {
+            let counter = self
+                .transient_failure_counters
+                .get(&request.stage_contract.stage_id)
+                .expect("transient failure counter missing");
+            let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
+            if attempt <= *limit {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    stage_id: request.stage_contract.stage_id,
+                    failure_class: FailureClass::TransportFailure,
+                    details: format!(
+                        "stub adapter configured to fail invocation {attempt}/{limit} for this stage"
+                    ),
+                });
+            }
+        }
+
         if self
             .fail_invoke_stages
             .contains(&request.stage_contract.stage_id)
@@ -129,7 +203,7 @@ impl AgentExecutionPort for StubBackendAdapter {
             }
         }
 
-        let payload = canned_payload_for_stage(request.stage_contract.stage_id);
+        let payload = self.payload_for_stage(request.stage_contract.stage_id);
         let raw_output = serde_json::to_string_pretty(&payload)?;
         let prompt_token_count = count_tokens(&request.payload.prompt);
         let completion_token_count = count_tokens(&raw_output);

@@ -7,6 +7,7 @@ use crate::adapters::fs::{
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
+use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
@@ -44,9 +45,7 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         RunSubcommand::History => handle_history().await,
         RunSubcommand::Tail { logs } => handle_tail(logs).await,
         RunSubcommand::Start => handle_start().await,
-        RunSubcommand::Resume => Err(AppError::NotYetImplemented {
-            command: "run resume".to_owned(),
-        }),
+        RunSubcommand::Resume => handle_resume().await,
         RunSubcommand::Rollback { .. } => Err(AppError::NotYetImplemented {
             command: "run rollback".to_owned(),
         }),
@@ -97,13 +96,24 @@ async fn handle_start() -> AppResult<()> {
     let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
 
     // Check preconditions before engine call (fail fast with clear errors)
-    if run_snapshot.status != crate::contexts::project_run_record::model::RunStatus::NotStarted {
-        return Err(AppError::RunStartFailed {
-            reason: format!(
-                "project snapshot status is '{}'; run start requires 'not_started'",
-                run_snapshot.status
-            ),
-        });
+    match run_snapshot.status {
+        RunStatus::NotStarted => {}
+        RunStatus::Failed | RunStatus::Paused => {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "project snapshot status is '{}'; use `ralph-burning run resume`",
+                    run_snapshot.status
+                ),
+            });
+        }
+        status => {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "project snapshot status is '{}'; run start requires 'not_started'",
+                    status
+                ),
+            });
+        }
     }
     if run_snapshot.has_active_run() {
         return Err(AppError::RunStartFailed {
@@ -134,7 +144,87 @@ async fn handle_start() -> AppResult<()> {
     )
     .await?;
 
-    println!("Run completed successfully.");
+    let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    match final_snapshot.status {
+        RunStatus::Completed => println!("Run completed successfully."),
+        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+        status => println!("Run finished with status '{}'.", status),
+    }
+    Ok(())
+}
+
+async fn handle_resume() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let project_store = FsProjectStore;
+    let project_record = project_store.read_project_record(&current_dir, &project_id)?;
+    if project_record.flow != FlowPreset::Standard {
+        return Err(AppError::UnsupportedFlow {
+            flow_id: project_record.flow.as_str().to_owned(),
+        });
+    }
+
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    match run_snapshot.status {
+        RunStatus::Failed | RunStatus::Paused => {}
+        RunStatus::NotStarted => {
+            return Err(AppError::ResumeFailed {
+                reason: "project has not started a run yet; use `ralph-burning run start`"
+                    .to_owned(),
+            });
+        }
+        RunStatus::Running => {
+            return Err(AppError::ResumeFailed {
+                reason: "project already has a running run; `run resume` only works from failed or paused snapshots".to_owned(),
+            });
+        }
+        RunStatus::Completed => {
+            return Err(AppError::ResumeFailed {
+                reason: "project is already completed; there is nothing to resume".to_owned(),
+            });
+        }
+    }
+    if run_snapshot.has_active_run() {
+        return Err(AppError::ResumeFailed {
+            reason: "failed or paused snapshots must not retain an active run".to_owned(),
+        });
+    }
+
+    let effective_config = EffectiveConfig::load(&current_dir)?;
+    let agent_service = build_agent_execution_service();
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+
+    println!("Resuming run for project '{}'...", project_id);
+
+    engine::resume_standard_run(
+        &agent_service,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_write,
+        &log_write,
+        &current_dir,
+        &project_id,
+        &effective_config,
+    )
+    .await?;
+
+    let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
+    match final_snapshot.status {
+        RunStatus::Completed => println!("Run completed successfully."),
+        RunStatus::Paused => println!("{}", final_snapshot.status_summary),
+        status => println!("Run finished with status '{}'.", status),
+    }
+
     Ok(())
 }
 

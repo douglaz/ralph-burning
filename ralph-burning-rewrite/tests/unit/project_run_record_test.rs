@@ -453,9 +453,29 @@ fn run_snapshot_validates_running_without_active_run_as_corrupt() {
 }
 
 #[test]
-fn run_snapshot_validates_paused_without_active_run_as_corrupt() {
+fn run_snapshot_validates_paused_without_active_run_as_valid() {
     let snapshot = RunSnapshot {
         active_run: None,
+        status: RunStatus::Paused,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "paused".to_owned(),
+    };
+    assert!(snapshot.validate_semantics().is_ok());
+}
+
+#[test]
+fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
+    let snapshot = RunSnapshot {
+        active_run: Some(ActiveRun {
+            run_id: "run-1".to_owned(),
+            stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                ralph_burning::shared::domain::StageId::Planning,
+            ),
+            started_at: test_timestamp(),
+        }),
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -516,6 +536,28 @@ fn run_snapshot_validates_failed_without_active_run_as_valid() {
         status_summary: "failed".to_owned(),
     };
     assert!(snapshot.validate_semantics().is_ok());
+}
+
+#[test]
+fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
+    let snapshot = RunSnapshot {
+        active_run: Some(ActiveRun {
+            run_id: "run-1".to_owned(),
+            stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+                ralph_burning::shared::domain::StageId::Planning,
+            ),
+            started_at: test_timestamp(),
+        }),
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 0,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed".to_owned(),
+    };
+    let result = snapshot.validate_semantics();
+    assert!(result.is_err());
+    assert!(result.unwrap_err().contains("failed"));
 }
 
 // ── Terminal State Run Status Reporting ──

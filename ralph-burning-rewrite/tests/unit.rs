@@ -39,3 +39,6 @@ mod stub_backend_test;
 
 #[path = "unit/workflow_engine_test.rs"]
 mod workflow_engine_test;
+
+#[path = "unit/retry_policy_test.rs"]
+mod retry_policy_test;

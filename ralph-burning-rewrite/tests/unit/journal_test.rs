@@ -2,6 +2,7 @@ use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{JournalEvent, JournalEventType};
+use ralph_burning::shared::domain::{FailureClass, RunId, StageId};
 use ralph_burning::shared::error::AppError;
 
 fn test_timestamp() -> chrono::DateTime<Utc> {
@@ -184,4 +185,37 @@ fn last_sequence_returns_last_event_sequence() {
         make_event(2, JournalEventType::RunStarted),
     ];
     assert_eq!(journal::last_sequence(&events), 2);
+}
+
+#[test]
+fn stage_failed_event_builder_serializes_failure_metadata() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::stage_failed_event(
+        2,
+        test_timestamp(),
+        &run_id,
+        StageId::Implementation,
+        1,
+        2,
+        FailureClass::TransportFailure,
+        "temporary network issue",
+        true,
+    );
+
+    assert_eq!(event.event_type, JournalEventType::StageFailed);
+    assert_eq!(event.details["stage_id"], "implementation");
+    assert_eq!(event.details["attempt"], 2);
+    assert_eq!(event.details["failure_class"], "transport_failure");
+    assert_eq!(event.details["will_retry"], true);
+}
+
+#[test]
+fn run_resumed_event_builder_serializes_resume_cursor() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::run_resumed_event(3, test_timestamp(), &run_id, StageId::Planning, 2);
+
+    assert_eq!(event.event_type, JournalEventType::RunResumed);
+    assert_eq!(event.details["run_id"], "run-1");
+    assert_eq!(event.details["resume_stage"], "planning");
+    assert_eq!(event.details["cycle"], 2);
 }

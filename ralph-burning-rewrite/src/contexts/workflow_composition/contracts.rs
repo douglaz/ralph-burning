@@ -112,16 +112,30 @@ impl StageContract {
     /// failure. Non-passing QA/review outcomes are errors classified as
     /// [`FailureClass::QaReviewOutcomeFailure`] — no success bundle is returned.
     pub fn evaluate(&self, raw_json: &serde_json::Value) -> Result<ValidatedBundle, ContractError> {
+        let bundle = self.evaluate_permissive(raw_json)?;
+
+        self.check_outcome(&bundle.payload)?;
+
+        Ok(bundle)
+    }
+
+    /// Evaluate a raw JSON value without enforcing passing review outcomes.
+    ///
+    /// Schema validation → semantic validation → rendering.
+    ///
+    /// This is used by the engine so it can durably persist non-passing
+    /// validation payloads before applying remediation or terminal semantics.
+    pub fn evaluate_permissive(
+        &self,
+        raw_json: &serde_json::Value,
+    ) -> Result<ValidatedBundle, ContractError> {
         // Step 1: Schema validation (deserialization into typed payload).
         let payload = self.validate_schema(raw_json)?;
 
         // Step 2: Semantic / domain validation.
         self.validate_semantics(&payload)?;
 
-        // Step 3: Non-passing QA/review outcome check (before rendering).
-        self.check_outcome(&payload)?;
-
-        // Step 4: Deterministic Markdown rendering (only on full success).
+        // Step 3: Deterministic Markdown rendering (without outcome enforcement).
         let artifact = self.render(&payload);
 
         Ok(ValidatedBundle { payload, artifact })

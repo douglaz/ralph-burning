@@ -58,22 +58,30 @@ impl RunSnapshot {
     /// Returns `Err` with a description if status and active_run are inconsistent.
     pub fn validate_semantics(&self) -> Result<(), String> {
         match (&self.status, &self.active_run) {
-            // Running or Paused requires an active run cursor
+            // Running requires an active run cursor.
             (RunStatus::Running, None) => Err(
                 "status is 'running' but active_run is null — inconsistent canonical state"
                     .to_owned(),
             ),
-            (RunStatus::Paused, None) => Err(
-                "status is 'paused' but active_run is null — inconsistent canonical state"
+            (RunStatus::Paused, Some(_)) => Err(
+                "status is 'paused' but active_run is present — inconsistent canonical state"
                     .to_owned(),
             ),
-            // NotStarted must not have an active run cursor
+            // All non-running states must not retain an active run cursor.
             (RunStatus::NotStarted, Some(_)) => Err(
                 "status is 'not_started' but active_run is present — inconsistent canonical state"
                     .to_owned(),
             ),
-            // All other combinations are valid:
-            // NotStarted + None, Running/Paused + Some, Completed/Failed + None/Some
+            (RunStatus::Completed, Some(_)) => Err(
+                "status is 'completed' but active_run is present — inconsistent canonical state"
+                    .to_owned(),
+            ),
+            (RunStatus::Failed, Some(_)) => Err(
+                "status is 'failed' but active_run is present — inconsistent canonical state"
+                    .to_owned(),
+            ),
+            // Valid combinations:
+            // NotStarted/Paused/Completed/Failed + None, Running + Some
             _ => Ok(()),
         }
     }
@@ -152,7 +160,9 @@ pub struct JournalEvent {
 pub enum JournalEventType {
     ProjectCreated,
     RunStarted,
+    RunResumed,
     StageEntered,
+    StageFailed,
     StageCompleted,
     CycleAdvanced,
     CompletionRoundAdvanced,
