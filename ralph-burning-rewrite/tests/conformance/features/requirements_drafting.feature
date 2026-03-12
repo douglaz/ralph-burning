@@ -215,3 +215,52 @@ Feature: Requirements Drafting and Project Seed Handoff
     When the answers.toml template is generated from the question set
     Then the template is valid TOML
     And parsing the template produces the original default values
+
+  # RD-028
+  Scenario: Journal append failure at run_created transitions run to failed
+    Given a workspace with an initialized project
+    When the journal append fails during the run_created event
+    Then the run transitions to "failed" status
+    And run.json is the authoritative record of the failure
+
+  # RD-029
+  Scenario: Journal append failure at questions_generated rolls back and fails run
+    Given a workspace with an initialized project
+    When the journal append fails during the questions_generated event
+    Then the question payload and artifact are rolled back
+    And the run transitions to "failed" status
+    And latest_question_set_id is cleared in run.json
+
+  # RD-030
+  Scenario: Journal append failure at draft_generated rolls back and fails run
+    Given a requirements run that reached draft generation
+    When the journal append fails during the draft_generated event
+    Then the draft payload and artifact are rolled back
+    And the run transitions to "failed" status
+    And latest_draft_id is cleared in run.json
+
+  # RD-031
+  Scenario: Journal append failure at review_completed rolls back and fails run
+    Given a requirements run that reached review completion
+    When the journal append fails during the review_completed event
+    Then the review payload and artifact are rolled back
+    And the run transitions to "failed" status
+    And latest_review_id is cleared in run.json
+    And draft history survives the review journal failure
+
+  # RD-032
+  Scenario: Journal append failure at seed_generated rolls back seed and fails run
+    Given a requirements run that reached seed generation
+    When the journal append fails during the seed_generated event
+    Then the seed payload and artifact are rolled back
+    And seed files are removed from the run directory
+    And the run transitions to "failed" status
+    And draft and review history survive the seed journal failure
+
+  # RD-033
+  Scenario: Journal append failure at run_completed preserves completed state
+    Given a requirements run that reached the completion boundary
+    When the journal append fails during the run_completed event
+    Then the run remains in "completed" status
+    And all seed files and history are preserved
+    And the journal contains seed_generated but not run_completed

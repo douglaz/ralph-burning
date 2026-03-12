@@ -152,8 +152,19 @@ where
         self.store.write_run(base_dir, &run_id, &run)?;
 
         let created_event = journal_event(1, now, RequirementsJournalEventType::RunCreated, &run);
-        self.store
-            .append_journal_event(base_dir, &run_id, &created_event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &created_event)
+        {
+            self.fail_run(
+                base_dir,
+                &mut run,
+                1,
+                &format!("journal append failed for run_created: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
 
         // Generate questions
         let run_root = requirements_run_root(base_dir, &run_id);
@@ -216,8 +227,29 @@ where
                     RequirementsJournalEventType::QuestionsGenerated,
                     &run,
                 );
-                self.store
-                    .append_journal_event(base_dir, &run_id, &qs_event)?;
+                if let Err(e) = self
+                    .store
+                    .append_journal_event(base_dir, &run_id, &qs_event)
+                {
+                    // Roll back question payload/artifact and boundary marker
+                    // so run.json does not reference deleted history.
+                    let _ = self.store.remove_payload_artifact_pair(
+                        base_dir,
+                        &run_id,
+                        &payload_id,
+                        &artifact_id,
+                    );
+                    run.latest_question_set_id = None;
+                    run.question_round = 0;
+                    self.fail_run(
+                        base_dir,
+                        &mut run,
+                        2,
+                        &format!("journal append failed for questions_generated: {e}"),
+                    )
+                    .await?;
+                    return Err(e);
+                }
 
                 // Record the pending question count in canonical state for all
                 // paths (including failure), so show() can report it without
@@ -297,8 +329,19 @@ where
         self.store.write_run(base_dir, &run_id, &run)?;
 
         let created_event = journal_event(1, now, RequirementsJournalEventType::RunCreated, &run);
-        self.store
-            .append_journal_event(base_dir, &run_id, &created_event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &created_event)
+        {
+            self.fail_run(
+                base_dir,
+                &mut run,
+                1,
+                &format!("journal append failed for run_created: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
 
         // Skip question generation entirely — go straight to draft
         self.continue_after_answers(base_dir, &mut run, idea, &[], 2, now)
@@ -456,8 +499,19 @@ where
             RequirementsJournalEventType::AnswersSubmitted,
             &run,
         );
-        self.store
-            .append_journal_event(base_dir, run_id, &event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, run_id, &event)
+        {
+            self.fail_run(
+                base_dir,
+                &mut run,
+                seq,
+                &format!("journal append failed for answers_submitted: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
 
         let idea = run.idea.clone();
         self.continue_after_answers(base_dir, &mut run, &idea, &answer_entries, seq + 1, Utc::now())
@@ -534,8 +588,28 @@ where
             RequirementsJournalEventType::DraftGenerated,
             run,
         );
-        self.store
-            .append_journal_event(base_dir, &run_id, &event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &event)
+        {
+            // Roll back draft payload/artifact and boundary marker
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &draft_payload_id,
+                &draft_artifact_id,
+            );
+            run.latest_draft_id = None;
+            run.recommended_flow = None;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("journal append failed for draft_generated: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
         seq += 1;
 
         // ── Review ──────────────────────────────────────────────────────
@@ -592,8 +666,27 @@ where
             RequirementsJournalEventType::ReviewCompleted,
             run,
         );
-        self.store
-            .append_journal_event(base_dir, &run_id, &event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &event)
+        {
+            // Roll back review payload/artifact and boundary marker
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &review_payload_id,
+                &review_artifact_id,
+            );
+            run.latest_review_id = None;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("journal append failed for review_completed: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
         seq += 1;
 
         // Check review outcome
@@ -734,8 +827,29 @@ where
             RequirementsJournalEventType::SeedGenerated,
             run,
         );
-        self.store
-            .append_journal_event(base_dir, &run_id, &event)?;
+        if let Err(e) = self
+            .store
+            .append_journal_event(base_dir, &run_id, &event)
+        {
+            // Roll back seed payload/artifact, boundary marker, and seed files.
+            // Persist Failed state BEFORE cleanup (terminal-transition ordering).
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &seed_payload_id,
+                &seed_artifact_id,
+            );
+            run.latest_seed_id = None;
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("journal append failed for seed_generated: {e}"),
+            )
+            .await?;
+            let _ = self.store.remove_seed_pair(base_dir, &run_id);
+            return Err(e);
+        }
         seq += 1;
 
         let event = journal_event(
@@ -744,8 +858,12 @@ where
             RequirementsJournalEventType::RunCompleted,
             run,
         );
-        self.store
-            .append_journal_event(base_dir, &run_id, &event)?;
+        // Best-effort: the run is already durably complete in run.json with all
+        // seed files and history committed. A missing RunCompleted journal event
+        // is non-ideal but does not affect run state consistency.
+        let _ = self
+            .store
+            .append_journal_event(base_dir, &run_id, &event);
 
         let seed_path = self.store.seed_prompt_path(base_dir, &run_id);
         println!("Requirements completed. Seed files at:");
@@ -837,8 +955,11 @@ where
             RequirementsJournalEventType::RunFailed,
             run,
         );
-        self.store
-            .append_journal_event(base_dir, &run.run_id, &event)?;
+        // Best-effort journal append: if the journal is failing, the run.json
+        // Failed state is already committed and is the authoritative record.
+        // This matches the workflow engine's fail_run() pattern (engine.rs:1755).
+        let _ = self.store
+            .append_journal_event(base_dir, &run.run_id, &event);
         Ok(())
     }
 

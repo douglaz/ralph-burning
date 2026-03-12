@@ -1826,4 +1826,552 @@ mod service_integration {
             "default value with quotes and newlines should round-trip through TOML"
         );
     }
+
+    // ── Journal-failure fault-injection tests ────────────────────────────
+
+    mod journal_failure {
+        use std::path::{Path, PathBuf};
+        use std::sync::atomic::{AtomicU32, Ordering};
+
+        use chrono::{TimeZone, Utc};
+        use serde_json::Value;
+        use tempfile::tempdir;
+
+        use ralph_burning::adapters::fs::{
+            FsRawOutputStore, FsRequirementsStore, FsSessionStore,
+        };
+        use ralph_burning::adapters::stub_backend::StubBackendAdapter;
+        use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+        use ralph_burning::contexts::requirements_drafting::model::{
+            PersistedAnswers, RequirementsJournalEvent, RequirementsJournalEventType,
+            RequirementsRun, RequirementsStatus,
+        };
+        use ralph_burning::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
+        use ralph_burning::shared::error::AppResult;
+
+        use crate::workspace_test::initialize_workspace_fixture;
+
+        fn deterministic_now() -> chrono::DateTime<Utc> {
+            Utc.with_ymd_and_hms(2026, 3, 12, 12, 0, 0)
+                .single()
+                .expect("valid timestamp")
+        }
+
+        /// A requirements store that delegates to `FsRequirementsStore` but fails
+        /// `append_journal_event` on the Nth call (1-indexed), mirroring the
+        /// workflow engine's `FailingJournalStore`.
+        struct FailingJournalRequirementsStore {
+            call_count: AtomicU32,
+            fail_on_call: u32,
+        }
+
+        impl FailingJournalRequirementsStore {
+            fn new(fail_on_call: u32) -> Self {
+                Self {
+                    call_count: AtomicU32::new(0),
+                    fail_on_call,
+                }
+            }
+        }
+
+        impl RequirementsStorePort for FailingJournalRequirementsStore {
+            fn create_run_dir(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+                FsRequirementsStore.create_run_dir(base_dir, run_id)
+            }
+            fn write_run(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                run: &RequirementsRun,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_run(base_dir, run_id, run)
+            }
+            fn read_run(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsRun> {
+                FsRequirementsStore.read_run(base_dir, run_id)
+            }
+            fn append_journal_event(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                event: &RequirementsJournalEvent,
+            ) -> AppResult<()> {
+                let n = self.call_count.fetch_add(1, Ordering::SeqCst) + 1;
+                if n == self.fail_on_call {
+                    return Err(ralph_burning::shared::error::AppError::Io(
+                        std::io::Error::other("simulated journal append failure"),
+                    ));
+                }
+                FsRequirementsStore.append_journal_event(base_dir, run_id, event)
+            }
+            fn read_journal(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+            ) -> AppResult<Vec<RequirementsJournalEvent>> {
+                FsRequirementsStore.read_journal(base_dir, run_id)
+            }
+            fn write_payload(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                payload: &Value,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_payload(base_dir, run_id, payload_id, payload)
+            }
+            fn write_artifact(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                artifact_id: &str,
+                content: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_artifact(base_dir, run_id, artifact_id, content)
+            }
+            fn read_payload(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+            ) -> AppResult<Value> {
+                FsRequirementsStore.read_payload(base_dir, run_id, payload_id)
+            }
+            fn write_payload_artifact_pair_atomic(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                payload: &Value,
+                artifact_id: &str,
+                artifact: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_payload_artifact_pair_atomic(
+                    base_dir,
+                    run_id,
+                    payload_id,
+                    payload,
+                    artifact_id,
+                    artifact,
+                )
+            }
+            fn write_answers_toml(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                template: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_answers_toml(base_dir, run_id, template)
+            }
+            fn read_answers_toml(&self, base_dir: &Path, run_id: &str) -> AppResult<String> {
+                FsRequirementsStore.read_answers_toml(base_dir, run_id)
+            }
+            fn write_answers_json(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                answers: &PersistedAnswers,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_answers_json(base_dir, run_id, answers)
+            }
+            fn read_answers_json(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+            ) -> AppResult<PersistedAnswers> {
+                FsRequirementsStore.read_answers_json(base_dir, run_id)
+            }
+            fn write_seed_pair(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                project_json: &Value,
+                prompt_md: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.write_seed_pair(base_dir, run_id, project_json, prompt_md)
+            }
+            fn remove_seed_pair(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+                FsRequirementsStore.remove_seed_pair(base_dir, run_id)
+            }
+            fn remove_payload_artifact_pair(
+                &self,
+                base_dir: &Path,
+                run_id: &str,
+                payload_id: &str,
+                artifact_id: &str,
+            ) -> AppResult<()> {
+                FsRequirementsStore.remove_payload_artifact_pair(
+                    base_dir,
+                    run_id,
+                    payload_id,
+                    artifact_id,
+                )
+            }
+            fn answers_toml_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+                FsRequirementsStore.answers_toml_path(base_dir, run_id)
+            }
+            fn seed_prompt_path(&self, base_dir: &Path, run_id: &str) -> PathBuf {
+                FsRequirementsStore.seed_prompt_path(base_dir, run_id)
+            }
+        }
+
+        /// Helper: find the single run ID in the requirements directory.
+        fn find_single_run_id(base_dir: &Path) -> String {
+            let req_dir = base_dir.join(".ralph-burning/requirements");
+            let entries: Vec<_> = std::fs::read_dir(&req_dir)
+                .unwrap()
+                .filter_map(|e| e.ok())
+                .collect();
+            assert_eq!(entries.len(), 1, "expected exactly one requirements run");
+            entries[0].file_name().to_string_lossy().to_string()
+        }
+
+        /// Journal append failure at run_created must transition the run to
+        /// Failed state, not leave it in the initial Drafting state.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn run_created_journal_failure_persists_failed_state_in_draft() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 1st append_journal_event call (RunCreated)
+            let store = FailingJournalRequirementsStore::new(1);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(), "Test run_created failure", now)
+                .await;
+
+            assert!(result.is_err(), "draft should fail on run_created journal failure");
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(
+                run.status,
+                RequirementsStatus::Failed,
+                "run must be in Failed state after run_created journal failure"
+            );
+        }
+
+        /// Journal append failure at run_created in quick mode must also
+        /// transition the run to Failed state.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn run_created_journal_failure_persists_failed_state_in_quick() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let store = FailingJournalRequirementsStore::new(1);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test run_created failure in quick", now)
+                .await;
+
+            assert!(result.is_err(), "quick should fail on run_created journal failure");
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+        }
+
+        /// Journal append failure at questions_generated must roll back the
+        /// question payload/artifact pair and transition to Failed.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn questions_generated_journal_failure_rolls_back_and_fails_run() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 2nd append_journal_event call (QuestionsGenerated);
+            // 1st call is RunCreated which succeeds.
+            let store = FailingJournalRequirementsStore::new(2);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(), "Test questions_generated failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "draft should fail on questions_generated journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert!(
+                run.latest_question_set_id.is_none(),
+                "question set boundary marker should be cleared after rollback"
+            );
+            assert_eq!(
+                run.question_round, 0,
+                "question_round should be reset after rollback"
+            );
+
+            // Question payload/artifact should have been removed
+            let run_dir = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id);
+            let payloads_dir = run_dir.join("history/payloads");
+            if payloads_dir.exists() {
+                let payload_count = std::fs::read_dir(&payloads_dir).unwrap().count();
+                assert_eq!(
+                    payload_count, 0,
+                    "question payload should have been rolled back"
+                );
+            }
+            let artifacts_dir = run_dir.join("history/artifacts");
+            if artifacts_dir.exists() {
+                let artifact_count = std::fs::read_dir(&artifacts_dir).unwrap().count();
+                assert_eq!(
+                    artifact_count, 0,
+                    "question artifact should have been rolled back"
+                );
+            }
+        }
+
+        /// Journal append failure at draft_generated must roll back the draft
+        /// payload/artifact pair and transition to Failed.
+        /// In quick mode: call 1 = RunCreated, call 2 = DraftGenerated.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn draft_generated_journal_failure_rolls_back_and_fails_run() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // In quick mode: call 1 = RunCreated, call 2 = DraftGenerated (fail here)
+            let store = FailingJournalRequirementsStore::new(2);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test draft_generated failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on draft_generated journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert!(
+                run.latest_draft_id.is_none(),
+                "draft boundary marker should be cleared after rollback"
+            );
+            assert!(
+                run.recommended_flow.is_none(),
+                "recommended_flow should be cleared after rollback"
+            );
+
+            // Draft payload/artifact should have been removed
+            let run_dir = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id);
+            let payloads_dir = run_dir.join("history/payloads");
+            if payloads_dir.exists() {
+                let payload_count = std::fs::read_dir(&payloads_dir).unwrap().count();
+                assert_eq!(
+                    payload_count, 0,
+                    "draft payload should have been rolled back"
+                );
+            }
+        }
+
+        /// Journal append failure at review_completed must roll back the review
+        /// payload/artifact pair and transition to Failed.
+        /// In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (fail here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn review_completed_journal_failure_rolls_back_and_fails_run() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+            // call 3 = ReviewCompleted (fail here)
+            let store = FailingJournalRequirementsStore::new(3);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test review_completed failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on review_completed journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert!(
+                run.latest_review_id.is_none(),
+                "review boundary marker should be cleared after rollback"
+            );
+            // Draft should still be committed (it succeeded before the review failure)
+            assert!(
+                run.latest_draft_id.is_some(),
+                "draft boundary should survive review journal failure"
+            );
+        }
+
+        /// Journal append failure at seed_generated must roll back the seed
+        /// payload/artifact, seed files, and transition to Failed.
+        /// In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted, call 4 = SeedGenerated (fail here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn seed_generated_journal_failure_rolls_back_and_fails_run() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+            // call 3 = ReviewCompleted, call 4 = SeedGenerated (fail here)
+            let store = FailingJournalRequirementsStore::new(4);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test seed_generated failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on seed_generated journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert!(
+                run.latest_seed_id.is_none(),
+                "seed boundary marker should be cleared after rollback"
+            );
+
+            // Seed files should have been removed
+            let run_dir = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id);
+            assert!(
+                !run_dir.join("seed/project.json").exists(),
+                "seed/project.json should have been removed after rollback"
+            );
+            assert!(
+                !run_dir.join("seed/prompt.md").exists(),
+                "seed/prompt.md should have been removed after rollback"
+            );
+
+            // Draft and review should still be committed
+            assert!(
+                run.latest_draft_id.is_some(),
+                "draft boundary should survive seed journal failure"
+            );
+            assert!(
+                run.latest_review_id.is_some(),
+                "review boundary should survive seed journal failure"
+            );
+        }
+
+        /// Journal append failure at run_completed is best-effort: the run
+        /// should still be in Completed state since all durable state was
+        /// already committed.
+        /// In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted, call 4 = SeedGenerated,
+        /// call 5 = RunCompleted (fail here, best-effort).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn run_completed_journal_failure_preserves_completed_state() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // In quick mode: call 1 = RunCreated, call 2 = DraftGenerated,
+            // call 3 = ReviewCompleted, call 4 = SeedGenerated,
+            // call 5 = RunCompleted (fail here — but best-effort)
+            let store = FailingJournalRequirementsStore::new(5);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test run_completed failure", now)
+                .await;
+
+            // The run should succeed despite RunCompleted journal failure
+            assert!(
+                result.is_ok(),
+                "quick should succeed even when RunCompleted journal append fails"
+            );
+
+            let run_id = result.unwrap();
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(
+                run.status,
+                RequirementsStatus::Completed,
+                "run must remain Completed despite RunCompleted journal failure"
+            );
+            assert!(run.latest_seed_id.is_some());
+
+            // Seed files should exist
+            let run_dir = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id);
+            assert!(run_dir.join("seed/project.json").exists());
+            assert!(run_dir.join("seed/prompt.md").exists());
+
+            // Journal should have SeedGenerated but NOT RunCompleted
+            let journal = FsRequirementsStore
+                .read_journal(temp_dir.path(), &run_id)
+                .expect("read journal");
+            let has_seed = journal
+                .iter()
+                .any(|e| e.event_type == RequirementsJournalEventType::SeedGenerated);
+            let has_completed = journal
+                .iter()
+                .any(|e| e.event_type == RequirementsJournalEventType::RunCompleted);
+            assert!(has_seed, "SeedGenerated event should exist in journal");
+            assert!(
+                !has_completed,
+                "RunCompleted event should NOT exist (best-effort failure)"
+            );
+        }
+    }
 }
