@@ -18,10 +18,12 @@ use crate::contexts::project_run_record::model::{
     RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use crate::contexts::project_run_record::service::{
-    JournalStorePort, PayloadArtifactWritePort, RunSnapshotPort, RunSnapshotWritePort,
-    RuntimeLogWritePort,
+    ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort, RunSnapshotPort,
+    RunSnapshotWritePort, RuntimeLogWritePort,
 };
-use crate::contexts::workflow_composition::payloads::{ReviewOutcome, StagePayload};
+use crate::contexts::workflow_composition::payloads::{
+    ReviewOutcome, StagePayload, ValidationPayload,
+};
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::domain::{
     BackendRole, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
@@ -302,6 +304,7 @@ pub async fn resume_standard_run<A, R, S>(
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
@@ -318,6 +321,7 @@ where
         run_snapshot_read,
         run_snapshot_write,
         journal_store,
+        artifact_store,
         artifact_write,
         log_write,
         base_dir,
@@ -335,6 +339,7 @@ pub async fn resume_standard_run_with_retry<A, R, S>(
     run_snapshot_read: &dyn RunSnapshotPort,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
@@ -383,6 +388,13 @@ where
         Some(&workspace_defaults),
     )?;
     let resume_state = derive_resume_state(&events, &snapshot, &stage_plan)?;
+    let implementation_context = derive_resume_implementation_context(
+        artifact_store,
+        base_dir,
+        project_id,
+        &resume_state.cursor,
+        &events,
+    )?;
 
     preflight_check(
         agent_service.adapter(),
@@ -451,7 +463,7 @@ where
         retry_policy,
         cancellation_token,
         ExecutionOrigin::Resume,
-        None,
+        implementation_context,
     )
     .await?;
 
@@ -1285,14 +1297,24 @@ fn is_remediation_stage(stage_id: StageId) -> bool {
 
 fn remediation_context(stage_id: StageId, next_cycle: u32, bundle: &ValidatedBundle) -> Value {
     match &bundle.payload {
-        StagePayload::Validation(validation) => json!({
-            "source_stage": stage_id.as_str(),
-            "cycle": next_cycle,
-            "follow_up_or_amendments": validation.follow_up_or_amendments,
-            "findings_or_gaps": validation.findings_or_gaps,
-        }),
+        StagePayload::Validation(validation) => {
+            remediation_context_from_validation(stage_id, next_cycle, validation)
+        }
         _ => json!({}),
     }
+}
+
+fn remediation_context_from_validation(
+    stage_id: StageId,
+    next_cycle: u32,
+    validation: &ValidationPayload,
+) -> Value {
+    json!({
+        "source_stage": stage_id.as_str(),
+        "cycle": next_cycle,
+        "follow_up_or_amendments": validation.follow_up_or_amendments,
+        "findings_or_gaps": validation.findings_or_gaps,
+    })
 }
 
 fn invocation_context(cursor: &StageCursor, implementation_context: Option<&Value>) -> Value {
@@ -1343,6 +1365,98 @@ fn pending_remediation_cycle(
 
     (last_entry.stage_id == StageId::Implementation && last_entry.cycle > current_cycle)
         .then_some(last_entry.cycle)
+}
+
+fn derive_resume_implementation_context(
+    artifact_store: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    cursor: &StageCursor,
+    events: &[JournalEvent],
+) -> AppResult<Option<Value>> {
+    if cursor.stage != StageId::Implementation || cursor.cycle <= 1 {
+        return Ok(None);
+    }
+
+    let prior_cycle = cursor.cycle - 1;
+    let mut remediation_source = None;
+    for event in events.iter().rev() {
+        if event.event_type
+            != crate::contexts::project_run_record::model::JournalEventType::StageCompleted
+        {
+            continue;
+        }
+
+        let stage_id = detail_stage_id(event, "stage_id")?;
+        if !is_remediation_stage(stage_id) {
+            continue;
+        }
+
+        if detail_u32(event, "cycle") != Some(prior_cycle) {
+            continue;
+        }
+
+        remediation_source = Some((stage_id, detail_string(event, "payload_id")?.to_owned()));
+        break;
+    }
+
+    let Some((stage_id, payload_id)) = remediation_source else {
+        return Err(AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for implementation cycle {}; no durable qa/review payload was found for cycle {}",
+                cursor.cycle, prior_cycle
+            ),
+        });
+    };
+
+    let payloads = artifact_store
+        .list_payloads(base_dir, project_id)
+        .map_err(|error| AppError::ResumeFailed {
+            reason: format!(
+                "failed to load durable payload history for resume: {}",
+                error
+            ),
+        })?;
+    let payload_record = payloads
+        .into_iter()
+        .find(|record| record.payload_id == payload_id)
+        .ok_or_else(|| AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' is missing from durable history",
+                cursor.cycle, payload_id
+            ),
+        })?;
+    let payload: StagePayload =
+        serde_json::from_value(payload_record.payload).map_err(|error| AppError::ResumeFailed {
+            reason: format!(
+                "failed to parse remediation payload '{}' during resume: {}",
+                payload_id, error
+            ),
+        })?;
+
+    match payload {
+        StagePayload::Validation(validation)
+            if validation.outcome == ReviewOutcome::RequestChanges =>
+        {
+            Ok(Some(remediation_context_from_validation(
+                stage_id,
+                cursor.cycle,
+                &validation,
+            )))
+        }
+        StagePayload::Validation(validation) => Err(AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' recorded outcome '{}' instead of 'Request Changes'",
+                cursor.cycle, payload_id, validation.outcome
+            ),
+        }),
+        _ => Err(AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for implementation cycle {}; payload '{}' is not a validation payload",
+                cursor.cycle, payload_id
+            ),
+        }),
+    }
 }
 
 fn standard_stage_plan_for_resume(

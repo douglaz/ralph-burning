@@ -210,6 +210,7 @@ async fn handle_resume() -> AppResult<()> {
         &run_snapshot_read,
         &run_snapshot_write,
         &journal_store,
+        &FsArtifactStore,
         &artifact_write,
         &log_write,
         &current_dir,

@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
-    FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
+    FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
     FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
@@ -1420,14 +1420,15 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
     let pid = create_standard_project(base_dir, "resume-remediation-boundary");
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    let adapter = StubBackendAdapter::default().with_stage_payload_sequence(
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
         StageId::Qa,
         vec![
             request_changes_payload(&["carry remediation into cycle two"]),
             approved_validation_payload(),
         ],
-    );
-    let agent_service = build_agent_service_with_adapter(adapter.clone());
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
 
     // Append order before the remediation handoff:
     //   1 run_started
@@ -1468,6 +1469,7 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
         &FsRunSnapshotStore,
         &FsRunSnapshotWriteStore,
         &FsJournalStore,
+        &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
         base_dir,
@@ -1497,6 +1499,17 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
         .expect("run_resumed");
     assert_eq!(run_resumed.details["resume_stage"], "implementation");
     assert_eq!(run_resumed.details["cycle"], 2);
+
+    let implementation_contexts = adapter_handle.contexts_for(StageId::Implementation);
+    assert_eq!(implementation_contexts.len(), 2);
+    assert_eq!(
+        implementation_contexts[1]["remediation"]["follow_up_or_amendments"][0],
+        "carry remediation into cycle two"
+    );
+    assert_eq!(
+        implementation_contexts[1]["remediation"]["source_stage"],
+        "qa"
+    );
 }
 
 #[tokio::test]
@@ -1531,6 +1544,7 @@ async fn resume_from_failed_run_skips_completed_stages() {
         &FsRunSnapshotStore,
         &FsRunSnapshotWriteStore,
         &FsJournalStore,
+        &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
         base_dir,
@@ -1609,6 +1623,7 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
         &FsRunSnapshotStore,
         &FsRunSnapshotWriteStore,
         &FsJournalStore,
+        &FsArtifactStore,
         &FsPayloadArtifactWriteStore,
         &FsRuntimeLogWriteStore,
         base_dir,
