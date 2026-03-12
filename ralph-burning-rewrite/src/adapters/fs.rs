@@ -816,11 +816,7 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         }
     }
 
-    fn drain_amendments(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<u32> {
         let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
         if !dir.is_dir() {
             return Ok(0);
@@ -838,11 +834,7 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         Ok(count)
     }
 
-    fn has_pending_amendments(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
         let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
         if !dir.is_dir() {
             return Ok(false);

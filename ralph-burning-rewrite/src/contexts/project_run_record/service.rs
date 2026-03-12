@@ -148,18 +148,10 @@ pub trait AmendmentQueuePort {
     ) -> AppResult<()>;
 
     /// Remove all pending amendment files. Returns count removed.
-    fn drain_amendments(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-    ) -> AppResult<u32>;
+    fn drain_amendments(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<u32>;
 
     /// Check if any amendment files exist on disk.
-    fn has_pending_amendments(
-        &self,
-        base_dir: &Path,
-        project_id: &ProjectId,
-    ) -> AppResult<bool>;
+    fn has_pending_amendments(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<bool>;
 }
 
 /// Port for reading/writing/clearing the active project pointer.

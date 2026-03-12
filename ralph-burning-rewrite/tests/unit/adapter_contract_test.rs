@@ -1001,7 +1001,10 @@ fn amendment_queue_write_and_list_round_trip() {
 
     let store = FsAmendmentQueueStore;
     let pid = ProjectId::new("alpha").unwrap();
-    let amendment = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
+    let amendment = make_amendment(
+        "amend-001",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+    );
 
     store.write_amendment(tmp.path(), &pid, &amendment).unwrap();
 
@@ -1033,7 +1036,10 @@ fn amendment_queue_has_pending_returns_true_when_present() {
 
     let store = FsAmendmentQueueStore;
     let pid = ProjectId::new("alpha").unwrap();
-    let amendment = make_amendment("amend-001", ralph_burning::shared::domain::StageId::AcceptanceQa);
+    let amendment = make_amendment(
+        "amend-001",
+        ralph_burning::shared::domain::StageId::AcceptanceQa,
+    );
 
     store.write_amendment(tmp.path(), &pid, &amendment).unwrap();
     assert!(store.has_pending_amendments(tmp.path(), &pid).unwrap());
@@ -1047,15 +1053,23 @@ fn amendment_queue_remove_deletes_single_amendment() {
 
     let store = FsAmendmentQueueStore;
     let pid = ProjectId::new("alpha").unwrap();
-    let a1 = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
-    let mut a2 = make_amendment("amend-002", ralph_burning::shared::domain::StageId::CompletionPanel);
+    let a1 = make_amendment(
+        "amend-001",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+    );
+    let mut a2 = make_amendment(
+        "amend-002",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+    );
     // Offset timestamp so sort is deterministic
     a2.created_at = test_timestamp() + chrono::Duration::seconds(1);
 
     store.write_amendment(tmp.path(), &pid, &a1).unwrap();
     store.write_amendment(tmp.path(), &pid, &a2).unwrap();
 
-    store.remove_amendment(tmp.path(), &pid, "amend-001").unwrap();
+    store
+        .remove_amendment(tmp.path(), &pid, "amend-001")
+        .unwrap();
 
     let pending = store.list_pending_amendments(tmp.path(), &pid).unwrap();
     assert_eq!(pending.len(), 1);
@@ -1072,7 +1086,9 @@ fn amendment_queue_remove_nonexistent_is_ok() {
     let pid = ProjectId::new("alpha").unwrap();
 
     // Removing non-existent amendment should succeed
-    store.remove_amendment(tmp.path(), &pid, "nonexistent").unwrap();
+    store
+        .remove_amendment(tmp.path(), &pid, "nonexistent")
+        .unwrap();
 }
 
 #[test]
@@ -1084,8 +1100,14 @@ fn amendment_queue_drain_removes_all_and_returns_count() {
     let store = FsAmendmentQueueStore;
     let pid = ProjectId::new("alpha").unwrap();
 
-    let a1 = make_amendment("amend-001", ralph_burning::shared::domain::StageId::CompletionPanel);
-    let a2 = make_amendment("amend-002", ralph_burning::shared::domain::StageId::AcceptanceQa);
+    let a1 = make_amendment(
+        "amend-001",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+    );
+    let a2 = make_amendment(
+        "amend-002",
+        ralph_burning::shared::domain::StageId::AcceptanceQa,
+    );
     store.write_amendment(tmp.path(), &pid, &a1).unwrap();
     store.write_amendment(tmp.path(), &pid, &a2).unwrap();
 
@@ -1093,7 +1115,10 @@ fn amendment_queue_drain_removes_all_and_returns_count() {
     assert_eq!(drained, 2);
 
     assert!(!store.has_pending_amendments(tmp.path(), &pid).unwrap());
-    assert!(store.list_pending_amendments(tmp.path(), &pid).unwrap().is_empty());
+    assert!(store
+        .list_pending_amendments(tmp.path(), &pid)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -1136,9 +1161,21 @@ fn amendment_queue_batch_sequence_provides_deterministic_ordering() {
 
     // Write 3 amendments with the same timestamp but different batch_sequence values.
     // Write them in reverse order to verify sort uses batch_sequence, not insertion order.
-    let a3 = make_amendment_with_seq("amd-003", ralph_burning::shared::domain::StageId::CompletionPanel, 3);
-    let a1 = make_amendment_with_seq("amd-001", ralph_burning::shared::domain::StageId::CompletionPanel, 1);
-    let a2 = make_amendment_with_seq("amd-002", ralph_burning::shared::domain::StageId::CompletionPanel, 2);
+    let a3 = make_amendment_with_seq(
+        "amd-003",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+        3,
+    );
+    let a1 = make_amendment_with_seq(
+        "amd-001",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+        1,
+    );
+    let a2 = make_amendment_with_seq(
+        "amd-002",
+        ralph_burning::shared::domain::StageId::CompletionPanel,
+        2,
+    );
 
     store.write_amendment(tmp.path(), &pid, &a3).unwrap();
     store.write_amendment(tmp.path(), &pid, &a1).unwrap();

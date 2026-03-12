@@ -44,3 +44,15 @@ Feature: Docs Change Run Start Orchestration
     Then the command exits successfully
     And the journal contains a "stage_failed" event for "docs_update" with will_retry true
     And the docs_update stage is entered twice with attempts 1 and 2
+
+  # SC-DOCS-START-005
+  Scenario: Conditionally approved docs validation preserves follow-up amendments in snapshot state
+    Given an initialized workspace with project "docs-echo" using flow "docs_change"
+    And project "docs-echo" is selected as active
+    And the docs_validation stage returns "conditionally_approved" with follow-up amendment "add a rollout caveat"
+    When the user runs "run start"
+    Then the command exits successfully
+    And the run snapshot shows status "completed" with no active run
+    And the amendment_queue pending list in run.json is empty
+    And the run snapshot records the docs_validation follow-up amendment without a completion-round restart
+    And no "amendment_queued" or "completion_round_advanced" events exist

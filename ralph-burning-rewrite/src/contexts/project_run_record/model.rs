@@ -159,6 +159,10 @@ pub struct QueuedAmendment {
 pub struct AmendmentQueueState {
     pub pending: Vec<QueuedAmendment>,
     pub processed_count: u32,
+    /// Snapshot-only follow-ups captured from conditional approvals on flows
+    /// that do not use durable completion-round amendments.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recorded_follow_ups: Vec<QueuedAmendment>,
 }
 
 /// A single journal event stored in `journal.ndjson`.

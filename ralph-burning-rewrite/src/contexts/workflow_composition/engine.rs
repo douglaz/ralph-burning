@@ -787,16 +787,13 @@ where
                     // Track written IDs so we can roll back on partial failure.
                     let mut written_ids: Vec<String> = Vec::new();
                     for amendment in &amendments {
-                        if let Err(error) = amendment_queue_port.write_amendment(
-                            base_dir,
-                            project_id,
-                            amendment,
-                        ) {
+                        if let Err(error) =
+                            amendment_queue_port.write_amendment(base_dir, project_id, amendment)
+                        {
                             // Roll back already-written amendment files from this batch.
                             for id in &written_ids {
-                                let _ = amendment_queue_port.remove_amendment(
-                                    base_dir, project_id, id,
-                                );
+                                let _ =
+                                    amendment_queue_port.remove_amendment(base_dir, project_id, id);
                             }
                             // Failure invariant: if amendment persistence fails, no queue
                             // entry becomes visible in run.json.
@@ -946,11 +943,46 @@ where
                     cursor = next_cursor;
                     continue;
                 }
-                ReviewOutcome::ConditionallyApproved => {
-                    // Non-late-stage ConditionallyApproved: accumulate amendments
-                    // in snapshot but do NOT trigger completion round advancement.
-                    // These are informational and do not block progression.
+                ReviewOutcome::ConditionallyApproved if semantics.late_stages.is_empty() => {
+                    // Docs/CI flows do not enter completion rounds, but their follow-ups
+                    // still need to be preserved in canonical snapshot state.
+                    let recorded_follow_ups = build_recorded_follow_ups(
+                        validation_follow_ups(&bundle.payload),
+                        stage_id,
+                        cursor.cycle,
+                        cursor.completion_round,
+                        run_id,
+                    );
+                    snapshot
+                        .amendment_queue
+                        .recorded_follow_ups
+                        .extend(recorded_follow_ups);
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist recorded follow-ups after {}: {}",
+                                    stage_id.as_str(),
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
                 }
+                ReviewOutcome::ConditionallyApproved => {}
                 ReviewOutcome::RequestChanges
                     if semantics.remediation_trigger_stages.contains(&stage_id) =>
                 {
@@ -974,8 +1006,7 @@ where
                         .await;
                     }
 
-                    let next_stage_index =
-                        stage_index_for(stage_plan, semantics.execution_stage)?;
+                    let next_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
                     let next_cursor = cursor.advance_cycle(semantics.execution_stage);
                     record_cycle_advance(snapshot, next_cursor.cycle, semantics.execution_stage);
                     *seq += 1;
@@ -1150,8 +1181,7 @@ where
                 semantics.execution_stage,
             );
             let cycle_event_line = journal::serialize_event(&cycle_event)?;
-            if let Err(error) =
-                journal_store.append_event(base_dir, project_id, &cycle_event_line)
+            if let Err(error) = journal_store.append_event(base_dir, project_id, &cycle_event_line)
             {
                 *seq -= 1;
                 return fail_run_result(
@@ -1821,6 +1851,36 @@ fn build_queued_amendments(
         .collect()
 }
 
+fn build_recorded_follow_ups(
+    follow_ups: &[String],
+    source_stage: StageId,
+    source_cycle: u32,
+    source_completion_round: u32,
+    run_id: &RunId,
+) -> Vec<QueuedAmendment> {
+    let now = Utc::now();
+    follow_ups
+        .iter()
+        .enumerate()
+        .map(|(idx, body)| QueuedAmendment {
+            amendment_id: format!(
+                "{}-{}-c{}-cr{}-follow-up{}",
+                run_id.as_str(),
+                source_stage.as_str(),
+                source_cycle,
+                source_completion_round,
+                idx + 1
+            ),
+            source_stage,
+            source_cycle,
+            source_completion_round,
+            body: body.clone(),
+            created_at: now,
+            batch_sequence: (idx + 1) as u32,
+        })
+        .collect()
+}
+
 /// Completion guard: blocks run_completed when pending amendments remain.
 fn completion_guard(
     snapshot: &RunSnapshot,
@@ -1937,10 +1997,7 @@ fn stage_index_for(stage_plan: &[StagePlan], stage_id: StageId) -> AppResult<usi
         .position(|entry| entry.stage_id == stage_id)
         .ok_or_else(|| AppError::CorruptRecord {
             file: "journal.ndjson".to_owned(),
-            details: format!(
-                "stage '{}' is not part of the active stage plan",
-                stage_id
-            ),
+            details: format!("stage '{}' is not part of the active stage plan", stage_id),
         })
 }
 
@@ -2153,12 +2210,9 @@ fn derive_resume_state(
         }
     }
 
-    if let Some(pending_cycle) = pending_remediation_cycle(
-        snapshot,
-        current_cycle,
-        last_completed_stage,
-        semantics,
-    ) {
+    if let Some(pending_cycle) =
+        pending_remediation_cycle(snapshot, current_cycle, last_completed_stage, semantics)
+    {
         current_cycle = pending_cycle;
         next_stage_index = execution_stage_index;
     }
@@ -2170,8 +2224,9 @@ fn derive_resume_state(
 
     if next_stage_index >= stage_plan.len() {
         return Err(AppError::ResumeFailed {
-            reason: "all stages in the current flow are already complete; there is nothing to resume"
-                .to_owned(),
+            reason:
+                "all stages in the current flow are already complete; there is nothing to resume"
+                    .to_owned(),
         });
     }
 

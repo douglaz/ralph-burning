@@ -44,3 +44,15 @@ Feature: CI Improvement Run Start Orchestration
     Then the command exits successfully
     And the journal contains a "stage_failed" event for "ci_update" with will_retry true
     And the ci_update stage is entered twice with attempts 1 and 2
+
+  # SC-CI-START-005
+  Scenario: Conditionally approved CI review preserves follow-up amendments in snapshot state
+    Given an initialized workspace with project "ci-echo" using flow "ci_improvement"
+    And project "ci-echo" is selected as active
+    And the review stage returns "conditionally_approved" with follow-up amendment "document the workflow guardrail"
+    When the user runs "run start"
+    Then the command exits successfully
+    And the run snapshot shows status "completed" with no active run
+    And the amendment_queue pending list in run.json is empty
+    And the run snapshot records the review follow-up amendment without a completion-round restart
+    And no "amendment_queued" or "completion_round_advanced" events exist

@@ -311,16 +311,14 @@ async fn happy_path_docs_change_run_completes() {
         entered
     );
 
-    let payload_count = fs::read_dir(
-        base_dir.join(".ralph-burning/projects/docs-happy/history/payloads"),
-    )
-    .unwrap()
-    .count();
-    let artifact_count = fs::read_dir(
-        base_dir.join(".ralph-burning/projects/docs-happy/history/artifacts"),
-    )
-    .unwrap()
-    .count();
+    let payload_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/docs-happy/history/payloads"))
+            .unwrap()
+            .count();
+    let artifact_count =
+        fs::read_dir(base_dir.join(".ralph-burning/projects/docs-happy/history/artifacts"))
+            .unwrap()
+            .count();
     assert_eq!(payload_count, 4);
     assert_eq!(artifact_count, 4);
 }
@@ -441,6 +439,127 @@ async fn docs_change_remediation_restarts_from_docs_update() {
 }
 
 #[tokio::test]
+async fn docs_change_conditionally_approved_records_follow_ups_without_durable_amendments() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "docs-conditional", FlowPreset::DocsChange);
+
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::DocsValidation,
+            conditionally_approved_payload(&["add a rollout caveat", "tighten the examples"]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+    assert_eq!(
+        snapshot
+            .amendment_queue
+            .recorded_follow_ups
+            .iter()
+            .map(|item| item.body.as_str())
+            .collect::<Vec<_>>(),
+        vec!["add a rollout caveat", "tighten the examples"]
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
+            .count(),
+        0
+    );
+    assert_eq!(
+        events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::CompletionRoundAdvanced)
+            .count(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn ci_improvement_remediation_restarts_from_ci_update() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "ci-remediation", FlowPreset::CiImprovement);
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::CiValidation,
+        vec![
+            request_changes_payload(&["tighten the workflow assertion"]),
+            approved_validation_payload(),
+        ],
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::CiImprovement,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "ci_update").len(),
+        2
+    );
+
+    let cycle_advanced: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
+        .collect();
+    assert_eq!(cycle_advanced.len(), 1);
+    assert_eq!(cycle_advanced[0].details["resume_stage"], "ci_update");
+
+    let ci_update_contexts = adapter_handle.contexts_for(StageId::CiUpdate);
+    assert_eq!(ci_update_contexts.len(), 2);
+    assert_eq!(
+        ci_update_contexts[1]["remediation"]["follow_up_or_amendments"][0],
+        "tighten the workflow assertion"
+    );
+}
+
+#[tokio::test]
 async fn ci_improvement_rejected_validation_fails_run() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -482,7 +601,10 @@ async fn ci_improvement_rejected_validation_fails_run() {
         .rev()
         .find(|event| event.event_type == JournalEventType::RunFailed)
         .expect("run_failed");
-    assert_eq!(run_failed.details["failure_class"], "qa_review_outcome_failure");
+    assert_eq!(
+        run_failed.details["failure_class"],
+        "qa_review_outcome_failure"
+    );
 }
 
 #[tokio::test]
@@ -551,6 +673,74 @@ async fn resume_from_failed_docs_change_run_skips_completed_stages() {
         .find(|event| event.event_type == JournalEventType::RunResumed)
         .expect("run_resumed");
     assert_eq!(run_resumed.details["resume_stage"], "docs_update");
+}
+
+#[tokio::test]
+async fn resume_from_failed_ci_improvement_run_skips_completed_stages() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "ci-resume", FlowPreset::CiImprovement);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let failing_agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::CiUpdate, 3),
+    );
+    let first_result = engine::execute_run(
+        &failing_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::CiImprovement,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err());
+
+    let resume_agent_service = build_agent_service();
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::CiImprovement,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "ci_plan").len(),
+        1
+    );
+    assert_eq!(
+        stage_events(&events, JournalEventType::StageEntered, "ci_update").len(),
+        4
+    );
+
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "ci_update");
 }
 
 // ── Precondition failure tests ──────────────────────────────────────────────
@@ -2110,7 +2300,7 @@ async fn cancellation_between_retry_attempts_does_not_start_next_attempt() {
 }
 
 #[tokio::test]
-async fn conditionally_approved_queues_amendments_and_proceeds() {
+async fn standard_non_late_conditionally_approved_does_not_queue_amendments_and_proceeds() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -2173,14 +2363,13 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
     // CompletionPanel returns conditionally_approved on first call, approved on second.
     // AcceptanceQa and FinalReview return approved.
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload_sequence(
-                StageId::CompletionPanel,
-                vec![
-                    conditionally_approved_payload(&["tighten the acceptance note"]),
-                    approved_validation_payload(),
-                ],
-            ),
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["tighten the acceptance note"]),
+                approved_validation_payload(),
+            ],
+        ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2204,7 +2393,10 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
-    assert_eq!(snapshot.completion_rounds, 2, "should be completion round 2");
+    assert_eq!(
+        snapshot.completion_rounds, 2,
+        "should be completion round 2"
+    );
     assert!(
         snapshot.amendment_queue.pending.is_empty(),
         "amendments should be drained after planning commit"
@@ -2228,26 +2420,31 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
         .iter()
         .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
         .collect();
-    assert_eq!(round_events.len(), 1, "should have one completion_round_advanced event");
+    assert_eq!(
+        round_events.len(),
+        1,
+        "should have one completion_round_advanced event"
+    );
     assert_eq!(round_events[0].details["from_round"], 1);
     assert_eq!(round_events[0].details["to_round"], 2);
     assert_eq!(round_events[0].details["source_stage"], "completion_panel");
 
     // Planning should be entered twice (once for initial, once for round 2).
-    let planning_entered =
-        stage_events(&events, JournalEventType::StageEntered, "planning");
+    let planning_entered = stage_events(&events, JournalEventType::StageEntered, "planning");
     assert_eq!(planning_entered.len(), 2, "planning entered twice");
 
     // Check that no amendment files remain on disk.
-    let amendments_dir = base_dir
-        .join(".ralph-burning/projects/cr-alpha/amendments");
+    let amendments_dir = base_dir.join(".ralph-burning/projects/cr-alpha/amendments");
     if amendments_dir.is_dir() {
         let files: Vec<_> = std::fs::read_dir(&amendments_dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
-        assert!(files.is_empty(), "amendment files should be drained from disk");
+        assert!(
+            files.is_empty(),
+            "amendment files should be drained from disk"
+        );
     }
 }
 
@@ -2333,7 +2530,11 @@ async fn late_stage_approved_advances_to_next_late_stage() {
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     // Verify completion_panel -> acceptance_qa -> final_review progression.
-    let cp_completed = stage_events(&events, JournalEventType::StageCompleted, "completion_panel");
+    let cp_completed = stage_events(
+        &events,
+        JournalEventType::StageCompleted,
+        "completion_panel",
+    );
     let aq_completed = stage_events(&events, JournalEventType::StageCompleted, "acceptance_qa");
     let fr_completed = stage_events(&events, JournalEventType::StageCompleted, "final_review");
     assert_eq!(cp_completed.len(), 1);
@@ -2351,14 +2552,13 @@ async fn late_stage_request_changes_triggers_completion_round_like_conditional()
 
     // AcceptanceQa returns request_changes on first invocation, approved on second.
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload_sequence(
-                StageId::AcceptanceQa,
-                vec![
-                    request_changes_payload(&["fix acceptance criteria"]),
-                    approved_validation_payload(),
-                ],
-            ),
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::AcceptanceQa,
+            vec![
+                request_changes_payload(&["fix acceptance criteria"]),
+                approved_validation_payload(),
+            ],
+        ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2402,14 +2602,13 @@ async fn cycle_advanced_emitted_when_entering_implementation_from_completion_rou
     let pid = create_standard_project(base_dir, "cr-kappa");
 
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload_sequence(
-                StageId::CompletionPanel,
-                vec![
-                    conditionally_approved_payload(&["minor fix"]),
-                    approved_validation_payload(),
-                ],
-            ),
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["minor fix"]),
+                approved_validation_payload(),
+            ],
+        ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2498,7 +2697,10 @@ async fn completion_guard_produces_resumable_snapshot_when_disk_amendments_remai
     .await;
 
     // The run must fail with CompletionBlocked.
-    assert!(result.is_err(), "run should fail when completion guard fires");
+    assert!(
+        result.is_err(),
+        "run should fail when completion guard fires"
+    );
     let err = result.unwrap_err();
     assert!(
         err.to_string().contains("completion blocked"),
@@ -2586,14 +2788,13 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
     let pid = create_standard_project(base_dir, "fr-cond");
 
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload_sequence(
-                StageId::FinalReview,
-                vec![
-                    conditionally_approved_payload(&["tighten final wording"]),
-                    approved_validation_payload(),
-                ],
-            ),
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::FinalReview,
+            vec![
+                conditionally_approved_payload(&["tighten final wording"]),
+                approved_validation_payload(),
+            ],
+        ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2611,13 +2812,19 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
     )
     .await;
 
-    assert!(result.is_ok(), "run should complete after final_review continuation: {result:?}");
+    assert!(
+        result.is_ok(),
+        "run should complete after final_review continuation: {result:?}"
+    );
 
     let snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
-    assert_eq!(snapshot.completion_rounds, 2, "should advance to completion round 2");
+    assert_eq!(
+        snapshot.completion_rounds, 2,
+        "should advance to completion round 2"
+    );
     assert!(
         snapshot.amendment_queue.pending.is_empty(),
         "amendments should be drained after planning commit"
@@ -2634,36 +2841,38 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
         !amendment_events.is_empty(),
         "should have amendment_queued events"
     );
-    assert_eq!(
-        amendment_events[0].details["body"],
-        "tighten final wording"
-    );
+    assert_eq!(amendment_events[0].details["body"], "tighten final wording");
 
     // Completion round advanced with source_stage = final_review.
     let round_events: Vec<_> = events
         .iter()
         .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
         .collect();
-    assert_eq!(round_events.len(), 1, "should have one completion_round_advanced event");
+    assert_eq!(
+        round_events.len(),
+        1,
+        "should have one completion_round_advanced event"
+    );
     assert_eq!(round_events[0].details["source_stage"], "final_review");
     assert_eq!(round_events[0].details["from_round"], 1);
     assert_eq!(round_events[0].details["to_round"], 2);
 
     // Planning should be entered twice (initial + restart from final_review).
-    let planning_entered =
-        stage_events(&events, JournalEventType::StageEntered, "planning");
+    let planning_entered = stage_events(&events, JournalEventType::StageEntered, "planning");
     assert_eq!(planning_entered.len(), 2, "planning entered twice");
 
     // No amendment files remain on disk.
-    let amendments_dir = base_dir
-        .join(".ralph-burning/projects/fr-cond/amendments");
+    let amendments_dir = base_dir.join(".ralph-burning/projects/fr-cond/amendments");
     if amendments_dir.is_dir() {
         let files: Vec<_> = std::fs::read_dir(&amendments_dir)
             .unwrap()
             .filter_map(|e| e.ok())
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
             .collect();
-        assert!(files.is_empty(), "amendment files should be drained from disk");
+        assert!(
+            files.is_empty(),
+            "amendment files should be drained from disk"
+        );
     }
 }
 
@@ -2678,14 +2887,13 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
     let pid = create_standard_project(base_dir, "fr-reqch");
 
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload_sequence(
-                StageId::FinalReview,
-                vec![
-                    request_changes_payload(&["fix final review finding"]),
-                    approved_validation_payload(),
-                ],
-            ),
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::FinalReview,
+            vec![
+                request_changes_payload(&["fix final review finding"]),
+                approved_validation_payload(),
+            ],
+        ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2703,7 +2911,10 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
     )
     .await;
 
-    assert!(result.is_ok(), "run should complete after final_review request_changes: {result:?}");
+    assert!(
+        result.is_ok(),
+        "run should complete after final_review request_changes: {result:?}"
+    );
 
     let snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
