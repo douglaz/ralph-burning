@@ -131,6 +131,186 @@ fn tail_view_includes_empty_logs_when_requested_but_none_exist() {
     assert!(view.runtime_logs.as_ref().unwrap().is_empty());
 }
 
+// ── Rollback Boundary Filtering ──
+
+#[test]
+fn visible_journal_events_prune_rolled_back_branch_but_keep_new_branch() {
+    let events = vec![
+        JournalEvent {
+            sequence: 1,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::ProjectCreated,
+            details: serde_json::json!({}),
+        },
+        JournalEvent {
+            sequence: 2,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::StageCompleted,
+            details: serde_json::json!({
+                "stage_id": "planning",
+                "cycle": 1,
+                "payload_id": "p1",
+                "artifact_id": "a1"
+            }),
+        },
+        JournalEvent {
+            sequence: 3,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::RollbackCreated,
+            details: serde_json::json!({
+                "rollback_id": "rb-planning",
+                "stage_id": "planning",
+                "cycle": 1
+            }),
+        },
+        JournalEvent {
+            sequence: 4,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::StageCompleted,
+            details: serde_json::json!({
+                "stage_id": "implementation",
+                "cycle": 1,
+                "payload_id": "p2",
+                "artifact_id": "a2"
+            }),
+        },
+        JournalEvent {
+            sequence: 5,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::RollbackPerformed,
+            details: serde_json::json!({
+                "rollback_id": "rb-planning",
+                "stage_id": "planning",
+                "cycle": 1,
+                "visible_through_sequence": 3,
+                "hard": false,
+                "rollback_count": 1
+            }),
+        },
+        JournalEvent {
+            sequence: 6,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::RunResumed,
+            details: serde_json::json!({}),
+        },
+        JournalEvent {
+            sequence: 7,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::StageCompleted,
+            details: serde_json::json!({
+                "stage_id": "implementation",
+                "cycle": 1,
+                "payload_id": "p3",
+                "artifact_id": "a3"
+            }),
+        },
+    ];
+
+    let visible = queries::visible_journal_events(&events).expect("visible journal");
+    let sequences: Vec<_> = visible.iter().map(|event| event.sequence).collect();
+    assert_eq!(sequences, vec![1, 2, 3, 5, 6, 7]);
+}
+
+#[test]
+fn filter_history_records_hides_payloads_from_rolled_back_branch() {
+    let events = queries::visible_journal_events(&[
+        JournalEvent {
+            sequence: 1,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::ProjectCreated,
+            details: serde_json::json!({}),
+        },
+        JournalEvent {
+            sequence: 2,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::StageCompleted,
+            details: serde_json::json!({
+                "stage_id": "planning",
+                "cycle": 1,
+                "payload_id": "p1",
+                "artifact_id": "a1"
+            }),
+        },
+        JournalEvent {
+            sequence: 3,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::RollbackCreated,
+            details: serde_json::json!({
+                "rollback_id": "rb-planning",
+                "stage_id": "planning",
+                "cycle": 1
+            }),
+        },
+        JournalEvent {
+            sequence: 4,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::StageCompleted,
+            details: serde_json::json!({
+                "stage_id": "implementation",
+                "cycle": 1,
+                "payload_id": "p2",
+                "artifact_id": "a2"
+            }),
+        },
+        JournalEvent {
+            sequence: 5,
+            timestamp: test_timestamp(),
+            event_type: JournalEventType::RollbackPerformed,
+            details: serde_json::json!({
+                "rollback_id": "rb-planning",
+                "stage_id": "planning",
+                "cycle": 1,
+                "visible_through_sequence": 3,
+                "hard": false,
+                "rollback_count": 1
+            }),
+        },
+    ])
+    .expect("visible events");
+
+    let payloads = vec![
+        PayloadRecord {
+            payload_id: "p1".to_owned(),
+            stage_id: StageId::Planning,
+            cycle: 1,
+            attempt: 1,
+            created_at: test_timestamp(),
+            payload: serde_json::json!({}),
+        },
+        PayloadRecord {
+            payload_id: "p2".to_owned(),
+            stage_id: StageId::Implementation,
+            cycle: 1,
+            attempt: 1,
+            created_at: test_timestamp(),
+            payload: serde_json::json!({}),
+        },
+    ];
+    let artifacts = vec![
+        ArtifactRecord {
+            artifact_id: "a1".to_owned(),
+            payload_id: "p1".to_owned(),
+            stage_id: StageId::Planning,
+            created_at: test_timestamp(),
+            content: "planning".to_owned(),
+        },
+        ArtifactRecord {
+            artifact_id: "a2".to_owned(),
+            payload_id: "p2".to_owned(),
+            stage_id: StageId::Implementation,
+            created_at: test_timestamp(),
+            content: "implementation".to_owned(),
+        },
+    ];
+
+    let (visible_payloads, visible_artifacts) =
+        queries::filter_history_records(&events, payloads, artifacts).expect("filtered history");
+    assert_eq!(visible_payloads.len(), 1);
+    assert_eq!(visible_payloads[0].payload_id, "p1");
+    assert_eq!(visible_artifacts.len(), 1);
+    assert_eq!(visible_artifacts[0].artifact_id, "a1");
+}
+
 // ── History Consistency Validation ──
 
 #[test]

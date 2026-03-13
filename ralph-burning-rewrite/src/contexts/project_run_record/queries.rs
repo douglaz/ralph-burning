@@ -1,3 +1,5 @@
+use std::collections::HashSet;
+
 use crate::shared::error::AppResult;
 
 use super::model::{ArtifactRecord, JournalEvent, PayloadRecord, RunSnapshot, RuntimeLogEntry};
@@ -127,4 +129,86 @@ pub fn validate_history_consistency(
         }
     }
     Ok(())
+}
+
+/// Apply logical rollback boundaries to an append-only journal.
+///
+/// Each `rollback_performed` event rewinds the visible event stream back to the
+/// referenced durable boundary, then becomes the new branch point for
+/// subsequent events.
+pub fn visible_journal_events(events: &[JournalEvent]) -> AppResult<Vec<JournalEvent>> {
+    let mut visible: Vec<JournalEvent> = Vec::with_capacity(events.len());
+
+    for event in events {
+        if event.event_type == super::model::JournalEventType::RollbackPerformed {
+            let visible_through_sequence = rollback_boundary_sequence(event)?;
+            visible.retain(|prior| prior.sequence <= visible_through_sequence);
+        }
+        visible.push(event.clone());
+    }
+
+    Ok(visible)
+}
+
+/// Filter payload/artifact history to the records reachable from the visible
+/// journal branch after applying rollback boundaries.
+pub fn filter_history_records(
+    events: &[JournalEvent],
+    payloads: Vec<PayloadRecord>,
+    artifacts: Vec<ArtifactRecord>,
+) -> AppResult<(Vec<PayloadRecord>, Vec<ArtifactRecord>)> {
+    let mut visible_payload_ids = HashSet::new();
+    let mut visible_artifact_ids = HashSet::new();
+
+    for event in events {
+        if event.event_type != super::model::JournalEventType::StageCompleted {
+            continue;
+        }
+
+        visible_payload_ids.insert(detail_string(event, "payload_id")?.to_owned());
+        visible_artifact_ids.insert(detail_string(event, "artifact_id")?.to_owned());
+    }
+
+    let mut visible_payloads: Vec<_> = payloads
+        .into_iter()
+        .filter(|payload| visible_payload_ids.contains(payload.payload_id.as_str()))
+        .collect();
+    let mut visible_artifacts: Vec<_> = artifacts
+        .into_iter()
+        .filter(|artifact| {
+            visible_artifact_ids.contains(artifact.artifact_id.as_str())
+                && visible_payload_ids.contains(artifact.payload_id.as_str())
+        })
+        .collect();
+
+    visible_payloads.sort_by_key(|record| record.created_at);
+    visible_artifacts.sort_by_key(|record| record.created_at);
+
+    Ok((visible_payloads, visible_artifacts))
+}
+
+fn rollback_boundary_sequence(event: &JournalEvent) -> AppResult<u64> {
+    event.details.get("visible_through_sequence").and_then(|value| {
+        value.as_u64()
+    }).ok_or_else(|| crate::shared::error::AppError::CorruptRecord {
+        file: "journal.ndjson".to_owned(),
+        details: format!(
+            "rollback_performed event sequence {} is missing 'visible_through_sequence'",
+            event.sequence
+        ),
+    })
+}
+
+fn detail_string<'a>(event: &'a JournalEvent, key: &str) -> AppResult<&'a str> {
+    event
+        .details
+        .get(key)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| crate::shared::error::AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "event sequence {} is missing string field '{}'",
+                event.sequence, key
+            ),
+        })
 }

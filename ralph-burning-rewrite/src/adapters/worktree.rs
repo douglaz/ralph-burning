@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::contexts::automation_runtime::WorktreePort;
+use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Default, Clone, Copy)]
@@ -53,6 +54,37 @@ impl WorktreeAdapter {
         }
 
         Ok("HEAD".to_owned())
+    }
+
+    pub fn current_head_sha(&self, repo_root: &Path) -> AppResult<Option<String>> {
+        let output = Self::git(repo_root, &["rev-parse", "HEAD"])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        let sha = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if sha.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(sha))
+        }
+    }
+
+    pub fn hard_reset_to_sha(&self, repo_root: &Path, sha: &str) -> AppResult<()> {
+        let output = Self::git(repo_root, &["reset", "--hard", sha])?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::Io(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )))
+    }
+}
+
+impl RepositoryResetPort for WorktreeAdapter {
+    fn reset_to_sha(&self, repo_root: &Path, sha: &str) -> AppResult<()> {
+        self.hard_reset_to_sha(repo_root, sha)
     }
 }
 

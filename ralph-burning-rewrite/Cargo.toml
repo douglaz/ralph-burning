@@ -15,6 +15,7 @@ toml = "0.8"
 toml_edit = "0.22"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
+uuid = { version = "1", features = ["v4"] }
 
 [dev-dependencies]
 jsonschema = "0.18"

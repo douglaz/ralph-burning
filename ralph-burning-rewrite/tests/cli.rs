@@ -66,6 +66,14 @@ status_summary = "created"
     }
 }
 
+fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
+    fs::write(
+        base_dir.join(".ralph-burning/active-project"),
+        format!("{project_id}\n"),
+    )
+    .expect("write active-project");
+}
+
 fn write_editor_script(
     base_dir: &std::path::Path,
     name: &str,
@@ -1496,6 +1504,188 @@ fn run_history_shows_journal_events_for_new_project() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Journal Events"));
     assert!(stdout.contains("ProjectCreated"));
+}
+
+#[test]
+fn run_rollback_soft_updates_snapshot_and_hides_rolled_back_history() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "failed",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "failed at implementation"
+}"#,
+    )
+    .expect("write failed snapshot");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-03-12T22:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-03-12T22:01:00Z","event_type":"stage_completed","details":{"stage_id":"planning","cycle":1,"attempt":1,"payload_id":"p1","artifact_id":"a1"}}
+{"sequence":3,"timestamp":"2026-03-12T22:01:01Z","event_type":"rollback_created","details":{"rollback_id":"rb-planning","stage_id":"planning","cycle":1}}
+{"sequence":4,"timestamp":"2026-03-12T22:02:00Z","event_type":"stage_completed","details":{"stage_id":"implementation","cycle":1,"attempt":1,"payload_id":"p2","artifact_id":"a2"}}
+{"sequence":5,"timestamp":"2026-03-12T22:02:01Z","event_type":"rollback_created","details":{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}"#,
+    )
+    .expect("write journal");
+    fs::write(
+        project_root.join("history/payloads/p1.json"),
+        r#"{"payload_id":"p1","stage_id":"planning","cycle":1,"attempt":1,"created_at":"2026-03-12T22:01:00Z","payload":{}}"#,
+    )
+    .expect("write p1");
+    fs::write(
+        project_root.join("history/artifacts/a1.json"),
+        r#"{"artifact_id":"a1","payload_id":"p1","stage_id":"planning","created_at":"2026-03-12T22:01:00Z","content":"planning"}"#,
+    )
+    .expect("write a1");
+    fs::write(
+        project_root.join("history/payloads/p2.json"),
+        r#"{"payload_id":"p2","stage_id":"implementation","cycle":1,"attempt":1,"created_at":"2026-03-12T22:02:00Z","payload":{}}"#,
+    )
+    .expect("write p2");
+    fs::write(
+        project_root.join("history/artifacts/a2.json"),
+        r#"{"artifact_id":"a2","payload_id":"p2","stage_id":"implementation","created_at":"2026-03-12T22:02:00Z","content":"implementation"}"#,
+    )
+    .expect("write a2");
+    fs::write(
+        project_root.join("rollback/rb-planning.json"),
+        r#"{
+  "rollback_id": "rb-planning",
+  "created_at": "2026-03-12T22:01:01Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-1",
+      "stage_cursor": {
+        "stage": "implementation",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 1
+      },
+      "started_at": "2026-03-12T22:00:00Z"
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 1,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "running: Implementation"
+  }
+}"#,
+    )
+    .expect("write rollback point");
+
+    let rollback = Command::new(binary())
+        .args(["run", "rollback", "--to", "planning"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run rollback");
+    assert!(rollback.status.success(), "{:?}", rollback);
+
+    let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
+    assert!(run_json.contains("\"status\": \"paused\""));
+    assert!(run_json.contains("\"last_rollback_id\": \"rb-planning\""));
+    assert!(run_json.contains("\"rollback_count\": 1"));
+
+    let history = Command::new(binary())
+        .args(["run", "history"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history");
+    assert!(
+        history.status.success(),
+        "{}",
+        String::from_utf8_lossy(&history.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&history.stdout);
+    assert!(stdout.contains("RollbackPerformed"));
+    assert!(stdout.contains("p1"));
+    assert!(!stdout.contains("p2"), "rolled-back payload should be hidden");
+}
+
+#[test]
+fn run_rollback_hard_failure_keeps_logical_rollback_durable() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": { "pending": [], "processed_count": 0 },
+  "status_summary": "paused before hard rollback"
+}"#,
+    )
+    .expect("write paused snapshot");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        r#"{"sequence":1,"timestamp":"2026-03-12T22:00:00Z","event_type":"project_created","details":{"project_id":"alpha","flow":"standard"}}
+{"sequence":2,"timestamp":"2026-03-12T22:02:01Z","event_type":"rollback_created","details":{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}"#,
+    )
+    .expect("write journal");
+    fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        r#"{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-12T22:02:01Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "git_sha": "deadbeef",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-1",
+      "stage_cursor": {
+        "stage": "qa",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 1
+      },
+      "started_at": "2026-03-12T22:00:00Z"
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 1,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "running: QA"
+  }
+}"#,
+    )
+    .expect("write rollback point");
+
+    let rollback = Command::new(binary())
+        .args(["run", "rollback", "--to", "implementation", "--hard"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run hard rollback");
+    assert!(!rollback.status.success());
+
+    let stderr = String::from_utf8_lossy(&rollback.stderr);
+    assert!(stderr.contains("logical rollback was committed"));
+
+    let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
+    assert!(run_json.contains("\"status\": \"paused\""));
+    assert!(run_json.contains("\"last_rollback_id\": \"rb-implementation\""));
+    assert!(run_json.contains("\"rollback_count\": 1"));
+
+    let journal = fs::read_to_string(project_root.join("journal.ndjson")).expect("read journal");
+    assert!(journal.contains("\"rollback_performed\""));
 }
 
 // ── Run Tail ──

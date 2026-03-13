@@ -2,10 +2,11 @@ use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
-    FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
+    FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
+use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
@@ -46,9 +47,7 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         RunSubcommand::Tail { logs } => handle_tail(logs).await,
         RunSubcommand::Start => handle_start().await,
         RunSubcommand::Resume => handle_resume().await,
-        RunSubcommand::Rollback { .. } => Err(AppError::NotYetImplemented {
-            command: "run rollback".to_owned(),
-        }),
+        RunSubcommand::Rollback { to, hard } => handle_rollback(to, hard).await,
     }
 }
 
@@ -370,6 +369,54 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
                 );
             }
         }
+    }
+
+    Ok(())
+}
+
+async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let project_store = FsProjectStore;
+    let project_record = project_store.read_project_record(&current_dir, &project_id)?;
+
+    let target_stage = match target.parse::<StageId>() {
+        Ok(stage_id) => stage_id,
+        Err(_) => {
+            return Err(AppError::RollbackStageNotInFlow {
+                project_id: project_id.to_string(),
+                stage_id: target,
+                flow: project_record.flow.to_string(),
+            });
+        }
+    };
+
+    let rollback_point = service::perform_rollback(
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsRollbackPointStore,
+        Some(&WorktreeAdapter),
+        &current_dir,
+        &project_id,
+        project_record.flow,
+        target_stage,
+        hard,
+    )?;
+
+    println!(
+        "Rollback complete: project '{}' paused at {} cycle {}.",
+        project_id,
+        rollback_point.stage_id,
+        rollback_point.cycle
+    );
+    if hard {
+        println!("Repository reset to recorded git SHA.");
     }
 
     Ok(())

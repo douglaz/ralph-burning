@@ -2,13 +2,15 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
-use crate::shared::domain::{FlowPreset, ProjectId};
+use crate::contexts::workflow_composition;
+use crate::shared::domain::{FlowPreset, ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 use super::journal;
 use super::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, ProjectDetail, ProjectListEntry,
-    ProjectRecord, ProjectStatusSummary, RunSnapshot, RuntimeLogEntry, SessionStore,
+    ProjectRecord, ProjectStatusSummary, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
+    SessionStore,
 };
 use super::queries::{self, RunHistoryView, RunStatusView, RunTailView};
 
@@ -88,6 +90,34 @@ pub trait RunSnapshotWritePort {
         project_id: &ProjectId,
         snapshot: &RunSnapshot,
     ) -> AppResult<()>;
+}
+
+/// Port for durable rollback point persistence.
+pub trait RollbackPointStorePort {
+    fn write_rollback_point(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        rollback_point: &RollbackPoint,
+    ) -> AppResult<()>;
+
+    fn list_rollback_points(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<RollbackPoint>>;
+
+    fn read_rollback_point_by_stage(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        stage_id: StageId,
+    ) -> AppResult<Option<RollbackPoint>>;
+}
+
+/// Port for repository reset operations during hard rollback.
+pub trait RepositoryResetPort {
+    fn reset_to_sha(&self, repo_root: &Path, sha: &str) -> AppResult<()>;
 }
 
 /// Port for writing payload and artifact records atomically as a pair.
@@ -371,9 +401,12 @@ pub fn run_history(
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<RunHistoryView> {
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let payloads = artifact_port.list_payloads(base_dir, project_id)?;
-    let artifacts = artifact_port.list_artifacts(base_dir, project_id)?;
+    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
 
     queries::validate_history_consistency(&payloads, &artifacts)?;
 
@@ -394,9 +427,12 @@ pub fn run_tail(
     project_id: &ProjectId,
     include_logs: bool,
 ) -> AppResult<RunTailView> {
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let payloads = artifact_port.list_payloads(base_dir, project_id)?;
-    let artifacts = artifact_port.list_artifacts(base_dir, project_id)?;
+    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
 
     queries::validate_history_consistency(&payloads, &artifacts)?;
 
@@ -414,4 +450,185 @@ pub fn run_tail(
         include_logs,
         runtime_logs,
     ))
+}
+
+/// List visible rollback points for the current logical history branch.
+pub fn list_rollback_points(
+    rollback_store: &dyn RollbackPointStorePort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<RollbackPoint>> {
+    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let visible_ids = visible_rollback_ids(&events);
+    let mut points = rollback_store
+        .list_rollback_points(base_dir, project_id)?
+        .into_iter()
+        .filter(|point| visible_ids.contains(point.rollback_id.as_str()))
+        .collect::<Vec<_>>();
+    points.sort_by_key(|point| point.created_at);
+    Ok(points)
+}
+
+/// Look up the latest visible rollback point for a stage.
+pub fn get_rollback_point_for_stage(
+    rollback_store: &dyn RollbackPointStorePort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    stage_id: StageId,
+) -> AppResult<Option<RollbackPoint>> {
+    let visible_events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let visible_ids = visible_rollback_ids(&visible_events);
+
+    Ok(rollback_store
+        .list_rollback_points(base_dir, project_id)?
+        .into_iter()
+        .filter(|point| point.stage_id == stage_id)
+        .filter(|point| visible_ids.contains(point.rollback_id.as_str()))
+        .max_by_key(|point| point.created_at))
+}
+
+/// Perform a logical or hard rollback to a visible checkpoint.
+#[allow(clippy::too_many_arguments)]
+pub fn perform_rollback(
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    journal_port: &dyn JournalStorePort,
+    rollback_store: &dyn RollbackPointStorePort,
+    reset_port: Option<&dyn RepositoryResetPort>,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    flow: FlowPreset,
+    target_stage: StageId,
+    hard: bool,
+) -> AppResult<RollbackPoint> {
+    let current_snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    match current_snapshot.status {
+        RunStatus::Failed | RunStatus::Paused => {}
+        status => {
+            return Err(AppError::RollbackInvalidStatus {
+                project_id: project_id.to_string(),
+                status: status.to_string(),
+            });
+        }
+    }
+
+    if !flow_stage_membership(flow, target_stage) {
+        return Err(AppError::RollbackStageNotInFlow {
+            project_id: project_id.to_string(),
+            stage_id: target_stage.to_string(),
+            flow: flow.to_string(),
+        });
+    }
+
+    let rollback_point = get_rollback_point_for_stage(
+        rollback_store,
+        journal_port,
+        base_dir,
+        project_id,
+        target_stage,
+    )?
+    .ok_or_else(|| AppError::RollbackPointNotFound {
+        project_id: project_id.to_string(),
+        stage_id: target_stage.to_string(),
+    })?;
+
+    let events = journal_port.read_journal(base_dir, project_id)?;
+    let visible_through_sequence =
+        rollback_created_sequence_for(&events, rollback_point.rollback_id.as_str())?;
+
+    let mut restored_snapshot = rollback_point.run_snapshot.clone();
+    restored_snapshot.status = RunStatus::Paused;
+    restored_snapshot.active_run = None;
+    restored_snapshot.rollback_point_meta.rollback_count =
+        current_snapshot.rollback_point_meta.rollback_count + 1;
+    restored_snapshot.rollback_point_meta.last_rollback_id =
+        Some(rollback_point.rollback_id.clone());
+    restored_snapshot.status_summary = format!(
+        "paused after rollback to {} (cycle {}); run `ralph-burning run resume` to continue",
+        rollback_point.stage_id.display_name(),
+        rollback_point.cycle
+    );
+
+    run_write_port.write_run_snapshot(base_dir, project_id, &restored_snapshot)?;
+
+    let sequence = journal::last_sequence(&events) + 1;
+    let rollback_event = journal::rollback_performed_event(
+        sequence,
+        Utc::now(),
+        rollback_point.rollback_id.as_str(),
+        rollback_point.stage_id,
+        rollback_point.cycle,
+        visible_through_sequence,
+        hard,
+        rollback_point.git_sha.as_deref(),
+        restored_snapshot.rollback_point_meta.rollback_count,
+    );
+    let rollback_line = journal::serialize_event(&rollback_event)?;
+    journal_port.append_event(base_dir, project_id, &rollback_line)?;
+
+    if hard {
+        let git_sha = rollback_point.git_sha.as_deref().ok_or_else(|| {
+            AppError::RollbackGitResetFailed {
+                project_id: project_id.to_string(),
+                rollback_id: rollback_point.rollback_id.clone(),
+                details: "rollback point does not record a git commit SHA".to_owned(),
+            }
+        })?;
+
+        let reset_port = reset_port.ok_or_else(|| AppError::RollbackGitResetFailed {
+            project_id: project_id.to_string(),
+            rollback_id: rollback_point.rollback_id.clone(),
+            details: "no repository reset adapter was provided".to_owned(),
+        })?;
+
+        if let Err(error) = reset_port.reset_to_sha(base_dir, git_sha) {
+            return Err(AppError::RollbackGitResetFailed {
+                project_id: project_id.to_string(),
+                rollback_id: rollback_point.rollback_id.clone(),
+                details: error.to_string(),
+            });
+        }
+    }
+
+    Ok(rollback_point)
+}
+
+fn flow_stage_membership(flow: FlowPreset, stage_id: StageId) -> bool {
+    workflow_composition::flow_definition(flow)
+        .stages
+        .contains(&stage_id)
+}
+
+fn visible_rollback_ids(events: &[JournalEvent]) -> std::collections::HashSet<&str> {
+    events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::RollbackCreated)
+        .filter_map(|event| {
+            event.details.get("rollback_id").and_then(|value| value.as_str())
+        })
+        .collect()
+}
+
+fn rollback_created_sequence_for(events: &[JournalEvent], rollback_id: &str) -> AppResult<u64> {
+    events
+        .iter()
+        .find(|event| {
+            event.event_type == JournalEventType::RollbackCreated
+                && event
+                    .details
+                    .get("rollback_id")
+                    .and_then(|value| value.as_str())
+                    == Some(rollback_id)
+        })
+        .map(|event| event.sequence)
+        .ok_or_else(|| AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "missing rollback_created event for rollback point '{}'",
+                rollback_id
+            ),
+        })
 }

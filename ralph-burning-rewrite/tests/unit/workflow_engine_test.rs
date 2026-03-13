@@ -191,10 +191,15 @@ async fn happy_path_standard_run_completes() {
     assert_eq!(events[0].event_type, JournalEventType::ProjectCreated);
     assert_eq!(events[1].event_type, JournalEventType::RunStarted);
 
-    // Last event should be run_completed
+    assert!(
+        events
+            .iter()
+            .any(|event| event.event_type == JournalEventType::RunCompleted),
+        "run_completed event should be present"
+    );
     assert_eq!(
         events.last().unwrap().event_type,
-        JournalEventType::RunCompleted
+        JournalEventType::RollbackCreated
     );
 
     // Verify payloads and artifacts were written
@@ -263,6 +268,44 @@ async fn happy_path_prompt_review_disabled() {
         pr_events.is_empty(),
         "prompt_review stage should not appear"
     );
+}
+
+#[tokio::test]
+async fn successful_stage_transitions_create_rollback_points() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "rollback-points");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await
+    .expect("run completes");
+
+    let rollback_dir = base_dir.join(".ralph-burning/projects/rollback-points/rollback");
+    let rollback_file_count = fs::read_dir(&rollback_dir).unwrap().count();
+    assert_eq!(rollback_file_count, 8, "one checkpoint per completed stage");
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let rollback_events = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::RollbackCreated)
+        .count();
+    assert_eq!(rollback_events, 8);
 }
 
 #[tokio::test]
@@ -2313,14 +2356,17 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
     //   1 run_started
     //   2 stage_entered(prompt_review)
     //   3 stage_completed(prompt_review)
-    //   4 stage_entered(planning)
-    //   5 stage_completed(planning)
-    //   6 stage_entered(implementation)
-    //   7 stage_completed(implementation)
-    //   8 stage_entered(qa)
-    //   9 stage_completed(qa)
-    //  10 cycle_advanced -> fail here
-    let failing_journal = FailingJournalStore::new(10);
+    //   4 rollback_created(prompt_review)
+    //   5 stage_entered(planning)
+    //   6 stage_completed(planning)
+    //   7 rollback_created(planning)
+    //   8 stage_entered(implementation)
+    //   9 stage_completed(implementation)
+    //  10 rollback_created(implementation)
+    //  11 stage_entered(qa)
+    //  12 stage_completed(qa)
+    //  13 cycle_advanced -> fail here
+    let failing_journal = FailingJournalStore::new(13);
 
     let first_result = engine::execute_standard_run(
         &agent_service,

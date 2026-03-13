@@ -188,6 +188,7 @@ pub enum JournalEventType {
     RunCompleted,
     RunFailed,
     RollbackCreated,
+    RollbackPerformed,
     AmendmentQueued,
 }
 
@@ -237,6 +238,8 @@ pub struct RollbackPoint {
     pub created_at: DateTime<Utc>,
     pub stage_id: StageId,
     pub cycle: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_sha: Option<String>,
     pub run_snapshot: RunSnapshot,
 }
 

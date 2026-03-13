@@ -9,15 +9,15 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
-    FsProjectStore, FsRunSnapshotStore, FsRuntimeLogStore,
+    FsProjectStore, FsRollbackPointStore, FsRunSnapshotStore, FsRuntimeLogStore,
 };
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service::{
-    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
-    RuntimeLogStorePort,
+    ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort,
+    RollbackPointStorePort, RunSnapshotPort, RuntimeLogStorePort,
 };
-use ralph_burning::shared::domain::{FlowPreset, ProjectId};
+use ralph_burning::shared::domain::{FlowPreset, ProjectId, StageId};
 use ralph_burning::shared::error::AppError;
 
 fn test_timestamp() -> chrono::DateTime<Utc> {
@@ -460,6 +460,56 @@ fn run_snapshot_store_semantically_inconsistent_returns_corrupt() {
     let pid = ProjectId::new("alpha").unwrap();
     let err = store.read_run_snapshot(tmp.path(), &pid).unwrap_err();
     assert!(matches!(err, AppError::CorruptRecord { .. }));
+}
+
+// ── FsRollbackPointStore ──
+
+#[test]
+fn rollback_point_store_round_trip_write_list_and_read_by_stage() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let store = FsRollbackPointStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let planning_point = RollbackPoint {
+        rollback_id: "rb-planning".to_owned(),
+        created_at: test_timestamp(),
+        stage_id: StageId::Planning,
+        cycle: 1,
+        git_sha: Some("abc123".to_owned()),
+        run_snapshot: RunSnapshot::initial(),
+    };
+    let review_point = RollbackPoint {
+        rollback_id: "rb-review".to_owned(),
+        created_at: test_timestamp() + chrono::Duration::minutes(1),
+        stage_id: StageId::Review,
+        cycle: 1,
+        git_sha: None,
+        run_snapshot: RunSnapshot::initial(),
+    };
+
+    store
+        .write_rollback_point(tmp.path(), &pid, &planning_point)
+        .expect("write planning point");
+    store
+        .write_rollback_point(tmp.path(), &pid, &review_point)
+        .expect("write review point");
+
+    let points = store
+        .list_rollback_points(tmp.path(), &pid)
+        .expect("list rollback points");
+    assert_eq!(points.len(), 2);
+    assert_eq!(points[0].rollback_id, "rb-planning");
+    assert_eq!(points[1].rollback_id, "rb-review");
+
+    let by_stage = store
+        .read_rollback_point_by_stage(tmp.path(), &pid, StageId::Review)
+        .expect("read by stage")
+        .expect("review point exists");
+    assert_eq!(by_stage.rollback_id, "rb-review");
+    assert_eq!(by_stage.stage_id, StageId::Review);
 }
 
 // ── FsArtifactStore ──

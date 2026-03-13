@@ -297,6 +297,68 @@ pub fn amendment_queued_event(
     }
 }
 
+/// Build a `rollback_created` journal event.
+pub fn rollback_created_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    rollback_id: &str,
+    stage_id: StageId,
+    cycle: u32,
+    git_sha: Option<&str>,
+) -> JournalEvent {
+    let mut details = serde_json::json!({
+        "run_id": run_id.as_str(),
+        "rollback_id": rollback_id,
+        "stage_id": stage_id.as_str(),
+        "cycle": cycle,
+    });
+
+    if let Some(git_sha) = git_sha {
+        details["git_sha"] = serde_json::json!(git_sha);
+    }
+
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RollbackCreated,
+        details,
+    }
+}
+
+/// Build a `rollback_performed` journal event.
+pub fn rollback_performed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    rollback_id: &str,
+    stage_id: StageId,
+    cycle: u32,
+    visible_through_sequence: u64,
+    hard: bool,
+    git_sha: Option<&str>,
+    rollback_count: u32,
+) -> JournalEvent {
+    let mut details = serde_json::json!({
+        "rollback_id": rollback_id,
+        "stage_id": stage_id.as_str(),
+        "cycle": cycle,
+        "visible_through_sequence": visible_through_sequence,
+        "hard": hard,
+        "rollback_count": rollback_count,
+    });
+
+    if let Some(git_sha) = git_sha {
+        details["git_sha"] = serde_json::json!(git_sha);
+    }
+
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::RollbackPerformed,
+        details,
+    }
+}
+
 /// Build a `run_failed` journal event.
 pub fn run_failed_event(
     sequence: u64,

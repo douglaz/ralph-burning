@@ -56,6 +56,33 @@ pub enum AppError {
     RunStartFailed { reason: String },
     #[error("cannot resume run: {reason}")]
     ResumeFailed { reason: String },
+    #[error(
+        "cannot rollback project '{project_id}' while run status is '{status}'; rollback is only allowed from failed or paused snapshots"
+    )]
+    RollbackInvalidStatus { project_id: String, status: String },
+    #[error(
+        "cannot rollback project '{project_id}' to stage '{stage_id}': stage is not part of flow '{flow}'"
+    )]
+    RollbackStageNotInFlow {
+        project_id: String,
+        stage_id: String,
+        flow: String,
+    },
+    #[error(
+        "cannot rollback project '{project_id}' to stage '{stage_id}': no persisted rollback point exists"
+    )]
+    RollbackPointNotFound {
+        project_id: String,
+        stage_id: String,
+    },
+    #[error(
+        "hard rollback for project '{project_id}' failed after the logical rollback was committed at rollback point '{rollback_id}': {details}"
+    )]
+    RollbackGitResetFailed {
+        project_id: String,
+        rollback_id: String,
+        details: String,
+    },
     #[error("preflight check failed for stage '{stage_id}': {details}")]
     PreflightFailed { stage_id: StageId, details: String },
     #[error("stage commit failed for stage '{stage_id}': {details}")]

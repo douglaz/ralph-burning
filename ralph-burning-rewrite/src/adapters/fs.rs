@@ -12,15 +12,15 @@ use crate::contexts::automation_runtime::model::{DaemonJournalEvent, DaemonTask,
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RunSnapshot, RuntimeLogEntry,
-    SessionStore,
+    ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RollbackPoint, RunSnapshot,
+    RuntimeLogEntry, SessionStore,
 };
 use crate::contexts::project_run_record::service::{
     ActiveProjectPort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
-    ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort, RuntimeLogStorePort,
-    RuntimeLogWritePort,
+    ProjectStorePort, RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    RuntimeLogStorePort, RuntimeLogWritePort,
 };
-use crate::shared::domain::{ProjectId, WorkspaceConfig};
+use crate::shared::domain::{ProjectId, StageId, WorkspaceConfig};
 use crate::shared::error::{AppError, AppResult};
 
 const ACTIVE_PROJECT_FILE: &str = "active-project";
@@ -196,7 +196,16 @@ impl FileSystem {
         })?;
         fs::create_dir_all(parent)?;
 
+        let needs_separator = match fs::read(path) {
+            Ok(contents) => contents.last().is_some_and(|byte| *byte != b'\n'),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+            Err(error) => return Err(error.into()),
+        };
+
         let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        if needs_separator {
+            file.write_all(b"\n")?;
+        }
         writeln!(file, "{}", line)?;
         file.sync_all()?;
         Ok(())
@@ -692,6 +701,69 @@ impl RunSnapshotWritePort for FsRunSnapshotWriteStore {
         let path = FileSystem::project_root(base_dir, project_id).join(RUN_FILE);
         let contents = serde_json::to_string_pretty(snapshot)?;
         FileSystem::write_atomic(&path, &contents)
+    }
+}
+
+/// Filesystem-backed implementation of `RollbackPointStorePort`.
+pub struct FsRollbackPointStore;
+
+impl RollbackPointStorePort for FsRollbackPointStore {
+    fn write_rollback_point(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        rollback_point: &RollbackPoint,
+    ) -> AppResult<()> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("rollback")
+            .join(format!("{}.json", rollback_point.rollback_id));
+        let contents = serde_json::to_string_pretty(rollback_point)?;
+        FileSystem::write_atomic(&path, &contents)
+    }
+
+    fn list_rollback_points(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<Vec<RollbackPoint>> {
+        let dir = FileSystem::project_root(base_dir, project_id).join("rollback");
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut points = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "json") {
+                let raw = fs::read_to_string(&path)?;
+                let point: RollbackPoint =
+                    serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                        file: format!(
+                            "rollback/{}",
+                            path.file_name().unwrap_or_default().to_string_lossy()
+                        ),
+                        details: error.to_string(),
+                    })?;
+                points.push(point);
+            }
+        }
+
+        points.sort_by_key(|point| point.created_at);
+        Ok(points)
+    }
+
+    fn read_rollback_point_by_stage(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        stage_id: StageId,
+    ) -> AppResult<Option<RollbackPoint>> {
+        Ok(self
+            .list_rollback_points(base_dir, project_id)?
+            .into_iter()
+            .filter(|point| point.stage_id == stage_id)
+            .max_by_key(|point| point.created_at))
     }
 }
 

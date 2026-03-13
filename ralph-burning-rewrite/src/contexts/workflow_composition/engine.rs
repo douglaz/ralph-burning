@@ -3,7 +3,10 @@ use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
+use uuid::Uuid;
 
+use crate::adapters::fs::FsRollbackPointStore;
+use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -15,11 +18,12 @@ use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, LogLevel, PayloadRecord,
-    QueuedAmendment, RunSnapshot, RunStatus, RuntimeLogEntry,
+    QueuedAmendment, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
+use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
     AmendmentQueuePort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
-    RunSnapshotPort, RunSnapshotWritePort, RuntimeLogWritePort,
+    RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort, RuntimeLogWritePort,
 };
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
@@ -155,7 +159,8 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    execute_run_with_retry(
+    let rollback_store = FsRollbackPointStore;
+    execute_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -163,6 +168,7 @@ where
         artifact_write,
         log_write,
         amendment_queue_port,
+        &rollback_store,
         base_dir,
         project_id,
         preset,
@@ -182,6 +188,48 @@ pub async fn execute_run_with_retry<A, R, S>(
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    preset: FlowPreset,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let rollback_store = FsRollbackPointStore;
+    execute_run_with_retry_internal(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        &rollback_store,
+        base_dir,
+        project_id,
+        preset,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_run_with_retry_internal<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
     preset: FlowPreset,
@@ -281,6 +329,7 @@ where
         artifact_write,
         log_write,
         amendment_queue_port,
+        rollback_store,
         base_dir,
         project_id,
         &run_id,
@@ -393,7 +442,8 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
-    resume_run_with_retry(
+    let rollback_store = FsRollbackPointStore;
+    resume_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
         run_snapshot_write,
@@ -402,6 +452,7 @@ where
         artifact_write,
         log_write,
         amendment_queue_port,
+        &rollback_store,
         base_dir,
         project_id,
         preset,
@@ -422,6 +473,50 @@ pub async fn resume_run_with_retry<A, R, S>(
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    preset: FlowPreset,
+    effective_config: &EffectiveConfig,
+    retry_policy: &RetryPolicy,
+    cancellation_token: CancellationToken,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let rollback_store = FsRollbackPointStore;
+    resume_run_with_retry_internal(
+        agent_service,
+        run_snapshot_read,
+        run_snapshot_write,
+        journal_store,
+        artifact_store,
+        artifact_write,
+        log_write,
+        amendment_queue_port,
+        &rollback_store,
+        base_dir,
+        project_id,
+        preset,
+        effective_config,
+        retry_policy,
+        cancellation_token,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn resume_run_with_retry_internal<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue_port: &dyn AmendmentQueuePort,
+    rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
     preset: FlowPreset,
@@ -461,7 +556,12 @@ where
     }
 
     let events = journal_store.read_journal(base_dir, project_id)?;
-    let stage_ids = stage_plan_for_resume(preset, &events, effective_config)?;
+    let visible_events = queries::visible_journal_events(&events).map_err(|error| {
+        AppError::ResumeFailed {
+            reason: error.to_string(),
+        }
+    })?;
+    let stage_ids = stage_plan_for_resume(preset, &visible_events, effective_config)?;
     let semantics = flow_semantics(preset);
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let stage_plan = resolve_stage_plan(
@@ -472,13 +572,13 @@ where
     // Reconcile amendments from disk into snapshot before deriving resume state.
     reconcile_amendments_from_disk(&mut snapshot, amendment_queue_port, base_dir, project_id)?;
 
-    let resume_state = derive_resume_state(&events, &snapshot, &stage_plan, semantics)?;
+    let resume_state = derive_resume_state(&visible_events, &snapshot, &stage_plan, semantics)?;
     let execution_context = derive_resume_execution_context(
         artifact_store,
         base_dir,
         project_id,
         &resume_state.cursor,
-        &events,
+        &visible_events,
         semantics,
     )?;
 
@@ -539,6 +639,7 @@ where
         artifact_write,
         log_write,
         amendment_queue_port,
+        rollback_store,
         base_dir,
         project_id,
         &resume_state.run_id,
@@ -643,6 +744,7 @@ async fn execute_run_internal<A, R, S>(
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
+    rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
@@ -754,6 +856,31 @@ where
                             error
                         ),
                     },
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+            if let Err(error) = persist_rollback_point(
+                rollback_store,
+                journal_store,
+                base_dir,
+                project_id,
+                run_id,
+                seq,
+                snapshot,
+                stage_id,
+                cursor.cycle,
+            ) {
+                return checkpoint_failure_result(
+                    error,
                     stage_id,
                     run_id,
                     seq,
@@ -940,6 +1067,31 @@ where
                         )
                         .await;
                     }
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
 
                     execution_context = None;
                     stage_index = planning_index;
@@ -1072,6 +1224,31 @@ where
                                     error
                                 ),
                             },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
                             stage_id,
                             run_id,
                             seq,
@@ -1227,6 +1404,31 @@ where
                 run_id,
                 seq,
             )?;
+            if let Err(error) = persist_rollback_point(
+                rollback_store,
+                journal_store,
+                base_dir,
+                project_id,
+                run_id,
+                seq,
+                snapshot,
+                stage_id,
+                cursor.cycle,
+            ) {
+                return checkpoint_failure_result(
+                    error,
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
             return Ok(RunOutcome::Completed);
         }
 
@@ -1253,6 +1455,31 @@ where
                         error
                     ),
                 },
+                stage_id,
+                run_id,
+                seq,
+                snapshot,
+                journal_store,
+                run_snapshot_write,
+                base_dir,
+                project_id,
+                origin,
+            )
+            .await;
+        }
+        if let Err(error) = persist_rollback_point(
+            rollback_store,
+            journal_store,
+            base_dir,
+            project_id,
+            run_id,
+            seq,
+            snapshot,
+            stage_id,
+            cursor.cycle,
+        ) {
+            return checkpoint_failure_result(
+                error,
                 stage_id,
                 run_id,
                 seq,
@@ -1673,6 +1900,52 @@ async fn persist_stage_success(
     Ok(())
 }
 
+fn persist_rollback_point(
+    rollback_store: &dyn RollbackPointStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &RunSnapshot,
+    stage_id: StageId,
+    cycle: u32,
+) -> AppResult<()> {
+    let worktree = WorktreeAdapter;
+    let created_at = Utc::now();
+    let rollback_point = RollbackPoint {
+        rollback_id: Uuid::new_v4().to_string(),
+        created_at,
+        stage_id,
+        cycle,
+        git_sha: worktree.current_head_sha(base_dir).ok().flatten(),
+        run_snapshot: snapshot.clone(),
+    };
+
+    rollback_store.write_rollback_point(base_dir, project_id, &rollback_point)?;
+
+    *seq += 1;
+    let event = journal::rollback_created_event(
+        *seq,
+        created_at,
+        run_id,
+        rollback_point.rollback_id.as_str(),
+        rollback_point.stage_id,
+        rollback_point.cycle,
+        rollback_point.git_sha.as_deref(),
+    );
+    let line = journal::serialize_event(&event)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("failed to persist rollback_created event: {}", error),
+        });
+    }
+
+    Ok(())
+}
+
 fn complete_run(
     snapshot: &mut RunSnapshot,
     run_snapshot_write: &dyn RunSnapshotWritePort,
@@ -1789,6 +2062,42 @@ async fn fail_run_result<T>(
     )
     .await?;
     unreachable!("fail_run always returns an error")
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn checkpoint_failure_result<T>(
+    error: AppError,
+    stage_id: StageId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    journal_store: &dyn JournalStorePort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    origin: ExecutionOrigin,
+) -> AppResult<T> {
+    if snapshot.status == RunStatus::Completed {
+        return Err(origin.error(format!(
+            "stage {} checkpoint failed after completion: {}",
+            stage_id.as_str(),
+            error
+        )));
+    }
+
+    fail_run_result(
+        &error,
+        stage_id,
+        run_id,
+        seq,
+        snapshot,
+        journal_store,
+        run_snapshot_write,
+        base_dir,
+        project_id,
+        origin,
+    )
+    .await
 }
 
 fn failure_label(error: &AppError) -> String {
