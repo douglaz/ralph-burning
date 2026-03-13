@@ -65,6 +65,21 @@ pub fn build_agent_execution_service(
             adapter = adapter.with_invoke_failure(stage_id);
         }
     }
+    // Test-only seam: JSON map from stage-id string to payload JSON.
+    // Example: {"completion_panel": {"outcome":"conditionally_approved",...}}
+    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_STAGE_OVERRIDES") {
+        if let Ok(overrides) =
+            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
+                &overrides_json,
+            )
+        {
+            for (stage_str, payload) in overrides {
+                if let Ok(stage_id) = stage_str.parse::<StageId>() {
+                    adapter = adapter.with_stage_payload(stage_id, payload);
+                }
+            }
+        }
+    }
 
     AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
 }

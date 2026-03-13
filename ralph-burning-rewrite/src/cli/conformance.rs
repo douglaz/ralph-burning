@@ -2,7 +2,6 @@ use clap::{Args, Subcommand};
 
 use crate::contexts::conformance_spec::catalog;
 use crate::contexts::conformance_spec::cutover_guard;
-use crate::contexts::conformance_spec::model::ScenarioOutcome;
 use crate::contexts::conformance_spec::runner;
 use crate::contexts::conformance_spec::scenarios;
 use crate::shared::error::{AppError, AppResult};
@@ -92,19 +91,10 @@ fn handle_run(filter: Option<String>) -> AppResult<()> {
     eprint!("{report}");
 
     // Phase 7: Exit code
+    // The runner already printed the failing scenario ID and reason during execution;
+    // returning ConformanceRunFailed gives a non-zero exit without double-printing.
     if report.failed > 0 {
-        let failed_id = report
-            .results
-            .iter()
-            .find_map(|r| match &r.outcome {
-                ScenarioOutcome::Failed(reason) => Some((r.id.clone(), reason.clone())),
-                _ => None,
-            })
-            .unwrap_or_default();
-        Err(AppError::ConformanceScenarioFailed {
-            scenario_id: failed_id.0,
-            details: failed_id.1,
-        })
+        Err(AppError::ConformanceRunFailed)
     } else {
         Ok(())
     }

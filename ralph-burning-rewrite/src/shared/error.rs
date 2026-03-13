@@ -179,6 +179,8 @@ pub enum AppError {
         scenario_id: String,
         details: String,
     },
+    #[error("conformance run failed (see above for details)")]
+    ConformanceRunFailed,
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]

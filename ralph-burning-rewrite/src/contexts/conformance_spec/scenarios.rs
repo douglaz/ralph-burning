@@ -48,17 +48,95 @@ struct CmdOutput {
 }
 
 fn run_cli(args: &[&str], cwd: &Path) -> Result<CmdOutput, String> {
-    let output = Command::new(binary_path())
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .map_err(|e| format!("failed to run CLI: {e}"))?;
+    run_cli_with_env(args, cwd, &[])
+}
+
+fn run_cli_with_env(
+    args: &[&str],
+    cwd: &Path,
+    env: &[(&str, &str)],
+) -> Result<CmdOutput, String> {
+    let mut cmd = Command::new(binary_path());
+    cmd.args(args).current_dir(cwd);
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().map_err(|e| format!("failed to run CLI: {e}"))?;
 
     Ok(CmdOutput {
         success: output.status.success(),
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+// ---------------------------------------------------------------------------
+// Journal and durable-state assertion helpers
+// ---------------------------------------------------------------------------
+
+fn read_journal(ws: &TempWorkspace, project_id: &str) -> Result<Vec<serde_json::Value>, String> {
+    let path = ws
+        .path()
+        .join(format!(".ralph-burning/projects/{project_id}/journal.ndjson"));
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read journal: {e}"))?;
+    content
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| serde_json::from_str(l).map_err(|e| format!("parse journal line: {e}")))
+        .collect()
+}
+
+fn read_run_snapshot(
+    ws: &TempWorkspace,
+    project_id: &str,
+) -> Result<serde_json::Value, String> {
+    let path = ws
+        .path()
+        .join(format!(".ralph-burning/projects/{project_id}/run.json"));
+    let content = std::fs::read_to_string(&path).map_err(|e| format!("read run.json: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("parse run.json: {e}"))
+}
+
+fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
+    let dir = ws
+        .path()
+        .join(format!(".ralph-burning/projects/{project_id}/history/payloads"));
+    let count = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read payloads dir: {e}"))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .count();
+    Ok(count)
+}
+
+fn count_artifact_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
+    let dir = ws
+        .path()
+        .join(format!(".ralph-burning/projects/{project_id}/history/artifacts"));
+    let count = std::fs::read_dir(&dir)
+        .map_err(|e| format!("read artifacts dir: {e}"))?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "md"))
+        .count();
+    Ok(count)
+}
+
+fn journal_event_types(events: &[serde_json::Value]) -> Vec<String> {
+    events
+        .iter()
+        .filter_map(|e| e.get("event_type").and_then(|v| v.as_str()).map(String::from))
+        .collect()
+}
+
+/// Check that `haystack` does not contain `needle`, returning a descriptive error if it does.
+#[allow(dead_code)]
+fn assert_not_contains(haystack: &str, needle: &str, context: &str) -> Result<(), String> {
+    if haystack.contains(needle) {
+        return Err(format!(
+            "{context}: expected NOT to contain '{needle}', got: {haystack}"
+        ));
+    }
+    Ok(())
 }
 
 fn assert_success(out: &CmdOutput) -> Result<(), String> {
@@ -880,18 +958,69 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "alpha", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+
+        // Verify precondition
+        let pre = run_cli(&["run", "status"], ws.path())?;
+        assert_success(&pre)?;
+        assert_contains(&pre.stdout, "not_started", "run status before start")?;
+
+        // Execute run start
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "run status before start")?;
+
+        // Verify post-condition: status is completed with no active run
+        let post = run_cli(&["run", "status"], ws.path())?;
+        assert_success(&post)?;
+        assert_contains(&post.stdout, "completed", "run status after start")?;
+
+        // Verify journal contains expected event types
+        let events = read_journal(&ws, "alpha")?;
+        let types = journal_event_types(&events);
+        for expected in &["run_started", "stage_entered", "stage_completed", "run_completed"] {
+            if !types.iter().any(|t| t == expected) {
+                return Err(format!("journal missing event type: {expected}"));
+            }
+        }
+
+        // Verify payload and artifact records exist for all 8 standard stages
+        let payloads = count_payload_files(&ws, "alpha")?;
+        let artifacts = count_artifact_files(&ws, "alpha")?;
+        if payloads < 8 {
+            return Err(format!("expected >= 8 payloads, got {payloads}"));
+        }
+        if artifacts < 8 {
+            return Err(format!("expected >= 8 artifacts, got {artifacts}"));
+        }
         Ok(())
     });
 
     reg!(m, "SC-START-002", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "beta", "quick_dev")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+
+        // Execute run start
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "run status before start")?;
+
+        // Verify post-condition: status is completed
+        let post = run_cli(&["run", "status"], ws.path())?;
+        assert_success(&post)?;
+        assert_contains(&post.stdout, "completed", "run status after start")?;
+
+        // Verify journal records quick_dev stages in sequence
+        let events = read_journal(&ws, "beta")?;
+        let types = journal_event_types(&events);
+        for expected in &["run_started", "stage_entered", "stage_completed", "run_completed"] {
+            if !types.iter().any(|t| t == expected) {
+                return Err(format!("journal missing event type: {expected}"));
+            }
+        }
+
+        // Verify 4 quick_dev stages worth of payloads/artifacts
+        let payloads = count_payload_files(&ws, "beta")?;
+        if payloads < 4 {
+            return Err(format!("expected >= 4 payloads for quick_dev, got {payloads}"));
+        }
         Ok(())
     });
 
@@ -997,12 +1126,27 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-012", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "fail-record", "standard")?;
-        // Verify journal exists and is parseable
-        let journal = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/fail-record/journal.ndjson"),
-        ).map_err(|e| e.to_string())?;
-        if journal.trim().is_empty() {
-            return Err("journal should not be empty".into());
+
+        // Configure a stage to fail during invocation
+        let out = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")],
+        )?;
+        assert_failure(&out)?;
+
+        // Verify journal records the failure
+        let events = read_journal(&ws, "fail-record")?;
+        let types = journal_event_types(&events);
+        if !types.iter().any(|t| t == "run_failed") {
+            return Err("journal should contain run_failed event".into());
+        }
+
+        // Verify run snapshot shows failed status
+        let snapshot = read_run_snapshot(&ws, "fail-record")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "failed" {
+            return Err(format!("expected failed status, got '{status}'"));
         }
         Ok(())
     });
@@ -1044,15 +1188,32 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-016", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "post-run", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
-        assert_success(&out)?;
+
+        // Complete a run first
+        let start = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&start)?;
+
+        // Post-run status query
+        let status = run_cli(&["run", "status"], ws.path())?;
+        assert_success(&status)?;
+        assert_contains(&status.stdout, "completed", "post-run status")?;
+
+        // Post-run history query
+        let history = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&history)?;
         Ok(())
     });
 
     reg!(m, "SC-START-017", || {
+        // Run start should succeed for all four built-in flow presets
         for flow in &["standard", "quick_dev", "docs_change", "ci_improvement"] {
-            let out = run_cli(&["flow", "show", flow], Path::new("/tmp"))?;
+            let ws = TempWorkspace::new()?;
+            let proj_id = format!("preset-{}", flow.replace('_', "-"));
+            setup_workspace_with_project(&ws, &proj_id, flow)?;
+            let out = run_cli(&["run", "start"], ws.path())?;
             assert_success(&out)?;
+            let status = run_cli(&["run", "status"], ws.path())?;
+            assert_contains(&status.stdout, "completed", &format!("status for {flow}"))?;
         }
         Ok(())
     });
@@ -1060,11 +1221,60 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-START-018", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        // Disable prompt_review
         run_cli(&["config", "set", "prompt_review.enabled", "false"], ws.path())?;
-        let out = run_cli(&["flow", "show", "standard"], ws.path())?;
+        create_project_fixture(ws.path(), "november", "standard");
+        select_project(ws.path(), "november");
+
+        // Execute run start
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        // Standard has 8 stages, minus prompt_review = 7
-        assert_contains(&out.stdout, "Stage count: 8", "stdout")?;
+
+        // Verify status is completed
+        let post = run_cli(&["run", "status"], ws.path())?;
+        assert_success(&post)?;
+        assert_contains(&post.stdout, "completed", "run status after start")?;
+
+        // Verify 7 payloads/artifacts (all except prompt_review)
+        let payloads = count_payload_files(&ws, "november")?;
+        let artifacts = count_artifact_files(&ws, "november")?;
+        if payloads != 7 {
+            return Err(format!("expected 7 payloads (no prompt_review), got {payloads}"));
+        }
+        if artifacts != 7 {
+            return Err(format!("expected 7 artifacts (no prompt_review), got {artifacts}"));
+        }
+
+        // Verify journal contains no prompt_review events
+        let events = read_journal(&ws, "november")?;
+        for event in &events {
+            if let Some(details) = event.get("details") {
+                if let Some(stage) = details.get("stage_id").and_then(|v| v.as_str()) {
+                    if stage == "prompt_review" {
+                        return Err("journal should contain no prompt_review events".into());
+                    }
+                }
+            }
+        }
+
+        // Verify first stage_entered event is for "planning"
+        let first_stage_entered = events.iter().find(|e| {
+            e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
+        if let Some(event) = first_stage_entered {
+            let stage = event
+                .get("details")
+                .and_then(|d| d.get("stage_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if stage != "planning" {
+                return Err(format!(
+                    "first stage_entered should be 'planning', got '{stage}'"
+                ));
+            }
+        } else {
+            return Err("no stage_entered event found in journal".into());
+        }
         Ok(())
     });
 
@@ -1098,9 +1308,10 @@ fn register_run_start_quick_dev(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-QD-START-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "qd-happy", "quick_dev")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "status")?;
+        let status = run_cli(&["run", "status"], ws.path())?;
+        assert_contains(&status.stdout, "completed", "quick_dev run completed")?;
         Ok(())
     });
 
@@ -1191,9 +1402,10 @@ fn register_run_start_docs_change(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-DOCS-START-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "docs-happy", "docs_change")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "status")?;
+        let status = run_cli(&["run", "status"], ws.path())?;
+        assert_contains(&status.stdout, "completed", "docs_change run completed")?;
         Ok(())
     });
 
@@ -1239,9 +1451,10 @@ fn register_run_start_ci_improvement(m: &mut HashMap<String, ScenarioExecutor>) 
     reg!(m, "SC-CI-START-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ci-happy", "ci_improvement")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "status")?;
+        let status = run_cli(&["run", "status"], ws.path())?;
+        assert_contains(&status.stdout, "completed", "ci_improvement run completed")?;
         Ok(())
     });
 
@@ -1605,9 +1818,83 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-CR-001", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-alpha", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+
+        // Configure completion_panel to return conditionally_approved with amendments.
+        // The stub backend reads RALPH_BURNING_TEST_STAGE_OVERRIDES.
+        let overrides = serde_json::json!({
+            "completion_panel": {
+                "outcome": "conditionally_approved",
+                "evidence": ["Needs minor formatting changes"],
+                "findings_or_gaps": [],
+                "follow_up_or_amendments": [
+                    {
+                        "summary": "Fix formatting",
+                        "details": "Update code formatting to match style guide."
+                    }
+                ]
+            }
+        });
+        let overrides_str = overrides.to_string();
+
+        let out = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides_str)],
+        )?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "not_started", "status")?;
+
+        // Verify journal contains amendment_queued and completion_round_advanced events
+        let events = read_journal(&ws, "cr-alpha")?;
+        let types = journal_event_types(&events);
+        if !types.iter().any(|t| t == "amendment_queued") {
+            return Err("journal missing 'amendment_queued' event".into());
+        }
+        if !types.iter().any(|t| t == "completion_round_advanced") {
+            return Err("journal missing 'completion_round_advanced' event".into());
+        }
+
+        // Verify planning stage was entered a second time (restart from planning)
+        let planning_entered_count = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("planning")
+            })
+            .count();
+        if planning_entered_count < 2 {
+            return Err(format!(
+                "expected planning stage_entered >= 2 times, got {planning_entered_count}"
+            ));
+        }
+
+        // Verify run completed with completion_rounds >= 2
+        let snapshot = read_run_snapshot(&ws, "cr-alpha")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected completed status, got '{status}'"));
+        }
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if rounds < 2 {
+            return Err(format!("expected completion_rounds >= 2, got {rounds}"));
+        }
+
+        // Verify amendment_queue is empty after completion
+        let queue_pending = snapshot
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array())
+            .map_or(0, |a| a.len());
+        if queue_pending > 0 {
+            return Err(format!(
+                "expected empty amendment_queue after completion, got {queue_pending} pending"
+            ));
+        }
         Ok(())
     });
 
@@ -1622,18 +1909,90 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-CR-003", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-reject", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
-        assert_success(&out)?;
+
+        // Configure completion_panel to return rejected
+        let overrides = serde_json::json!({
+            "completion_panel": {
+                "outcome": "rejected",
+                "evidence": ["Does not meet requirements"],
+                "findings_or_gaps": ["Critical gap"],
+                "follow_up_or_amendments": []
+            }
+        });
+        let overrides_str = overrides.to_string();
+
+        let out = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides_str)],
+        )?;
+        assert_failure(&out)?;
+
+        // Verify run snapshot shows failed
+        let snapshot = read_run_snapshot(&ws, "cr-reject")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "failed" {
+            return Err(format!("expected failed status, got '{status}'"));
+        }
+
+        // No completion_round_advanced event should exist
+        let events = read_journal(&ws, "cr-reject")?;
+        let types = journal_event_types(&events);
+        if types.iter().any(|t| t == "completion_round_advanced") {
+            return Err("journal should NOT contain completion_round_advanced for rejected outcome".into());
+        }
         Ok(())
     });
 
     reg!(m, "SC-CR-004", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-advance", "standard")?;
-        let out = run_cli(&["flow", "show", "standard"], ws.path())?;
+
+        // Default stub returns approved for all stages, so this is the normal happy path
+        let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
-        assert_contains(&out.stdout, "completion_panel", "stdout")?;
-        assert_contains(&out.stdout, "acceptance_qa", "stdout")?;
+
+        // Verify run completes with completion_rounds=1 (no advancement needed)
+        let snapshot = read_run_snapshot(&ws, "cr-advance")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected completed status, got '{status}'"));
+        }
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if rounds != 1 {
+            return Err(format!("expected completion_rounds=1, got {rounds}"));
+        }
+
+        // Verify completion_panel transitions to acceptance_qa transitions to final_review
+        let events = read_journal(&ws, "cr-advance")?;
+        let stage_sequence: Vec<String> = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+            })
+            .filter_map(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("stage_id"))
+                    .and_then(|v| v.as_str())
+                    .map(String::from)
+            })
+            .collect();
+        // Verify late stages appear in order
+        let cp_idx = stage_sequence.iter().position(|s| s == "completion_panel");
+        let aq_idx = stage_sequence.iter().position(|s| s == "acceptance_qa");
+        let fr_idx = stage_sequence.iter().position(|s| s == "final_review");
+        if let (Some(cp), Some(aq), Some(fr)) = (cp_idx, aq_idx, fr_idx) {
+            if !(cp < aq && aq < fr) {
+                return Err(format!(
+                    "late stages out of order: completion_panel@{cp}, acceptance_qa@{aq}, final_review@{fr}"
+                ));
+            }
+        } else {
+            return Err("missing one or more late stages in journal".into());
+        }
         Ok(())
     });
 
@@ -1779,9 +2138,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RESUME-005", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "echo", "standard")?;
-        // Resume requires failed or paused status
+        // Resume requires failed or paused status; not_started should be rejected
         let out = run_cli(&["run", "resume"], ws.path())?;
         assert_failure(&out)?;
+        assert_contains(&out.stderr, "resume", "resume error")?;
         Ok(())
     });
 
@@ -1969,9 +2329,42 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "RD-001", || {
         let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "rd-draft", "standard")?;
-        let out = run_cli(&["project", "show"], ws.path())?;
+        init_workspace(&ws)?;
+        // requirements draft needs a workspace but not an active project
+        let out = run_cli(
+            &["requirements", "draft", "--idea", "Build a REST API"],
+            ws.path(),
+        )?;
         assert_success(&out)?;
+
+        // Verify a requirements run was created
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+
+        // With the stub backend (empty questions), the run should complete directly
+        // Verify the run directory has the expected artifacts
+        let run_dir = entries[0].path();
+        if !run_dir.join("run.json").is_file() {
+            return Err("requirements run.json not created".into());
+        }
+
+        // Check run status is completed (stub returns empty questions, so no awaiting_answers)
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" && status != "awaiting_answers" {
+            return Err(format!(
+                "expected requirements run status 'completed' or 'awaiting_answers', got '{status}'"
+            ));
+        }
         Ok(())
     });
 
@@ -1985,9 +2378,35 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "RD-003", || {
         let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "rd-quick", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+        init_workspace(&ws)?;
+        // Quick mode skips questions entirely
+        let out = run_cli(
+            &["requirements", "quick", "--idea", "Build a REST API"],
+            ws.path(),
+        )?;
         assert_success(&out)?;
+
+        // Verify a requirements run was created and completed
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!(
+                "expected requirements run status 'completed', got '{status}'"
+            ));
+        }
         Ok(())
     });
 
@@ -2001,9 +2420,33 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "RD-005", || {
         let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "rd-show", "standard")?;
-        let out = run_cli(&["run", "status"], ws.path())?;
+        init_workspace(&ws)?;
+        // Create a completed requirements run first
+        let create_out = run_cli(
+            &["requirements", "quick", "--idea", "Show test"],
+            ws.path(),
+        )?;
+        assert_success(&create_out)?;
+
+        // Find the requirements run ID
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created for show test".into());
+        }
+        let run_id = entries[0]
+            .file_name()
+            .to_string_lossy()
+            .to_string();
+
+        // Run requirements show
+        let out = run_cli(&["requirements", "show", &run_id], ws.path())?;
         assert_success(&out)?;
+        // Verify output contains status information
+        assert_contains(&out.stdout, "completed", "requirements show output")?;
         Ok(())
     });
 
