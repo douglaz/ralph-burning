@@ -254,9 +254,9 @@ async fn cleanup_aborted_task(
         let clear_result =
             DaemonTaskService::clear_lease_reference(store, base_dir, task_id).map(|_| ());
         return match (release_result, clear_result) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(_), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
             (Err(error), Err(_)) => Err(error),
         };
     }

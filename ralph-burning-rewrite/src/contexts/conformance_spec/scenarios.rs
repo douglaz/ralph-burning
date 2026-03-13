@@ -5683,20 +5683,25 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         // already held, the daemon should skip the first and process the second.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        // Git-backed workspace required for real worktree dispatch.
+        init_git_repo(&ws)?;
 
         // Also set up a project fixture for free-proj so the daemon's
         // ensure_project / workflow dispatch has something to work with.
         create_project_fixture(ws.path(), "free-proj", "standard");
 
         let now = chrono::Utc::now();
-        // Task 1: its project lock is already held → claim will fail
+        // Task 1: its project lock is already held → claim will fail.
+        // Use an earlier created_at to guarantee it sorts before free-task,
+        // since list_tasks sorts by (is_terminal, created_at, task_id).
+        let locked_time = now - chrono::Duration::seconds(10);
         let task1_json = serde_json::json!({
             "task_id": "locked-task",
             "issue_ref": "repo#locked",
             "project_id": "locked-proj",
             "status": "pending",
-            "created_at": now.to_rfc3339(),
-            "updated_at": now.to_rfc3339(),
+            "created_at": locked_time.to_rfc3339(),
+            "updated_at": locked_time.to_rfc3339(),
             "attempt_count": 0,
             "dispatch_mode": "workflow",
             "routing_labels": [],
@@ -5712,7 +5717,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&lock_path, "external-holder")
             .map_err(|e| format!("write lock: {e}"))?;
 
-        // Task 2: no lock contention (different project)
+        // Task 2: no lock contention (different project), later created_at
         let task2_json = serde_json::json!({
             "task_id": "free-task",
             "issue_ref": "repo#free",
@@ -5793,6 +5798,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         // a pending task through worktree-backed execution.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        // Git-backed workspace required for real worktree dispatch.
+        init_git_repo(&ws)?;
 
         // Create a project fixture so ensure_project succeeds during dispatch.
         create_project_fixture(ws.path(), "cwd-proj", "standard");
@@ -5822,8 +5829,6 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
-        // We don't assert_success because the task dispatch may fail (no git repo
-        // for worktree creation), but the CWD must still be unchanged regardless.
         let cwd_after = std::env::current_dir()
             .map_err(|e| format!("get cwd: {e}"))?;
         if cwd_before != cwd_after {

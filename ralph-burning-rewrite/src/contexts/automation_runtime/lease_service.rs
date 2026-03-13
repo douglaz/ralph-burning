@@ -31,6 +31,17 @@ pub struct LeaseCleanupFailure {
     pub details: String,
 }
 
+/// Result of a lease release operation. Distinguishes physical cleanup
+/// (worktree, lease file, writer lock) from post-cleanup journal append.
+#[derive(Debug, Clone)]
+pub struct ReleaseResult {
+    /// Always true when release returns Ok — physical resources were removed.
+    pub resources_released: bool,
+    /// If the LeaseReleased journal append failed after physical cleanup,
+    /// this contains the error description. Resources are still released.
+    pub journal_error: Option<String>,
+}
+
 pub struct LeaseService;
 
 impl LeaseService {
@@ -110,7 +121,7 @@ impl LeaseService {
         base_dir: &Path,
         repo_root: &Path,
         lease: &WorktreeLease,
-    ) -> AppResult<()> {
+    ) -> AppResult<ReleaseResult> {
         let project_id = ProjectId::new(lease.project_id.clone())?;
 
         // Attempt worktree removal first. If it fails, keep all durable lease
@@ -120,7 +131,10 @@ impl LeaseService {
         // Worktree removal succeeded — proceed with lease file + lock cleanup.
         store.remove_lease(base_dir, &lease.lease_id)?;
         store.release_writer_lock(base_dir, &project_id)?;
-        DaemonTaskService::append_journal_event(
+
+        // Physical cleanup complete. Journal append is best-effort — failure
+        // does not mean resources are retained.
+        let journal_error = DaemonTaskService::append_journal_event(
             store,
             base_dir,
             crate::contexts::automation_runtime::model::DaemonJournalEventType::LeaseReleased,
@@ -129,9 +143,14 @@ impl LeaseService {
                 "lease_id": lease.lease_id,
                 "project_id": lease.project_id,
             }),
-        )?;
+        )
+        .err()
+        .map(|e| e.to_string());
 
-        Ok(())
+        Ok(ReleaseResult {
+            resources_released: true,
+            journal_error,
+        })
     }
 
     pub fn find_lease_for_task(
@@ -178,12 +197,13 @@ impl LeaseService {
             }
 
             // Release order: worktree removal → lease file → writer lock → journal.
-            // If release fails (e.g. worktree removal), the lease remains durable
-            // for a later reconcile pass. The task is already terminal.
+            // If physical release fails (e.g. worktree removal), the lease remains
+            // durable for a later reconcile pass. The task is already terminal.
             let release_result = Self::release(store, worktree, base_dir, repo_root, &lease);
             match release_result {
-                Ok(()) => {
-                    // Lease fully released — now clear the task's lease reference.
+                Ok(outcome) => {
+                    // Physical resources released. Journal error is non-fatal.
+                    // Now clear the task's lease reference.
                     match DaemonTaskService::clear_lease_reference(
                         store,
                         base_dir,
@@ -206,10 +226,17 @@ impl LeaseService {
                             });
                         }
                     }
+                    if let Some(je) = outcome.journal_error {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: format!("release_journal: {je}"),
+                        });
+                    }
                 }
                 Err(e) => {
-                    // Release failed (e.g. worktree removal) — lease remains durable
-                    // and the task remains terminal but recoverable for a later reconcile.
+                    // Physical release failed (e.g. worktree removal) — lease remains
+                    // durable and the task remains terminal but recoverable for later.
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: lease.lease_id.clone(),
                         task_id: task.task_id.clone(),

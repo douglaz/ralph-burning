@@ -981,6 +981,55 @@ impl WorktreePort for FailingWorktreeAdapter {
     }
 }
 
+/// A worktree adapter that succeeds without requiring a real git repository.
+/// Creates simple directories for worktrees instead of calling `git worktree add`.
+struct SuccessWorktreeAdapter;
+
+impl WorktreePort for SuccessWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/task/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _branch_name: &str,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        std::fs::create_dir_all(worktree_path)?;
+        Ok(())
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(worktree_path)?;
+        }
+        Ok(())
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
 #[test]
 fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
     let store = FsDaemonStore;
@@ -1185,8 +1234,10 @@ impl DaemonStorePort for FailingJournalStore {
 fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
     // When the LeaseAcquired journal append fails, the task must end up
     // Pending (not Claimed) with no lease and no writer lock.
+    // Uses SuccessWorktreeAdapter so worktree creation succeeds without git,
+    // ensuring the test actually reaches the journal-failure branch.
     let temp = tempdir().expect("tempdir");
-    let worktree_adapter = WorktreeAdapter;
+    let worktree_adapter = SuccessWorktreeAdapter;
     let routing = RoutingEngine::new();
 
     // fail_after=0: the very first journal append (LeaseAcquired) will fail.
@@ -1228,7 +1279,7 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
         "task should be Pending or Failed, got: {:?}",
         task_after.status
     );
-    // lease_id should be cleared
+    // lease_id should be cleared (resources were released by SuccessWorktreeAdapter)
     assert!(
         task_after.lease_id.is_none(),
         "lease_id must be cleared after rollback"
@@ -1239,8 +1290,10 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
 fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
     // When TaskClaimed journal fails (after LeaseAcquired succeeds),
     // the task must end up Failed with cleared lease_id.
+    // Uses SuccessWorktreeAdapter so worktree creation succeeds without git,
+    // ensuring the test reaches the second journal append (TaskClaimed).
     let temp = tempdir().expect("tempdir");
-    let worktree_adapter = WorktreeAdapter;
+    let worktree_adapter = SuccessWorktreeAdapter;
     let routing = RoutingEngine::new();
 
     // fail_after=1: the first journal append (LeaseAcquired) succeeds,
@@ -1279,9 +1332,10 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
         Some("claim_journal_failed".to_owned()),
         task_after.failure_class
     );
+    // Resources were released by SuccessWorktreeAdapter, so lease_id must be cleared
     assert!(
         task_after.lease_id.is_none(),
-        "lease_id must be cleared after claim journal failure"
+        "lease_id must be cleared after claim journal failure when resources released"
     );
 }
 

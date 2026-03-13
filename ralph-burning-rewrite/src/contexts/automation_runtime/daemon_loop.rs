@@ -1124,9 +1124,9 @@ where
             DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ());
 
         match (release_result, clear_result) {
-            (Ok(()), Ok(())) => Ok(()),
+            (Ok(_), Ok(())) => Ok(()),
             (Err(error), Ok(())) => Err(error),
-            (Ok(()), Err(error)) => Err(error),
+            (Ok(_), Err(error)) => Err(error),
             (Err(error), Err(_)) => Err(error),
         }
     }

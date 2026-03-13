@@ -185,13 +185,20 @@ impl DaemonTaskService {
             }),
         ) {
             // LeaseAcquired journal failed before TaskClaimed: only restore to
-            // Pending if lease/worktree/writer-lock cleanup fully succeeds.
-            // If cleanup fails, persist a terminal Failed state so the durable
-            // model never hides retained claim resources.
+            // Pending if physical lease/worktree/writer-lock cleanup fully succeeds.
+            // If physical cleanup fails, persist a terminal Failed state so the
+            // durable model never hides retained claim resources.
             let release_result =
                 LeaseService::release(store, worktree, base_dir, repo_root, &lease);
-            if release_result.is_ok() {
-                // All claim resources released — safe to restore Pending.
+            let resources_released = release_result
+                .as_ref()
+                .map_or(false, |r| r.resources_released);
+
+            if resources_released {
+                // Physical resources released — safe to restore Pending.
+                let release_journal_err = release_result
+                    .ok()
+                    .and_then(|r| r.journal_error);
                 let rollback_result = (|| -> AppResult<()> {
                     task.status = TaskStatus::Pending;
                     task.clear_lease();
@@ -206,6 +213,7 @@ impl DaemonTaskService {
                             "reason": format!("LeaseAcquired journal failed: {journal_err}"),
                             "rollback_target": "pending",
                             "lease_released": true,
+                            "release_journal_error": release_journal_err,
                         }),
                     );
                     Ok(())
@@ -227,8 +235,8 @@ impl DaemonTaskService {
                     })();
                 }
             } else {
-                // Release failed — claim resources (lease/worktree/lock) remain
-                // on disk. Mark terminal so durable state is truthful.
+                // Physical release failed — claim resources (lease/worktree/lock)
+                // remain on disk. Mark terminal so durable state is truthful.
                 let release_err = release_result.unwrap_err();
                 let _ = (|| -> AppResult<()> {
                     let mut t = store.read_task(base_dir, &task.task_id)?;
@@ -268,9 +276,13 @@ impl DaemonTaskService {
                 "project_id": project_id,
             }),
         ) {
-            // TaskClaimed journal failed: release lease, mark failed, clear lease_id.
-            let release_err = LeaseService::release(store, worktree, base_dir, repo_root, &lease)
-                .err();
+            // TaskClaimed journal failed: attempt lease release and mark failed.
+            // Only clear lease_id if physical resources were actually released.
+            let release_result =
+                LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+            let resources_released = release_result
+                .as_ref()
+                .map_or(false, |r| r.resources_released);
             let _ = (|| -> AppResult<()> {
                 let mut t = store.read_task(base_dir, &task.task_id)?;
                 t.transition_to(TaskStatus::Failed, Utc::now())?;
@@ -278,7 +290,9 @@ impl DaemonTaskService {
                     "claim_journal_failed",
                     &format!("TaskClaimed journal append failed: {journal_err}"),
                 );
-                t.clear_lease();
+                if resources_released {
+                    t.clear_lease();
+                }
                 store.write_task(base_dir, &t)?;
                 let _ = Self::append_journal_event(
                     store,
@@ -288,7 +302,7 @@ impl DaemonTaskService {
                         "task_id": task.task_id,
                         "reason": format!("TaskClaimed journal failed: {journal_err}"),
                         "rollback_target": "failed",
-                        "lease_released": release_err.is_none(),
+                        "lease_released": resources_released,
                     }),
                 );
                 Ok(())
