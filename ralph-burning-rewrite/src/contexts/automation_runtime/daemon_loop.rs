@@ -227,7 +227,9 @@ where
     }
 
     /// Check tasks in WaitingForRequirements state and resume them if their
-    /// linked requirements run has completed.
+    /// linked requirements run has completed. Before resuming, derive the seed
+    /// handoff and populate the task's project metadata so the next workflow
+    /// dispatch cycle can create/resume the project correctly.
     fn check_waiting_tasks(&self, base_dir: &Path) -> AppResult<()> {
         let Some(req_store) = self.requirements_store else {
             return Ok(());
@@ -244,20 +246,56 @@ where
 
             match req_service::is_requirements_run_complete(req_store, base_dir, run_id) {
                 Ok(true) => {
-                    match DaemonTaskService::resume_from_waiting(
-                        self.store,
-                        base_dir,
-                        &task.task_id,
-                    ) {
-                        Ok(_) => {
-                            println!(
-                                "daemon: resumed task '{}' from waiting (requirements run '{}' complete)",
-                                task.task_id, run_id
-                            );
+                    // Derive seed handoff before resuming so task has project metadata
+                    match req_service::extract_seed_handoff(req_store, base_dir, run_id) {
+                        Ok(handoff) => {
+                            // Populate task with seed-derived project metadata
+                            let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
+                            if handoff.flow != routed_flow {
+                                println!(
+                                    "daemon: seed suggests flow '{}' but routed flow '{}' is authoritative for task '{}'",
+                                    handoff.flow.as_str(),
+                                    routed_flow.as_str(),
+                                    task.task_id,
+                                );
+                            }
+                            let mut t = self.store.read_task(base_dir, &task.task_id)?;
+                            t.project_id = handoff.project_id;
+                            t.project_name = Some(handoff.project_name);
+                            t.prompt = Some(handoff.prompt_body);
+                            t.resolved_flow = Some(routed_flow);
+                            self.store.write_task(base_dir, &t)?;
+
+                            match DaemonTaskService::resume_from_waiting(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                            ) {
+                                Ok(_) => {
+                                    println!(
+                                        "daemon: resumed task '{}' from waiting (requirements run '{}' complete)",
+                                        task.task_id, run_id
+                                    );
+                                }
+                                Err(e) => {
+                                    println!(
+                                        "daemon: failed to resume task '{}': {}",
+                                        task.task_id, e
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
+                            // Seed extraction failed — fail the task but preserve the requirements run
+                            let _ = DaemonTaskService::mark_failed(
+                                self.store,
+                                base_dir,
+                                &task.task_id,
+                                "seed_handoff_failed",
+                                &e.to_string(),
+                            );
                             println!(
-                                "daemon: failed to resume task '{}': {}",
+                                "daemon: seed handoff failed for task '{}': {}",
                                 task.task_id, e
                             );
                         }
@@ -289,12 +327,16 @@ where
         let default_flow = effective_config.default_flow();
         let repo_root = base_dir;
 
-        // For requirements dispatch modes, handle before claiming lease/worktree
+        // For requirements dispatch modes, handle before claiming lease/worktree.
+        // requirements_quick completes the requirements run, derives the seed,
+        // updates the task to Workflow mode, then falls through to the standard
+        // claim/project/dispatch path in the same cycle.
+        // requirements_draft enters WaitingForRequirements and returns immediately.
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
-                return self
-                    .handle_requirements_quick(base_dir, task)
-                    .await;
+                self.handle_requirements_quick(base_dir, task).await?;
+                // Task is now Workflow mode with project metadata populated.
+                // Fall through to standard claim/dispatch below.
             }
             DispatchMode::RequirementsDraft => {
                 return self
@@ -305,6 +347,9 @@ where
                 // Fall through to standard workflow dispatch
             }
         }
+
+        // Re-read task from disk (may have been updated by requirements_quick)
+        let task = &self.store.read_task(base_dir, &task.task_id)?;
 
         let (claimed_task, lease) = match DaemonTaskService::claim_task(
             self.store,
@@ -415,8 +460,9 @@ where
     }
 
     /// Handle requirements_quick dispatch: invoke requirements quick, link the
-    /// run ID to the task, derive seed, create project, then continue through
-    /// workflow execution in the same cycle.
+    /// run ID to the task, derive seed, and update the task with project metadata
+    /// + Workflow mode so the caller can continue into the standard claim/project/
+    /// dispatch path in the same daemon cycle.
     async fn handle_requirements_quick(
         &self,
         base_dir: &Path,
@@ -491,27 +537,27 @@ where
             );
         }
 
-        // Update task to workflow mode for continuation
+        // Update task to workflow mode with seed-derived project metadata.
+        // The caller will continue into the standard claim/project/dispatch path.
         let mut updated = self.store.read_task(base_dir, &task.task_id)?;
         updated.dispatch_mode = DispatchMode::Workflow;
+        updated.resolved_flow = Some(routed_flow);
         updated.project_id = handoff.project_id.clone();
         updated.project_name = Some(handoff.project_name.clone());
         updated.prompt = Some(handoff.prompt_body.clone());
         self.store.write_task(base_dir, &updated)?;
 
-        // Mark task completed — the seed and requirements are done.
-        // The project can be started separately via the normal workflow path.
-        let _ = DaemonTaskService::mark_completed(self.store, base_dir, &task.task_id);
         println!(
-            "daemon: requirements_quick completed for task '{}', run_id='{}'",
+            "daemon: requirements_quick seed ready for task '{}', run_id='{}', continuing to workflow",
             task.task_id, run_id
         );
 
         Ok(())
     }
 
-    /// Handle requirements_draft dispatch: invoke requirements draft to generate
-    /// questions, then transition to WaitingForRequirements state.
+    /// Handle requirements_draft dispatch: transition through Pending → Claimed
+    /// → Active, invoke requirements draft to generate questions, then transition
+    /// to WaitingForRequirements state (which releases all resources).
     async fn handle_requirements_draft(
         &self,
         base_dir: &Path,
@@ -523,6 +569,17 @@ where
                 details: "no requirements store configured for daemon".to_owned(),
             }
         })?;
+
+        // Transition through Pending → Claimed → Active without a worktree lease.
+        // The draft path only needs the agent to generate questions — no project,
+        // worktree, or writer lock is required.
+        {
+            let mut t = self.store.read_task(base_dir, &task.task_id)?;
+            let now = Utc::now();
+            t.transition_to(TaskStatus::Claimed, now)?;
+            t.transition_to(TaskStatus::Active, now)?;
+            self.store.write_task(base_dir, &t)?;
+        }
 
         let idea = task.prompt.clone().unwrap_or_else(|| {
             format!("Automated task for issue {}", task.issue_ref)
@@ -543,7 +600,7 @@ where
             }
         };
 
-        // Transition to waiting state — release all resources
+        // Transition Active → WaitingForRequirements, releasing all resources
         match DaemonTaskService::mark_waiting_for_requirements(
             self.store,
             base_dir,

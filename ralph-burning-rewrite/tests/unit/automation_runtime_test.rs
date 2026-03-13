@@ -463,6 +463,62 @@ fn parse_requirements_command_multiline_body() {
     assert_eq!(Some(DispatchMode::RequirementsQuick), result);
 }
 
+#[test]
+fn parse_requirements_command_bare_requirements_fails() {
+    // "/rb requirements" without a subcommand is malformed
+    let result = parse_requirements_command("/rb requirements");
+    assert!(result.is_err(), "bare '/rb requirements' should fail");
+}
+
+#[test]
+fn parse_requirements_command_extra_tokens_fails() {
+    // "/rb requirements draft extra" has too many tokens
+    let result = parse_requirements_command("/rb requirements draft extra");
+    assert!(result.is_err(), "extra tokens should fail");
+}
+
+#[test]
+fn is_requirements_command_identifies_requirements_commands() {
+    use ralph_burning::contexts::automation_runtime::watcher::is_requirements_command;
+    assert!(is_requirements_command("/rb requirements draft"));
+    assert!(is_requirements_command("/rb requirements quick"));
+    assert!(is_requirements_command("/rb requirements"));
+    assert!(is_requirements_command("rb requirements unknown"));
+    assert!(!is_requirements_command("/rb flow standard"));
+    assert!(!is_requirements_command(""));
+    assert!(!is_requirements_command("some random text"));
+}
+
+#[test]
+fn watched_issue_with_requirements_command_routes_flow_from_labels() {
+    // When routing_command is a requirements command, flow should come from labels/default
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let routing = RoutingEngine::new();
+
+    let issue = WatchedIssueMeta {
+        issue_ref: "org/repo#70".to_owned(),
+        source_revision: "ccc33333".to_owned(),
+        title: "Req with label flow".to_owned(),
+        body: "Body".to_owned(),
+        labels: vec!["rb:flow:quick_dev".to_owned()],
+        routing_command: Some("/rb requirements quick".to_owned()),
+    };
+
+    let result = DaemonTaskService::create_task_from_watched_issue(
+        &store,
+        temp.path(),
+        &routing,
+        FlowPreset::Standard,
+        &issue,
+        DispatchMode::RequirementsQuick,
+    )
+    .expect("should succeed with label-based flow routing");
+    let task = result.expect("task should be created");
+    // Flow should come from the label, not from parsing the requirements command
+    assert_eq!(Some(FlowPreset::QuickDev), task.resolved_flow);
+}
+
 // ── Dispatch mode serialization ─────────────────────────────────────────────
 
 #[test]

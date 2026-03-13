@@ -23,28 +23,47 @@ pub trait IssueWatcherPort {
 ///
 /// Returns `None` if the text does not contain a requirements command,
 /// allowing the caller to default to `DispatchMode::Workflow`.
+///
+/// Returns `Err` for malformed requirements commands (e.g. `/rb requirements`
+/// without a subcommand, unknown subcommands, or extra tokens).
 pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>> {
     for line in text.lines() {
         let trimmed = line.trim();
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.len() == 3
+        if tokens.len() >= 2
             && matches!(tokens[0], "/rb" | "rb")
             && tokens[1] == "requirements"
         {
-            return match tokens[2] {
-                "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
-                "quick" => Ok(Some(DispatchMode::RequirementsQuick)),
-                other => Err(AppError::WatcherIngestionFailed {
-                    issue_ref: trimmed.to_owned(),
-                    details: format!(
-                        "unknown requirements subcommand '{}'; expected 'draft' or 'quick'",
-                        other
-                    ),
-                }),
-            };
+            if tokens.len() == 3 {
+                return match tokens[2] {
+                    "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
+                    "quick" => Ok(Some(DispatchMode::RequirementsQuick)),
+                    other => Err(AppError::WatcherIngestionFailed {
+                        issue_ref: trimmed.to_owned(),
+                        details: format!(
+                            "unknown requirements subcommand '{}'; expected 'draft' or 'quick'",
+                            other
+                        ),
+                    }),
+                };
+            }
+            // Malformed: missing subcommand or extra tokens
+            return Err(AppError::WatcherIngestionFailed {
+                issue_ref: trimmed.to_owned(),
+                details: "malformed requirements command; expected '/rb requirements draft' or '/rb requirements quick'".to_owned(),
+            });
         }
     }
     Ok(None)
+}
+
+/// Check if a routing command string is a requirements command (not a flow command).
+/// Used to prevent requirements commands from being passed to flow routing.
+pub fn is_requirements_command(text: &str) -> bool {
+    let tokens: Vec<&str> = text.trim().split_whitespace().collect();
+    tokens.len() >= 2
+        && matches!(tokens[0], "/rb" | "rb")
+        && tokens[1] == "requirements"
 }
 
 /// Resolve the dispatch mode for a watched issue.

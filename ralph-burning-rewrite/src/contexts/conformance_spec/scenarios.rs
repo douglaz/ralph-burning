@@ -5523,88 +5523,346 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
 
 fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-INTAKE-001", || {
-        // Watcher ingestion creates a task from a watched issue file
+        // Watcher ingestion creates a task from a watched issue
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
-        std::fs::create_dir_all(&watched_dir).map_err(|e| e.to_string())?;
-        let issue = serde_json::json!({
-            "issue_ref": "test/repo#1",
-            "source_revision": "abc12345",
-            "title": "Test issue",
-            "body": "Implement feature X",
-            "labels": [],
-            "routing_command": null
-        });
-        std::fs::write(watched_dir.join("issue-1.json"), issue.to_string())
-            .map_err(|e| e.to_string())?;
-        // Status should succeed (watcher is polled only during daemon start)
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+        let issue = WatchedIssueMeta {
+            issue_ref: "test/repo#1".to_owned(),
+            source_revision: "abc12345".to_owned(),
+            title: "Test issue".to_owned(),
+            body: "Implement feature X".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+
+        let result = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
+        ).map_err(|e| e.to_string())?;
+        let task = result.ok_or("expected a task to be created")?;
+        if task.issue_ref != "test/repo#1" {
+            return Err(format!("wrong issue_ref: {}", task.issue_ref));
+        }
+        if task.source_revision.as_deref() != Some("abc12345") {
+            return Err(format!("wrong source_revision: {:?}", task.source_revision));
+        }
+        if task.dispatch_mode != DispatchMode::Workflow {
+            return Err(format!("wrong dispatch_mode: {}", task.dispatch_mode));
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-002", || {
         // Idempotent re-polling: same issue_ref + source_revision produces no duplicate
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+        let issue = WatchedIssueMeta {
+            issue_ref: "test/repo#2".to_owned(),
+            source_revision: "rev11111".to_owned(),
+            title: "Idempotent".to_owned(),
+            body: "Body".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+
+        // First ingestion creates
+        let r1 = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
+        ).map_err(|e| e.to_string())?;
+        if r1.is_none() {
+            return Err("first ingestion should create a task".to_owned());
+        }
+
+        // Second ingestion is no-op
+        let r2 = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
+        ).map_err(|e| e.to_string())?;
+        if r2.is_some() {
+            return Err("second ingestion should be idempotent no-op".to_owned());
+        }
+
+        // Only one task exists
+        let tasks = DaemonTaskService::list_tasks(&store, ws.path()).map_err(|e| e.to_string())?;
+        let matching: Vec<_> = tasks.iter().filter(|t| t.issue_ref == "test/repo#2").collect();
+        if matching.len() != 1 {
+            return Err(format!("expected 1 task, found {}", matching.len()));
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-003", || {
-        // Requirements quick handoff: daemon status shows dispatch mode
+        // Requirements quick handoff: task is created with RequirementsQuick dispatch,
+        // then when processed the seed is derived and task transitions through to
+        // workflow mode with project metadata populated.
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+        let issue = WatchedIssueMeta {
+            issue_ref: "test/repo#3".to_owned(),
+            source_revision: "rev33333".to_owned(),
+            title: "Quick test".to_owned(),
+            body: "/rb requirements quick\n\nImplement feature".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+
+        // Resolve dispatch mode
+        let mode = crate::contexts::automation_runtime::watcher::resolve_dispatch_mode(&issue)
+            .map_err(|e| e.to_string())?;
+        if mode != DispatchMode::RequirementsQuick {
+            return Err(format!("expected RequirementsQuick, got {}", mode));
+        }
+
+        // Create task with RequirementsQuick dispatch
+        let result = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, mode,
+        ).map_err(|e| e.to_string())?;
+        let task = result.ok_or("expected a task to be created")?;
+        if task.dispatch_mode != DispatchMode::RequirementsQuick {
+            return Err(format!("wrong dispatch_mode: {}", task.dispatch_mode));
+        }
+        if task.requirements_run_id.is_some() {
+            return Err("requirements_run_id should not be set yet".to_owned());
+        }
+
+        // Verify daemon status shows the task
         let out = run_cli(&["daemon", "status"], ws.path())?;
         assert_success(&out)?;
+        assert_contains(&out.stdout, "dispatch=requirements_quick", "status output")?;
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-004", || {
-        // Requirements draft waiting/resume: status shows waiting_for_requirements
+        // Requirements draft: task enters waiting_for_requirements when processed
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, TaskStatus, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+        let issue = WatchedIssueMeta {
+            issue_ref: "test/repo#4".to_owned(),
+            source_revision: "rev44444".to_owned(),
+            title: "Draft test".to_owned(),
+            body: "/rb requirements draft\n\nPlan feature".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+
+        let mode = crate::contexts::automation_runtime::watcher::resolve_dispatch_mode(&issue)
+            .map_err(|e| e.to_string())?;
+        if mode != DispatchMode::RequirementsDraft {
+            return Err(format!("expected RequirementsDraft, got {}", mode));
+        }
+
+        let result = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, mode,
+        ).map_err(|e| e.to_string())?;
+        let task = result.ok_or("expected a task to be created")?;
+        if task.dispatch_mode != DispatchMode::RequirementsDraft {
+            return Err(format!("wrong dispatch_mode: {}", task.dispatch_mode));
+        }
+
+        // Simulate the state transitions that handle_requirements_draft performs:
+        // Pending -> Claimed -> Active -> WaitingForRequirements
+        let mut t = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        let now = chrono::Utc::now();
+        t.transition_to(TaskStatus::Claimed, now).map_err(|e| e.to_string())?;
+        t.transition_to(TaskStatus::Active, now).map_err(|e| e.to_string())?;
+        store.write_task(ws.path(), &t).map_err(|e| e.to_string())?;
+
+        DaemonTaskService::mark_waiting_for_requirements(
+            &store, ws.path(), &task.task_id, "req-draft-004",
+        ).map_err(|e| e.to_string())?;
+
+        let final_task = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        if final_task.status != TaskStatus::WaitingForRequirements {
+            return Err(format!("expected waiting_for_requirements, got {}", final_task.status));
+        }
+        if final_task.lease_id.is_some() {
+            return Err("task in waiting state should have no lease".to_owned());
+        }
+        if final_task.requirements_run_id.as_deref() != Some("req-draft-004") {
+            return Err(format!("wrong requirements_run_id: {:?}", final_task.requirements_run_id));
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-005", || {
-        // Duplicate issue rejection: same issue_ref with different source_revision
-        // while non-terminal task exists
+        // Duplicate issue rejection: different source_revision while non-terminal
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+        use crate::shared::error::AppError;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
-        Ok(())
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+
+        let issue1 = WatchedIssueMeta {
+            issue_ref: "test/repo#5".to_owned(),
+            source_revision: "rev55551".to_owned(),
+            title: "First".to_owned(),
+            body: "Body".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+        DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue1, DispatchMode::Workflow,
+        ).map_err(|e| e.to_string())?;
+
+        let issue2 = WatchedIssueMeta {
+            issue_ref: "test/repo#5".to_owned(),
+            source_revision: "rev55552".to_owned(),
+            title: "Second".to_owned(),
+            body: "Body".to_owned(),
+            labels: vec![],
+            routing_command: None,
+        };
+        let err = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue2, DispatchMode::Workflow,
+        );
+        match err {
+            Err(AppError::DuplicateWatchedIssue { .. }) => Ok(()),
+            Err(e) => Err(format!("expected DuplicateWatchedIssue, got: {e}")),
+            Ok(_) => Err("expected error for duplicate issue with different revision".to_owned()),
+        }
     });
 
     reg!(m, "DAEMON-INTAKE-006", || {
-        // Routed flow override: seed suggests different flow but routed flow wins
+        // Routed flow override: task has routed flow that differs from default
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
+        let store = FsDaemonStore;
+        let routing = RoutingEngine::new();
+
+        // Issue with explicit flow routing command
+        let issue = WatchedIssueMeta {
+            issue_ref: "test/repo#6".to_owned(),
+            source_revision: "rev66666".to_owned(),
+            title: "Override test".to_owned(),
+            body: "Body".to_owned(),
+            labels: vec![],
+            routing_command: Some("/rb flow quick_dev".to_owned()),
+        };
+
+        let result = DaemonTaskService::create_task_from_watched_issue(
+            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
+        ).map_err(|e| e.to_string())?;
+        let task = result.ok_or("expected a task to be created")?;
+        // Routed flow should be quick_dev (from command), not standard (default)
+        if task.resolved_flow != Some(FlowPreset::QuickDev) {
+            return Err(format!("expected quick_dev, got {:?}", task.resolved_flow));
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-007", || {
         // Unknown requirements command fails ingestion
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
+        use crate::contexts::automation_runtime::watcher;
+
+        // Malformed: unknown subcommand
+        let result = watcher::parse_requirements_command("/rb requirements unknown");
+        if result.is_ok() {
+            return Err("expected error for unknown requirements subcommand".to_owned());
+        }
+
+        // Malformed: missing subcommand
+        let result2 = watcher::parse_requirements_command("/rb requirements");
+        if result2.is_ok() {
+            return Err("expected error for bare '/rb requirements'".to_owned());
+        }
+
+        // Malformed: extra tokens
+        let result3 = watcher::parse_requirements_command("/rb requirements draft extra");
+        if result3.is_ok() {
+            return Err("expected error for extra tokens".to_owned());
+        }
+
+        // Valid: no requirements command at all is Ok(None)
+        let result4 = watcher::parse_requirements_command("/rb flow standard")
+            .map_err(|e| e.to_string())?;
+        if result4.is_some() {
+            return Err("expected None for non-requirements command".to_owned());
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-008", || {
         // Daemon status surfaces waiting state and requirements_run_id
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DaemonTask, DispatchMode, RoutingSource, TaskStatus};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "intake-wait-008".to_owned(),
+            issue_ref: "test/repo#8".to_owned(),
+            project_id: "watched-test-repo8".to_owned(),
+            project_name: Some("Wait test".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: Some("rev88888".to_owned()),
+            requirements_run_id: Some("req-123".to_owned()),
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+
         let out = run_cli(&["daemon", "status"], ws.path())?;
         assert_success(&out)?;
+        assert_contains(&out.stdout, "waiting_for_requirements", "status output")?;
+        assert_contains(&out.stdout, "requirements_run=req-123", "status output")?;
         Ok(())
     });
 }

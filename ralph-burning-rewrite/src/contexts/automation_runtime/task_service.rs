@@ -344,8 +344,14 @@ impl DaemonTaskService {
             }
         }
 
+        // If the routing_command is a requirements command, don't pass it to flow
+        // resolution — requirements commands are orthogonal to flow routing.
+        // Flow precedence still applies via labels and repo default.
+        let flow_routing_cmd = issue.routing_command.as_deref().filter(|cmd| {
+            !super::watcher::is_requirements_command(cmd)
+        });
         let resolution = routing_engine.resolve_flow(
-            issue.routing_command.as_deref(),
+            flow_routing_cmd,
             &issue.labels,
             default_flow,
         )?;
