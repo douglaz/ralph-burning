@@ -4435,3 +4435,61 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
         "should not contain cleanup failures, got: {stdout}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Daemon lifecycle conformance regression tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn conformance_daemon_lifecycle_007_passes() {
+    let output = Command::new(binary())
+        .args(["conformance", "run", "--filter", "DAEMON-LIFECYCLE-007"])
+        .output()
+        .expect("run conformance --filter DAEMON-LIFECYCLE-007");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "DAEMON-LIFECYCLE-007 should pass: {stderr}"
+    );
+    assert!(
+        stderr.contains("Passed:    1") || stderr.contains("PASS"),
+        "should report scenario passed, got: {stderr}"
+    );
+}
+
+#[test]
+fn conformance_daemon_lifecycle_008_passes() {
+    let output = Command::new(binary())
+        .args(["conformance", "run", "--filter", "DAEMON-LIFECYCLE-008"])
+        .output()
+        .expect("run conformance --filter DAEMON-LIFECYCLE-008");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "DAEMON-LIFECYCLE-008 should pass: {stderr}"
+    );
+    assert!(
+        stderr.contains("Passed:    1") || stderr.contains("PASS"),
+        "should report scenario passed, got: {stderr}"
+    );
+}
+
+#[test]
+fn conformance_full_suite_passes() {
+    let output = Command::new(binary())
+        .args(["conformance", "run"])
+        .output()
+        .expect("run conformance run (full suite)");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "full conformance suite should pass: {stderr}"
+    );
+    assert!(
+        stderr.contains("Failed:    0"),
+        "no scenarios should fail, got: {stderr}"
+    );
+}

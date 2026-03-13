@@ -51,11 +51,14 @@ Feature: Daemon Lifecycle Commands
   Scenario: Daemon continues processing after a single task claim failure
     Given two pending daemon tasks and the first task's project writer lock is already held
     When the user runs "ralph-burning daemon start --single-iteration"
-    Then the first task is skipped due to writer lock contention
-    And the second task is claimed and processed normally
+    Then the command succeeds
+    And the first task remains pending with no lease acquired and no durable mutation
+    And the second task is claimed and processed in the same daemon cycle
 
   # DAEMON-LIFECYCLE-008
   Scenario: Daemon dispatch does not mutate process-global working directory
     Given a pending daemon task in a git-backed workspace
     When the daemon dispatches the task in a worktree
-    Then the process working directory remains unchanged after dispatch
+    Then the command succeeds
+    And the task status is no longer pending
+    And the process working directory remains unchanged after dispatch

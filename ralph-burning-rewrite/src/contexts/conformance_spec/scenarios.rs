@@ -5706,7 +5706,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "dispatch_mode": "workflow",
             "routing_labels": [],
             "resolved_flow": "standard",
-            "routing_source": "default"
+            "routing_source": "default_flow"
         });
         let task1_path = ws.path().join(".ralph-burning/daemon/tasks/locked-task.json");
         std::fs::write(&task1_path, serde_json::to_string_pretty(&task1_json).unwrap())
@@ -5729,7 +5729,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "dispatch_mode": "workflow",
             "routing_labels": [],
             "resolved_flow": "standard",
-            "routing_source": "default"
+            "routing_source": "default_flow"
         });
         let task2_path = ws.path().join(".ralph-burning/daemon/tasks/free-task.json");
         std::fs::write(&task2_path, serde_json::to_string_pretty(&task2_json).unwrap())
@@ -5739,8 +5739,10 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
+        assert_success(&out)?;
 
-        // Verify: the locked task was skipped (still pending)
+        // Writer-lock contention invariant: the locked task must remain pending,
+        // acquire no lease/worktree, and produce no claim-side durable mutation.
         let task1_after: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&task1_path)
                 .map_err(|e| format!("read task1 after: {e}"))?,
@@ -5755,8 +5757,15 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
                 "locked-task should remain 'pending' but is '{task1_status}'"
             ));
         }
+        // locked-task must not have acquired a lease
+        if task1_after.get("lease_id").and_then(|v| v.as_str()).is_some() {
+            return Err(
+                "locked-task must not acquire a lease under writer lock contention".to_owned(),
+            );
+        }
 
-        // Verify: the second task was claimed and processed (status changed from pending)
+        // The second eligible task should be claimed and processed in the same
+        // daemon cycle (status changed from pending).
         let task2_after: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&task2_path)
                 .map_err(|e| format!("read task2 after: {e}"))?,
@@ -5817,7 +5826,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "dispatch_mode": "workflow",
             "routing_labels": [],
             "resolved_flow": "standard",
-            "routing_source": "default"
+            "routing_source": "default_flow"
         });
         let task_path = ws.path().join(".ralph-burning/daemon/tasks/cwd-test-task.json");
         std::fs::write(&task_path, serde_json::to_string_pretty(&task_json).unwrap())
@@ -5829,6 +5838,11 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
+        // Dispatch must succeed — if the command fails, the task fixture was
+        // malformed or the daemon could not process it, which must not count as
+        // a passing CWD-unchanged assertion.
+        assert_success(&out)?;
+
         let cwd_after = std::env::current_dir()
             .map_err(|e| format!("get cwd: {e}"))?;
         if cwd_before != cwd_after {
@@ -5839,7 +5853,9 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
-        // Verify the task was actually attempted (status changed from pending)
+        // Verify the task was actually dispatched (status must have changed
+        // from pending). A malformed fixture that causes a parse failure must
+        // not satisfy the unchanged-CWD assertion.
         let task_after: serde_json::Value = serde_json::from_str(
             &std::fs::read_to_string(&task_path)
                 .map_err(|e| format!("read task after: {e}"))?,
@@ -5849,11 +5865,10 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("pending");
-        let combined = format!("{}{}", out.stdout, out.stderr);
-        // Task must have been attempted — either status changed or output mentions it
-        if task_status == "pending" && !combined.contains("cwd-test-task") {
+        if task_status == "pending" {
+            let combined = format!("{}{}", out.stdout, out.stderr);
             return Err(format!(
-                "task was never attempted during dispatch, output: {combined}"
+                "task was never dispatched (still pending after successful daemon cycle), output: {combined}"
             ));
         }
         Ok(())
