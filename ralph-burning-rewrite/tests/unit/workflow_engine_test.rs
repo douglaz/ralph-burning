@@ -390,7 +390,7 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
 
     let implementation_payloads: Vec<_> = payload_files
         .iter()
-        .filter(|name| name.contains("-implementation-c1-a1"))
+        .filter(|name| name.contains("-implementation-c1-a1-cr1"))
         .cloned()
         .collect();
     assert_eq!(
@@ -413,7 +413,7 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
 
     let implementation_artifacts: Vec<_> = artifact_files
         .iter()
-        .filter(|name| name.contains("-implementation-c1-a1"))
+        .filter(|name| name.contains("-implementation-c1-a1-cr1"))
         .cloned()
         .collect();
     assert_eq!(implementation_artifacts.len(), 2);
@@ -3579,4 +3579,121 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
         .collect();
     assert_eq!(round_events.len(), 1);
     assert_eq!(round_events[0].details["source_stage"], "final_review");
+}
+
+#[tokio::test]
+async fn completion_round_restart_creates_distinct_round_aware_payload_artifact_files() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-ids");
+
+    // CompletionPanel returns conditionally_approved on first call, approved on second.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["tighten note"]),
+                approved_validation_payload(),
+            ],
+        ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.completion_rounds, 2);
+
+    let payloads_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/payloads");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/artifacts");
+
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    let artifact_files: Vec<String> = fs::read_dir(&artifacts_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+
+    // Round-1 planning should have -cr1, round-2 planning should have -cr2.
+    let cr1_planning_payloads: Vec<_> = payload_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr1"))
+        .collect();
+    let cr2_planning_payloads: Vec<_> = payload_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr2"))
+        .collect();
+    assert_eq!(
+        cr1_planning_payloads.len(),
+        1,
+        "round-1 planning payload should exist: {payload_files:?}"
+    );
+    assert_eq!(
+        cr2_planning_payloads.len(),
+        1,
+        "round-2 planning payload should exist: {payload_files:?}"
+    );
+
+    let cr1_planning_artifacts: Vec<_> = artifact_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr1"))
+        .collect();
+    let cr2_planning_artifacts: Vec<_> = artifact_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr2"))
+        .collect();
+    assert_eq!(
+        cr1_planning_artifacts.len(),
+        1,
+        "round-1 planning artifact should exist: {artifact_files:?}"
+    );
+    assert_eq!(
+        cr2_planning_artifacts.len(),
+        1,
+        "round-2 planning artifact should exist: {artifact_files:?}"
+    );
+
+    // Verify round-1 and round-2 are distinct files (not overwritten).
+    assert_ne!(
+        cr1_planning_payloads[0], cr2_planning_payloads[0],
+        "round-1 and round-2 planning payload filenames must differ"
+    );
+    assert_ne!(
+        cr1_planning_artifacts[0], cr2_planning_artifacts[0],
+        "round-1 and round-2 planning artifact filenames must differ"
+    );
+
+    // Verify all payload/artifact files contain -cr suffix (no legacy format).
+    for name in &payload_files {
+        assert!(
+            name.contains("-cr"),
+            "payload file should contain -cr: {name}"
+        );
+    }
+    for name in &artifact_files {
+        assert!(
+            name.contains("-cr"),
+            "artifact file should contain -cr: {name}"
+        );
+    }
 }

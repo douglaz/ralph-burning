@@ -118,11 +118,12 @@ fn history_record_base_id(
     rollback_count: u32,
 ) -> String {
     let base_id = format!(
-        "{}-{}-c{}-a{}",
+        "{}-{}-c{}-a{}-cr{}",
         run_id.as_str(),
         stage_id.as_str(),
         cursor.cycle,
-        cursor.attempt
+        cursor.attempt,
+        cursor.completion_round
     );
     if rollback_count == 0 {
         base_id
