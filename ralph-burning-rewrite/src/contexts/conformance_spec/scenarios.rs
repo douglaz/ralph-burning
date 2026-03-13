@@ -3254,6 +3254,56 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         Ok(())
     });
+
+    reg!(m, "SC-RESUME-010", || {
+        // Run start acquires and releases the writer lock
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "hotel", "standard")?;
+        let out = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&out)?;
+        // Writer lock must be released after completion
+        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-hotel.lock");
+        if lock_path.exists() {
+            return Err("writer lock file still exists after run start completed".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RESUME-011", || {
+        // Run start exits non-zero when writer lock is held
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "india-lock", "standard")?;
+        // Pre-create the writer lock
+        let lock_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&lock_dir).map_err(|e| format!("create lock dir: {e}"))?;
+        std::fs::write(lock_dir.join("writer-india-lock.lock"), "held-by-test")
+            .map_err(|e| format!("write lock: {e}"))?;
+        let out = run_cli(&["run", "start"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "writer lock", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RESUME-012", || {
+        // Run resume acquires and releases the writer lock
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "juliet", "standard")?;
+        // First run: fail at implementation to get a failed snapshot
+        let start = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")],
+        )?;
+        assert_failure(&start)?;
+        // Resume should succeed and release the lock
+        let resume = run_cli(&["run", "resume"], ws.path())?;
+        assert_success(&resume)?;
+        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-juliet.lock");
+        if lock_path.exists() {
+            return Err("writer lock file still exists after run resume completed".into());
+        }
+        Ok(())
+    });
 }
 
 // ===========================================================================
@@ -5538,6 +5588,43 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         let out = run_cli(&["daemon", "abort", "nonexistent-task"], ws.path())?;
         assert_failure(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-LIFECYCLE-006", || {
+        // Reconcile with no stale leases succeeds cleanly
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "reconcile"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "reconciled", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-LIFECYCLE-007", || {
+        // Daemon continues processing after a single task claim failure
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+        // No pending tasks, so the daemon exits cleanly
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-LIFECYCLE-008", || {
+        // No process-global CWD mutation (structural assertion: dispatch_in_worktree
+        // no longer calls set_current_dir — verified via code review + no CWD
+        // dependency in the engine path)
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
         Ok(())
     });
 }

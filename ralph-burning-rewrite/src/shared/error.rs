@@ -165,6 +165,8 @@ pub enum AppError {
         issue_ref: String,
         source_revision: String,
     },
+    #[error("reconcile cleanup failed: {failed_count} stale lease(s) could not be fully cleaned up")]
+    ReconcileCleanupFailed { failed_count: usize },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {
         file: String,

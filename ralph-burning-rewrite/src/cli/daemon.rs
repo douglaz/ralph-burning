@@ -209,6 +209,19 @@ async fn handle_reconcile(ttl_seconds: Option<u64>) -> AppResult<()> {
         report.failed_task_ids.len(),
         report.released_lease_ids.len()
     );
+
+    if report.has_cleanup_failures() {
+        println!("--- Cleanup Failures ---");
+        for failure in &report.cleanup_failures {
+            println!(
+                "  lease={} task={}: {}",
+                failure.lease_id, failure.task_id, failure.details
+            );
+        }
+        return Err(AppError::ReconcileCleanupFailed {
+            failed_count: report.cleanup_failures.len(),
+        });
+    }
     Ok(())
 }
 

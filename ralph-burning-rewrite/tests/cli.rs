@@ -4259,3 +4259,151 @@ fn daemon_abort_waiting_task_succeeds() {
     let task: DaemonTask = serde_json::from_str(&task_json).expect("parse task");
     assert_eq!(TaskStatus::Aborted, task.status);
 }
+
+// ---------------------------------------------------------------------------
+// Writer lock contention tests (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_run_start_acquires_and_releases_writer_lock() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "lock-start");
+    select_active_project_fixture(temp_dir.path(), "lock-start");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(output.status.success(), "run start should succeed");
+
+    let lock_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/writer-lock-start.lock");
+    assert!(
+        !lock_path.exists(),
+        "writer lock file should be released after run start completes"
+    );
+}
+
+#[test]
+fn cli_run_start_fails_when_writer_lock_held() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "lock-held");
+    select_active_project_fixture(temp_dir.path(), "lock-held");
+
+    // Pre-create the writer lock file
+    let lock_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&lock_dir).expect("create lease dir");
+    fs::write(lock_dir.join("writer-lock-held.lock"), "held-by-test")
+        .expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(
+        !output.status.success(),
+        "run start should fail when lock is held"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer lock"),
+        "error should mention writer lock, got: {stderr}"
+    );
+
+    // Verify no run-state mutation occurred
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/lock-held/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        run_json.contains("\"not_started\""),
+        "run state should remain not_started"
+    );
+}
+
+#[test]
+fn cli_run_resume_acquires_and_releases_writer_lock() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "lock-resume");
+    select_active_project_fixture(temp_dir.path(), "lock-resume");
+
+    // First, fail the run to get a failed snapshot
+    let fail_output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")
+        .output()
+        .expect("run start to fail");
+    assert!(!fail_output.status.success());
+
+    // Now resume — the lock should be acquired and released
+    let output = Command::new(binary())
+        .args(["run", "resume"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run resume");
+    assert!(output.status.success(), "run resume should succeed");
+
+    let lock_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/writer-lock-resume.lock");
+    assert!(
+        !lock_path.exists(),
+        "writer lock file should be released after run resume completes"
+    );
+}
+
+#[test]
+fn cli_run_start_releases_lock_on_error() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "lock-err");
+    select_active_project_fixture(temp_dir.path(), "lock-err");
+
+    // Force a run failure — lock should still be released
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "planning")
+        .output()
+        .expect("run start");
+    assert!(!output.status.success(), "run start should fail");
+
+    let lock_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases/writer-lock-err.lock");
+    assert!(
+        !lock_path.exists(),
+        "writer lock file should be released even when run fails"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile cleanup failure reporting (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["daemon", "reconcile"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run reconcile");
+    assert!(output.status.success(), "reconcile should succeed with no leases");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("reconciled"),
+        "should print reconcile summary, got: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Cleanup Failures"),
+        "should not contain cleanup failures, got: {stdout}"
+    );
+}

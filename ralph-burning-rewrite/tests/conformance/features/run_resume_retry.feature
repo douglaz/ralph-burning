@@ -90,3 +90,29 @@ Feature: Retry, Remediation, and Resume
     When the engine handles the failure
     Then no further "stage_entered" events are emitted for "implementation"
     And the run snapshot shows status "failed" with no active run
+
+  # SC-RESUME-010
+  Scenario: Run start acquires and releases the per-project writer lock
+    Given an initialized workspace with project "hotel" using flow "standard"
+    And project "hotel" is selected as active
+    When the user runs "run start"
+    Then no writer lock file remains for project "hotel" after completion
+    And the command exits successfully
+
+  # SC-RESUME-011
+  Scenario: Run start exits non-zero when the writer lock is already held
+    Given an initialized workspace with project "india" using flow "standard"
+    And project "india" is selected as active
+    And the writer lock for project "india" is already held
+    When the user runs "run start"
+    Then the command fails with "ProjectWriterLockHeld"
+    And no run-state mutation occurs for project "india"
+
+  # SC-RESUME-012
+  Scenario: Run resume acquires and releases the per-project writer lock
+    Given an initialized workspace with project "juliet" using flow "standard"
+    And project "juliet" is selected as active
+    And a previous run failed after planning
+    When the user runs "run resume"
+    Then no writer lock file remains for project "juliet" after completion
+    And the command exits successfully

@@ -15,6 +15,20 @@ pub struct ReconcileReport {
     pub failed_task_ids: Vec<String>,
     pub released_lease_ids: Vec<String>,
     pub removed_worktrees: Vec<String>,
+    pub cleanup_failures: Vec<LeaseCleanupFailure>,
+}
+
+impl ReconcileReport {
+    pub fn has_cleanup_failures(&self) -> bool {
+        !self.cleanup_failures.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LeaseCleanupFailure {
+    pub lease_id: String,
+    pub task_id: String,
+    pub details: String,
 }
 
 pub struct LeaseService;
@@ -164,12 +178,32 @@ impl LeaseService {
                 report.failed_task_ids.push(task.task_id.clone());
             }
 
-            let _ = Self::release(store, worktree, base_dir, repo_root, &lease);
-            let _ = DaemonTaskService::clear_lease_reference(store, base_dir, &task.task_id);
-            report.released_lease_ids.push(lease.lease_id.clone());
-            report
-                .removed_worktrees
-                .push(lease.worktree_path.display().to_string());
+            let release_result = Self::release(store, worktree, base_dir, repo_root, &lease);
+            let clear_result =
+                DaemonTaskService::clear_lease_reference(store, base_dir, &task.task_id);
+
+            match (&release_result, &clear_result) {
+                (Ok(()), Ok(_)) => {
+                    report.released_lease_ids.push(lease.lease_id.clone());
+                    report
+                        .removed_worktrees
+                        .push(lease.worktree_path.display().to_string());
+                }
+                _ => {
+                    let mut details = Vec::new();
+                    if let Err(ref e) = release_result {
+                        details.push(format!("release: {e}"));
+                    }
+                    if let Err(ref e) = clear_result {
+                        details.push(format!("clear_lease_ref: {e}"));
+                    }
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: lease.lease_id.clone(),
+                        task_id: task.task_id.clone(),
+                        details: details.join("; "),
+                    });
+                }
+            }
         }
 
         DaemonTaskService::append_journal_event(

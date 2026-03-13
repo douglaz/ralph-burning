@@ -1,20 +1,50 @@
+use std::path::Path;
+
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRollbackPointStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
+    FsSessionStore,
 };
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
+use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::StageId;
+use crate::shared::domain::{ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
+
+/// RAII guard that releases the per-project writer lock on drop.
+struct WriterLockGuard<'a> {
+    store: &'a dyn DaemonStorePort,
+    base_dir: &'a Path,
+    project_id: ProjectId,
+}
+
+impl Drop for WriterLockGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.store.release_writer_lock(self.base_dir, &self.project_id);
+    }
+}
+
+fn acquire_cli_writer_lock<'a>(
+    store: &'a dyn DaemonStorePort,
+    base_dir: &'a Path,
+    project_id: ProjectId,
+) -> AppResult<WriterLockGuard<'a>> {
+    store.acquire_writer_lock(base_dir, &project_id, "cli")?;
+    Ok(WriterLockGuard {
+        store,
+        base_dir,
+        project_id,
+    })
+}
 
 #[derive(Debug, Args)]
 pub struct RunCommand {
@@ -143,6 +173,10 @@ async fn handle_start() -> AppResult<()> {
         });
     }
 
+    // Acquire per-project writer lock before any run-state mutation
+    let daemon_store = FsDaemonStore;
+    let _lock_guard = acquire_cli_writer_lock(&daemon_store, &current_dir, project_id.clone())?;
+
     let effective_config = EffectiveConfig::load(&current_dir)?;
 
     let agent_service = build_agent_execution_service();
@@ -215,6 +249,10 @@ async fn handle_resume() -> AppResult<()> {
             reason: "failed or paused snapshots must not retain an active run".to_owned(),
         });
     }
+
+    // Acquire per-project writer lock before any run-state mutation
+    let daemon_store = FsDaemonStore;
+    let _lock_guard = acquire_cli_writer_lock(&daemon_store, &current_dir, project_id.clone())?;
 
     let effective_config = EffectiveConfig::load(&current_dir)?;
     let agent_service = build_agent_execution_service();

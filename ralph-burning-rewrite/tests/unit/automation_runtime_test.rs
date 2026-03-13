@@ -3,6 +3,7 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::FsDaemonStore;
 use ralph_burning::adapters::worktree::WorktreeAdapter;
+use ralph_burning::contexts::automation_runtime::lease_service::LeaseService;
 use ralph_burning::contexts::automation_runtime::model::{
     DaemonTask, DispatchMode, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
@@ -819,4 +820,111 @@ fn active_task_can_transition_to_pending_for_requeue() {
         Some("req-empty-draft".to_owned()),
         requeued.requirements_run_id
     );
+}
+
+// ---------------------------------------------------------------------------
+// Writer lock contention (CLI-level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn writer_lock_acquire_release_roundtrip() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("lock-test".to_owned())
+        .expect("valid id");
+
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "cli")
+        .expect("acquire lock");
+
+    // Second acquire should fail with ProjectWriterLockHeld
+    let err = store
+        .acquire_writer_lock(temp.path(), &project_id, "cli-2")
+        .expect_err("second acquire should fail");
+    assert!(
+        matches!(err, AppError::ProjectWriterLockHeld { .. }),
+        "expected ProjectWriterLockHeld, got: {err:?}"
+    );
+
+    // Release and re-acquire should succeed
+    store
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("release lock");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "cli-3")
+        .expect("re-acquire after release");
+    store
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("final release");
+}
+
+#[test]
+fn writer_lock_release_is_idempotent() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned())
+        .expect("valid id");
+
+    // Release without acquire should not fail
+    store
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("release without acquire should succeed");
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile partial-failure accounting
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_reports_only_successful_releases() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    // Create a task and a stale lease, but no actual worktree — release will
+    // still succeed because remove_worktree errors are deferred.
+    let mut task = sample_task();
+    task.task_id = "reconcile-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-reconcile-test".to_owned(),
+        task_id: "reconcile-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: temp.path().join("nonexistent-wt"),
+        branch_name: "rb/reconcile-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    // Create the writer lock so release can succeed
+    let project_id = ralph_burning::shared::domain::ProjectId::new("demo".to_owned())
+        .expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-reconcile-test")
+        .expect("acquire lock");
+
+    let worktree_adapter = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0), // force all leases stale
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert_eq!("lease-reconcile-test", report.stale_lease_ids[0]);
+    assert_eq!(1, report.failed_task_ids.len());
+    assert_eq!("reconcile-test", report.failed_task_ids[0]);
+}
+
+#[test]
+fn reconcile_report_has_cleanup_failures_is_false_when_empty() {
+    let report = ralph_burning::contexts::automation_runtime::ReconcileReport::default();
+    assert!(!report.has_cleanup_failures());
 }

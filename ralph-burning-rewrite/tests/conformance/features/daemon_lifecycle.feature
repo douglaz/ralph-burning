@@ -38,3 +38,24 @@ Feature: Daemon Lifecycle Commands
     Given a daemon task in status "completed"
     When the user runs "ralph-burning daemon abort <task-id>"
     Then the command fails with "TaskStateTransitionInvalid"
+
+  # DAEMON-LIFECYCLE-006
+  Scenario: Reconcile reports cleanup failures and exits non-zero
+    Given a stale daemon lease whose worktree cannot be removed
+    When the user runs "ralph-burning daemon reconcile"
+    Then the output includes "Cleanup Failures"
+    And the output includes the failing lease id and task id
+    And the command exits non-zero
+
+  # DAEMON-LIFECYCLE-007
+  Scenario: Daemon continues processing after a single task claim failure
+    Given two pending daemon tasks and the first task's project writer lock is already held
+    When the user runs "ralph-burning daemon start --single-iteration"
+    Then the first task is skipped due to writer lock contention
+    And the second task is claimed and processed normally
+
+  # DAEMON-LIFECYCLE-008
+  Scenario: Daemon dispatch does not mutate process-global working directory
+    Given a pending daemon task in a git-backed workspace
+    When the daemon dispatches the task in a worktree
+    Then the process working directory remains unchanged after dispatch

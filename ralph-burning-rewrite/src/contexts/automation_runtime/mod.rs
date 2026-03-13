@@ -13,7 +13,7 @@ pub mod watcher;
 pub const CONTEXT_NAME: &str = "automation_runtime";
 
 pub use daemon_loop::{DaemonLoop, DaemonLoopConfig};
-pub use lease_service::{LeaseService, ReconcileReport};
+pub use lease_service::{LeaseCleanupFailure, LeaseService, ReconcileReport};
 pub use model::{
     DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, RoutingResolution,
     RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,

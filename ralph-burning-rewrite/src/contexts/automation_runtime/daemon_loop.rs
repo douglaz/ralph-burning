@@ -171,7 +171,9 @@ where
             return Ok(false);
         };
 
-        self.process_task(base_dir, &task, config, shutdown).await?;
+        if let Err(error) = self.process_task(base_dir, &task, config, shutdown).await {
+            println!("daemon: task {} failed: {}", task.task_id, error);
+        }
         Ok(true)
     }
 
@@ -924,13 +926,10 @@ where
         flow: FlowPreset,
         run_status: RunStatus,
         effective_config: &EffectiveConfig,
-        worktree_path: &Path,
+        _worktree_path: &Path,
         cancellation_token: CancellationToken,
     ) -> AppResult<()> {
-        let original_dir = std::env::current_dir()?;
-        std::env::set_current_dir(worktree_path)?;
-
-        let result = match run_status {
+        match run_status {
             RunStatus::NotStarted => {
                 engine::execute_run_with_retry(
                     self.agent_service,
@@ -978,14 +977,6 @@ where
                 from: "run_completed".to_owned(),
                 to: "daemon_dispatch".to_owned(),
             }),
-        };
-
-        let reset_result = std::env::set_current_dir(original_dir);
-        match (result, reset_result) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) => Err(error),
-            (Ok(()), Err(error)) => Err(error.into()),
-            (Err(error), Err(_)) => Err(error),
         }
     }
 
@@ -1045,9 +1036,14 @@ where
 
     fn cleanup_active_leases(&self, base_dir: &Path) -> AppResult<()> {
         let leases = self.store.list_leases(base_dir)?;
-        for lease in leases {
+        for lease in &leases {
             let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &lease.task_id);
-            let _ = self.release_task_lease(base_dir, base_dir, &lease.task_id, &lease);
+            if let Err(e) = self.release_task_lease(base_dir, base_dir, &lease.task_id, lease) {
+                eprintln!(
+                    "daemon: cleanup failed for lease '{}' (task '{}'): {}",
+                    lease.lease_id, lease.task_id, e
+                );
+            }
         }
         Ok(())
     }
