@@ -188,15 +188,17 @@ pub fn filter_history_records(
 }
 
 fn rollback_boundary_sequence(event: &JournalEvent) -> AppResult<u64> {
-    event.details.get("visible_through_sequence").and_then(|value| {
-        value.as_u64()
-    }).ok_or_else(|| crate::shared::error::AppError::CorruptRecord {
-        file: "journal.ndjson".to_owned(),
-        details: format!(
-            "rollback_performed event sequence {} is missing 'visible_through_sequence'",
-            event.sequence
-        ),
-    })
+    event
+        .details
+        .get("visible_through_sequence")
+        .and_then(|value| value.as_u64())
+        .ok_or_else(|| crate::shared::error::AppError::CorruptRecord {
+            file: "journal.ndjson".to_owned(),
+            details: format!(
+                "rollback_performed event sequence {} is missing 'visible_through_sequence'",
+                event.sequence
+            ),
+        })
 }
 
 fn detail_string<'a>(event: &'a JournalEvent, key: &str) -> AppResult<&'a str> {

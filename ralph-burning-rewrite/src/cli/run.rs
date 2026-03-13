@@ -411,9 +411,7 @@ async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
 
     println!(
         "Rollback complete: project '{}' paused at {} cycle {}.",
-        project_id,
-        rollback_point.stage_id,
-        rollback_point.cycle
+        project_id, rollback_point.stage_id, rollback_point.cycle
     );
     if hard {
         println!("Repository reset to recorded git SHA.");

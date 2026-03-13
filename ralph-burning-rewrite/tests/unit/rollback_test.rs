@@ -98,6 +98,7 @@ impl RunSnapshotWritePort for TrackingRunSnapshotWriteStore {
 struct FakeJournalStore {
     events: Vec<JournalEvent>,
     appended: RefCell<Vec<JournalEvent>>,
+    fail_with: Option<String>,
 }
 
 impl JournalStorePort for FakeJournalStore {
@@ -109,12 +110,10 @@ impl JournalStorePort for FakeJournalStore {
         Ok(self.events.clone())
     }
 
-    fn append_event(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-        line: &str,
-    ) -> AppResult<()> {
+    fn append_event(&self, _base_dir: &Path, _project_id: &ProjectId, line: &str) -> AppResult<()> {
+        if let Some(message) = &self.fail_with {
+            return Err(AppError::Io(std::io::Error::other(message.clone())));
+        }
         self.appended
             .borrow_mut()
             .push(journal::deserialize_event(line)?);
@@ -209,11 +208,20 @@ fn get_rollback_point_for_stage_excludes_hidden_points_after_logical_rollback() 
             },
         ],
         appended: RefCell::new(Vec::new()),
+        fail_with: None,
     };
     let rollback_store = FakeRollbackStore {
         points: vec![
-            rollback_point("rb-planning", StageId::Planning, running_snapshot(StageId::Implementation)),
-            rollback_point("rb-review", StageId::Review, running_snapshot(StageId::CompletionPanel)),
+            rollback_point(
+                "rb-planning",
+                StageId::Planning,
+                running_snapshot(StageId::Implementation),
+            ),
+            rollback_point(
+                "rb-review",
+                StageId::Review,
+                running_snapshot(StageId::CompletionPanel),
+            ),
         ],
     };
 
@@ -241,6 +249,7 @@ fn perform_rollback_rejects_non_resumable_statuses() {
         &FakeJournalStore {
             events: vec![],
             appended: RefCell::new(Vec::new()),
+            fail_with: None,
         },
         &FakeRollbackStore { points: vec![] },
         None,
@@ -270,6 +279,7 @@ fn perform_rollback_rejects_stage_outside_project_flow() {
         &FakeJournalStore {
             events: vec![],
             appended: RefCell::new(Vec::new()),
+            fail_with: None,
         },
         &FakeRollbackStore { points: vec![] },
         None,
@@ -315,6 +325,7 @@ fn perform_rollback_restores_snapshot_and_updates_meta() {
             rollback_created_event(2, "rb-planning", StageId::Planning),
         ],
         appended: RefCell::new(Vec::new()),
+        fail_with: None,
     };
 
     let restored = perform_rollback(
@@ -378,6 +389,7 @@ fn hard_rollback_failure_preserves_logical_rollback_state() {
             rollback_created_event(2, "rb-impl", StageId::Implementation),
         ],
         appended: RefCell::new(Vec::new()),
+        fail_with: None,
     };
     let reset_port = FakeResetPort {
         shas: RefCell::new(Vec::new()),
@@ -409,5 +421,78 @@ fn hard_rollback_failure_preserves_logical_rollback_state() {
     assert_eq!(writes.len(), 1, "logical rollback must be persisted first");
     assert_eq!(writes[0].status, RunStatus::Paused);
     assert_eq!(journal_store.appended.borrow().len(), 1);
-    assert_eq!(reset_port.shas.borrow().as_slice(), &["deadbeef".to_owned()]);
+    assert_eq!(
+        reset_port.shas.borrow().as_slice(),
+        &["deadbeef".to_owned()]
+    );
+}
+
+#[test]
+fn perform_rollback_restores_previous_snapshot_when_journal_append_fails() {
+    let original_snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 2,
+        rollback_point_meta: RollbackPointMeta {
+            last_rollback_id: Some("previous".to_owned()),
+            rollback_count: 2,
+        },
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed at review".to_owned(),
+    };
+    let run_store = FakeRunSnapshotStore {
+        snapshot: original_snapshot.clone(),
+    };
+    let write_store = TrackingRunSnapshotWriteStore::default();
+    let journal_store = FakeJournalStore {
+        events: vec![
+            JournalEvent {
+                sequence: 1,
+                timestamp: test_timestamp(),
+                event_type: JournalEventType::ProjectCreated,
+                details: serde_json::json!({}),
+            },
+            rollback_created_event(2, "rb-planning", StageId::Planning),
+        ],
+        appended: RefCell::new(Vec::new()),
+        fail_with: Some("append failed".to_owned()),
+    };
+
+    let error = perform_rollback(
+        &run_store,
+        &write_store,
+        &journal_store,
+        &FakeRollbackStore {
+            points: vec![rollback_point(
+                "rb-planning",
+                StageId::Planning,
+                running_snapshot(StageId::Implementation),
+            )],
+        },
+        None,
+        Path::new("/tmp"),
+        &project_id(),
+        FlowPreset::Standard,
+        StageId::Planning,
+        false,
+    )
+    .expect_err("journal append failure should abort rollback");
+
+    assert!(matches!(error, AppError::Io(_)));
+    assert!(journal_store.appended.borrow().is_empty());
+
+    let writes = write_store.writes.borrow();
+    assert_eq!(
+        writes.len(),
+        2,
+        "rollback should restore the prior snapshot"
+    );
+    assert_eq!(writes[0].status, RunStatus::Paused);
+    assert_eq!(writes[0].rollback_point_meta.rollback_count, 3);
+    assert_eq!(
+        writes[0].rollback_point_meta.last_rollback_id.as_deref(),
+        Some("rb-planning")
+    );
+    assert_eq!(writes[1], original_snapshot);
 }

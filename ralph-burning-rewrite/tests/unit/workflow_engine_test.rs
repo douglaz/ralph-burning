@@ -9,8 +9,8 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
-    FsProjectStore, FsRawOutputStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
-    FsRuntimeLogWriteStore, FsSessionStore,
+    FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
@@ -306,6 +306,147 @@ async fn successful_stage_transitions_create_rollback_points() {
         .filter(|event| event.event_type == JournalEventType::RollbackCreated)
         .count();
     assert_eq!(rollback_events, 8);
+}
+
+#[tokio::test]
+async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "rollback-branch");
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let failing_review_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_invoke_failure(StageId::Review),
+    );
+    let first_result = engine::execute_standard_run(
+        &failing_review_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err(), "first branch should fail at review");
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert!(failed_snapshot.active_run.is_none());
+
+    service::perform_rollback(
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsRollbackPointStore,
+        None,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        StageId::Planning,
+        false,
+    )
+    .expect("rollback to planning succeeds");
+
+    let resume_service = build_agent_service();
+    let resume_result = engine::resume_standard_run(
+        &resume_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let payloads_dir = base_dir.join(".ralph-burning/projects/rollback-branch/history/payloads");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/rollback-branch/history/artifacts");
+
+    let mut payload_files: Vec<_> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    payload_files.sort();
+
+    let mut artifact_files: Vec<_> = fs::read_dir(&artifacts_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    artifact_files.sort();
+
+    let implementation_payloads: Vec<_> = payload_files
+        .iter()
+        .filter(|name| name.contains("-implementation-c1-a1"))
+        .cloned()
+        .collect();
+    assert_eq!(
+        implementation_payloads.len(),
+        2,
+        "rollback/resume should retain both the abandoned and visible implementation payload files"
+    );
+    assert!(
+        implementation_payloads
+            .iter()
+            .any(|name| name.contains("-rb1")),
+        "resumed implementation payload should use a branch-specific durable ID"
+    );
+    assert!(
+        implementation_payloads
+            .iter()
+            .any(|name| !name.contains("-rb1")),
+        "abandoned implementation payload should remain on disk"
+    );
+
+    let implementation_artifacts: Vec<_> = artifact_files
+        .iter()
+        .filter(|name| name.contains("-implementation-c1-a1"))
+        .cloned()
+        .collect();
+    assert_eq!(implementation_artifacts.len(), 2);
+    assert!(implementation_artifacts
+        .iter()
+        .any(|name| name.contains("-rb1")));
+    assert!(implementation_artifacts
+        .iter()
+        .any(|name| !name.contains("-rb1")));
+
+    let history = service::run_history(&FsJournalStore, &FsArtifactStore, base_dir, &pid).unwrap();
+    let visible_implementation_payloads: Vec<_> = history
+        .payloads
+        .iter()
+        .filter(|record| record.stage_id == StageId::Implementation)
+        .collect();
+    assert_eq!(visible_implementation_payloads.len(), 1);
+    assert!(
+        visible_implementation_payloads[0]
+            .payload_id
+            .contains("-rb1"),
+        "visible implementation history should come from the resumed branch"
+    );
+
+    assert_eq!(
+        payload_files.len(),
+        10,
+        "old branch payload files should remain on disk alongside the resumed branch"
+    );
+    assert_eq!(
+        history.payloads.len(),
+        8,
+        "run history should hide rolled-back stages"
+    );
 }
 
 #[tokio::test]
@@ -830,7 +971,12 @@ async fn happy_path_quick_dev_run_completes() {
         .map(|event| event.details["stage_id"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!(
-        vec!["plan_and_implement", "review", "apply_fixes", "final_review"],
+        vec![
+            "plan_and_implement",
+            "review",
+            "apply_fixes",
+            "final_review"
+        ],
         entered
     );
 
@@ -1007,8 +1153,16 @@ async fn quick_dev_final_review_conditionally_approved_triggers_completion_round
     assert_eq!(round_events.len(), 1);
 
     // Verify the run restarted at plan_and_implement
-    let plan_entries = stage_events(&events, JournalEventType::StageEntered, "plan_and_implement");
-    assert_eq!(plan_entries.len(), 2, "plan_and_implement should run twice across completion rounds");
+    let plan_entries = stage_events(
+        &events,
+        JournalEventType::StageEntered,
+        "plan_and_implement",
+    );
+    assert_eq!(
+        plan_entries.len(),
+        2,
+        "plan_and_implement should run twice across completion rounds"
+    );
 }
 
 #[tokio::test]
@@ -1064,7 +1218,12 @@ async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     assert_eq!(
-        stage_events(&events, JournalEventType::StageEntered, "plan_and_implement").len(),
+        stage_events(
+            &events,
+            JournalEventType::StageEntered,
+            "plan_and_implement"
+        )
+        .len(),
         1
     );
     assert_eq!(
@@ -1087,9 +1246,8 @@ async fn quick_dev_preflight_failure_leaves_state_unchanged() {
     setup_workspace(base_dir);
     let pid = create_project_with_flow(base_dir, "qd-preflight", FlowPreset::QuickDev);
 
-    let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().unavailable(),
-    );
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().unavailable());
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let pre_snapshot = FsRunSnapshotStore

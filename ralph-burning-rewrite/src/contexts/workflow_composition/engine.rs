@@ -111,6 +111,26 @@ fn generate_run_id() -> AppResult<RunId> {
     RunId::new(format!("run-{}", now.format("%Y%m%d%H%M%S")))
 }
 
+fn history_record_base_id(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    rollback_count: u32,
+) -> String {
+    let base_id = format!(
+        "{}-{}-c{}-a{}",
+        run_id.as_str(),
+        stage_id.as_str(),
+        cursor.cycle,
+        cursor.attempt
+    );
+    if rollback_count == 0 {
+        base_id
+    } else {
+        format!("{base_id}-rb{rollback_count}")
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ExecutionOrigin {
     Start,
@@ -556,11 +576,10 @@ where
     }
 
     let events = journal_store.read_journal(base_dir, project_id)?;
-    let visible_events = queries::visible_journal_events(&events).map_err(|error| {
-        AppError::ResumeFailed {
+    let visible_events =
+        queries::visible_journal_events(&events).map_err(|error| AppError::ResumeFailed {
             reason: error.to_string(),
-        }
-    })?;
+        })?;
     let stage_ids = stage_plan_for_resume(preset, &visible_events, effective_config)?;
     let semantics = flow_semantics(preset);
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
@@ -1793,12 +1812,13 @@ async fn persist_stage_success(
     origin: ExecutionOrigin,
 ) -> AppResult<()> {
     let stage_now = Utc::now();
-    let payload_id = format!(
-        "{}-{}-c{}-a{}",
-        run_id.as_str(),
-        stage_id.as_str(),
-        cursor.cycle,
-        cursor.attempt
+    // After a rollback, durable history must branch instead of overwriting the
+    // abandoned payload/artifact files from the previous branch.
+    let payload_id = history_record_base_id(
+        run_id,
+        stage_id,
+        cursor,
+        snapshot.rollback_point_meta.rollback_count,
     );
     let artifact_id = format!("{}-artifact", payload_id);
 

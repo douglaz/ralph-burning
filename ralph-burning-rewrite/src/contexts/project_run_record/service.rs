@@ -401,7 +401,8 @@ pub fn run_history(
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<RunHistoryView> {
-    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
     let (payloads, artifacts) = queries::filter_history_records(
         &events,
         artifact_port.list_payloads(base_dir, project_id)?,
@@ -427,7 +428,8 @@ pub fn run_tail(
     project_id: &ProjectId,
     include_logs: bool,
 ) -> AppResult<RunTailView> {
-    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
     let (payloads, artifacts) = queries::filter_history_records(
         &events,
         artifact_port.list_payloads(base_dir, project_id)?,
@@ -459,7 +461,8 @@ pub fn list_rollback_points(
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<Vec<RollbackPoint>> {
-    let events = queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
     let visible_ids = visible_rollback_ids(&events);
     let mut points = rollback_store
         .list_rollback_points(base_dir, project_id)?
@@ -552,8 +555,6 @@ pub fn perform_rollback(
         rollback_point.cycle
     );
 
-    run_write_port.write_run_snapshot(base_dir, project_id, &restored_snapshot)?;
-
     let sequence = journal::last_sequence(&events) + 1;
     let rollback_event = journal::rollback_performed_event(
         sequence,
@@ -567,16 +568,31 @@ pub fn perform_rollback(
         restored_snapshot.rollback_point_meta.rollback_count,
     );
     let rollback_line = journal::serialize_event(&rollback_event)?;
-    journal_port.append_event(base_dir, project_id, &rollback_line)?;
+    run_write_port.write_run_snapshot(base_dir, project_id, &restored_snapshot)?;
+    if let Err(append_error) = journal_port.append_event(base_dir, project_id, &rollback_line) {
+        if let Err(restore_error) =
+            run_write_port.write_run_snapshot(base_dir, project_id, &current_snapshot)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "rollback journal append failed after snapshot write: {append_error}; failed to restore the previous snapshot: {restore_error}"
+                ),
+            });
+        }
+        return Err(append_error);
+    }
 
     if hard {
-        let git_sha = rollback_point.git_sha.as_deref().ok_or_else(|| {
-            AppError::RollbackGitResetFailed {
-                project_id: project_id.to_string(),
-                rollback_id: rollback_point.rollback_id.clone(),
-                details: "rollback point does not record a git commit SHA".to_owned(),
-            }
-        })?;
+        let git_sha =
+            rollback_point
+                .git_sha
+                .as_deref()
+                .ok_or_else(|| AppError::RollbackGitResetFailed {
+                    project_id: project_id.to_string(),
+                    rollback_id: rollback_point.rollback_id.clone(),
+                    details: "rollback point does not record a git commit SHA".to_owned(),
+                })?;
 
         let reset_port = reset_port.ok_or_else(|| AppError::RollbackGitResetFailed {
             project_id: project_id.to_string(),
@@ -607,7 +623,10 @@ fn visible_rollback_ids(events: &[JournalEvent]) -> std::collections::HashSet<&s
         .iter()
         .filter(|event| event.event_type == JournalEventType::RollbackCreated)
         .filter_map(|event| {
-            event.details.get("rollback_id").and_then(|value| value.as_str())
+            event
+                .details
+                .get("rollback_id")
+                .and_then(|value| value.as_str())
         })
         .collect()
 }

@@ -1610,7 +1610,10 @@ fn run_rollback_soft_updates_snapshot_and_hides_rolled_back_history() {
     let stdout = String::from_utf8_lossy(&history.stdout);
     assert!(stdout.contains("RollbackPerformed"));
     assert!(stdout.contains("p1"));
-    assert!(!stdout.contains("p2"), "rolled-back payload should be hidden");
+    assert!(
+        !stdout.contains("p2"),
+        "rolled-back payload should be hidden"
+    );
 }
 
 #[test]
