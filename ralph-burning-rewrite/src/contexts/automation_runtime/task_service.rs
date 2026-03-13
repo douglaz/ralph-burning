@@ -167,7 +167,14 @@ impl DaemonTaskService {
         task.transition_to(TaskStatus::Claimed, now)?;
         task.attach_lease(lease.lease_id.clone());
         store.write_task(base_dir, &task).map_err(|error| {
-            let _ = LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
+            let _ = LeaseService::release(
+                store,
+                worktree,
+                base_dir,
+                repo_root,
+                &lease,
+                ReleaseMode::Idempotent,
+            );
             error
         })?;
 
@@ -188,17 +195,21 @@ impl DaemonTaskService {
             // Pending if physical lease/worktree/writer-lock cleanup fully succeeds.
             // If physical cleanup fails, persist a terminal Failed state so the
             // durable model never hides retained claim resources.
-            let release_result =
-                LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
+            let release_result = LeaseService::release(
+                store,
+                worktree,
+                base_dir,
+                repo_root,
+                &lease,
+                ReleaseMode::Idempotent,
+            );
             let resources_released = release_result
                 .as_ref()
                 .map_or(false, |r| r.resources_released);
 
             if resources_released {
                 // Physical resources released — safe to restore Pending.
-                let release_journal_err = release_result
-                    .ok()
-                    .and_then(|r| r.journal_error);
+                let release_journal_err = release_result.ok().and_then(|r| r.journal_error);
                 let rollback_result = (|| -> AppResult<()> {
                     task.status = TaskStatus::Pending;
                     task.clear_lease();
@@ -287,8 +298,14 @@ impl DaemonTaskService {
         ) {
             // TaskClaimed journal failed: attempt lease release and mark failed.
             // Only clear lease_id if physical resources were actually released.
-            let release_result =
-                LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
+            let release_result = LeaseService::release(
+                store,
+                worktree,
+                base_dir,
+                repo_root,
+                &lease,
+                ReleaseMode::Idempotent,
+            );
             let resources_released = release_result
                 .as_ref()
                 .map_or(false, |r| r.resources_released);
@@ -471,14 +488,12 @@ impl DaemonTaskService {
         // If the routing_command is a requirements command, don't pass it to flow
         // resolution — requirements commands are orthogonal to flow routing.
         // Flow precedence still applies via labels and repo default.
-        let flow_routing_cmd = issue.routing_command.as_deref().filter(|cmd| {
-            !super::watcher::is_requirements_command(cmd)
-        });
-        let resolution = routing_engine.resolve_flow(
-            flow_routing_cmd,
-            &issue.labels,
-            default_flow,
-        )?;
+        let flow_routing_cmd = issue
+            .routing_command
+            .as_deref()
+            .filter(|cmd| !super::watcher::is_requirements_command(cmd));
+        let resolution =
+            routing_engine.resolve_flow(flow_routing_cmd, &issue.labels, default_flow)?;
 
         let task_id = format!(
             "watch-{}-{}",
@@ -491,10 +506,7 @@ impl DaemonTaskService {
         let task = DaemonTask {
             task_id,
             issue_ref: issue_ref.clone(),
-            project_id: format!(
-                "watched-{}",
-                issue_ref.replace('/', "-").replace('#', "")
-            ),
+            project_id: format!("watched-{}", issue_ref.replace('/', "-").replace('#', "")),
             project_name: Some(issue.title.clone()),
             prompt: Some(issue.body.clone()),
             routing_command: issue.routing_command.clone(),

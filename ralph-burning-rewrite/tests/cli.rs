@@ -3997,9 +3997,15 @@ fn conformance_list_validates_no_duplicate_ids() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Total:"), "output should include a total count");
+    assert!(
+        stdout.contains("Total:"),
+        "output should include a total count"
+    );
     assert!(stdout.contains("SC-START-001"), "should list SC-START-001");
-    assert!(stdout.contains("workspace-init-fresh"), "should list workspace-init-fresh");
+    assert!(
+        stdout.contains("workspace-init-fresh"),
+        "should list workspace-init-fresh"
+    );
 }
 
 #[test]
@@ -4026,7 +4032,10 @@ fn conformance_list_fails_on_duplicate_ids() {
     .expect("write duplicate feature file");
 
     let output = Command::new(binary())
-        .env("RALPH_BURNING_TEST_FEATURES_DIR", features_path.to_str().unwrap())
+        .env(
+            "RALPH_BURNING_TEST_FEATURES_DIR",
+            features_path.to_str().unwrap(),
+        )
         .args(["conformance", "list"])
         .output()
         .expect("run conformance list with duplicate");
@@ -4074,7 +4083,10 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     // Force a specific early scenario to fail, run the full suite, and verify
     // fail-fast behavior: non-zero exit, failed=1, not_run > 0.
     let output = Command::new(binary())
-        .env("RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR", "workspace-init-fresh")
+        .env(
+            "RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR",
+            "workspace-init-fresh",
+        )
         .args(["conformance", "run"])
         .output()
         .expect("run conformance with forced failure");
@@ -4106,7 +4118,8 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     );
     // Verify not_run count is > 0 (fail-fast stopped remaining scenarios)
     // Parse the Not run count
-    let not_run_line = stderr.lines()
+    let not_run_line = stderr
+        .lines()
         .find(|l| l.contains("Not run:"))
         .unwrap_or("");
     let not_run_count: usize = not_run_line
@@ -4124,7 +4137,12 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
 fn conformance_run_failure_exits_non_zero_with_single_report() {
     // Unknown filter causes non-zero exit before execution
     let output = Command::new(binary())
-        .args(["conformance", "run", "--filter", "NONEXISTENT-FAIL-FAST-TEST"])
+        .args([
+            "conformance",
+            "run",
+            "--filter",
+            "NONEXISTENT-FAIL-FAST-TEST",
+        ])
         .output()
         .expect("run conformance with unknown filter");
 
@@ -4323,8 +4341,7 @@ fn cli_run_start_fails_when_writer_lock_held() {
     // Pre-create the writer lock file
     let lock_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
     fs::create_dir_all(&lock_dir).expect("create lease dir");
-    fs::write(lock_dir.join("writer-lock-held.lock"), "held-by-test")
-        .expect("write lock");
+    fs::write(lock_dir.join("writer-lock-held.lock"), "held-by-test").expect("write lock");
 
     let output = Command::new(binary())
         .args(["run", "start"])
@@ -4423,7 +4440,10 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run reconcile");
-    assert!(output.status.success(), "reconcile should succeed with no leases");
+    assert!(
+        output.status.success(),
+        "reconcile should succeed with no leases"
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(

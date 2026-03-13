@@ -4,7 +4,9 @@ use std::process::Command;
 
 use super::runner::ScenarioExecutor;
 
-use crate::contexts::workflow_composition::contracts::{contract_for_stage, all_contracts, ContractFamily};
+use crate::contexts::workflow_composition::contracts::{
+    all_contracts, contract_for_stage, ContractFamily,
+};
 use crate::shared::domain::StageId;
 use crate::shared::error::ContractError;
 
@@ -18,10 +20,7 @@ struct TempWorkspace {
 
 impl TempWorkspace {
     fn new() -> Result<Self, String> {
-        let path = std::env::temp_dir().join(format!(
-            "ralph-conformance-{}",
-            uuid::Uuid::new_v4()
-        ));
+        let path = std::env::temp_dir().join(format!("ralph-conformance-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&path).map_err(|e| format!("create temp workspace: {e}"))?;
         Ok(Self { path })
     }
@@ -58,17 +57,15 @@ fn run_cli(args: &[&str], cwd: &Path) -> Result<CmdOutput, String> {
     run_cli_with_env(args, cwd, &[])
 }
 
-fn run_cli_with_env(
-    args: &[&str],
-    cwd: &Path,
-    env: &[(&str, &str)],
-) -> Result<CmdOutput, String> {
+fn run_cli_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Result<CmdOutput, String> {
     let mut cmd = Command::new(binary_path());
     cmd.args(args).current_dir(cwd);
     for (k, v) in env {
         cmd.env(k, v);
     }
-    let output = cmd.output().map_err(|e| format!("failed to run CLI: {e}"))?;
+    let output = cmd
+        .output()
+        .map_err(|e| format!("failed to run CLI: {e}"))?;
 
     Ok(CmdOutput {
         success: output.status.success(),
@@ -82,9 +79,9 @@ fn run_cli_with_env(
 // ---------------------------------------------------------------------------
 
 fn read_journal(ws: &TempWorkspace, project_id: &str) -> Result<Vec<serde_json::Value>, String> {
-    let path = ws
-        .path()
-        .join(format!(".ralph-burning/projects/{project_id}/journal.ndjson"));
+    let path = ws.path().join(format!(
+        ".ralph-burning/projects/{project_id}/journal.ndjson"
+    ));
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read journal: {e}"))?;
     content
         .lines()
@@ -93,10 +90,7 @@ fn read_journal(ws: &TempWorkspace, project_id: &str) -> Result<Vec<serde_json::
         .collect()
 }
 
-fn read_run_snapshot(
-    ws: &TempWorkspace,
-    project_id: &str,
-) -> Result<serde_json::Value, String> {
+fn read_run_snapshot(ws: &TempWorkspace, project_id: &str) -> Result<serde_json::Value, String> {
     let path = ws
         .path()
         .join(format!(".ralph-burning/projects/{project_id}/run.json"));
@@ -105,9 +99,9 @@ fn read_run_snapshot(
 }
 
 fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
-    let dir = ws
-        .path()
-        .join(format!(".ralph-burning/projects/{project_id}/history/payloads"));
+    let dir = ws.path().join(format!(
+        ".ralph-burning/projects/{project_id}/history/payloads"
+    ));
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read payloads dir: {e}"))?
         .filter_map(|e| e.ok())
@@ -117,9 +111,9 @@ fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, St
 }
 
 fn count_artifact_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
-    let dir = ws
-        .path()
-        .join(format!(".ralph-burning/projects/{project_id}/history/artifacts"));
+    let dir = ws.path().join(format!(
+        ".ralph-burning/projects/{project_id}/history/artifacts"
+    ));
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read artifacts dir: {e}"))?
         .filter_map(|e| e.ok())
@@ -131,7 +125,11 @@ fn count_artifact_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, S
 fn journal_event_types(events: &[serde_json::Value]) -> Vec<String> {
     events
         .iter()
-        .filter_map(|e| e.get("event_type").and_then(|v| v.as_str()).map(String::from))
+        .filter_map(|e| {
+            e.get("event_type")
+                .and_then(|v| v.as_str())
+                .map(String::from)
+        })
         .collect()
 }
 
@@ -148,7 +146,10 @@ fn assert_not_contains(haystack: &str, needle: &str, context: &str) -> Result<()
 
 fn assert_success(out: &CmdOutput) -> Result<(), String> {
     if !out.success {
-        return Err(format!("expected success, got failure. stderr: {}", out.stderr));
+        return Err(format!(
+            "expected success, got failure. stderr: {}",
+            out.stderr
+        ));
     }
     Ok(())
 }
@@ -162,7 +163,9 @@ fn assert_failure(out: &CmdOutput) -> Result<(), String> {
 
 fn assert_contains(haystack: &str, needle: &str, context: &str) -> Result<(), String> {
     if !haystack.contains(needle) {
-        return Err(format!("{context}: expected to contain '{needle}', got: {haystack}"));
+        return Err(format!(
+            "{context}: expected to contain '{needle}', got: {haystack}"
+        ));
     }
     Ok(())
 }
@@ -197,7 +200,8 @@ status_summary = "created"
             r#"{{"sequence":1,"timestamp":"2026-03-11T19:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"{flow}"}}}}"#,
         ),
     ).expect("write journal");
-    std::fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#).expect("write sessions");
+    std::fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#)
+        .expect("write sessions");
     for subdir in &[
         "history/payloads",
         "history/artifacts",
@@ -385,7 +389,10 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "workspace-config-set-invalid-value", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["config", "set", "default_flow", "unknown_flow"], ws.path())?;
+        let out = run_cli(
+            &["config", "set", "default_flow", "unknown_flow"],
+            ws.path(),
+        )?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -410,7 +417,9 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&script_path).map_err(|e| e.to_string())?.permissions();
+            let mut perms = std::fs::metadata(&script_path)
+                .map_err(|e| e.to_string())?
+                .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&script_path, perms).map_err(|e| e.to_string())?;
         }
@@ -421,7 +430,10 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
             .output()
             .map_err(|e| format!("run config edit: {e}"))?;
         if !out.status.success() {
-            return Err(format!("config edit failed: {}", String::from_utf8_lossy(&out.stderr)));
+            return Err(format!(
+                "config edit failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
         }
         let toml = std::fs::read_to_string(ws.path().join(".ralph-burning/workspace.toml"))
             .map_err(|e| e.to_string())?;
@@ -436,11 +448,14 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             &script_path,
             "#!/bin/sh\necho 'not valid toml {{{' > \"$1\"\n",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&script_path).map_err(|e| e.to_string())?.permissions();
+            let mut perms = std::fs::metadata(&script_path)
+                .map_err(|e| e.to_string())?
+                .permissions();
             perms.set_mode(0o755);
             std::fs::set_permissions(&script_path, perms).map_err(|e| e.to_string())?;
         }
@@ -555,10 +570,21 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         // Write a prompt file
-        std::fs::write(ws.path().join("prompt.md"), "# Test prompt\n").map_err(|e| e.to_string())?;
+        std::fs::write(ws.path().join("prompt.md"), "# Test prompt\n")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(
-            &["project", "create", "--id", "test-proj", "--name", "Test Project",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "test-proj",
+                "--name",
+                "Test Project",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_success(&out)?;
@@ -583,13 +609,33 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         std::fs::write(ws.path().join("prompt.md"), "# Test\n").map_err(|e| e.to_string())?;
         run_cli(
-            &["project", "create", "--id", "dup", "--name", "First",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "dup",
+                "--name",
+                "First",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         let out = run_cli(
-            &["project", "create", "--id", "dup", "--name", "Second",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "dup",
+                "--name",
+                "Second",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_failure(&out)?;
@@ -603,8 +649,10 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "fixed-flow", "standard");
         // Verify the project.toml has flow = standard
         let toml = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/fixed-flow/project.toml"),
-        ).map_err(|e| e.to_string())?;
+            ws.path()
+                .join(".ralph-burning/projects/fixed-flow/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         assert_contains(&toml, "flow = \"standard\"", "project.toml")?;
         Ok(())
     });
@@ -679,9 +727,11 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         // Set up an active run with stage_cursor (canonical shape)
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/running-proj/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/running-proj/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "running-proj"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "active run", "stderr")?;
@@ -693,14 +743,30 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         std::fs::write(ws.path().join("prompt.md"), "# Atomic\n").map_err(|e| e.to_string())?;
         let out = run_cli(
-            &["project", "create", "--id", "atomic-proj", "--name", "Atomic",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "atomic-proj",
+                "--name",
+                "Atomic",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_success(&out)?;
         // If successful, all canonical files should exist
         let dir = ws.path().join(".ralph-burning/projects/atomic-proj");
-        for f in &["project.toml", "run.json", "journal.ndjson", "sessions.json", "prompt.md"] {
+        for f in &[
+            "project.toml",
+            "run.json",
+            "journal.ndjson",
+            "sessions.json",
+            "prompt.md",
+        ] {
             if !dir.join(f).is_file() {
                 return Err(format!("missing canonical file: {f}"));
             }
@@ -718,8 +784,18 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&config_path, updated).map_err(|e| e.to_string())?;
         std::fs::write(ws.path().join("prompt.md"), "# Test\n").map_err(|e| e.to_string())?;
         let out = run_cli(
-            &["project", "create", "--id", "ver-proj", "--name", "Ver",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "ver-proj",
+                "--name",
+                "Ver",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_failure(&out)?;
@@ -732,8 +808,18 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         std::fs::write(ws.path().join("prompt.md"), "# Test\n").map_err(|e| e.to_string())?;
         let out = run_cli(
-            &["project", "create", "--id", "bad-flow", "--name", "Bad",
-              "--prompt", "prompt.md", "--flow", "invalid_flow"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "bad-flow",
+                "--name",
+                "Bad",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "invalid_flow",
+            ],
             ws.path(),
         )?;
         assert_failure(&out)?;
@@ -746,8 +832,18 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         std::fs::write(ws.path().join("prompt.md"), "# Test\n").map_err(|e| e.to_string())?;
         run_cli(
-            &["project", "create", "--id", "no-select", "--name", "No Select",
-              "--prompt", "prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "no-select",
+                "--name",
+                "No Select",
+                "--prompt",
+                "prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         let ptr_path = ws.path().join(".ralph-burning/active-project");
@@ -778,9 +874,12 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "schema-proj", "standard");
         let run_json = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/schema-proj/run.json"),
-        ).map_err(|e| e.to_string())?;
-        let parsed: serde_json::Value = serde_json::from_str(&run_json).map_err(|e| e.to_string())?;
+            ws.path()
+                .join(".ralph-burning/projects/schema-proj/run.json"),
+        )
+        .map_err(|e| e.to_string())?;
+        let parsed: serde_json::Value =
+            serde_json::from_str(&run_json).map_err(|e| e.to_string())?;
         // Verify required fields exist in the run snapshot
         if parsed.get("status").is_none() {
             return Err("run.json missing 'status' field".into());
@@ -798,8 +897,11 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-show", "standard");
-        std::fs::remove_file(ws.path().join(".ralph-burning/projects/corrupt-show/project.toml"))
-            .map_err(|e| e.to_string())?;
+        std::fs::remove_file(
+            ws.path()
+                .join(".ralph-burning/projects/corrupt-show/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "corrupt-show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -809,8 +911,11 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-list", "standard");
-        std::fs::remove_file(ws.path().join(".ralph-burning/projects/corrupt-list/project.toml"))
-            .map_err(|e| e.to_string())?;
+        std::fs::remove_file(
+            ws.path()
+                .join(".ralph-burning/projects/corrupt-list/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "list"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -820,8 +925,11 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "corrupt-del", "standard");
-        std::fs::remove_file(ws.path().join(".ralph-burning/projects/corrupt-del/project.toml"))
-            .map_err(|e| e.to_string())?;
+        std::fs::remove_file(
+            ws.path()
+                .join(".ralph-burning/projects/corrupt-del/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "corrupt-del"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -830,16 +938,29 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-PROJ-019", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        std::fs::write(ws.path().join("my-prompt.md"), "# My prompt\n").map_err(|e| e.to_string())?;
+        std::fs::write(ws.path().join("my-prompt.md"), "# My prompt\n")
+            .map_err(|e| e.to_string())?;
         let out = run_cli(
-            &["project", "create", "--id", "ref-proj", "--name", "Ref",
-              "--prompt", "my-prompt.md", "--flow", "standard"],
+            &[
+                "project",
+                "create",
+                "--id",
+                "ref-proj",
+                "--name",
+                "Ref",
+                "--prompt",
+                "my-prompt.md",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_success(&out)?;
         let toml = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/ref-proj/project.toml"),
-        ).map_err(|e| e.to_string())?;
+            ws.path()
+                .join(".ralph-burning/projects/ref-proj/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         assert_contains(&toml, "prompt_reference", "project.toml")?;
         Ok(())
     });
@@ -860,9 +981,11 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         create_project_fixture(ws.path(), "bad-schema", "standard");
         // Write invalid project.toml
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/bad-schema/project.toml"),
+            ws.path()
+                .join(".ralph-burning/projects/bad-schema/project.toml"),
             "this is not valid project toml",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let _select = run_cli(&["project", "select", "bad-schema"], ws.path())?;
         // Select should succeed (it just writes the pointer), but show should fail
         select_project(ws.path(), "bad-schema");
@@ -908,7 +1031,9 @@ fn register_stage_contracts(m: &mut HashMap<String, ScenarioExecutor>) {
             "proposed_work": [{"order": 1, "summary": "Task 1", "details": "Details for task 1"}],
             "readiness": {"ready": true, "risks": []}
         });
-        let bundle = contract.evaluate(&payload).map_err(|e| format!("contract evaluation failed: {e}"))?;
+        let bundle = contract
+            .evaluate(&payload)
+            .map_err(|e| format!("contract evaluation failed: {e}"))?;
         if bundle.artifact.is_empty() {
             return Err("expected non-empty rendered artifact".into());
         }
@@ -924,7 +1049,9 @@ fn register_stage_contracts(m: &mut HashMap<String, ScenarioExecutor>) {
             "validation_evidence": ["Tests pass"],
             "outstanding_risks": []
         });
-        let bundle = contract.evaluate(&payload).map_err(|e| format!("contract evaluation failed: {e}"))?;
+        let bundle = contract
+            .evaluate(&payload)
+            .map_err(|e| format!("contract evaluation failed: {e}"))?;
         if bundle.artifact.is_empty() {
             return Err("expected non-empty rendered artifact".into());
         }
@@ -940,7 +1067,9 @@ fn register_stage_contracts(m: &mut HashMap<String, ScenarioExecutor>) {
             "findings_or_gaps": [],
             "follow_up_or_amendments": []
         });
-        let bundle = contract.evaluate(&payload).map_err(|e| format!("contract evaluation failed: {e}"))?;
+        let bundle = contract
+            .evaluate(&payload)
+            .map_err(|e| format!("contract evaluation failed: {e}"))?;
         if bundle.artifact.is_empty() {
             return Err("expected non-empty rendered artifact".into());
         }
@@ -994,7 +1123,8 @@ fn register_stage_contracts(m: &mut HashMap<String, ScenarioExecutor>) {
         let result = contract.evaluate(&payload);
         match result {
             Err(ref e @ ContractError::QaReviewOutcome { .. }) => {
-                if e.failure_class() != crate::shared::domain::FailureClass::QaReviewOutcomeFailure {
+                if e.failure_class() != crate::shared::domain::FailureClass::QaReviewOutcomeFailure
+                {
                     return Err("expected qa_review_outcome_failure class".into());
                 }
                 Ok(())
@@ -1016,7 +1146,9 @@ fn register_stage_contracts(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         for c in &contracts {
             match c.family {
-                ContractFamily::Planning | ContractFamily::Execution | ContractFamily::Validation => {}
+                ContractFamily::Planning
+                | ContractFamily::Execution
+                | ContractFamily::Validation => {}
             }
         }
         Ok(())
@@ -1091,7 +1223,12 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify journal contains expected event types
         let events = read_journal(&ws, "alpha")?;
         let types = journal_event_types(&events);
-        for expected in &["run_started", "stage_entered", "stage_completed", "run_completed"] {
+        for expected in &[
+            "run_started",
+            "stage_entered",
+            "stage_completed",
+            "run_completed",
+        ] {
             if !types.iter().any(|t| t == expected) {
                 return Err(format!("journal missing event type: {expected}"));
             }
@@ -1125,7 +1262,12 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify journal records quick_dev stages in sequence
         let events = read_journal(&ws, "beta")?;
         let types = journal_event_types(&events);
-        for expected in &["run_started", "stage_entered", "stage_completed", "run_completed"] {
+        for expected in &[
+            "run_started",
+            "stage_entered",
+            "stage_completed",
+            "run_completed",
+        ] {
             if !types.iter().any(|t| t == expected) {
                 return Err(format!("journal missing event type: {expected}"));
             }
@@ -1134,7 +1276,9 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify 4 quick_dev stages worth of payloads/artifacts
         let payloads = count_payload_files(&ws, "beta")?;
         if payloads < 4 {
-            return Err(format!("expected >= 4 payloads for quick_dev, got {payloads}"));
+            return Err(format!(
+                "expected >= 4 payloads for quick_dev, got {payloads}"
+            ));
         }
         Ok(())
     });
@@ -1146,7 +1290,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/gamma/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "not_started", "stderr")?;
@@ -1160,7 +1305,8 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/delta/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "not_started", "stderr")?;
@@ -1203,7 +1349,10 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         // Disable prompt review
-        run_cli(&["config", "set", "prompt_review.enabled", "false"], ws.path())?;
+        run_cli(
+            &["config", "set", "prompt_review.enabled", "false"],
+            ws.path(),
+        )?;
         let out = run_cli(&["config", "get", "prompt_review.enabled"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "false", "stdout")?;
@@ -1259,7 +1408,10 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run snapshot shows failed status
         let snapshot = read_run_snapshot(&ws, "fail-record")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "failed" {
             return Err(format!("expected failed status, got '{status}'"));
         }
@@ -1270,7 +1422,11 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "runtime-logs", "standard")?;
         // Runtime logs directory exists but is separate from durable state
-        if !ws.path().join(".ralph-burning/projects/runtime-logs/runtime/logs").is_dir() {
+        if !ws
+            .path()
+            .join(".ralph-burning/projects/runtime-logs/runtime/logs")
+            .is_dir()
+        {
             return Err("runtime/logs directory should exist".into());
         }
         Ok(())
@@ -1280,8 +1436,10 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "seq-check", "standard")?;
         let journal = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/seq-check/journal.ndjson"),
-        ).map_err(|e| e.to_string())?;
+            ws.path()
+                .join(".ralph-burning/projects/seq-check/journal.ndjson"),
+        )
+        .map_err(|e| e.to_string())?;
         let first_event: serde_json::Value =
             serde_json::from_str(journal.lines().next().unwrap_or("{}"))
                 .map_err(|e| e.to_string())?;
@@ -1337,7 +1495,10 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         // Disable prompt_review
-        run_cli(&["config", "set", "prompt_review.enabled", "false"], ws.path())?;
+        run_cli(
+            &["config", "set", "prompt_review.enabled", "false"],
+            ws.path(),
+        )?;
         create_project_fixture(ws.path(), "november", "standard");
         select_project(ws.path(), "november");
 
@@ -1354,10 +1515,14 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let payloads = count_payload_files(&ws, "november")?;
         let artifacts = count_artifact_files(&ws, "november")?;
         if payloads != 7 {
-            return Err(format!("expected 7 payloads (no prompt_review), got {payloads}"));
+            return Err(format!(
+                "expected 7 payloads (no prompt_review), got {payloads}"
+            ));
         }
         if artifacts != 7 {
-            return Err(format!("expected 7 artifacts (no prompt_review), got {artifacts}"));
+            return Err(format!(
+                "expected 7 artifacts (no prompt_review), got {artifacts}"
+            ));
         }
 
         // Verify journal contains no prompt_review events
@@ -1373,9 +1538,9 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify first stage_entered event is for "planning"
-        let first_stage_entered = events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-        });
+        let first_stage_entered = events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered"));
         if let Some(event) = first_stage_entered {
             let stage = event
                 .get("details")
@@ -1406,7 +1571,9 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "mid-fail", "standard")?;
         // Verify no partial durable history in a fresh project
-        let history_dir = ws.path().join(".ralph-burning/projects/mid-fail/history/payloads");
+        let history_dir = ws
+            .path()
+            .join(".ralph-burning/projects/mid-fail/history/payloads");
         let entries = std::fs::read_dir(&history_dir).map_err(|e| e.to_string())?;
         if entries.count() > 0 {
             return Err("fresh project should have no payload history".into());
@@ -1483,7 +1650,10 @@ fn register_run_start_quick_dev(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-QD-START-008", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        run_cli(&["config", "set", "prompt_review.enabled", "true"], ws.path())?;
+        run_cli(
+            &["config", "set", "prompt_review.enabled", "true"],
+            ws.path(),
+        )?;
         // quick_dev does not include prompt_review regardless of config
         let out = run_cli(&["flow", "show", "quick_dev"], ws.path())?;
         assert_success(&out)?;
@@ -1628,7 +1798,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rq-active/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "running", "stdout")?;
@@ -1665,9 +1836,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-tail-logs", "standard")?;
         // Create a runtime log
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-tail-logs/runtime/logs/latest.log"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-tail-logs/runtime/logs/latest.log"),
             "debug: test log line\n",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail", "--logs"], ws.path())?;
         assert_success(&out)?;
         Ok(())
@@ -1677,9 +1850,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-corrupt/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-corrupt/run.json"),
             "not json",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1689,9 +1864,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-journal-corrupt", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-journal-corrupt/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-journal-corrupt/journal.ndjson"),
             "not json\n",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1727,8 +1904,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-012", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-no-journal", "standard")?;
-        std::fs::remove_file(ws.path().join(".ralph-burning/projects/rq-no-journal/journal.ndjson"))
-            .map_err(|e| e.to_string())?;
+        std::fs::remove_file(
+            ws.path()
+                .join(".ralph-burning/projects/rq-no-journal/journal.ndjson"),
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1755,9 +1935,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-completed", "standard")?;
         let run_json = r#"{"active_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-completed/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-completed/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "completed", "stdout")?;
@@ -1771,7 +1953,8 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rq-failed/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "failed", "stdout")?;
@@ -1784,9 +1967,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         // Write semantically inconsistent run.json (active_run but status is completed)
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-inconsist/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-inconsist/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         // Should fail fast on semantic inconsistency
         assert_failure(&out)?;
@@ -1799,9 +1984,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rq-del-paused", "standard")?;
         let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-del-paused/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-del-paused/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "delete", "rq-del-paused"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1811,9 +1998,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-toml", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-corrupt-toml/project.toml"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-corrupt-toml/project.toml"),
             "not valid toml {{{",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1823,9 +2012,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-hist", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-corrupt-hist/project.toml"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-corrupt-hist/project.toml"),
             "not valid toml {{{",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1835,9 +2026,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-corrupt-tail", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-corrupt-tail/project.toml"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-corrupt-tail/project.toml"),
             "not valid toml {{{",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1847,9 +2040,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-show-corrupt", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-show-corrupt/project.toml"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-show-corrupt/project.toml"),
             "not valid toml {{{",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1859,8 +2054,10 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-missing-toml", "standard")?;
         std::fs::remove_file(
-            ws.path().join(".ralph-burning/projects/rq-missing-toml/project.toml"),
-        ).map_err(|e| e.to_string())?;
+            ws.path()
+                .join(".ralph-burning/projects/rq-missing-toml/project.toml"),
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "status"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1870,9 +2067,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-show", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-empty-j-show/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-empty-j-show/journal.ndjson"),
             "",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["project", "show", "rq-empty-j-show"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1882,9 +2081,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-hist", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-empty-j-hist/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-empty-j-hist/journal.ndjson"),
             "",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "history"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1894,9 +2095,11 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-empty-j-tail", "standard")?;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rq-empty-j-tail/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/rq-empty-j-tail/journal.ndjson"),
             "",
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail"], ws.path())?;
         assert_failure(&out)?;
         Ok(())
@@ -1917,7 +2120,9 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-RUN-028", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rq-tail-newest", "standard")?;
-        let log_dir = ws.path().join(".ralph-burning/projects/rq-tail-newest/runtime/logs");
+        let log_dir = ws
+            .path()
+            .join(".ralph-burning/projects/rq-tail-newest/runtime/logs");
         std::fs::write(log_dir.join("old.log"), "old log\n").map_err(|e| e.to_string())?;
         std::fs::write(log_dir.join("newest.log"), "newest log\n").map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail", "--logs"], ws.path())?;
@@ -1996,7 +2201,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run completed with completion_rounds >= 2
         let snapshot = read_run_snapshot(&ws, "cr-alpha")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed status, got '{status}'"));
         }
@@ -2060,12 +2268,15 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("journal missing completion_round_advanced event".into());
         }
         if let Some(evt) = round_event {
-            let source = evt.get("details")
+            let source = evt
+                .get("details")
                 .and_then(|d| d.get("source_stage"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if source != "acceptance_qa" {
-                return Err(format!("expected source_stage=acceptance_qa, got '{source}'"));
+                return Err(format!(
+                    "expected source_stage=acceptance_qa, got '{source}'"
+                ));
             }
         }
         Ok(())
@@ -2095,7 +2306,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run snapshot shows failed
         let snapshot = read_run_snapshot(&ws, "cr-reject")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "failed" {
             return Err(format!("expected failed status, got '{status}'"));
         }
@@ -2104,7 +2318,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let events = read_journal(&ws, "cr-reject")?;
         let types = journal_event_types(&events);
         if types.iter().any(|t| t == "completion_round_advanced") {
-            return Err("journal should NOT contain completion_round_advanced for rejected outcome".into());
+            return Err(
+                "journal should NOT contain completion_round_advanced for rejected outcome".into(),
+            );
         }
         Ok(())
     });
@@ -2119,7 +2335,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run completes with completion_rounds=1 (no advancement needed)
         let snapshot = read_run_snapshot(&ws, "cr-advance")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed status, got '{status}'"));
         }
@@ -2135,9 +2354,7 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let events = read_journal(&ws, "cr-advance")?;
         let stage_sequence: Vec<String> = events
             .iter()
-            .filter(|e| {
-                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
+            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered"))
             .filter_map(|e| {
                 e.get("details")
                     .and_then(|d| d.get("stage_id"))
@@ -2189,7 +2406,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|p| p.as_array())
             .map_or(0, |a| a.len());
         if queue_pending > 0 {
-            return Err(format!("expected empty amendment_queue for non-late stage, got {queue_pending}"));
+            return Err(format!(
+                "expected empty amendment_queue for non-late stage, got {queue_pending}"
+            ));
         }
         let events = read_journal(&ws, "cr-non-late")?;
         let types = journal_event_types(&events);
@@ -2258,19 +2477,31 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&out)?;
 
         let events = read_journal(&ws, "cr-multi")?;
-        let round_events: Vec<_> = events.iter()
-            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("completion_round_advanced"))
+        let round_events: Vec<_> = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("completion_round_advanced")
+            })
             .collect();
         if round_events.len() < 2 {
-            return Err(format!("expected >= 2 completion_round_advanced events, got {}", round_events.len()));
+            return Err(format!(
+                "expected >= 2 completion_round_advanced events, got {}",
+                round_events.len()
+            ));
         }
 
         let snapshot = read_run_snapshot(&ws, "cr-multi")?;
-        let rounds = snapshot.get("completion_rounds").and_then(|v| v.as_u64()).unwrap_or(0);
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if rounds < 3 {
             return Err(format!("expected completion_rounds >= 3, got {rounds}"));
         }
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed, got '{status}'"));
         }
@@ -2283,7 +2514,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "cr-guard", "standard")?;
 
         // Pre-plant a durable amendment file on disk
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-guard/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-guard/amendments");
         std::fs::write(
             amend_dir.join("orphaned-amendment.json"),
             r#"{"amendment_id":"orphan-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Orphan: Stale amendment","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -2313,12 +2546,16 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         // but NO amendment files on disk.
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[{"amendment_id":"snap-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Snap amend: in snapshot only","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}],"processed_count":0},"status_summary":"failed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/cr-snap-guard/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/cr-snap-guard/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
-        let journal_path = ws.path().join(".ralph-burning/projects/cr-snap-guard/journal.ndjson");
+        let journal_path = ws
+            .path()
+            .join(".ralph-burning/projects/cr-snap-guard/journal.ndjson");
         let mut journal = std::fs::read_to_string(&journal_path).map_err(|e| e.to_string())?;
         journal.push('\n');
         journal.push_str(r#"{"sequence":2,"timestamp":"2026-03-11T19:01:00Z","event_type":"run_started","details":{"run_id":"run-snap-1","first_stage":"planning"}}"#);
@@ -2327,7 +2564,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&journal_path, journal).map_err(|e| e.to_string())?;
 
         // Verify no amendment files exist on disk
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-snap-guard/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-snap-guard/amendments");
         let disk_files: Vec<_> = std::fs::read_dir(&amend_dir)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok())
@@ -2341,14 +2580,18 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run completed — amendments were processed via planning
         let snapshot = read_run_snapshot(&ws, "cr-snap-guard")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!(
                 "expected completed after resume with snapshot amendments, got '{status}'"
             ));
         }
         // Amendments must be drained from snapshot queue
-        let pending = snapshot.get("amendment_queue")
+        let pending = snapshot
+            .get("amendment_queue")
             .and_then(|q| q.get("pending"))
             .and_then(|p| p.as_array())
             .map(|a| a.len())
@@ -2359,7 +2602,8 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
         // processed_count must reflect the drained amendment
-        let processed = snapshot.get("amendment_queue")
+        let processed = snapshot
+            .get("amendment_queue")
             .and_then(|q| q.get("processed_count"))
             .and_then(|p| p.as_u64())
             .unwrap_or(0);
@@ -2377,12 +2621,16 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         // Set up a failed run state (as if it failed after round advancement)
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":2,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/cr-resume-amend/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/cr-resume-amend/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Append run_started and run_failed events so resume can find the run_started event
-        let journal_path = ws.path().join(".ralph-burning/projects/cr-resume-amend/journal.ndjson");
+        let journal_path = ws
+            .path()
+            .join(".ralph-burning/projects/cr-resume-amend/journal.ndjson");
         let mut journal = std::fs::read_to_string(&journal_path).map_err(|e| e.to_string())?;
         journal.push('\n');
         journal.push_str(r#"{"sequence":2,"timestamp":"2026-03-11T19:01:00Z","event_type":"run_started","details":{"run_id":"run-resume-1","first_stage":"planning"}}"#);
@@ -2391,7 +2639,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&journal_path, journal).map_err(|e| e.to_string())?;
 
         // Plant amendment files on disk for reconciliation
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-resume-amend/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-resume-amend/amendments");
         std::fs::write(
             amend_dir.join("resume-amend-1.json"),
             r#"{"amendment_id":"resume-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Resume fix: Fix from prior round","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -2401,7 +2651,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cr-resume-amend")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed after resume, got '{status}'"));
         }
@@ -2411,7 +2664,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             .filter_map(|e| e.ok())
             .collect();
         if !amend_files.is_empty() {
-            return Err(format!("expected amendments drained from disk, found {}", amend_files.len()));
+            return Err(format!(
+                "expected amendments drained from disk, found {}",
+                amend_files.len()
+            ));
         }
         Ok(())
     });
@@ -2492,7 +2748,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|p| p.as_array())
             .map_or(0, |a| a.len());
         if queue_pending > 0 {
-            return Err(format!("amendment_queue.pending should be empty after drain, got {queue_pending}"));
+            return Err(format!(
+                "amendment_queue.pending should be empty after drain, got {queue_pending}"
+            ));
         }
         let processed = snapshot
             .get("amendment_queue")
@@ -2503,13 +2761,18 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("processed_count should be incremented after drain".into());
         }
         // Verify no amendment files on disk
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-idempotent/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-idempotent/amendments");
         let remaining: Vec<_> = std::fs::read_dir(&amend_dir)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok())
             .collect();
         if !remaining.is_empty() {
-            return Err(format!("expected 0 amendment files on disk, found {}", remaining.len()));
+            return Err(format!(
+                "expected 0 amendment files on disk, found {}",
+                remaining.len()
+            ));
         }
         Ok(())
     });
@@ -2547,7 +2810,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         // Verify no partial amendment files remain on disk (batch rollback)
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-atomic/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-atomic/amendments");
         let remaining: Vec<_> = std::fs::read_dir(&amend_dir)
             .map_err(|e| e.to_string())?
             .filter_map(|e| e.ok())
@@ -2562,15 +2827,21 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the run snapshot shows failure, not completion
         let snapshot = read_run_snapshot(&ws, "cr-atomic")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status == "completed" {
-            return Err("run should have failed, not completed, after amendment write failure".into());
+            return Err(
+                "run should have failed, not completed, after amendment write failure".into(),
+            );
         }
 
         // Verify no amendment_queued events in journal (no queue entry visible
         // without a matching file)
         let events = read_journal(&ws, "cr-atomic")?;
-        let amend_events: Vec<_> = events.iter()
+        let amend_events: Vec<_> = events
+            .iter()
             .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
             .collect();
         if !amend_events.is_empty() {
@@ -2588,7 +2859,9 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "cr-resumable", "standard")?;
 
         // Pre-plant orphaned amendment on disk so the guard fires
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-resumable/amendments");
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/cr-resumable/amendments");
         std::fs::write(
             amend_dir.join("guard-amend.json"),
             r#"{"amendment_id":"guard-1","source_stage":"completion_panel","source_cycle":1,"source_completion_round":1,"body":"Guard: Blocks completion","created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
@@ -2599,9 +2872,14 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Snapshot should be failed with no active_run (resumable)
         let snapshot = read_run_snapshot(&ws, "cr-resumable")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "failed" {
-            return Err(format!("expected failed status after guard, got '{status}'"));
+            return Err(format!(
+                "expected failed status after guard, got '{status}'"
+            ));
         }
         let active_run = snapshot.get("active_run");
         if active_run.is_some() && !active_run.unwrap().is_null() {
@@ -2646,21 +2924,28 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify amendment_queued events have stable batch_sequence ordering
         let events = read_journal(&ws, "cr-batch-seq")?;
-        let amend_events: Vec<_> = events.iter()
+        let amend_events: Vec<_> = events
+            .iter()
             .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
             .collect();
         if amend_events.len() < 3 {
-            return Err(format!("expected >= 3 amendment_queued events, got {}", amend_events.len()));
+            return Err(format!(
+                "expected >= 3 amendment_queued events, got {}",
+                amend_events.len()
+            ));
         }
         // Verify batch_sequence values are in ascending order
         let mut prev_seq: i64 = -1;
         for evt in &amend_events {
-            if let Some(seq) = evt.get("details")
+            if let Some(seq) = evt
+                .get("details")
                 .and_then(|d| d.get("batch_sequence"))
                 .and_then(|v| v.as_i64())
             {
                 if seq <= prev_seq {
-                    return Err(format!("batch_sequence not ascending: prev={prev_seq}, current={seq}"));
+                    return Err(format!(
+                        "batch_sequence not ascending: prev={prev_seq}, current={seq}"
+                    ));
                 }
                 prev_seq = seq;
             }
@@ -2710,27 +2995,39 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("journal missing completion_round_advanced event".into());
         }
         if let Some(evt) = round_event {
-            let source = evt.get("details")
+            let source = evt
+                .get("details")
                 .and_then(|d| d.get("source_stage"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if source != "final_review" {
-                return Err(format!("expected source_stage=final_review, got '{source}'"));
+                return Err(format!(
+                    "expected source_stage=final_review, got '{source}'"
+                ));
             }
         }
 
         // Verify planning was entered a second time and run completed with rounds=2
-        let planning_count = events.iter()
+        let planning_count = events
+            .iter()
             .filter(|e| {
                 e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                    && e.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()) == Some("planning")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("planning")
             })
             .count();
         if planning_count < 2 {
-            return Err(format!("expected planning entered >= 2 times, got {planning_count}"));
+            return Err(format!(
+                "expected planning entered >= 2 times, got {planning_count}"
+            ));
         }
         let snapshot = read_run_snapshot(&ws, "cr-fr-cond")?;
-        let rounds = snapshot.get("completion_rounds").and_then(|v| v.as_u64()).unwrap_or(0);
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if rounds < 2 {
             return Err(format!("expected completion_rounds >= 2, got {rounds}"));
         }
@@ -2782,17 +3079,23 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("journal missing completion_round_advanced event".into());
         }
         if let Some(evt) = round_event {
-            let source = evt.get("details")
+            let source = evt
+                .get("details")
                 .and_then(|d| d.get("source_stage"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if source != "final_review" {
-                return Err(format!("expected source_stage=final_review, got '{source}'"));
+                return Err(format!(
+                    "expected source_stage=final_review, got '{source}'"
+                ));
             }
         }
 
         let snapshot = read_run_snapshot(&ws, "cr-fr-changes")?;
-        let rounds = snapshot.get("completion_rounds").and_then(|v| v.as_u64()).unwrap_or(0);
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if rounds < 2 {
             return Err(format!("expected completion_rounds >= 2, got {rounds}"));
         }
@@ -2830,7 +3133,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         if stage_failed.is_none() {
             return Err("journal missing stage_failed event for implementation".into());
         }
-        let will_retry = stage_failed.unwrap()
+        let will_retry = stage_failed
+            .unwrap()
             .get("details")
             .and_then(|d| d.get("will_retry"))
             .and_then(|v| v.as_bool())
@@ -2840,13 +3144,16 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify implementation was entered a second time (retry)
-        let impl_entered_count = events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details")
-                    .and_then(|d| d.get("stage_id"))
-                    .and_then(|v| v.as_str())
-                    == Some("implementation")
-        }).count();
+        let impl_entered_count = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("implementation")
+            })
+            .count();
         if impl_entered_count < 2 {
             return Err(format!(
                 "expected implementation stage_entered >= 2 (retry), got {impl_entered_count}"
@@ -2855,7 +3162,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify run completed
         let snapshot = read_run_snapshot(&ws, "alpha")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed, got '{status}'"));
         }
@@ -2884,7 +3194,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify status is failed
         let snapshot = read_run_snapshot(&ws, "bravo")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "failed" {
             return Err(format!("expected failed, got '{status}'"));
         }
@@ -2922,21 +3235,24 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify journal contains cycle_advanced event
         let events = read_journal(&ws, "charlie")?;
-        let cycle_advanced = events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("cycle_advanced")
-        });
+        let cycle_advanced = events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("cycle_advanced"));
         if cycle_advanced.is_none() {
             return Err("journal missing cycle_advanced event".into());
         }
 
         // Verify implementation entered twice across the run
-        let impl_entered = events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details")
-                    .and_then(|d| d.get("stage_id"))
-                    .and_then(|v| v.as_str())
-                    == Some("implementation")
-        }).count();
+        let impl_entered = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("implementation")
+            })
+            .count();
         if impl_entered < 2 {
             return Err(format!(
                 "expected implementation entered >= 2 times, got {impl_entered}"
@@ -2945,7 +3261,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify completed
         let snapshot = read_run_snapshot(&ws, "charlie")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed, got '{status}'"));
         }
@@ -2975,12 +3294,18 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify paused status
         let snapshot = read_run_snapshot(&ws, "delta")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "paused" {
             return Err(format!("expected paused, got '{status}'"));
         }
         // Verify status_summary instructs user to resume
-        let summary = snapshot.get("status_summary").and_then(|v| v.as_str()).unwrap_or("");
+        let summary = snapshot
+            .get("status_summary")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if !summary.contains("resume") {
             return Err(format!("status_summary should mention resume: '{summary}'"));
         }
@@ -3008,9 +3333,14 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         // Capture the run_id before resume
         let pre_snapshot = read_run_snapshot(&ws, "echo")?;
         let pre_events = read_journal(&ws, "echo")?;
-        let run_id = pre_events.iter()
+        let run_id = pre_events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("")
             .to_string();
         if run_id.is_empty() {
@@ -3026,46 +3356,57 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the resumed run keeps the original run_id
         let post_events = read_journal(&ws, "echo")?;
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed event".into());
         }
-        let resumed_run_id = resume_evt.unwrap()
+        let resumed_run_id = resume_evt
+            .unwrap()
             .get("details")
             .and_then(|d| d.get("run_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if resumed_run_id != run_id {
-            return Err(format!("expected resumed run_id={run_id}, got {resumed_run_id}"));
+            return Err(format!(
+                "expected resumed run_id={run_id}, got {resumed_run_id}"
+            ));
         }
 
         // Verify planning is NOT re-executed after resume (only entered once total)
         // Count planning stage_entered events after the run_resumed event
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
-        let planning_after_resume = post_events.iter().filter(|e| {
-            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details")
-                    .and_then(|d| d.get("stage_id"))
-                    .and_then(|v| v.as_str())
-                    == Some("planning")
-        }).count();
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let planning_after_resume = post_events
+            .iter()
+            .filter(|e| {
+                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("planning")
+            })
+            .count();
         if planning_after_resume > 0 {
             return Err("planning should not be re-executed after resume".into());
         }
 
         // Verify the first resumed stage is "implementation" with attempt 1
-        let first_stage_after_resume = post_events.iter()
+        let first_stage_after_resume = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
             })
             .next();
         if let Some(evt) = first_stage_after_resume {
-            let stage = evt.get("details")
+            let stage = evt
+                .get("details")
                 .and_then(|d| d.get("stage_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
@@ -3074,7 +3415,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
                     "expected first resumed stage=implementation, got '{stage}'"
                 ));
             }
-            let attempt = evt.get("details")
+            let attempt = evt
+                .get("details")
                 .and_then(|d| d.get("attempt"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
@@ -3089,7 +3431,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify completed
         let final_snapshot = read_run_snapshot(&ws, "echo")?;
-        let status = final_snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = final_snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed after resume, got '{status}'"));
         }
@@ -3123,9 +3468,14 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Capture original run_id
         let pre_events = read_journal(&ws, "foxtrot")?;
-        let run_id = pre_events.iter()
+        let run_id = pre_events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
             .unwrap_or("")
             .to_string();
 
@@ -3135,39 +3485,50 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify resumed run keeps original run_id
         let post_events = read_journal(&ws, "foxtrot")?;
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed event".into());
         }
-        let resumed_run_id = resume_evt.unwrap()
+        let resumed_run_id = resume_evt
+            .unwrap()
             .get("details")
             .and_then(|d| d.get("run_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if resumed_run_id != run_id {
-            return Err(format!("expected resumed run_id={run_id}, got {resumed_run_id}"));
+            return Err(format!(
+                "expected resumed run_id={run_id}, got {resumed_run_id}"
+            ));
         }
 
         // Verify first resumed stage is planning with attempt 1
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
-        let first_stage_after_resume = post_events.iter()
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let first_stage_after_resume = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
             })
             .next();
         if let Some(evt) = first_stage_after_resume {
-            let stage = evt.get("details")
+            let stage = evt
+                .get("details")
                 .and_then(|d| d.get("stage_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
             if stage != "planning" {
-                return Err(format!("expected first resumed stage=planning, got '{stage}'"));
+                return Err(format!(
+                    "expected first resumed stage=planning, got '{stage}'"
+                ));
             }
-            let attempt = evt.get("details")
+            let attempt = evt
+                .get("details")
                 .and_then(|d| d.get("attempt"))
                 .and_then(|v| v.as_u64())
                 .unwrap_or(0);
@@ -3182,7 +3543,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify completed
         let final_snapshot = read_run_snapshot(&ws, "foxtrot")?;
-        let status = final_snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = final_snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "completed" {
             return Err(format!("expected completed, got '{status}'"));
         }
@@ -3202,7 +3566,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/golf/run.json"),
             completed_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out2 = run_cli(&["run", "resume"], ws.path())?;
         assert_failure(&out2)?;
         Ok(())
@@ -3216,7 +3581,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/hotel/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "resume", "stderr")?;
@@ -3236,7 +3602,8 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let events = read_journal(&ws, "india")?;
-        let failed_seq = events.iter()
+        let failed_seq = events
+            .iter()
             .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_failed"))
             .map(|e| e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0))
             .next()
@@ -3262,7 +3629,9 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
         // Writer lock must be released after completion
-        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-hotel.lock");
+        let lock_path = ws
+            .path()
+            .join(".ralph-burning/daemon/leases/writer-hotel.lock");
         if lock_path.exists() {
             return Err("writer lock file still exists after run start completed".into());
         }
@@ -3277,11 +3646,13 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Snapshot run.json and journal before the attempt
         let run_before = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/india-lock/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/india-lock/run.json"),
         )
         .map_err(|e| format!("read run.json before: {e}"))?;
         let journal_before = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/india-lock/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/india-lock/journal.ndjson"),
         )
         .map_err(|e| format!("read journal before: {e}"))?;
 
@@ -3296,11 +3667,13 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify no run-state mutation occurred
         let run_after = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/india-lock/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/india-lock/run.json"),
         )
         .map_err(|e| format!("read run.json after: {e}"))?;
         let journal_after = std::fs::read_to_string(
-            ws.path().join(".ralph-burning/projects/india-lock/journal.ndjson"),
+            ws.path()
+                .join(".ralph-burning/projects/india-lock/journal.ndjson"),
         )
         .map_err(|e| format!("read journal after: {e}"))?;
 
@@ -3331,7 +3704,9 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         // Resume should succeed and release the lock
         let resume = run_cli(&["run", "resume"], ws.path())?;
         assert_success(&resume)?;
-        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-juliet.lock");
+        let lock_path = ws
+            .path()
+            .join(".ralph-burning/daemon/leases/writer-juliet.lock");
         if lock_path.exists() {
             return Err("writer lock file still exists after run resume completed".into());
         }
@@ -3358,10 +3733,16 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&start)?;
 
         let pre_events = read_journal(&ws, "ns-docs")?;
-        let run_id = pre_events.iter()
+        let run_id = pre_events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
-            .unwrap_or("").to_string();
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
 
         // Step 2: resume → resumes from docs_update, completes
         let resume = run_cli(&["run", "resume"], ws.path())?;
@@ -3369,41 +3750,60 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let post_events = read_journal(&ws, "ns-docs")?;
         // Verify run_id preserved
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed event".into());
         }
-        let resumed_id = resume_evt.unwrap()
-            .get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()).unwrap_or("");
+        let resumed_id = resume_evt
+            .unwrap()
+            .get("details")
+            .and_then(|d| d.get("run_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if resumed_id != run_id {
-            return Err(format!("run_id mismatch: expected {run_id}, got {resumed_id}"));
+            return Err(format!(
+                "run_id mismatch: expected {run_id}, got {resumed_id}"
+            ));
         }
 
         // Verify docs_plan NOT re-entered after resume
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let plan_after = post_events.iter().any(|e| {
             e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                 && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()) == Some("docs_plan")
+                && e.get("details")
+                    .and_then(|d| d.get("stage_id"))
+                    .and_then(|v| v.as_str())
+                    == Some("docs_plan")
         });
         if plan_after {
             return Err("docs_plan should not be re-executed after resume".into());
         }
 
         // Verify first resumed stage is docs_update
-        let first_stage = post_events.iter()
+        let first_stage = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
             })
             .next();
         if let Some(evt) = first_stage {
-            let sid = evt.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()).unwrap_or("");
+            let sid = evt
+                .get("details")
+                .and_then(|d| d.get("stage_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if sid != "docs_update" {
-                return Err(format!("expected first resumed stage=docs_update, got '{sid}'"));
+                return Err(format!(
+                    "expected first resumed stage=docs_update, got '{sid}'"
+                ));
             }
         }
 
@@ -3427,40 +3827,60 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&start)?;
 
         let pre_events = read_journal(&ws, "ns-ci")?;
-        let run_id = pre_events.iter()
+        let run_id = pre_events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
-            .unwrap_or("").to_string();
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
 
         let resume = run_cli(&["run", "resume"], ws.path())?;
         assert_success(&resume)?;
 
         let post_events = read_journal(&ws, "ns-ci")?;
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed".into());
         }
-        let resumed_id = resume_evt.unwrap()
-            .get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()).unwrap_or("");
+        let resumed_id = resume_evt
+            .unwrap()
+            .get("details")
+            .and_then(|d| d.get("run_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if resumed_id != run_id {
             return Err(format!("run_id mismatch: {run_id} vs {resumed_id}"));
         }
 
         // Verify ci_plan not re-entered, first resumed stage is ci_update
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
-        let first_stage = post_events.iter()
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let first_stage = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
             })
             .next();
         if let Some(evt) = first_stage {
-            let sid = evt.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()).unwrap_or("");
+            let sid = evt
+                .get("details")
+                .and_then(|d| d.get("stage_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if sid != "ci_update" {
-                return Err(format!("expected first resumed stage=ci_update, got '{sid}'"));
+                return Err(format!(
+                    "expected first resumed stage=ci_update, got '{sid}'"
+                ));
             }
         }
 
@@ -3502,7 +3922,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // docs_validation request_changes triggers remediation cycle (cycle_advanced)
         let events = read_journal(&ws, "ns-docs-amend")?;
-        if !journal_event_types(&events).iter().any(|t| t == "cycle_advanced") {
+        if !journal_event_types(&events)
+            .iter()
+            .any(|t| t == "cycle_advanced")
+        {
             return Err("journal missing cycle_advanced event for remediation".into());
         }
 
@@ -3543,7 +3966,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // ci_validation request_changes triggers remediation cycle (cycle_advanced)
         let events = read_journal(&ws, "ns-ci-amend")?;
-        if !journal_event_types(&events).iter().any(|t| t == "cycle_advanced") {
+        if !journal_event_types(&events)
+            .iter()
+            .any(|t| t == "cycle_advanced")
+        {
             return Err("journal missing cycle_advanced event for remediation".into());
         }
 
@@ -3568,49 +3994,70 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&start)?;
 
         let pre_events = read_journal(&ws, "ns-qd")?;
-        let run_id = pre_events.iter()
+        let run_id = pre_events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
-            .unwrap_or("").to_string();
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
 
         // Resume → completes from review
         let resume = run_cli(&["run", "resume"], ws.path())?;
         assert_success(&resume)?;
 
         let post_events = read_journal(&ws, "ns-qd")?;
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed".into());
         }
-        let resumed_id = resume_evt.unwrap()
-            .get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()).unwrap_or("");
+        let resumed_id = resume_evt
+            .unwrap()
+            .get("details")
+            .and_then(|d| d.get("run_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if resumed_id != run_id {
             return Err(format!("run_id mismatch: {run_id} vs {resumed_id}"));
         }
 
         // plan_and_implement not re-entered after resume
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         let pai_after = post_events.iter().any(|e| {
             e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                 && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()) == Some("plan_and_implement")
+                && e.get("details")
+                    .and_then(|d| d.get("stage_id"))
+                    .and_then(|v| v.as_str())
+                    == Some("plan_and_implement")
         });
         if pai_after {
             return Err("plan_and_implement should not be re-entered after resume".into());
         }
 
         // First resumed stage is review
-        let first_stage = post_events.iter()
+        let first_stage = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
             })
             .next();
         if let Some(evt) = first_stage {
-            let sid = evt.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()).unwrap_or("");
+            let sid = evt
+                .get("details")
+                .and_then(|d| d.get("stage_id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if sid != "review" {
                 return Err(format!("expected first resumed stage=review, got '{sid}'"));
             }
@@ -3654,19 +4101,30 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         // review request_changes triggers remediation cycle (not amendments —
         // review is a remediation trigger, not a late stage in quick_dev)
         let events = read_journal(&ws, "ns-qd-amend")?;
-        if !journal_event_types(&events).iter().any(|t| t == "cycle_advanced") {
+        if !journal_event_types(&events)
+            .iter()
+            .any(|t| t == "cycle_advanced")
+        {
             return Err("journal missing cycle_advanced for remediation".into());
         }
 
         // Remediation restarts from execution stage (apply_fixes).
         // Quick_dev stage order: plan_and_implement → review → apply_fixes → final_review
         // So apply_fixes is entered once (during remediation cycle), not during initial run.
-        let af_entered = events.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-                && e.get("details").and_then(|d| d.get("stage_id")).and_then(|v| v.as_str()) == Some("apply_fixes")
-        }).count();
+        let af_entered = events
+            .iter()
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("apply_fixes")
+            })
+            .count();
         if af_entered < 1 {
-            return Err(format!("expected apply_fixes entered >= 1 time after remediation, got {af_entered}"));
+            return Err(format!(
+                "expected apply_fixes entered >= 1 time after remediation, got {af_entered}"
+            ));
         }
 
         let final_snap = read_run_snapshot(&ws, "ns-qd-amend")?;
@@ -3725,7 +4183,10 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // If run completed, manually set to failed for rollback test
         let pre_snap = read_run_snapshot(&ws, "rb-soft")?;
-        let status = pre_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = pre_snap
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status == "completed" || status == "running" {
             let mut snap = pre_snap.clone();
             snap["status"] = serde_json::json!("failed");
@@ -3734,7 +4195,8 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             std::fs::write(
                 ws.path().join(".ralph-burning/projects/rb-soft/run.json"),
                 serde_json::to_string_pretty(&snap).unwrap(),
-            ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         }
 
         // Now rollback to planning
@@ -3743,9 +4205,14 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify: status is paused, journal has rollback_performed
         let post_snap = read_run_snapshot(&ws, "rb-soft")?;
-        let post_status = post_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post_status = post_snap
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post_status != "paused" {
-            return Err(format!("expected paused after rollback, got '{post_status}'"));
+            return Err(format!(
+                "expected paused after rollback, got '{post_status}'"
+            ));
         }
         let post_events = read_journal(&ws, "rb-soft")?;
         let post_types = journal_event_types(&post_events);
@@ -3792,13 +4259,14 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify rollback points were created with a git SHA
         let pre_events = read_journal(&ws, "rb-hard")?;
-        let rb_created = pre_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created")
-        });
+        let rb_created = pre_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created"));
         if rb_created.is_none() {
             return Err("expected rollback_created event after run start".into());
         }
-        let created_sha = rb_created.unwrap()
+        let created_sha = rb_created
+            .unwrap()
             .get("details")
             .and_then(|d| d.get("git_sha"))
             .and_then(|v| v.as_str())
@@ -3816,24 +4284,33 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rb-hard/run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Hard rollback to implementation — git repo exists so reset should succeed.
-        let rb = run_cli(&["run", "rollback", "--to", "implementation", "--hard"], ws.path())?;
+        let rb = run_cli(
+            &["run", "rollback", "--to", "implementation", "--hard"],
+            ws.path(),
+        )?;
         assert_success(&rb)?;
 
         // Verify logical rollback committed
         let post_snap = read_run_snapshot(&ws, "rb-hard")?;
-        let post_status = post_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post_status = post_snap
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post_status != "paused" {
-            return Err(format!("logical rollback should set paused, got '{post_status}'"));
+            return Err(format!(
+                "logical rollback should set paused, got '{post_status}'"
+            ));
         }
 
         // Journal should have rollback_performed
         let post_events = read_journal(&ws, "rb-hard")?;
-        let rb_event = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
-        });
+        let rb_event = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed"));
         if rb_event.is_none() {
             return Err("journal should have rollback_performed event".into());
         }
@@ -3846,7 +4323,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if rb_stage != "implementation" {
-            return Err(format!("rollback_performed should target implementation, got '{rb_stage}'"));
+            return Err(format!(
+                "rollback_performed should target implementation, got '{rb_stage}'"
+            ));
         }
 
         // Verify hard=true
@@ -3866,7 +4345,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if event_sha.is_empty() {
-            return Err("rollback_performed event must record a non-empty git_sha for hard rollback".into());
+            return Err(
+                "rollback_performed event must record a non-empty git_sha for hard rollback".into(),
+            );
         }
 
         // Verify the repository reset targeted the recorded SHA — after hard reset,
@@ -3876,7 +4357,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .current_dir(ws.path())
             .output()
             .map_err(|e| format!("git rev-parse HEAD: {e}"))?;
-        let current_head = String::from_utf8_lossy(&head_output.stdout).trim().to_owned();
+        let current_head = String::from_utf8_lossy(&head_output.stdout)
+            .trim()
+            .to_owned();
         if current_head != event_sha {
             return Err(format!(
                 "repository HEAD should be reset to rollback SHA {event_sha}, got {current_head}"
@@ -3902,9 +4385,11 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rb-bad-stage", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-bad-stage/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rb-bad-stage/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         // ci_plan is not part of the standard flow
         let out = run_cli(&["run", "rollback", "--to", "ci_plan"], ws.path())?;
         assert_failure(&out)?;
@@ -3918,9 +4403,11 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         setup_workspace_with_project(&ws, "rb-no-point", "standard")?;
         let run_json = r#"{"active_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-no-point/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rb-no-point/run.json"),
             run_json,
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "rollback", "--to", "review"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "rollback point", "stderr")?;
@@ -3974,17 +4461,20 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rb-multi/run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // First rollback: to implementation
         let rb1 = run_cli(&["run", "rollback", "--to", "implementation"], ws.path())?;
         assert_success(&rb1)?;
         let snap1 = read_run_snapshot(&ws, "rb-multi")?;
-        let count1 = snap1.get("rollback_point_meta")
+        let count1 = snap1
+            .get("rollback_point_meta")
             .and_then(|m| m.get("rollback_count"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let last_id1 = snap1.get("rollback_point_meta")
+        let last_id1 = snap1
+            .get("rollback_point_meta")
             .and_then(|m| m.get("last_rollback_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -4007,13 +4497,14 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Also verify the journal metadata: visible_through_sequence is recorded
         let events1 = read_journal(&ws, "rb-multi")?;
-        let rb1_event = events1.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
-        });
+        let rb1_event = events1
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed"));
         if rb1_event.is_none() {
             return Err("journal missing rollback_performed after first rollback".into());
         }
-        let visible_through_1 = rb1_event.unwrap()
+        let visible_through_1 = rb1_event
+            .unwrap()
             .get("details")
             .and_then(|d| d.get("visible_through_sequence"))
             .and_then(|v| v.as_u64());
@@ -4027,17 +4518,20 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rb-multi/run.json"),
             serde_json::to_string_pretty(&snap1_mut).unwrap(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Second rollback: to planning
         let rb2 = run_cli(&["run", "rollback", "--to", "planning"], ws.path())?;
         assert_success(&rb2)?;
         let snap2 = read_run_snapshot(&ws, "rb-multi")?;
-        let count2 = snap2.get("rollback_point_meta")
+        let count2 = snap2
+            .get("rollback_point_meta")
             .and_then(|m| m.get("rollback_count"))
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let last_id2 = snap2.get("rollback_point_meta")
+        let last_id2 = snap2
+            .get("rollback_point_meta")
             .and_then(|m| m.get("last_rollback_id"))
             .and_then(|v| v.as_str())
             .unwrap_or("")
@@ -4071,9 +4565,10 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the raw journal has at least 2 rollback_performed events
         let events2 = read_journal(&ws, "rb-multi")?;
-        let rb_performed_events: Vec<_> = events2.iter().filter(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
-        }).collect();
+        let rb_performed_events: Vec<_> = events2
+            .iter()
+            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed"))
+            .collect();
         if rb_performed_events.len() < 2 {
             return Err(format!(
                 "expected >= 2 rollback_performed events, got {}",
@@ -4117,10 +4612,16 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Capture original run_id
         let events = read_journal(&ws, "rb-resume")?;
-        let run_id = events.iter()
+        let run_id = events
+            .iter()
             .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_started"))
-            .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
-            .unwrap_or("").to_string();
+            .and_then(|e| {
+                e.get("details")
+                    .and_then(|d| d.get("run_id"))
+                    .and_then(|v| v.as_str())
+            })
+            .unwrap_or("")
+            .to_string();
 
         // Count pre-rollback StageCompleted events visible to the user
         let pre_history = run_cli(&["run", "history"], ws.path())?;
@@ -4135,7 +4636,8 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             ws.path().join(".ralph-burning/projects/rb-resume/run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Rollback to implementation
         let rb = run_cli(&["run", "rollback", "--to", "implementation"], ws.path())?;
@@ -4143,9 +4645,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify the rollback event records visible_through_sequence
         let rb_events = read_journal(&ws, "rb-resume")?;
-        let rb_performed = rb_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
-        });
+        let rb_performed = rb_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed"));
         let visible_through = rb_performed
             .and_then(|e| e.get("details"))
             .and_then(|d| d.get("visible_through_sequence"))
@@ -4172,14 +4674,18 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify resumed run keeps original run_id
         let post_events = read_journal(&ws, "rb-resume")?;
-        let resume_evt = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed")
-        });
+        let resume_evt = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("run_resumed"));
         if resume_evt.is_none() {
             return Err("journal missing run_resumed after rollback+resume".into());
         }
-        let resumed_id = resume_evt.unwrap()
-            .get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()).unwrap_or("");
+        let resumed_id = resume_evt
+            .unwrap()
+            .get("details")
+            .and_then(|d| d.get("run_id"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if resumed_id != run_id {
             return Err(format!("expected run_id={run_id}, got {resumed_id}"));
         }
@@ -4187,9 +4693,13 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify the first resumed stage follows the rollback boundary
         // (rollback to implementation means resume starts from the next stage
         // after implementation in the plan)
-        let resume_seq = resume_evt.unwrap()
-            .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
-        let first_stage_after_resume = post_events.iter()
+        let resume_seq = resume_evt
+            .unwrap()
+            .get("sequence")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let first_stage_after_resume = post_events
+            .iter()
             .filter(|e| {
                 e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
                     && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
@@ -4275,9 +4785,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Verify rollback points captured a real SHA
         let pre_events = read_journal(&ws, "rb-hard-fail")?;
-        let rb_created = pre_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created")
-        });
+        let rb_created = pre_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created"));
         let created_sha = rb_created
             .and_then(|e| e.get("details"))
             .and_then(|d| d.get("git_sha"))
@@ -4288,8 +4798,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Now destroy the git repo so that `git reset --hard <sha>` will fail
-        std::fs::remove_dir_all(ws.path().join(".git"))
-            .map_err(|e| format!("remove .git: {e}"))?;
+        std::fs::remove_dir_all(ws.path().join(".git")).map_err(|e| format!("remove .git: {e}"))?;
 
         // Set to failed
         let snap = read_run_snapshot(&ws, "rb-hard-fail")?;
@@ -4297,20 +4806,28 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         snap["status"] = serde_json::json!("failed");
         snap["active_run"] = serde_json::json!(null);
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/rb-hard-fail/run.json"),
+            ws.path()
+                .join(".ralph-burning/projects/rb-hard-fail/run.json"),
             serde_json::to_string_pretty(&snap).unwrap(),
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
 
         // Hard rollback to implementation — the rollback point has a valid SHA but
         // git reset will fail because the .git directory no longer exists.
-        let rb = run_cli(&["run", "rollback", "--to", "implementation", "--hard"], ws.path())?;
+        let rb = run_cli(
+            &["run", "rollback", "--to", "implementation", "--hard"],
+            ws.path(),
+        )?;
         // The command should fail with a git-reset error
         assert_failure(&rb)?;
 
         // Verify run.json is in paused state — the logical rollback (snapshot + journal)
         // was committed before the git reset was attempted and failed
         let post_snap = read_run_snapshot(&ws, "rb-hard-fail")?;
-        let post_status = post_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post_status = post_snap
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post_status != "paused" {
             return Err(format!(
                 "expected paused (logical rollback committed before git failure), got '{post_status}'"
@@ -4319,9 +4836,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Journal should have rollback_performed event even though git reset failed
         let post_events = read_journal(&ws, "rb-hard-fail")?;
-        let rb_event = post_events.iter().find(|e| {
-            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
-        });
+        let rb_event = post_events
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed"));
         if rb_event.is_none() {
             return Err("journal should have rollback_performed even when git reset fails".into());
         }
@@ -4334,7 +4851,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if rb_stage != "implementation" {
-            return Err(format!("rollback_performed should target implementation, got '{rb_stage}'"));
+            return Err(format!(
+                "rollback_performed should target implementation, got '{rb_stage}'"
+            ));
         }
 
         // Verify the event records the git_sha — this proves the failure occurred on the
@@ -4375,7 +4894,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Build a REST API"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -4430,7 +4952,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "completed" {
-            return Err(format!("expected 'completed' for empty questions, got '{status}'"));
+            return Err(format!(
+                "expected 'completed' for empty questions, got '{status}'"
+            ));
         }
         Ok(())
     });
@@ -4485,7 +5009,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Build a web app"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -4514,14 +5041,18 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             run_dir.join("answers.toml"),
             "q1 = \"React with TypeScript\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        )
+        .map_err(|e| format!("write answers.toml: {e}"))?;
 
         // Invoke requirements answer with EDITOR=true (no-op editor, answers already written)
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
             ws.path(),
             &[
-                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                (
+                    "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                    &label_overrides.to_string(),
+                ),
                 ("EDITOR", "true"),
             ],
         )?;
@@ -4532,9 +5063,14 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("read post-answer run.json: {e}"))?;
         let post_run: serde_json::Value =
             serde_json::from_str(&post_run_content).map_err(|e| format!("parse: {e}"))?;
-        let post_status = post_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post_status = post_run
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post_status != "completed" {
-            return Err(format!("expected 'completed' after answer, got '{post_status}'"));
+            return Err(format!(
+                "expected 'completed' after answer, got '{post_status}'"
+            ));
         }
         Ok(())
     });
@@ -4543,10 +5079,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         // Create a completed requirements run first
-        let create_out = run_cli(
-            &["requirements", "quick", "--idea", "Show test"],
-            ws.path(),
-        )?;
+        let create_out = run_cli(&["requirements", "quick", "--idea", "Show test"], ws.path())?;
         assert_success(&create_out)?;
 
         // Find the requirements run ID
@@ -4558,10 +5091,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if entries.is_empty() {
             return Err("no requirements run created for show test".into());
         }
-        let run_id = entries[0]
-            .file_name()
-            .to_string_lossy()
-            .to_string();
+        let run_id = entries[0].file_name().to_string_lossy().to_string();
 
         // Run requirements show
         let out = run_cli(&["requirements", "show", &run_id], ws.path())?;
@@ -4588,7 +5118,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "quick", "--idea", "Build a REST API"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_failure(&out)?;
 
@@ -4608,7 +5141,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "failed" {
-            return Err(format!("expected 'failed' after review rejection, got '{status}'"));
+            return Err(format!(
+                "expected 'failed' after review rejection, got '{status}'"
+            ));
         }
         Ok(())
     });
@@ -4624,7 +5159,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
 
         let out = run_cli_with_env(
-            &["requirements", "quick", "--idea", "Seed rollback prompt fail test"],
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Seed rollback prompt fail test",
+            ],
             ws.path(),
             &[("RALPH_BURNING_TEST_SEED_PROMPT_WRITE_FAIL", "1")],
         )?;
@@ -4646,7 +5186,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "failed" {
-            return Err(format!("expected 'failed' after seed write failure, got '{status}'"));
+            return Err(format!(
+                "expected 'failed' after seed write failure, got '{status}'"
+            ));
         }
 
         // Verify both seed files are removed via rollback — neither project.json
@@ -4698,7 +5240,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         match result {
             Err(ContractError::DomainValidation { .. }) => Ok(()),
             Err(e) => Err(format!("expected DomainValidation, got: {e}")),
-            Ok(_) => Err("expected domain validation error for rejected with empty findings".into()),
+            Ok(_) => {
+                Err("expected domain validation error for rejected with empty findings".into())
+            }
         }
     });
 
@@ -4719,7 +5263,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Resume test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -4744,24 +5291,30 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // question boundary (as per the feature scenario precondition)
         let mut run_mut = run.clone();
         run_mut["status"] = serde_json::json!("failed");
-        run_mut["status_summary"] = serde_json::json!("failed: simulated failure at question boundary");
+        run_mut["status_summary"] =
+            serde_json::json!("failed: simulated failure at question boundary");
         std::fs::write(
             run_dir.join("run.json"),
             serde_json::to_string_pretty(&run_mut).unwrap(),
-        ).map_err(|e| format!("write failed run.json: {e}"))?;
+        )
+        .map_err(|e| format!("write failed run.json: {e}"))?;
 
         // Pre-populate answers.toml with valid answers
         std::fs::write(
             run_dir.join("answers.toml"),
             "q1 = \"The direct approach\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        )
+        .map_err(|e| format!("write answers.toml: {e}"))?;
 
         // Invoke requirements answer — this should resume from the answer boundary
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
             ws.path(),
             &[
-                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                (
+                    "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                    &label_overrides.to_string(),
+                ),
                 ("EDITOR", "true"),
             ],
         )?;
@@ -4772,9 +5325,14 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("read post-answer run.json: {e}"))?;
         let post_run: serde_json::Value =
             serde_json::from_str(&post_content).map_err(|e| format!("parse: {e}"))?;
-        let post_status = post_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post_status = post_run
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post_status != "completed" {
-            return Err(format!("expected 'completed' after answer resume, got '{post_status}'"));
+            return Err(format!(
+                "expected 'completed' after answer resume, got '{post_status}'"
+            ));
         }
         Ok(())
     });
@@ -4796,7 +5354,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Editor fail test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
         let req_dir = ws.path().join(".ralph-burning/requirements");
@@ -4809,8 +5370,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Capture journal event count before answer attempt
         let journal_path = run_dir.join("journal.ndjson");
-        let pre_journal = std::fs::read_to_string(&journal_path)
-            .map_err(|e| format!("read journal: {e}"))?;
+        let pre_journal =
+            std::fs::read_to_string(&journal_path).map_err(|e| format!("read journal: {e}"))?;
         let pre_event_count = pre_journal.lines().filter(|l| !l.trim().is_empty()).count();
 
         // Capture answers.json content before answer attempt
@@ -4832,13 +5393,18 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "awaiting_answers" {
-            return Err(format!("expected 'awaiting_answers' after editor failure, got '{status}'"));
+            return Err(format!(
+                "expected 'awaiting_answers' after editor failure, got '{status}'"
+            ));
         }
 
         // Verify journal has no new events
-        let post_journal = std::fs::read_to_string(&journal_path)
-            .map_err(|e| format!("read journal: {e}"))?;
-        let post_event_count = post_journal.lines().filter(|l| !l.trim().is_empty()).count();
+        let post_journal =
+            std::fs::read_to_string(&journal_path).map_err(|e| format!("read journal: {e}"))?;
+        let post_event_count = post_journal
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count();
         if post_event_count != pre_event_count {
             return Err(format!(
                 "expected no new journal events after editor failure, had {pre_event_count}, now {post_event_count}"
@@ -4870,7 +5436,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Unknown ID test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -4890,7 +5459,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             run_dir.join("answers.toml"),
             "q1 = \"Valid answer\"\nunknown_key = \"Invalid\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        )
+        .map_err(|e| format!("write answers.toml: {e}"))?;
 
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -4898,7 +5468,11 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[("EDITOR", "true")],
         )?;
         assert_failure(&answer_out)?;
-        assert_contains(&answer_out.stderr, "unknown question ID", "validation error")?;
+        assert_contains(
+            &answer_out.stderr,
+            "unknown question ID",
+            "validation error",
+        )?;
 
         // Verify answers.json is not replaced
         let post_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
@@ -4913,7 +5487,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "awaiting_answers" {
-            return Err(format!("expected 'awaiting_answers' after validation error, got '{status}'"));
+            return Err(format!(
+                "expected 'awaiting_answers' after validation error, got '{status}'"
+            ));
         }
         Ok(())
     });
@@ -4935,7 +5511,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Empty answer test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -4952,10 +5531,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let pre_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
 
         // Write answers.toml with empty value for required question
-        std::fs::write(
-            run_dir.join("answers.toml"),
-            "q1 = \"\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        std::fs::write(run_dir.join("answers.toml"), "q1 = \"\"\n")
+            .map_err(|e| format!("write answers.toml: {e}"))?;
 
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -4978,7 +5555,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "awaiting_answers" {
-            return Err(format!("expected 'awaiting_answers' after empty answer error, got '{status}'"));
+            return Err(format!(
+                "expected 'awaiting_answers' after empty answer error, got '{status}'"
+            ));
         }
         Ok(())
     });
@@ -4996,9 +5575,17 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             }
         });
         let out = run_cli_with_env(
-            &["requirements", "quick", "--idea", "Conditional approval test"],
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Conditional approval test",
+            ],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
         let req_dir = ws.path().join(".ralph-burning/requirements");
@@ -5034,7 +5621,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Answer reject test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
         let req_dir = ws.path().join(".ralph-burning/requirements");
@@ -5054,21 +5644,25 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "awaiting_answers" {
             return Err(format!("expected awaiting_answers, got '{status}'"));
         }
-        let question_round = run.get("question_round").and_then(|v| v.as_u64()).unwrap_or(0);
+        let question_round = run
+            .get("question_round")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         if question_round == 0 {
             return Err("expected non-zero question_round after question generation".into());
         }
 
         // Submit valid answers
-        std::fs::write(
-            run_dir.join("answers.toml"),
-            "q1 = \"My answer\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        std::fs::write(run_dir.join("answers.toml"), "q1 = \"My answer\"\n")
+            .map_err(|e| format!("write answers.toml: {e}"))?;
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
             ws.path(),
             &[
-                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                (
+                    "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                    &label_overrides.to_string(),
+                ),
                 ("EDITOR", "true"),
             ],
         )?;
@@ -5080,7 +5674,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &["requirements", "answer", &run_id],
             ws.path(),
             &[
-                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                (
+                    "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                    &label_overrides.to_string(),
+                ),
                 ("EDITOR", "true"),
             ],
         )?;
@@ -5129,7 +5726,11 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let result = contract.evaluate(&payload);
         match result {
             Err(ContractError::DomainValidation { details, .. }) => {
-                assert_contains(&details, "conditionally_approved requires at least one follow-up", "error")?;
+                assert_contains(
+                    &details,
+                    "conditionally_approved requires at least one follow-up",
+                    "error",
+                )?;
                 Ok(())
             }
             Err(e) => Err(format!("expected DomainValidation, got: {e}")),
@@ -5154,7 +5755,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Double submit gate"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
@@ -5176,15 +5780,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Submit valid answers — first submission should succeed
-        std::fs::write(
-            run_dir.join("answers.toml"),
-            "q1 = \"First answer\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        std::fs::write(run_dir.join("answers.toml"), "q1 = \"First answer\"\n")
+            .map_err(|e| format!("write answers.toml: {e}"))?;
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
             ws.path(),
             &[
-                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                (
+                    "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                    &label_overrides.to_string(),
+                ),
                 ("EDITOR", "true"),
             ],
         )?;
@@ -5195,28 +5800,39 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("read post run.json: {e}"))?;
         let post1_run: serde_json::Value =
             serde_json::from_str(&post1_content).map_err(|e| format!("parse: {e}"))?;
-        let post1_status = post1_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post1_status = post1_run
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
 
         // Try to answer again — should be rejected since answers are already
         // durably submitted past the question boundary
         std::fs::write(
             run_dir.join("answers.toml"),
             "q1 = \"Second answer attempt\"\n",
-        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        )
+        .map_err(|e| format!("write answers.toml: {e}"))?;
         let answer2_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
             ws.path(),
             &[("EDITOR", "true")],
         )?;
         assert_failure(&answer2_out)?;
-        assert_contains(&answer2_out.stderr, "cannot answer", "double submission rejection")?;
+        assert_contains(
+            &answer2_out.stderr,
+            "cannot answer",
+            "double submission rejection",
+        )?;
 
         // Verify run state is unchanged
         let post2_content = std::fs::read_to_string(run_dir.join("run.json"))
             .map_err(|e| format!("read final run.json: {e}"))?;
         let post2_run: serde_json::Value =
             serde_json::from_str(&post2_content).map_err(|e| format!("parse: {e}"))?;
-        let post2_status = post2_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let post2_status = post2_run
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if post2_status != post1_status {
             return Err(format!(
                 "expected run state unchanged after double submission, was '{post1_status}', now '{post2_status}'"
@@ -5291,7 +5907,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Failed show test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
         let req_dir = ws.path().join(".ralph-burning/requirements");
@@ -5314,7 +5933,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             run_dir.join("run.json"),
             serde_json::to_string_pretty(&run).unwrap(),
-        ).map_err(|e| format!("write failed run.json: {e}"))?;
+        )
+        .map_err(|e| format!("write failed run.json: {e}"))?;
 
         // Run requirements show and verify it includes pending question count
         // AND the failure summary
@@ -5322,10 +5942,18 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&show_out)?;
         assert_contains(&show_out.stdout, "failed", "show status")?;
         // The show output should include "Pending Questions:" with count 2
-        assert_contains(&show_out.stdout, "Pending Questions:", "pending question label")?;
+        assert_contains(
+            &show_out.stdout,
+            "Pending Questions:",
+            "pending question label",
+        )?;
         assert_contains(&show_out.stdout, "2", "pending question count")?;
         // The show output should include the failure summary
-        assert_contains(&show_out.stdout, "simulated failure at question boundary", "failure summary")?;
+        assert_contains(
+            &show_out.stdout,
+            "simulated failure at question boundary",
+            "failure summary",
+        )?;
         Ok(())
     });
 
@@ -5344,7 +5972,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["requirements", "draft", "--idea", "Populated answers test"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
         let req_dir = ws.path().join(".ralph-burning/requirements");
@@ -5646,9 +6277,14 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "dispatch_mode": "workflow",
             "routing_labels": []
         });
-        let task_path = ws.path().join(".ralph-burning/daemon/tasks/cleanup-fail-task.json");
-        std::fs::write(&task_path, serde_json::to_string_pretty(&task_json).unwrap())
-            .map_err(|e| format!("write task: {e}"))?;
+        let task_path = ws
+            .path()
+            .join(".ralph-burning/daemon/tasks/cleanup-fail-task.json");
+        std::fs::write(
+            &task_path,
+            serde_json::to_string_pretty(&task_json).unwrap(),
+        )
+        .map_err(|e| format!("write task: {e}"))?;
 
         let lease_json = serde_json::json!({
             "lease_id": "lease-cleanup-fail-task",
@@ -5660,12 +6296,19 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "ttl_seconds": 60,
             "last_heartbeat": one_hour_ago.to_rfc3339()
         });
-        let lease_path = ws.path().join(".ralph-burning/daemon/leases/lease-cleanup-fail-task.json");
-        std::fs::write(&lease_path, serde_json::to_string_pretty(&lease_json).unwrap())
-            .map_err(|e| format!("write lease: {e}"))?;
+        let lease_path = ws
+            .path()
+            .join(".ralph-burning/daemon/leases/lease-cleanup-fail-task.json");
+        std::fs::write(
+            &lease_path,
+            serde_json::to_string_pretty(&lease_json).unwrap(),
+        )
+        .map_err(|e| format!("write lease: {e}"))?;
 
         // Create the writer lock so cleanup can attempt to release it
-        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-cleanup-proj.lock");
+        let lock_path = ws
+            .path()
+            .join(".ralph-burning/daemon/leases/writer-cleanup-proj.lock");
         std::fs::write(&lock_path, "lease-cleanup-fail-task")
             .map_err(|e| format!("write lock: {e}"))?;
 
@@ -5708,14 +6351,20 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "resolved_flow": "standard",
             "routing_source": "default_flow"
         });
-        let task1_path = ws.path().join(".ralph-burning/daemon/tasks/locked-task.json");
-        std::fs::write(&task1_path, serde_json::to_string_pretty(&task1_json).unwrap())
-            .map_err(|e| format!("write task1: {e}"))?;
+        let task1_path = ws
+            .path()
+            .join(".ralph-burning/daemon/tasks/locked-task.json");
+        std::fs::write(
+            &task1_path,
+            serde_json::to_string_pretty(&task1_json).unwrap(),
+        )
+        .map_err(|e| format!("write task1: {e}"))?;
 
         // Hold the writer lock for locked-proj
-        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-locked-proj.lock");
-        std::fs::write(&lock_path, "external-holder")
-            .map_err(|e| format!("write lock: {e}"))?;
+        let lock_path = ws
+            .path()
+            .join(".ralph-burning/daemon/leases/writer-locked-proj.lock");
+        std::fs::write(&lock_path, "external-holder").map_err(|e| format!("write lock: {e}"))?;
 
         // Task 2: no lock contention (different project), later created_at
         let task2_json = serde_json::json!({
@@ -5732,20 +6381,19 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "routing_source": "default_flow"
         });
         let task2_path = ws.path().join(".ralph-burning/daemon/tasks/free-task.json");
-        std::fs::write(&task2_path, serde_json::to_string_pretty(&task2_json).unwrap())
-            .map_err(|e| format!("write task2: {e}"))?;
+        std::fs::write(
+            &task2_path,
+            serde_json::to_string_pretty(&task2_json).unwrap(),
+        )
+        .map_err(|e| format!("write task2: {e}"))?;
 
-        let out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         assert_success(&out)?;
 
         // Writer-lock contention invariant: the locked task must remain pending,
         // acquire no lease/worktree, and produce no claim-side durable mutation.
         let task1_after: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&task1_path)
-                .map_err(|e| format!("read task1 after: {e}"))?,
+            &std::fs::read_to_string(&task1_path).map_err(|e| format!("read task1 after: {e}"))?,
         )
         .map_err(|e| format!("parse task1: {e}"))?;
         let task1_status = task1_after
@@ -5758,7 +6406,11 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
         // locked-task must not have acquired a lease
-        if task1_after.get("lease_id").and_then(|v| v.as_str()).is_some() {
+        if task1_after
+            .get("lease_id")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
             return Err(
                 "locked-task must not acquire a lease under writer lock contention".to_owned(),
             );
@@ -5767,8 +6419,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         // The second eligible task should be claimed and processed in the same
         // daemon cycle (status changed from pending).
         let task2_after: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&task2_path)
-                .map_err(|e| format!("read task2 after: {e}"))?,
+            &std::fs::read_to_string(&task2_path).map_err(|e| format!("read task2 after: {e}"))?,
         )
         .map_err(|e| format!("parse task2: {e}"))?;
         let task2_status = task2_after
@@ -5794,12 +6445,11 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-008", || {
         // Daemon dispatch does not mutate process-global working directory.
         // Structural assertion: daemon_loop.rs must not contain set_current_dir.
-        let source = include_str!(
-            "../../contexts/automation_runtime/daemon_loop.rs"
-        );
+        let source = include_str!("../../contexts/automation_runtime/daemon_loop.rs");
         if source.contains("set_current_dir") {
             return Err(
-                "daemon_loop.rs must not call set_current_dir — CWD must remain unchanged".to_owned(),
+                "daemon_loop.rs must not call set_current_dir — CWD must remain unchanged"
+                    .to_owned(),
             );
         }
 
@@ -5828,23 +6478,23 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "resolved_flow": "standard",
             "routing_source": "default_flow"
         });
-        let task_path = ws.path().join(".ralph-burning/daemon/tasks/cwd-test-task.json");
-        std::fs::write(&task_path, serde_json::to_string_pretty(&task_json).unwrap())
-            .map_err(|e| format!("write task: {e}"))?;
+        let task_path = ws
+            .path()
+            .join(".ralph-burning/daemon/tasks/cwd-test-task.json");
+        std::fs::write(
+            &task_path,
+            serde_json::to_string_pretty(&task_json).unwrap(),
+        )
+        .map_err(|e| format!("write task: {e}"))?;
 
-        let cwd_before = std::env::current_dir()
-            .map_err(|e| format!("get cwd: {e}"))?;
-        let out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let cwd_before = std::env::current_dir().map_err(|e| format!("get cwd: {e}"))?;
+        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         // Dispatch must succeed — if the command fails, the task fixture was
         // malformed or the daemon could not process it, which must not count as
         // a passing CWD-unchanged assertion.
         assert_success(&out)?;
 
-        let cwd_after = std::env::current_dir()
-            .map_err(|e| format!("get cwd: {e}"))?;
+        let cwd_after = std::env::current_dir().map_err(|e| format!("get cwd: {e}"))?;
         if cwd_before != cwd_after {
             return Err(format!(
                 "CWD changed during dispatch: before={}, after={}",
@@ -5857,8 +6507,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         // from pending). A malformed fixture that causes a parse failure must
         // not satisfy the unchanged-CWD assertion.
         let task_after: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&task_path)
-                .map_err(|e| format!("read task after: {e}"))?,
+            &std::fs::read_to_string(&task_path).map_err(|e| format!("read task after: {e}"))?,
         )
         .map_err(|e| format!("parse task: {e}"))?;
         let task_status = task_after
@@ -5964,8 +6613,14 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         };
 
         let result = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
-        ).map_err(|e| e.to_string())?;
+            &store,
+            ws.path(),
+            &routing,
+            FlowPreset::Standard,
+            &issue,
+            DispatchMode::Workflow,
+        )
+        .map_err(|e| e.to_string())?;
         let task = result.ok_or("expected a task to be created")?;
         if task.issue_ref != "test/repo#1" {
             return Err(format!("wrong issue_ref: {}", task.issue_ref));
@@ -6002,23 +6657,38 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // First ingestion creates
         let r1 = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
-        ).map_err(|e| e.to_string())?;
+            &store,
+            ws.path(),
+            &routing,
+            FlowPreset::Standard,
+            &issue,
+            DispatchMode::Workflow,
+        )
+        .map_err(|e| e.to_string())?;
         if r1.is_none() {
             return Err("first ingestion should create a task".to_owned());
         }
 
         // Second ingestion is no-op
         let r2 = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
-        ).map_err(|e| e.to_string())?;
+            &store,
+            ws.path(),
+            &routing,
+            FlowPreset::Standard,
+            &issue,
+            DispatchMode::Workflow,
+        )
+        .map_err(|e| e.to_string())?;
         if r2.is_some() {
             return Err("second ingestion should be idempotent no-op".to_owned());
         }
 
         // Only one task exists
         let tasks = DaemonTaskService::list_tasks(&store, ws.path()).map_err(|e| e.to_string())?;
-        let matching: Vec<_> = tasks.iter().filter(|t| t.issue_ref == "test/repo#2").collect();
+        let matching: Vec<_> = tasks
+            .iter()
+            .filter(|t| t.issue_ref == "test/repo#2")
+            .collect();
         if matching.len() != 1 {
             return Err(format!("expected 1 task, found {}", matching.len()));
         }
@@ -6051,20 +6721,19 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-3.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle — the full watcher → requirements_quick →
         // seed handoff → project creation → workflow dispatch pipeline.
-        let out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         assert_success(&out)?;
 
         // Verify the task was created and processed to completion
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task = tasks.iter()
+        let task = tasks
+            .iter()
             .find(|t| t.issue_ref == "test/repo#3")
             .ok_or("no task created for issue test/repo#3")?;
 
@@ -6075,15 +6744,18 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_id = task.requirements_run_id.as_ref().unwrap();
 
         // The linked requirements run should be completed
-        let req_run_path = ws.path()
+        let req_run_path = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
         let run_content = std::fs::read_to_string(&req_run_path)
             .map_err(|e| format!("read requirements run.json: {e}"))?;
-        let run: serde_json::Value = serde_json::from_str(&run_content)
-            .map_err(|e| format!("parse run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
         let req_status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if req_status != "completed" {
-            return Err(format!("expected requirements run 'completed', got '{req_status}'"));
+            return Err(format!(
+                "expected requirements run 'completed', got '{req_status}'"
+            ));
         }
 
         // Task should have project metadata populated from seed
@@ -6095,7 +6767,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Task dispatch_mode should be Workflow (transitioned from RequirementsQuick)
-        if task.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow {
+        if task.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow
+        {
             return Err(format!(
                 "expected Workflow dispatch_mode after quick handoff, got {}",
                 task.dispatch_mode
@@ -6111,7 +6784,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify the project was actually created on disk
-        let project_path = ws.path()
+        let project_path = ws
+            .path()
             .join(format!(".ralph-burning/projects/{}", task.project_id));
         if !project_path.join("project.toml").is_file() {
             return Err(format!(
@@ -6149,7 +6823,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-4.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Override question_set to return non-empty questions so the draft
         // path reaches awaiting_answers instead of completing directly.
@@ -6166,19 +6841,26 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out)?;
 
         // Verify the task was created and entered waiting_for_requirements
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task = tasks.iter()
+        let task = tasks
+            .iter()
             .find(|t| t.issue_ref == "test/repo#4")
             .ok_or("no task created for issue test/repo#4")?;
 
         if task.status != TaskStatus::WaitingForRequirements {
-            return Err(format!("expected waiting_for_requirements, got {}", task.status));
+            return Err(format!(
+                "expected waiting_for_requirements, got {}",
+                task.status
+            ));
         }
         if task.lease_id.is_some() {
             return Err("task in waiting state should have no lease".to_owned());
@@ -6189,19 +6871,23 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // The linked requirements run should be in awaiting_answers status
         let run_id = task.requirements_run_id.as_ref().unwrap();
-        let req_run_path = ws.path()
+        let req_run_path = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
         let run_content = std::fs::read_to_string(&req_run_path)
             .map_err(|e| format!("read requirements run.json: {e}"))?;
-        let run: serde_json::Value = serde_json::from_str(&run_content)
-            .map_err(|e| format!("parse run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "awaiting_answers" {
-            return Err(format!("expected requirements run 'awaiting_answers', got '{status}'"));
+            return Err(format!(
+                "expected requirements run 'awaiting_answers', got '{status}'"
+            ));
         }
 
         // Verify answers.toml template was written
-        let answers_path = ws.path()
+        let answers_path = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/answers.toml"));
         if !answers_path.is_file() {
             return Err("answers.toml template should be written for draft".to_owned());
@@ -6233,8 +6919,14 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             routing_command: None,
         };
         DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue1, DispatchMode::Workflow,
-        ).map_err(|e| e.to_string())?;
+            &store,
+            ws.path(),
+            &routing,
+            FlowPreset::Standard,
+            &issue1,
+            DispatchMode::Workflow,
+        )
+        .map_err(|e| e.to_string())?;
 
         let issue2 = WatchedIssueMeta {
             issue_ref: "test/repo#5".to_owned(),
@@ -6245,7 +6937,12 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             routing_command: None,
         };
         let err = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue2, DispatchMode::Workflow,
+            &store,
+            ws.path(),
+            &routing,
+            FlowPreset::Standard,
+            &issue2,
+            DispatchMode::Workflow,
         );
         match err {
             Err(AppError::DuplicateWatchedIssue { .. }) => Ok(()),
@@ -6279,21 +6976,20 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-6.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle — the stub seed recommends "standard" but the
         // routing command says "quick_dev". The subsequent worktree step may
         // fail in a non-git workspace, but the routing warning should be
         // durably persisted on the task.
-        let _out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let _out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
 
         // Verify the task used the routed flow (quick_dev), not the seed's recommendation
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task = tasks.iter()
+        let task = tasks
+            .iter()
             .find(|t| t.issue_ref == "test/repo#6")
             .ok_or("no task created for issue test/repo#6")?;
 
@@ -6305,7 +7001,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         if task.routing_warnings.is_empty() {
             return Err("routing_warnings should contain the flow override warning".to_owned());
         }
-        let has_override_warning = task.routing_warnings.iter()
+        let has_override_warning = task
+            .routing_warnings
+            .iter()
             .any(|w| w.contains("seed suggests flow") && w.contains("authoritative"));
         if !has_override_warning {
             return Err(format!(
@@ -6319,8 +7017,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         if journal_path.is_file() {
             let journal = std::fs::read_to_string(&journal_path)
                 .map_err(|e| format!("read daemon journal: {e}"))?;
-            let has_journal_warning = journal.lines()
-                .any(|line| line.contains("routing_warning"));
+            let has_journal_warning = journal.lines().any(|line| line.contains("routing_warning"));
             if !has_journal_warning {
                 return Err("daemon journal should contain routing_warning event".to_owned());
             }
@@ -6357,8 +7054,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Valid: no requirements command at all is Ok(None)
-        let result4 = watcher::parse_requirements_command("/rb flow standard")
-            .map_err(|e| e.to_string())?;
+        let result4 =
+            watcher::parse_requirements_command("/rb flow standard").map_err(|e| e.to_string())?;
         if result4.is_some() {
             return Err("expected None for non-requirements command".to_owned());
         }
@@ -6382,19 +7079,20 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-7.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle — the watcher should skip this issue
-        let out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         assert_success(&out)?;
 
         // No task should have been created for the malformed issue
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let matching = tasks.iter().filter(|t| t.issue_ref == "test/repo#7").count();
+        let matching = tasks
+            .iter()
+            .filter(|t| t.issue_ref == "test/repo#7")
+            .count();
         if matching != 0 {
             return Err(format!(
                 "expected 0 tasks for malformed command, found {matching}"
@@ -6407,7 +7105,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-INTAKE-008", || {
         // Daemon status surfaces waiting state and requirements_run_id
         use crate::adapters::fs::FsDaemonStore;
-        use crate::contexts::automation_runtime::model::{DaemonTask, DispatchMode, RoutingSource, TaskStatus};
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
@@ -6437,7 +7137,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             source_revision: Some("rev88888".to_owned()),
             requirements_run_id: Some("req-123".to_owned()),
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
 
         let out = run_cli(&["daemon", "status"], ws.path())?;
         assert_success(&out)?;
@@ -6474,7 +7176,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-9.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Override question_set to return non-empty questions so the draft
         // path reaches awaiting_answers instead of completing directly.
@@ -6490,31 +7193,41 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         let out1 = run_cli_with_env(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+            &[(
+                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+                &label_overrides.to_string(),
+            )],
         )?;
         assert_success(&out1)?;
 
         // Verify the task is in waiting state
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task = tasks.iter()
+        let task = tasks
+            .iter()
             .find(|t| t.issue_ref == "test/repo#9")
             .ok_or("no task created for issue test/repo#9")?;
 
         if task.status != TaskStatus::WaitingForRequirements {
-            return Err(format!("expected waiting_for_requirements after first cycle, got {}", task.status));
+            return Err(format!(
+                "expected waiting_for_requirements after first cycle, got {}",
+                task.status
+            ));
         }
-        let run_id = task.requirements_run_id.as_ref()
+        let run_id = task
+            .requirements_run_id
+            .as_ref()
             .ok_or("requirements_run_id should be set after draft")?;
 
         // Simulate `requirements answer`: complete the requirements run by
         // writing it as completed with a seed payload on disk.
-        let req_run_path = ws.path()
+        let req_run_path = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
         let run_content = std::fs::read_to_string(&req_run_path)
             .map_err(|e| format!("read requirements run.json: {e}"))?;
-        let mut run: serde_json::Value = serde_json::from_str(&run_content)
-            .map_err(|e| format!("parse run.json: {e}"))?;
+        let mut run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
         let seed_id = "seed-from-answers";
         run["status"] = serde_json::json!("completed");
         run["latest_seed_id"] = serde_json::json!(seed_id);
@@ -6523,8 +7236,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("write completed run.json: {e}"))?;
 
         // Write the seed payload
-        let payload_dir = ws.path()
-            .join(format!(".ralph-burning/requirements/{run_id}/history/payloads"));
+        let payload_dir = ws.path().join(format!(
+            ".ralph-burning/requirements/{run_id}/history/payloads"
+        ));
         std::fs::create_dir_all(&payload_dir).map_err(|e| format!("mkdir payloads: {e}"))?;
         let seed_payload = serde_json::json!({
             "project_id": "resumed-draft-project",
@@ -6537,10 +7251,12 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             payload_dir.join(format!("{seed_id}.json")),
             serde_json::to_string_pretty(&seed_payload).unwrap(),
-        ).map_err(|e| format!("write seed payload: {e}"))?;
+        )
+        .map_err(|e| format!("write seed payload: {e}"))?;
 
         // Write the seed prompt
-        let seed_dir = ws.path()
+        let seed_dir = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/seed"));
         std::fs::create_dir_all(&seed_dir).map_err(|e| format!("mkdir seed: {e}"))?;
         std::fs::write(seed_dir.join("prompt.md"), "# Resumed draft prompt\n")
@@ -6549,15 +7265,13 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         // Second daemon cycle: check_waiting_tasks should see the completed
         // requirements run, resume the task, derive the seed, create the
         // project, and complete the workflow.
-        let out2 = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let out2 = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         assert_success(&out2)?;
 
         // Re-read the task — it should now be completed
         let tasks2 = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task2 = tasks2.iter()
+        let task2 = tasks2
+            .iter()
             .find(|t| t.issue_ref == "test/repo#9")
             .ok_or("task for issue test/repo#9 disappeared")?;
 
@@ -6569,7 +7283,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Task should have been switched to Workflow dispatch_mode
-        if task2.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow {
+        if task2.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow
+        {
             return Err(format!(
                 "expected Workflow dispatch_mode after resume, got {}",
                 task2.dispatch_mode
@@ -6580,7 +7295,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         if task2.project_id.is_empty() {
             return Err("project_id should be populated after resume".to_owned());
         }
-        let project_path = ws.path()
+        let project_path = ws
+            .path()
             .join(format!(".ralph-burning/projects/{}", task2.project_id));
         if !project_path.join("project.toml").is_file() {
             return Err(format!(
@@ -6619,19 +7335,18 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(
             watched_dir.join("issue-10.json"),
             serde_json::to_string_pretty(&issue_json).unwrap(),
-        ).map_err(|e| format!("write watched issue: {e}"))?;
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle (no label overrides → empty questions → immediate completion)
-        let out = run_cli(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-        )?;
+        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
         assert_success(&out)?;
 
         // Verify the task was requeued as Pending with Workflow dispatch_mode
         let store = FsDaemonStore;
         let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
-        let task = tasks.iter()
+        let task = tasks
+            .iter()
             .find(|t| t.issue_ref == "test/repo#10")
             .ok_or("no task created for issue test/repo#10")?;
 
@@ -6653,12 +7368,13 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // The linked requirements run should be completed (not awaiting_answers)
         let run_id = task.requirements_run_id.as_ref().unwrap();
-        let req_run_path = ws.path()
+        let req_run_path = ws
+            .path()
             .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
         let run_content = std::fs::read_to_string(&req_run_path)
             .map_err(|e| format!("read requirements run.json: {e}"))?;
-        let run: serde_json::Value = serde_json::from_str(&run_content)
-            .map_err(|e| format!("parse run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
         let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status != "completed" {
             return Err(format!(

@@ -1030,12 +1030,13 @@ pub fn extract_seed_handoff(
         });
     }
 
-    let seed_id = run.latest_seed_id.as_deref().ok_or_else(|| {
-        AppError::RequirementsHandoffFailed {
-            task_id: run_id.to_owned(),
-            details: "completed requirements run has no seed_id".to_owned(),
-        }
-    })?;
+    let seed_id =
+        run.latest_seed_id
+            .as_deref()
+            .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                task_id: run_id.to_owned(),
+                details: "completed requirements run has no seed_id".to_owned(),
+            })?;
 
     let seed_json = store.read_payload(base_dir, run_id, seed_id)?;
     let seed: super::model::ProjectSeedPayload =

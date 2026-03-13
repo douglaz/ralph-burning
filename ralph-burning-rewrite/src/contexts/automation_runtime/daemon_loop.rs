@@ -22,9 +22,7 @@ use crate::contexts::project_run_record::service::{
     RuntimeLogWritePort,
 };
 use crate::contexts::project_run_record::CreateProjectInput;
-use crate::contexts::requirements_drafting::service::{
-    self as req_service, RequirementsStorePort,
-};
+use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
@@ -200,10 +198,7 @@ where
             let dispatch_mode = match watcher::resolve_dispatch_mode(issue) {
                 Ok(mode) => mode,
                 Err(e) => {
-                    println!(
-                        "watcher: skipping issue '{}': {}",
-                        issue.issue_ref, e
-                    );
+                    println!("watcher: skipping issue '{}': {}", issue.issue_ref, e);
                     continue;
                 }
             };
@@ -386,9 +381,7 @@ where
                 // Fall through to standard claim/dispatch below.
             }
             DispatchMode::RequirementsDraft => {
-                return self
-                    .handle_requirements_draft(base_dir, task)
-                    .await;
+                return self.handle_requirements_draft(base_dir, task).await;
             }
             DispatchMode::Workflow => {
                 // Fall through to standard workflow dispatch
@@ -510,21 +503,18 @@ where
     /// run ID to the task, derive seed, and update the task with project metadata
     /// + Workflow mode so the caller can continue into the standard claim/project/
     /// dispatch path in the same daemon cycle.
-    async fn handle_requirements_quick(
-        &self,
-        base_dir: &Path,
-        task: &DaemonTask,
-    ) -> AppResult<()> {
-        let req_store = self.requirements_store.ok_or_else(|| {
-            AppError::RequirementsHandoffFailed {
-                task_id: task.task_id.clone(),
-                details: "no requirements store configured for daemon".to_owned(),
-            }
-        })?;
+    async fn handle_requirements_quick(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let req_store =
+            self.requirements_store
+                .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                    task_id: task.task_id.clone(),
+                    details: "no requirements store configured for daemon".to_owned(),
+                })?;
 
-        let idea = task.prompt.clone().unwrap_or_else(|| {
-            format!("Automated task for issue {}", task.issue_ref)
-        });
+        let idea = task
+            .prompt
+            .clone()
+            .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
         // Build a fresh requirements service (same pattern as CLI)
         let req_svc = build_requirements_service();
@@ -655,17 +645,13 @@ where
     /// transition to WaitingForRequirements (if questions need answers) or
     /// extract the seed and switch to Workflow mode (if the run completed
     /// directly with empty questions).
-    async fn handle_requirements_draft(
-        &self,
-        base_dir: &Path,
-        task: &DaemonTask,
-    ) -> AppResult<()> {
-        let req_store = self.requirements_store.ok_or_else(|| {
-            AppError::RequirementsHandoffFailed {
-                task_id: task.task_id.clone(),
-                details: "no requirements store configured for daemon".to_owned(),
-            }
-        })?;
+    async fn handle_requirements_draft(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let req_store =
+            self.requirements_store
+                .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                    task_id: task.task_id.clone(),
+                    details: "no requirements store configured for daemon".to_owned(),
+                })?;
 
         // Transition through Pending → Claimed → Active without a worktree lease.
         // The draft path only needs the agent to generate questions — no project,
@@ -678,9 +664,10 @@ where
             self.store.write_task(base_dir, &t)?;
         }
 
-        let idea = task.prompt.clone().unwrap_or_else(|| {
-            format!("Automated task for issue {}", task.issue_ref)
-        });
+        let idea = task
+            .prompt
+            .clone()
+            .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
         let req_svc = build_requirements_service();
         let run_id = match req_svc.draft(base_dir, &idea, Utc::now()).await {
@@ -701,8 +688,7 @@ where
         // If the question set was empty, the run completes directly (no user
         // answers needed). Only enter WaitingForRequirements when answers are
         // actually pending.
-        let run_complete =
-            req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
+        let run_complete = req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
 
         if run_complete {
             // Empty-question draft: run already completed. Extract seed and
@@ -1118,13 +1104,18 @@ where
         task_id: &str,
         lease: &crate::contexts::automation_runtime::model::WorktreeLease,
     ) -> AppResult<()> {
-        let release_result =
-            LeaseService::release(self.store, self.worktree, base_dir, repo_root, lease, crate::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent);
+        let release_result = LeaseService::release(
+            self.store,
+            self.worktree,
+            base_dir,
+            repo_root,
+            lease,
+            crate::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+        );
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
-                    .map(|_| ())
+                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ())
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -1158,10 +1149,9 @@ fn build_requirements_service(
 
     // Test-only seam: same label override mechanism as the CLI handler.
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
-        if let Ok(overrides) =
-            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
-                &overrides_json,
-            )
+        if let Ok(overrides) = serde_json::from_str::<
+            std::collections::HashMap<String, serde_json::Value>,
+        >(&overrides_json)
         {
             for (label, payload) in overrides {
                 let full_label = if label.starts_with("requirements:") {

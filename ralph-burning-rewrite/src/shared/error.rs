@@ -167,9 +167,13 @@ pub enum AppError {
         issue_ref: String,
         source_revision: String,
     },
-    #[error("reconcile cleanup failed: {failed_count} stale lease(s) could not be fully cleaned up")]
+    #[error(
+        "reconcile cleanup failed: {failed_count} stale lease(s) could not be fully cleaned up"
+    )]
     ReconcileCleanupFailed { failed_count: usize },
-    #[error("lease cleanup partially failed for task '{task_id}': some resources could not be released")]
+    #[error(
+        "lease cleanup partially failed for task '{task_id}': some resources could not be released"
+    )]
     LeaseCleanupPartialFailure { task_id: String },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {

@@ -637,8 +637,14 @@ fn watched_issue_with_requirements_command_routes_flow_from_labels() {
 #[test]
 fn dispatch_mode_display() {
     assert_eq!("workflow", DispatchMode::Workflow.as_str());
-    assert_eq!("requirements_draft", DispatchMode::RequirementsDraft.as_str());
-    assert_eq!("requirements_quick", DispatchMode::RequirementsQuick.as_str());
+    assert_eq!(
+        "requirements_draft",
+        DispatchMode::RequirementsDraft.as_str()
+    );
+    assert_eq!(
+        "requirements_quick",
+        DispatchMode::RequirementsQuick.as_str()
+    );
 }
 
 #[test]
@@ -787,10 +793,7 @@ fn post_link_metadata_failure_transitions_waiting_task_to_failed() {
         failed.failure_class
     );
     // The requirements_run_id should still be set — the run itself succeeded
-    assert_eq!(
-        Some("req-linked-ok".to_owned()),
-        failed.requirements_run_id
-    );
+    assert_eq!(Some("req-linked-ok".to_owned()), failed.requirements_run_id);
 }
 
 #[test]
@@ -830,8 +833,8 @@ fn active_task_can_transition_to_pending_for_requeue() {
 fn writer_lock_acquire_release_roundtrip() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new("lock-test".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("lock-test".to_owned()).expect("valid id");
 
     store
         .acquire_writer_lock(temp.path(), &project_id, "cli")
@@ -862,8 +865,8 @@ fn writer_lock_acquire_release_roundtrip() {
 fn writer_lock_release_is_idempotent() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned()).expect("valid id");
 
     // Release without acquire should not fail
     store
@@ -900,8 +903,8 @@ fn reconcile_reports_only_successful_releases() {
     store.write_lease(temp.path(), &lease).expect("write lease");
 
     // Create the writer lock
-    let project_id = ralph_burning::shared::domain::ProjectId::new("demo".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
     store
         .acquire_writer_lock(temp.path(), &project_id, "lease-reconcile-test")
         .expect("acquire lock");
@@ -930,7 +933,9 @@ fn reconcile_reports_only_successful_releases() {
     assert_eq!(1, report.cleanup_failures.len());
     assert_eq!("lease-reconcile-test", report.cleanup_failures[0].lease_id);
     assert!(
-        report.cleanup_failures[0].details.contains("worktree_absent"),
+        report.cleanup_failures[0]
+            .details
+            .contains("worktree_absent"),
         "details should indicate worktree was absent, got: {}",
         report.cleanup_failures[0].details
     );
@@ -984,7 +989,9 @@ impl WorktreePort for FailingWorktreeAdapter {
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "simulated worktree removal failure",
@@ -1034,7 +1041,9 @@ impl WorktreePort for SuccessWorktreeAdapter {
         _repo_root: &std::path::Path,
         worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
         if worktree_path.exists() {
             std::fs::remove_dir_all(worktree_path)?;
@@ -1112,7 +1121,9 @@ fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
         report.cleanup_failures[0].lease_id
     );
     assert!(
-        report.cleanup_failures[0].details.contains("worktree_remove:"),
+        report.cleanup_failures[0]
+            .details
+            .contains("worktree_remove:"),
         "details should indicate worktree removal failure, got: {}",
         report.cleanup_failures[0].details
     );
@@ -1211,7 +1222,9 @@ impl DaemonStorePort for FailingJournalStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.remove_lease(base_dir, lease_id)
     }
     fn read_daemon_journal(
@@ -1230,9 +1243,7 @@ impl DaemonStorePort for FailingJournalStore {
         let count = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let limit = self
-            .fail_after
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let limit = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
         if count >= limit {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -1248,13 +1259,16 @@ impl DaemonStorePort for FailingJournalStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.release_writer_lock(base_dir, project_id)
     }
 }
@@ -1276,9 +1290,7 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
     let mut task = sample_task();
     task.task_id = "claim-rollback-test".to_owned();
     task.project_id = "rollback-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1332,9 +1344,7 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
     let mut task = sample_task();
     task.task_id = "claim-fail-test".to_owned();
     task.project_id = "fail-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1388,9 +1398,7 @@ fn claim_journal_failure_with_release_failure_marks_failed_retains_lease() {
     let mut task = sample_task();
     task.task_id = "double-fail-test".to_owned();
     task.project_id = "double-fail-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1537,7 +1545,9 @@ impl DaemonStorePort for SubStepAbsentStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.lease_file_absent {
             Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
         } else {
@@ -1565,13 +1575,16 @@ impl DaemonStorePort for SubStepAbsentStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.writer_lock_absent {
             Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
         } else {
@@ -1636,13 +1649,21 @@ fn reconcile_lease_file_absent_reports_cleanup_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("lease_file_absent")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("lease_file_absent")),
         "should report lease_file_absent sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert_eq!(
         "lease-lfa-test",
-        report.cleanup_failures.iter().find(|f| f.details.contains("lease_file_absent")).unwrap().lease_id
+        report
+            .cleanup_failures
+            .iter()
+            .find(|f| f.details.contains("lease_file_absent"))
+            .unwrap()
+            .lease_id
     );
 }
 
@@ -1697,7 +1718,10 @@ fn reconcile_writer_lock_absent_reports_cleanup_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("writer_lock_absent")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("writer_lock_absent")),
         "should report writer_lock_absent sub-step failure, got: {:?}",
         report.cleanup_failures
     );
@@ -1751,11 +1775,15 @@ fn reconcile_both_substeps_absent_reports_both_failures() {
         .map(|f| f.details.as_str())
         .collect();
     assert!(
-        failure_details.iter().any(|d| d.contains("lease_file_absent")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("lease_file_absent")),
         "should report lease_file_absent, got: {failure_details:?}"
     );
     assert!(
-        failure_details.iter().any(|d| d.contains("writer_lock_absent")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("writer_lock_absent")),
         "should report writer_lock_absent, got: {failure_details:?}"
     );
 }
@@ -1835,7 +1863,9 @@ impl DaemonStorePort for SubStepErrorStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.lease_file_error {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -1867,13 +1897,16 @@ impl DaemonStorePort for SubStepErrorStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.writer_lock_error {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -1941,12 +1974,18 @@ fn reconcile_lease_file_delete_error_reports_specific_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("lease_file_delete:")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("lease_file_delete:")),
         "should report lease_file_delete sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("simulated lease file deletion failure")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("simulated lease file deletion failure")),
         "should include the original error message, got: {:?}",
         report.cleanup_failures
     );
@@ -2007,12 +2046,18 @@ fn reconcile_writer_lock_release_error_reports_specific_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("writer_lock_release:")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("writer_lock_release:")),
         "should report writer_lock_release sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("simulated writer lock release failure")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("simulated writer lock release failure")),
         "should include the original error message, got: {:?}",
         report.cleanup_failures
     );
@@ -2066,11 +2111,15 @@ fn reconcile_both_substep_errors_reports_both_failures() {
         .map(|f| f.details.as_str())
         .collect();
     assert!(
-        failure_details.iter().any(|d| d.contains("lease_file_delete:")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("lease_file_delete:")),
         "should report lease_file_delete, got: {failure_details:?}"
     );
     assert!(
-        failure_details.iter().any(|d| d.contains("writer_lock_release:")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("writer_lock_release:")),
         "should report writer_lock_release, got: {failure_details:?}"
     );
 }
@@ -2138,7 +2187,9 @@ fn release_with_lease_file_error_sets_resources_released_false() {
     );
 
     // LeaseReleased journal event must NOT have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         !journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2199,7 +2250,9 @@ fn release_with_writer_lock_error_sets_resources_released_false() {
     );
 
     // LeaseReleased journal event must NOT have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         !journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2261,7 +2314,9 @@ fn release_full_success_sets_resources_released_true_and_emits_journal() {
     );
 
     // LeaseReleased journal event MUST have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2531,7 +2586,9 @@ fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
             )
             .expect("clear lease ref");
         }
-        Ok(_) => panic!("Idempotent release with missing worktree should have resources_released=true"),
+        Ok(_) => {
+            panic!("Idempotent release with missing worktree should have resources_released=true")
+        }
         Err(e) => panic!("unexpected release error: {e}"),
     }
 
@@ -2544,7 +2601,10 @@ fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
         "lease_id must be cleared after successful idempotent release"
     );
     assert!(
-        !temp.path().join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json").exists(),
+        !temp
+            .path()
+            .join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json")
+            .exists(),
         "lease file must be removed"
     );
 }
@@ -2612,7 +2672,9 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         &self,
         _base_dir: &std::path::Path,
         _lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         // Return a real I/O error so release() gets resources_released=false
         // regardless of ReleaseMode.
         Err(std::io::Error::new(
@@ -2635,11 +2697,7 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         _event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
     ) -> ralph_burning::shared::error::AppResult<()> {
         // Always fail journal appends
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "simulated journal failure",
-        )
-        .into())
+        Err(std::io::Error::new(std::io::ErrorKind::Other, "simulated journal failure").into())
     }
     fn acquire_writer_lock(
         &self,
@@ -2647,13 +2705,16 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.release_writer_lock(base_dir, project_id)
     }
 }
@@ -2674,9 +2735,7 @@ fn claim_journal_failure_with_partial_release_marks_failed_retains_lease() {
     let mut task = sample_task();
     task.task_id = "partial-release-test".to_owned();
     task.project_id = "partial-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -2749,7 +2808,9 @@ impl WorktreePort for DisappearingWorktreeAdapter {
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         // Always report AlreadyAbsent — simulates the race condition
         Ok(ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
     }

@@ -29,7 +29,9 @@ struct WriterLockGuard<'a> {
 
 impl Drop for WriterLockGuard<'_> {
     fn drop(&mut self) {
-        let _ = self.store.release_writer_lock(self.base_dir, &self.project_id);
+        let _ = self
+            .store
+            .release_writer_lock(self.base_dir, &self.project_id);
     }
 }
 
@@ -99,7 +101,9 @@ pub fn build_agent_execution_service(
     // Format: "stage_id:count" e.g. "implementation:1"
     if let Ok(spec) = std::env::var("RALPH_BURNING_TEST_TRANSIENT_FAILURE") {
         if let Some((stage_str, count_str)) = spec.split_once(':') {
-            if let (Ok(stage_id), Ok(count)) = (stage_str.parse::<StageId>(), count_str.parse::<u32>()) {
+            if let (Ok(stage_id), Ok(count)) =
+                (stage_str.parse::<StageId>(), count_str.parse::<u32>())
+            {
                 adapter = adapter.with_transient_failure(stage_id, count);
             }
         }
@@ -109,10 +113,9 @@ pub fn build_agent_execution_service(
     // Example: {"completion_panel": {"outcome":"conditionally_approved",...}}
     // Example sequence: {"qa": [{"outcome":"request_changes",...}, {"outcome":"approved",...}]}
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_STAGE_OVERRIDES") {
-        if let Ok(overrides) =
-            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
-                &overrides_json,
-            )
+        if let Ok(overrides) = serde_json::from_str::<
+            std::collections::HashMap<String, serde_json::Value>,
+        >(&overrides_json)
         {
             for (stage_str, payload) in overrides {
                 if let Ok(stage_id) = stage_str.parse::<StageId>() {

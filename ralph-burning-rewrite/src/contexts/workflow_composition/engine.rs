@@ -923,6 +923,9 @@ where
                 {
                     // Late-stage conditional approval or request changes:
                     // Queue durable amendments, advance completion round, restart from planning.
+                    let next_cursor = cursor.advance_completion_round(semantics.planning_stage)?;
+                    let from_round = cursor.completion_round;
+                    let to_round = next_cursor.completion_round;
                     let follow_ups = validation_follow_ups(&bundle.payload);
                     let amendments = build_queued_amendments(
                         follow_ups,
@@ -1009,8 +1012,6 @@ where
                     snapshot.amendment_queue.pending.extend(amendments);
 
                     // Emit completion_round_advanced event.
-                    let from_round = cursor.completion_round;
-                    let to_round = from_round + 1;
                     let amendment_count = snapshot.amendment_queue.pending.len() as u32;
                     *seq += 1;
                     let round_event = journal::completion_round_advanced_event(
@@ -1050,7 +1051,6 @@ where
 
                     // Advance completion round and restart from the flow's planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
-                    let next_cursor = cursor.advance_completion_round(semantics.planning_stage)?;
                     snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {

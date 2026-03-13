@@ -18,6 +18,7 @@ use ralph_burning::contexts::agent_execution::model::{
 };
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
@@ -28,7 +29,7 @@ use ralph_burning::contexts::project_run_record::service::{
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
-use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, StageId};
+use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, RunId, StageId};
 use ralph_burning::shared::error::{AppError, AppResult};
 
 fn setup_workspace(base_dir: &Path) {
@@ -2996,6 +2997,105 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
             "amendment files should be drained from disk"
         );
     }
+}
+
+#[tokio::test]
+async fn resume_late_stage_conditionally_approved_reports_completion_round_overflow() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-overflow");
+    let run_id = RunId::new("run-overflow").unwrap();
+    let started_at = Utc::now();
+
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: u32::MAX,
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed".to_owned(),
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    let prior_stage_ids = [
+        StageId::PromptReview,
+        StageId::Planning,
+        StageId::Implementation,
+        StageId::Qa,
+        StageId::Review,
+    ];
+    let mut sequence = 2;
+    let run_started =
+        journal::run_started_event(sequence, started_at, &run_id, StageId::PromptReview);
+    let run_started_line = journal::serialize_event(&run_started).unwrap();
+    FsJournalStore
+        .append_event(base_dir, &pid, &run_started_line)
+        .unwrap();
+
+    for stage_id in prior_stage_ids {
+        sequence += 1;
+        let stage_completed = journal::stage_completed_event(
+            sequence,
+            started_at,
+            &run_id,
+            stage_id,
+            1,
+            1,
+            &format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX),
+            &format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX),
+        );
+        let line = journal::serialize_event(&stage_completed).unwrap();
+        FsJournalStore.append_event(base_dir, &pid, &line).unwrap();
+    }
+
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::CompletionPanel,
+            conditionally_approved_payload(&["overflow"]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::resume_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        &config,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(AppError::StageCursorOverflow {
+                field: "completion_round",
+                value: u32::MAX,
+            })
+        ),
+        "unexpected result: {result:?}"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert!(
+        round_events.is_empty(),
+        "completion_round_advanced should not be emitted on overflow"
+    );
 }
 
 #[tokio::test]

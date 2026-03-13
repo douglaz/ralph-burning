@@ -127,10 +127,7 @@ async fn handle_status() -> AppResult<()> {
         let heartbeat = lease
             .map(|lease| lease.last_heartbeat.to_rfc3339())
             .unwrap_or_else(|| "-".to_owned());
-        let req_run = task
-            .requirements_run_id
-            .as_deref()
-            .unwrap_or("-");
+        let req_run = task.requirements_run_id.as_deref().unwrap_or("-");
         println!(
             "{}  {}  dispatch={}  lease={}  heartbeat={}  issue={}  requirements_run={}",
             task.task_id,
@@ -250,12 +247,18 @@ async fn cleanup_aborted_task(
             continue;
         }
 
-        let release_result = LeaseService::release(store, worktree, base_dir, base_dir, &lease, ReleaseMode::Idempotent);
+        let release_result = LeaseService::release(
+            store,
+            worktree,
+            base_dir,
+            base_dir,
+            &lease,
+            ReleaseMode::Idempotent,
+        );
         return match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                DaemonTaskService::clear_lease_reference(store, base_dir, task_id)
-                    .map(|_| ())
+                DaemonTaskService::clear_lease_reference(store, base_dir, task_id).map(|_| ())
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease

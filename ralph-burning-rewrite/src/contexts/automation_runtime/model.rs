@@ -172,7 +172,14 @@ impl TaskStatus {
         match (self, next) {
             (Self::Pending, Self::Claimed | Self::Failed) => true,
             (Self::Claimed, Self::Active | Self::Failed | Self::Aborted) => true,
-            (Self::Active, Self::Pending | Self::Completed | Self::Failed | Self::Aborted | Self::WaitingForRequirements) => true,
+            (
+                Self::Active,
+                Self::Pending
+                | Self::Completed
+                | Self::Failed
+                | Self::Aborted
+                | Self::WaitingForRequirements,
+            ) => true,
             (Self::WaitingForRequirements, Self::Pending | Self::Failed | Self::Aborted) => true,
             (Self::Failed, Self::Pending) => true,
             _ if self == next => true,
