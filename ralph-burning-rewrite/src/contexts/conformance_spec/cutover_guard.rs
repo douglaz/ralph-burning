@@ -36,14 +36,15 @@ fn scan_directory(dir: &Path) -> AppResult<()> {
     for entry in entries {
         let path = entry.path();
         if path.is_dir() {
-            // Skip the conformance_spec context itself — it legitimately references
-            // legacy patterns for the purpose of the cutover guard.
-            let dir_name = path.file_name().unwrap_or_default().to_string_lossy();
-            if dir_name == "conformance_spec" {
-                continue;
-            }
             scan_directory(&path)?;
         } else if path.extension().map_or(false, |ext| ext == "rs") {
+            // Skip only this file (cutover_guard.rs) which defines the legacy
+            // pattern constants as string literals. All other conformance_spec
+            // files are scanned normally.
+            let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+            if file_name == "cutover_guard.rs" {
+                continue;
+            }
             scan_file(&path)?;
         }
     }
