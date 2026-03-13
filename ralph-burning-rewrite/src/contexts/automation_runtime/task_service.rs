@@ -187,22 +187,40 @@ impl DaemonTaskService {
             // LeaseAcquired journal failed before TaskClaimed: roll back to
             // Pending with no lease/worktree/writer lock, or mark Failed with
             // explicit failure class if rollback itself fails.
-            let _ = LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+            let release_err = LeaseService::release(store, worktree, base_dir, repo_root, &lease)
+                .err();
             let rollback_result = (|| -> AppResult<()> {
                 task.status = TaskStatus::Pending;
                 task.clear_lease();
                 task.updated_at = Utc::now();
                 store.write_task(base_dir, &task)?;
+                // Append compensating evidence so the journal explains the cleanup.
+                let _ = Self::append_journal_event(
+                    store,
+                    base_dir,
+                    DaemonJournalEventType::ClaimRollback,
+                    json!({
+                        "task_id": task.task_id,
+                        "reason": format!("LeaseAcquired journal failed: {journal_err}"),
+                        "rollback_target": "pending",
+                        "lease_released": release_err.is_none(),
+                    }),
+                );
                 Ok(())
             })();
             if rollback_result.is_err() {
-                let _ = Self::mark_failed(
-                    store,
-                    base_dir,
-                    &task.task_id,
-                    "claim_journal_failed",
-                    &format!("LeaseAcquired journal failed and rollback failed: {journal_err}"),
-                );
+                // Rollback failed: force to Failed with explicit class + clear lease_id.
+                let _ = (|| -> AppResult<()> {
+                    let mut t = store.read_task(base_dir, &task.task_id)?;
+                    t.transition_to(TaskStatus::Failed, Utc::now())?;
+                    t.set_failure(
+                        "claim_journal_failed",
+                        &format!("LeaseAcquired journal failed and rollback failed: {journal_err}"),
+                    );
+                    t.clear_lease();
+                    store.write_task(base_dir, &t)?;
+                    Ok(())
+                })();
             }
             return Err(journal_err);
         }
@@ -216,15 +234,31 @@ impl DaemonTaskService {
                 "project_id": project_id,
             }),
         ) {
-            // TaskClaimed journal failed: release lease and mark failed
-            let _ = LeaseService::release(store, worktree, base_dir, repo_root, &lease);
-            let _ = Self::mark_failed(
-                store,
-                base_dir,
-                &task.task_id,
-                "claim_journal_failed",
-                &format!("TaskClaimed journal append failed: {journal_err}"),
-            );
+            // TaskClaimed journal failed: release lease, mark failed, clear lease_id.
+            let release_err = LeaseService::release(store, worktree, base_dir, repo_root, &lease)
+                .err();
+            let _ = (|| -> AppResult<()> {
+                let mut t = store.read_task(base_dir, &task.task_id)?;
+                t.transition_to(TaskStatus::Failed, Utc::now())?;
+                t.set_failure(
+                    "claim_journal_failed",
+                    &format!("TaskClaimed journal append failed: {journal_err}"),
+                );
+                t.clear_lease();
+                store.write_task(base_dir, &t)?;
+                let _ = Self::append_journal_event(
+                    store,
+                    base_dir,
+                    DaemonJournalEventType::ClaimRollback,
+                    json!({
+                        "task_id": task.task_id,
+                        "reason": format!("TaskClaimed journal failed: {journal_err}"),
+                        "rollback_target": "failed",
+                        "lease_released": release_err.is_none(),
+                    }),
+                );
+                Ok(())
+            })();
             return Err(journal_err);
         }
 

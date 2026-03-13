@@ -112,9 +112,12 @@ impl LeaseService {
         lease: &WorktreeLease,
     ) -> AppResult<()> {
         let project_id = ProjectId::new(lease.project_id.clone())?;
-        let remove_error = worktree
-            .remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)
-            .err();
+
+        // Attempt worktree removal first. If it fails, keep all durable lease
+        // state (lease file, writer lock) intact so a later reconcile can retry.
+        worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)?;
+
+        // Worktree removal succeeded — proceed with lease file + lock cleanup.
         store.remove_lease(base_dir, &lease.lease_id)?;
         store.release_writer_lock(base_dir, &project_id)?;
         DaemonTaskService::append_journal_event(
@@ -127,10 +130,6 @@ impl LeaseService {
                 "project_id": lease.project_id,
             }),
         )?;
-
-        if let Some(error) = remove_error {
-            return Err(error);
-        }
 
         Ok(())
     }
@@ -178,29 +177,43 @@ impl LeaseService {
                 report.failed_task_ids.push(task.task_id.clone());
             }
 
+            // Release order: worktree removal → lease file → writer lock → journal.
+            // If release fails (e.g. worktree removal), the lease remains durable
+            // for a later reconcile pass. The task is already terminal.
             let release_result = Self::release(store, worktree, base_dir, repo_root, &lease);
-            let clear_result =
-                DaemonTaskService::clear_lease_reference(store, base_dir, &task.task_id);
-
-            match (&release_result, &clear_result) {
-                (Ok(()), Ok(_)) => {
-                    report.released_lease_ids.push(lease.lease_id.clone());
-                    report
-                        .removed_worktrees
-                        .push(lease.worktree_path.display().to_string());
+            match release_result {
+                Ok(()) => {
+                    // Lease fully released — now clear the task's lease reference.
+                    match DaemonTaskService::clear_lease_reference(
+                        store,
+                        base_dir,
+                        &task.task_id,
+                    ) {
+                        Ok(_) => {
+                            report.released_lease_ids.push(lease.lease_id.clone());
+                            report
+                                .removed_worktrees
+                                .push(lease.worktree_path.display().to_string());
+                        }
+                        Err(e) => {
+                            // Lease removed but task reference not cleared — do NOT
+                            // report as released; the task remains visibly inconsistent
+                            // for operator repair.
+                            report.cleanup_failures.push(LeaseCleanupFailure {
+                                lease_id: lease.lease_id.clone(),
+                                task_id: task.task_id.clone(),
+                                details: format!("clear_lease_ref: {e}"),
+                            });
+                        }
+                    }
                 }
-                _ => {
-                    let mut details = Vec::new();
-                    if let Err(ref e) = release_result {
-                        details.push(format!("release: {e}"));
-                    }
-                    if let Err(ref e) = clear_result {
-                        details.push(format!("clear_lease_ref: {e}"));
-                    }
+                Err(e) => {
+                    // Release failed (e.g. worktree removal) — lease remains durable
+                    // and the task remains terminal but recoverable for a later reconcile.
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: lease.lease_id.clone(),
                         task_id: task.task_id.clone(),
-                        details: details.join("; "),
+                        details: format!("release: {e}"),
                     });
                 }
             }

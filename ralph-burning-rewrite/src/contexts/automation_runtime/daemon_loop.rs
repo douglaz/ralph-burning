@@ -163,16 +163,25 @@ where
         // Phase 2: Check waiting tasks for completed requirements runs
         self.check_waiting_tasks(base_dir)?;
 
-        // Phase 3: Process next pending task
-        let pending_task = DaemonTaskService::list_tasks(self.store, base_dir)?
+        // Phase 3: Process all pending tasks in this cycle. A per-task claim
+        // failure or writer-lock contention does not stop the scan; the daemon
+        // continues with remaining eligible tasks.
+        let pending_tasks: Vec<DaemonTask> = DaemonTaskService::list_tasks(self.store, base_dir)?
             .into_iter()
-            .find(|task| task.status == TaskStatus::Pending);
-        let Some(task) = pending_task else {
+            .filter(|task| task.status == TaskStatus::Pending)
+            .collect();
+        if pending_tasks.is_empty() {
             return Ok(false);
-        };
+        }
 
-        if let Err(error) = self.process_task(base_dir, &task, config, shutdown).await {
-            println!("daemon: task {} failed: {}", task.task_id, error);
+        for task in &pending_tasks {
+            if let Err(error) = self
+                .process_task(base_dir, task, config, shutdown.clone())
+                .await
+            {
+                println!("daemon: task {} failed: {}", task.task_id, error);
+                // Continue scanning remaining pending tasks
+            }
         }
         Ok(true)
     }

@@ -244,6 +244,7 @@ pub enum DaemonJournalEventType {
     LeaseAcquired,
     LeaseReleased,
     ReconciliationRun,
+    ClaimRollback,
     WatcherIngestion,
     RequirementsHandoff,
     RequirementsWaiting,

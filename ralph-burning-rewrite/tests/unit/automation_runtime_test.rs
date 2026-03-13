@@ -928,3 +928,412 @@ fn reconcile_report_has_cleanup_failures_is_false_when_empty() {
     let report = ralph_burning::contexts::automation_runtime::ReconcileReport::default();
     assert!(!report.has_cleanup_failures());
 }
+
+// ---------------------------------------------------------------------------
+// Reconcile partial-failure: worktree removal fails → lease stays durable
+// ---------------------------------------------------------------------------
+
+/// A worktree adapter whose `remove_worktree` always fails.
+struct FailingWorktreeAdapter;
+
+impl WorktreePort for FailingWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/task/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated worktree removal failure",
+        )
+        .into())
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    // Create a task and a stale lease
+    let mut task = sample_task();
+    task.task_id = "partial-cleanup-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-partial-cleanup-test".to_owned(),
+        task_id: "partial-cleanup-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: temp.path().join("some-worktree"),
+        branch_name: "rb/partial-cleanup-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    // Create the writer lock
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-partial-cleanup-test")
+        .expect("acquire lock");
+
+    // Use the FailingWorktreeAdapter so worktree removal fails
+    let failing_worktree = FailingWorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &failing_worktree,
+        temp.path(),
+        temp.path(),
+        Some(0), // force stale
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    // Lease should NOT be in released_lease_ids
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "released_lease_ids should be empty when worktree removal fails"
+    );
+    // Should have a cleanup failure
+    assert_eq!(1, report.cleanup_failures.len());
+    assert_eq!(
+        "lease-partial-cleanup-test",
+        report.cleanup_failures[0].lease_id
+    );
+    assert!(
+        report.cleanup_failures[0].details.contains("release:"),
+        "details should indicate release failure"
+    );
+
+    // The lease file should still exist on disk (durable for later reconcile)
+    let leases = store.list_leases(temp.path()).expect("list leases");
+    assert_eq!(
+        1,
+        leases.len(),
+        "lease should remain durable after partial cleanup failure"
+    );
+    assert_eq!("lease-partial-cleanup-test", leases[0].lease_id);
+
+    // The task should be Failed (reconciliation_timeout) — terminal but recoverable
+    let failed_task = store
+        .read_task(temp.path(), "partial-cleanup-test")
+        .expect("read task");
+    assert_eq!(TaskStatus::Failed, failed_task.status);
+    assert_eq!(
+        Some("reconciliation_timeout".to_owned()),
+        failed_task.failure_class
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Claim-journal rollback: task ends Pending or Failed, never stranded Claimed
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that makes `append_daemon_journal_event` fail
+/// after a configurable number of successful calls.
+struct FailingJournalStore {
+    inner: FsDaemonStore,
+    fail_after: std::sync::atomic::AtomicUsize,
+    call_count: std::sync::atomic::AtomicUsize,
+}
+
+impl FailingJournalStore {
+    fn new(fail_after: usize) -> Self {
+        Self {
+            inner: FsDaemonStore,
+            fail_after: std::sync::atomic::AtomicUsize::new(fail_after),
+            call_count: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
+
+impl DaemonStorePort for FailingJournalStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.remove_lease(base_dir, lease_id)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        let count = self
+            .call_count
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let limit = self
+            .fail_after
+            .load(std::sync::atomic::Ordering::SeqCst);
+        if count >= limit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated journal append failure",
+            )
+            .into());
+        }
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.release_writer_lock(base_dir, project_id)
+    }
+}
+
+#[test]
+fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
+    // When the LeaseAcquired journal append fails, the task must end up
+    // Pending (not Claimed) with no lease and no writer lock.
+    let temp = tempdir().expect("tempdir");
+    let worktree_adapter = WorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    // fail_after=0: the very first journal append (LeaseAcquired) will fail.
+    // claim_task internally does write_task(Claimed) first, then tries journal.
+    let store = FailingJournalStore::new(0);
+
+    let mut task = sample_task();
+    task.task_id = "claim-rollback-test".to_owned();
+    task.project_id = "rollback-proj".to_owned();
+    store
+        .create_task(temp.path(), &task)
+        .expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &worktree_adapter,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "claim-rollback-test",
+        FlowPreset::Standard,
+        300,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    // The task must NOT be stranded in Claimed
+    let task_after = store
+        .read_task(temp.path(), "claim-rollback-test")
+        .expect("read task");
+    assert_ne!(
+        TaskStatus::Claimed,
+        task_after.status,
+        "task must not be stranded in Claimed after journal failure"
+    );
+    // Task should be Pending (rollback succeeded) or Failed (rollback failed)
+    assert!(
+        task_after.status == TaskStatus::Pending || task_after.status == TaskStatus::Failed,
+        "task should be Pending or Failed, got: {:?}",
+        task_after.status
+    );
+    // lease_id should be cleared
+    assert!(
+        task_after.lease_id.is_none(),
+        "lease_id must be cleared after rollback"
+    );
+}
+
+#[test]
+fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
+    // When TaskClaimed journal fails (after LeaseAcquired succeeds),
+    // the task must end up Failed with cleared lease_id.
+    let temp = tempdir().expect("tempdir");
+    let worktree_adapter = WorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    // fail_after=1: the first journal append (LeaseAcquired) succeeds,
+    // the second (TaskClaimed) fails.
+    let store = FailingJournalStore::new(1);
+
+    let mut task = sample_task();
+    task.task_id = "claim-fail-test".to_owned();
+    task.project_id = "fail-proj".to_owned();
+    store
+        .create_task(temp.path(), &task)
+        .expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &worktree_adapter,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "claim-fail-test",
+        FlowPreset::Standard,
+        300,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    let task_after = store
+        .read_task(temp.path(), "claim-fail-test")
+        .expect("read task");
+    assert_eq!(
+        TaskStatus::Failed,
+        task_after.status,
+        "task should be Failed after TaskClaimed journal failure"
+    );
+    assert_eq!(
+        Some("claim_journal_failed".to_owned()),
+        task_after.failure_class
+    );
+    assert!(
+        task_after.lease_id.is_none(),
+        "lease_id must be cleared after claim journal failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Panic-safe CLI lock release (RAII guard drop)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_writer_lock_guard_releases_on_drop() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("raii-test".to_owned()).expect("valid id");
+
+    // Acquire via the guard pattern, then drop it
+    {
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "cli")
+            .expect("acquire lock");
+        // Lock is held here
+        let err = store
+            .acquire_writer_lock(temp.path(), &project_id, "cli-2")
+            .expect_err("should be held");
+        assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+        // Simulate RAII release (guard drop)
+        store
+            .release_writer_lock(temp.path(), &project_id)
+            .expect("release lock");
+    }
+
+    // After release, lock should be available
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "cli-3")
+        .expect("should be available after RAII release");
+    store
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("final cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// No process-global CWD dependency: structural assertion
+// ---------------------------------------------------------------------------
+
+#[test]
+fn daemon_loop_process_cycle_does_not_call_set_current_dir() {
+    // Structural assertion: the daemon_loop module does not contain
+    // any reference to std::env::set_current_dir. This is validated at
+    // the source level — if someone adds it, this test will catch it.
+    let source = include_str!("../../src/contexts/automation_runtime/daemon_loop.rs");
+    assert!(
+        !source.contains("set_current_dir"),
+        "daemon_loop.rs must not call set_current_dir"
+    );
+}

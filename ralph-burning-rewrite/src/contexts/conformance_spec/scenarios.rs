@@ -5545,7 +5545,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
-// Daemon Lifecycle (5 scenarios)
+// Daemon Lifecycle (8 scenarios)
 // ===========================================================================
 
 fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -5592,39 +5592,156 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "DAEMON-LIFECYCLE-006", || {
-        // Reconcile with no stale leases succeeds cleanly
+        // Reconcile reports cleanup failures and exits non-zero when a stale
+        // lease's worktree cannot be removed.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "reconcile"], ws.path())?;
-        assert_success(&out)?;
-        assert_contains(&out.stdout, "reconciled", "stdout")?;
+
+        // Create a task in Active status and a stale lease pointing to a
+        // non-existent worktree path, so worktree removal will fail.
+        let now = chrono::Utc::now();
+        let one_hour_ago = now - chrono::Duration::hours(1);
+        let task_json = serde_json::json!({
+            "task_id": "cleanup-fail-task",
+            "issue_ref": "repo#cleanup",
+            "project_id": "cleanup-proj",
+            "status": "active",
+            "created_at": one_hour_ago.to_rfc3339(),
+            "updated_at": one_hour_ago.to_rfc3339(),
+            "attempt_count": 0,
+            "lease_id": "lease-cleanup-fail-task",
+            "dispatch_mode": "workflow",
+            "routing_labels": []
+        });
+        let task_path = ws.path().join(".ralph-burning/daemon/tasks/cleanup-fail-task.json");
+        std::fs::write(&task_path, serde_json::to_string_pretty(&task_json).unwrap())
+            .map_err(|e| format!("write task: {e}"))?;
+
+        let lease_json = serde_json::json!({
+            "lease_id": "lease-cleanup-fail-task",
+            "task_id": "cleanup-fail-task",
+            "project_id": "cleanup-proj",
+            "worktree_path": ws.path().join("nonexistent-worktree-for-cleanup"),
+            "branch_name": "rb/task/cleanup-fail-task",
+            "acquired_at": one_hour_ago.to_rfc3339(),
+            "ttl_seconds": 60,
+            "last_heartbeat": one_hour_ago.to_rfc3339()
+        });
+        let lease_path = ws.path().join(".ralph-burning/daemon/leases/lease-cleanup-fail-task.json");
+        std::fs::write(&lease_path, serde_json::to_string_pretty(&lease_json).unwrap())
+            .map_err(|e| format!("write lease: {e}"))?;
+
+        // Create the writer lock so cleanup can attempt to release it
+        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-cleanup-proj.lock");
+        std::fs::write(&lock_path, "lease-cleanup-fail-task")
+            .map_err(|e| format!("write lock: {e}"))?;
+
+        let out = run_cli(&["daemon", "reconcile", "--ttl-seconds", "0"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stdout, "Cleanup Failures", "stdout")?;
+        assert_contains(&out.stdout, "cleanup-fail-task", "stdout")?;
+        assert_contains(&out.stdout, "lease-cleanup-fail-task", "stdout")?;
         Ok(())
     });
 
     reg!(m, "DAEMON-LIFECYCLE-007", || {
-        // Daemon continues processing after a single task claim failure
+        // Daemon continues processing after a single task's writer lock is held.
+        // Given two pending tasks and the first task's project writer lock is
+        // already held, the daemon should skip the first and process the second.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+
+        let now = chrono::Utc::now();
+        // Task 1: its project lock is already held → claim will fail
+        let task1_json = serde_json::json!({
+            "task_id": "locked-task",
+            "issue_ref": "repo#locked",
+            "project_id": "locked-proj",
+            "status": "pending",
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339(),
+            "attempt_count": 0,
+            "dispatch_mode": "workflow",
+            "routing_labels": [],
+            "resolved_flow": "standard",
+            "routing_source": "default"
+        });
+        let task1_path = ws.path().join(".ralph-burning/daemon/tasks/locked-task.json");
+        std::fs::write(&task1_path, serde_json::to_string_pretty(&task1_json).unwrap())
+            .map_err(|e| format!("write task1: {e}"))?;
+
+        // Hold the writer lock for locked-proj
+        let lock_path = ws.path().join(".ralph-burning/daemon/leases/writer-locked-proj.lock");
+        std::fs::write(&lock_path, "external-holder")
+            .map_err(|e| format!("write lock: {e}"))?;
+
+        // Task 2: no lock contention (different project)
+        let task2_json = serde_json::json!({
+            "task_id": "free-task",
+            "issue_ref": "repo#free",
+            "project_id": "free-proj",
+            "status": "pending",
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339(),
+            "attempt_count": 0,
+            "dispatch_mode": "workflow",
+            "routing_labels": [],
+            "resolved_flow": "standard",
+            "routing_source": "default"
+        });
+        let task2_path = ws.path().join(".ralph-burning/daemon/tasks/free-task.json");
+        std::fs::write(&task2_path, serde_json::to_string_pretty(&task2_json).unwrap())
+            .map_err(|e| format!("write task2: {e}"))?;
+
         let out = run_cli(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
-        // No pending tasks, so the daemon exits cleanly
-        assert_success(&out)?;
+        // The daemon should NOT fail entirely — it processes what it can
+        // (the second task) and continues. The first task is skipped due to lock.
+        // We verify the output mentions processing (claiming) the free task.
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        // At minimum, the daemon should have attempted the second task
+        let attempted_second = combined.contains("free-task");
+        if !attempted_second {
+            return Err(format!(
+                "expected daemon to attempt 'free-task' after skipping 'locked-task', output: {combined}"
+            ));
+        }
         Ok(())
     });
 
     reg!(m, "DAEMON-LIFECYCLE-008", || {
-        // No process-global CWD mutation (structural assertion: dispatch_in_worktree
-        // no longer calls set_current_dir — verified via code review + no CWD
-        // dependency in the engine path)
+        // Daemon dispatch does not mutate process-global working directory.
+        // Structural assertion: daemon_loop.rs must not contain set_current_dir.
+        let source = include_str!(
+            "../../contexts/automation_runtime/daemon_loop.rs"
+        );
+        if source.contains("set_current_dir") {
+            return Err(
+                "daemon_loop.rs must not call set_current_dir — CWD must remain unchanged".to_owned(),
+            );
+        }
+
+        // Additionally verify a daemon start round-trip preserves CWD
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        let cwd_before = std::env::current_dir()
+            .map_err(|e| format!("get cwd: {e}"))?;
         let out = run_cli(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
         assert_success(&out)?;
+        let cwd_after = std::env::current_dir()
+            .map_err(|e| format!("get cwd: {e}"))?;
+        if cwd_before != cwd_after {
+            return Err(format!(
+                "CWD changed: before={}, after={}",
+                cwd_before.display(),
+                cwd_after.display()
+            ));
+        }
         Ok(())
     });
 }
