@@ -3952,26 +3952,32 @@ fn conformance_list_validates_no_duplicate_ids() {
 
 #[test]
 fn conformance_list_fails_on_duplicate_ids() {
-    // Inject a duplicate-ID feature file into the real features directory, run
-    // conformance list, verify it fails with a duplicate-ID diagnostic, then clean up.
-    let features_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/conformance/features");
-    let dup_file = features_dir.join("_zzz_duplicate_id_test.feature");
+    // Create an isolated temp features directory with two feature files that share
+    // a scenario ID, then point discovery at it via RALPH_BURNING_TEST_FEATURES_DIR.
+    // This avoids mutating the checked-in corpus and eliminates race conditions with
+    // other conformance tests reading the same directory.
+    let tmp_dir = tempfile::tempdir().expect("create temp features dir");
+    let features_path = tmp_dir.path();
 
-    // Write a feature file that duplicates an existing ID (SC-START-001)
+    // Write the first feature file with SC-DUP-001
     fs::write(
-        &dup_file,
-        "Feature: Duplicate ID Test\n\n  # SC-START-001\n  Scenario: Duplicate scenario for testing\n    Given nothing\n",
+        features_path.join("alpha.feature"),
+        "Feature: Alpha\n\n  # SC-DUP-001\n  Scenario: First scenario\n    Given nothing\n",
+    )
+    .expect("write first feature file");
+
+    // Write a second feature file that duplicates SC-DUP-001
+    fs::write(
+        features_path.join("beta.feature"),
+        "Feature: Beta\n\n  # SC-DUP-001\n  Scenario: Duplicate scenario\n    Given nothing\n",
     )
     .expect("write duplicate feature file");
 
     let output = Command::new(binary())
+        .env("RALPH_BURNING_TEST_FEATURES_DIR", features_path.to_str().unwrap())
         .args(["conformance", "list"])
         .output()
         .expect("run conformance list with duplicate");
-
-    // Clean up before assertions so the file is always removed
-    let _ = fs::remove_file(&dup_file);
 
     assert!(
         !output.status.success(),
@@ -3980,7 +3986,7 @@ fn conformance_list_fails_on_duplicate_ids() {
     );
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("duplicate") || stderr.contains("SC-START-001"),
+        stderr.contains("duplicate") || stderr.contains("SC-DUP-001"),
         "error should mention duplicate scenario ID: {stderr}"
     );
 }

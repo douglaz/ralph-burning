@@ -17,8 +17,18 @@ pub fn features_dir() -> &'static Path {
 ///
 /// Returns scenarios in deterministic order: feature files sorted by path,
 /// then scenarios in file order.
+///
+/// Respects the `RALPH_BURNING_TEST_FEATURES_DIR` environment variable to
+/// allow tests to point discovery at an isolated feature directory instead
+/// of the checked-in corpus.
 pub fn discover_scenarios() -> AppResult<Vec<ScenarioMeta>> {
-    discover_scenarios_from(features_dir())
+    let dir = match std::env::var("RALPH_BURNING_TEST_FEATURES_DIR") {
+        Ok(override_dir) if !override_dir.is_empty() => {
+            std::path::PathBuf::from(override_dir)
+        }
+        _ => features_dir().to_path_buf(),
+    };
+    discover_scenarios_from(&dir)
 }
 
 /// Discover scenarios from a specific features directory (testable).

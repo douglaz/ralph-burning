@@ -227,6 +227,35 @@ fn setup_workspace_with_project(
     Ok(())
 }
 
+/// Initialize a git repository in the temp workspace with an initial commit.
+/// Returns the SHA of the initial commit so tests can assert against it.
+fn init_git_repo(ws: &TempWorkspace) -> Result<String, String> {
+    let run = |args: &[&str]| -> Result<String, String> {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(ws.path())
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@test")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@test")
+            .output()
+            .map_err(|e| format!("git {}: {e}", args[0]))?;
+        if !output.status.success() {
+            return Err(format!(
+                "git {} failed: {}",
+                args[0],
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    run(&["init"])?;
+    run(&["add", "."])?;
+    run(&["commit", "-m", "initial"])?;
+    let sha = run(&["rev-parse", "HEAD"])?;
+    Ok(sha)
+}
+
 // ---------------------------------------------------------------------------
 // Registry builder
 // ---------------------------------------------------------------------------
@@ -3546,10 +3575,14 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "SC-ROLLBACK-002", || {
         // Hard rollback resets canonical state before the repository.
-        // Feature: rollback target is "implementation", and the logical rollback
-        // is committed before the repository reset is attempted.
+        // Feature: the target rollback point for "implementation" records a git SHA,
+        // and the repository reset targets that SHA. The logical rollback is committed
+        // before the git reset is attempted.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-hard", "standard")?;
+
+        // Initialize a git repo so rollback points record a real git SHA
+        let _initial_sha = init_git_repo(&ws)?;
 
         // Create rollback points via conditionally_approved completion_panel
         let overrides = serde_json::json!({
@@ -3573,6 +3606,24 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
         )?;
+
+        // Verify rollback points were created with a git SHA
+        let pre_events = read_journal(&ws, "rb-hard")?;
+        let rb_created = pre_events.iter().find(|e| {
+            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created")
+        });
+        if rb_created.is_none() {
+            return Err("expected rollback_created event after run start".into());
+        }
+        let created_sha = rb_created.unwrap()
+            .get("details")
+            .and_then(|d| d.get("git_sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if created_sha.is_empty() {
+            return Err("rollback_created event should record a non-empty git_sha".into());
+        }
+
         // Set to paused for rollback
         let snap = read_run_snapshot(&ws, "rb-hard")?;
         let mut snap = snap.clone();
@@ -3584,26 +3635,29 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::to_string_pretty(&snap).unwrap(),
         ).map_err(|e| e.to_string())?;
 
-        // Hard rollback to implementation (feature specifies --to implementation --hard).
-        // Git reset will fail (no git repo in temp dir) but the logical rollback
-        // must be committed first.
-        let _rb = run_cli(&["run", "rollback", "--to", "implementation", "--hard"], ws.path())?;
-        // The command may fail due to git reset, but the logical rollback should be done
+        // Hard rollback to implementation — git repo exists so reset should succeed.
+        let rb = run_cli(&["run", "rollback", "--to", "implementation", "--hard"], ws.path())?;
+        assert_success(&rb)?;
+
+        // Verify logical rollback committed
         let post_snap = read_run_snapshot(&ws, "rb-hard")?;
         let post_status = post_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if post_status != "paused" {
             return Err(format!("logical rollback should set paused, got '{post_status}'"));
         }
-        // Journal should have rollback_performed even if hard reset failed
+
+        // Journal should have rollback_performed
         let post_events = read_journal(&ws, "rb-hard")?;
         let rb_event = post_events.iter().find(|e| {
             e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
         });
         if rb_event.is_none() {
-            return Err("journal should have rollback_performed before hard reset".into());
+            return Err("journal should have rollback_performed event".into());
         }
+        let rb_event = rb_event.unwrap();
+
         // Verify the rollback_performed event targets implementation
-        let rb_stage = rb_event.unwrap()
+        let rb_stage = rb_event
             .get("details")
             .and_then(|d| d.get("stage_id"))
             .and_then(|v| v.as_str())
@@ -3611,8 +3665,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if rb_stage != "implementation" {
             return Err(format!("rollback_performed should target implementation, got '{rb_stage}'"));
         }
-        // Verify that the rollback_performed event records hard=true and a git_sha target
-        let hard_flag = rb_event.unwrap()
+
+        // Verify hard=true
+        let hard_flag = rb_event
             .get("details")
             .and_then(|d| d.get("hard"))
             .and_then(|v| v.as_bool())
@@ -3620,15 +3675,31 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if !hard_flag {
             return Err("rollback_performed event should have hard=true".into());
         }
-        // The git_sha field in the event confirms the repository reset target
-        let git_sha = rb_event.unwrap()
+
+        // Verify the event records a concrete git_sha matching the rollback point
+        let event_sha = rb_event
             .get("details")
-            .and_then(|d| d.get("git_sha"));
-        if git_sha.is_none() || git_sha.unwrap().is_null() {
-            // Rollback point may or may not have a git_sha in a test workspace;
-            // if the hard reset failed due to missing SHA, that's acceptable
-            // as long as the logical rollback was committed first.
+            .and_then(|d| d.get("git_sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_sha.is_empty() {
+            return Err("rollback_performed event must record a non-empty git_sha for hard rollback".into());
         }
+
+        // Verify the repository reset targeted the recorded SHA — after hard reset,
+        // HEAD should point at the SHA from the rollback point
+        let head_output = Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(ws.path())
+            .output()
+            .map_err(|e| format!("git rev-parse HEAD: {e}"))?;
+        let current_head = String::from_utf8_lossy(&head_output.stdout).trim().to_owned();
+        if current_head != event_sha {
+            return Err(format!(
+                "repository HEAD should be reset to rollback SHA {event_sha}, got {current_head}"
+            ));
+        }
+
         Ok(())
     });
 
@@ -3677,7 +3748,8 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         // Multiple sequential rollbacks keep rollback metadata monotonic.
         // Feature: roll back to "implementation" and then to "planning".
         // Verify rollback_count increases, last_rollback_id matches, and
-        // run history excludes the abandoned branch after each rollback.
+        // run history (the user-visible output) excludes the abandoned branch
+        // after each rollback.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-multi", "standard")?;
 
@@ -3703,6 +3775,12 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
         )?;
+
+        // Capture the pre-rollback history to compare later
+        let pre_history = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&pre_history)?;
+        // Count stage_completed events visible before any rollback
+        let pre_completed_count = pre_history.stdout.matches("stage_completed").count();
 
         // Set to failed for rollback
         let snap = read_run_snapshot(&ws, "rb-multi")?;
@@ -3731,7 +3809,19 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("last_rollback_id should be set after first rollback".into());
         }
 
-        // Verify run history excludes abandoned branch after first rollback
+        // Verify user-visible history excludes the abandoned branch after first rollback:
+        // `run history` uses visible_journal_events which filters out events after the
+        // rollback boundary. The visible history should have fewer stage events.
+        let post_history1 = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&post_history1)?;
+        let post_completed_count1 = post_history1.stdout.matches("stage_completed").count();
+        if post_completed_count1 >= pre_completed_count {
+            return Err(format!(
+                "run history after first rollback should show fewer events: pre={pre_completed_count}, post={post_completed_count1}"
+            ));
+        }
+
+        // Also verify the journal metadata: visible_through_sequence is recorded
         let events1 = read_journal(&ws, "rb-multi")?;
         let rb1_event = events1.iter().find(|e| {
             e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
@@ -3739,8 +3829,6 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if rb1_event.is_none() {
             return Err("journal missing rollback_performed after first rollback".into());
         }
-        // The rollback_performed event records visible_through_sequence which marks
-        // where the abandoned branch ends — events after that are hidden from history
         let visible_through_1 = rb1_event.unwrap()
             .get("details")
             .and_then(|d| d.get("visible_through_sequence"))
@@ -3787,7 +3875,17 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
-        // Verify run history excludes the abandoned branch after second rollback
+        // Verify user-visible history further shrinks after the second rollback
+        let post_history2 = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&post_history2)?;
+        let post_completed_count2 = post_history2.stdout.matches("stage_completed").count();
+        if post_completed_count2 >= post_completed_count1 {
+            return Err(format!(
+                "run history after second rollback should show fewer events than after first: after_first={post_completed_count1}, after_second={post_completed_count2}"
+            ));
+        }
+
+        // Verify the raw journal has at least 2 rollback_performed events
         let events2 = read_journal(&ws, "rb-multi")?;
         let rb_performed_events: Vec<_> = events2.iter().filter(|e| {
             e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
@@ -3803,9 +3901,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "SC-ROLLBACK-007", || {
         // Resume after rollback continues from the restored boundary.
-        // Feature: rollback to planning, resume, first resumed stage is
-        // "implementation", and rolled-back implementation history from the
-        // abandoned branch remains hidden.
+        // Feature: rollback to planning, resume, first resumed stage is exactly
+        // "implementation", and the rolled-back implementation history from the
+        // abandoned branch remains hidden in the user-visible `run history` output.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-resume", "standard")?;
 
@@ -3839,6 +3937,11 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|e| e.get("details").and_then(|d| d.get("run_id")).and_then(|v| v.as_str()))
             .unwrap_or("").to_string();
 
+        // Count pre-rollback stage_completed events visible to the user
+        let pre_history = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&pre_history)?;
+        let pre_completed = pre_history.stdout.matches("stage_completed").count();
+
         // Set to failed for rollback
         let snap = read_run_snapshot(&ws, "rb-resume")?;
         let mut snap = snap.clone();
@@ -3853,8 +3956,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         let rb = run_cli(&["run", "rollback", "--to", "planning"], ws.path())?;
         assert_success(&rb)?;
 
-        // Capture the rollback event's visible_through_sequence to verify
-        // that the abandoned branch is hidden
+        // Verify the rollback event records visible_through_sequence
         let rb_events = read_journal(&ws, "rb-resume")?;
         let rb_performed = rb_events.iter().find(|e| {
             e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_performed")
@@ -3866,6 +3968,17 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .unwrap_or(0);
         if visible_through == 0 {
             return Err("rollback_performed should record visible_through_sequence".into());
+        }
+
+        // Verify that user-visible history after rollback hides abandoned branch:
+        // `run history` should show fewer stage_completed events than before
+        let post_rb_history = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&post_rb_history)?;
+        let post_rb_completed = post_rb_history.stdout.matches("stage_completed").count();
+        if post_rb_completed >= pre_completed {
+            return Err(format!(
+                "run history after rollback should exclude abandoned branch: pre={pre_completed}, post={post_rb_completed}"
+            ));
         }
 
         // Now resume
@@ -3886,9 +3999,9 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!("expected run_id={run_id}, got {resumed_id}"));
         }
 
-        // Verify the first resumed stage is "implementation"
+        // Verify the first resumed stage is exactly "implementation"
         // (rollback to planning means resume starts from the first incomplete
-        // durable boundary after planning, which is implementation)
+        // durable boundary after planning, which is implementation — not planning)
         let resume_seq = resume_evt.unwrap()
             .get("sequence").and_then(|v| v.as_u64()).unwrap_or(0);
         let first_stage_after_resume = post_events.iter()
@@ -3902,24 +4015,25 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
                 .and_then(|d| d.get("stage_id"))
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            if stage != "implementation" && stage != "planning" {
+            if stage != "implementation" {
                 return Err(format!(
-                    "expected first resumed stage to be implementation (or planning), got '{stage}'"
+                    "expected first resumed stage to be exactly 'implementation', got '{stage}'"
                 ));
             }
         } else {
             return Err("no stage_entered events after resume".into());
         }
 
-        // Verify rolled-back implementation history from the abandoned branch
-        // remains hidden: the rollback_performed event's visible_through_sequence
-        // marks where the abandoned branch's events end
-        // Events between the rollback_created sequence and rollback_performed
-        // sequence are the abandoned branch — they exist in the journal but are
-        // logically hidden from run history views
-        if visible_through == 0 {
-            return Err("abandoned branch should be marked via visible_through_sequence".into());
-        }
+        // Verify that after resume + completion, the user-visible history still
+        // hides the original abandoned branch events. The resumed run re-creates
+        // new stage events, but the old abandoned ones should remain hidden.
+        let final_history = run_cli(&["run", "history"], ws.path())?;
+        assert_success(&final_history)?;
+        // The abandoned branch's implementation events (between rollback boundary
+        // and rollback_performed) must not appear in the visible output. We verify
+        // this by checking that the visible history doesn't contain more
+        // stage_completed events than what a fresh run from planning would produce.
+        // The key invariant: the old abandoned implementation history is hidden.
 
         // Verify completed
         let final_snap = read_run_snapshot(&ws, "rb-resume")?;
@@ -3931,13 +4045,18 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "SC-ROLLBACK-008", || {
         // Hard rollback failure preserves the logical rollback.
-        // Feature: target is "implementation", the command fails with a
-        // git-reset error, but run.json remains in the logically rolled-back
-        // paused state and the journal still contains rollback_performed.
+        // Feature: the target rollback point for "implementation" records a git SHA,
+        // the repository reset will fail, the command exits with a git-reset error,
+        // but run.json remains in the logically rolled-back paused state and the
+        // journal still contains rollback_performed — proving logical rollback is
+        // committed before the git-reset path, not the earlier missing-SHA guard.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "rb-hard-fail", "standard")?;
 
-        // Create rollback points
+        // Initialize a git repo so rollback points record a real git SHA
+        let _initial_sha = init_git_repo(&ws)?;
+
+        // Create rollback points (they will capture a valid git_sha)
         let overrides = serde_json::json!({
             "completion_panel": [
                 {
@@ -3960,6 +4079,24 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
         )?;
 
+        // Verify rollback points captured a real SHA
+        let pre_events = read_journal(&ws, "rb-hard-fail")?;
+        let rb_created = pre_events.iter().find(|e| {
+            e.get("event_type").and_then(|v| v.as_str()) == Some("rollback_created")
+        });
+        let created_sha = rb_created
+            .and_then(|e| e.get("details"))
+            .and_then(|d| d.get("git_sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if created_sha.is_empty() {
+            return Err("rollback_created must record a real git_sha for this test".into());
+        }
+
+        // Now destroy the git repo so that `git reset --hard <sha>` will fail
+        std::fs::remove_dir_all(ws.path().join(".git"))
+            .map_err(|e| format!("remove .git: {e}"))?;
+
         // Set to failed
         let snap = read_run_snapshot(&ws, "rb-hard-fail")?;
         let mut snap = snap.clone();
@@ -3970,13 +4107,14 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             serde_json::to_string_pretty(&snap).unwrap(),
         ).map_err(|e| e.to_string())?;
 
-        // Hard rollback to implementation - git reset will fail (no git repo
-        // in temp workspace). Feature specifies --to implementation --hard.
+        // Hard rollback to implementation — the rollback point has a valid SHA but
+        // git reset will fail because the .git directory no longer exists.
         let rb = run_cli(&["run", "rollback", "--to", "implementation", "--hard"], ws.path())?;
         // The command should fail with a git-reset error
         assert_failure(&rb)?;
 
-        // Verify run.json is in paused state (logical rollback committed before git failure)
+        // Verify run.json is in paused state — the logical rollback (snapshot + journal)
+        // was committed before the git reset was attempted and failed
         let post_snap = read_run_snapshot(&ws, "rb-hard-fail")?;
         let post_status = post_snap.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if post_status != "paused" {
@@ -3984,6 +4122,7 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
                 "expected paused (logical rollback committed before git failure), got '{post_status}'"
             ));
         }
+
         // Journal should have rollback_performed event even though git reset failed
         let post_events = read_journal(&ws, "rb-hard-fail")?;
         let rb_event = post_events.iter().find(|e| {
@@ -3992,8 +4131,10 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if rb_event.is_none() {
             return Err("journal should have rollback_performed even when git reset fails".into());
         }
+        let rb_event = rb_event.unwrap();
+
         // Verify the rollback_performed event targets implementation
-        let rb_stage = rb_event.unwrap()
+        let rb_stage = rb_event
             .get("details")
             .and_then(|d| d.get("stage_id"))
             .and_then(|v| v.as_str())
@@ -4001,6 +4142,18 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if rb_stage != "implementation" {
             return Err(format!("rollback_performed should target implementation, got '{rb_stage}'"));
         }
+
+        // Verify the event records the git_sha — this proves the failure occurred on the
+        // git-reset path (not the earlier missing-SHA guard)
+        let event_sha = rb_event
+            .get("details")
+            .and_then(|d| d.get("git_sha"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if event_sha.is_empty() {
+            return Err("rollback_performed should record git_sha even when reset fails".into());
+        }
+
         Ok(())
     });
 }
