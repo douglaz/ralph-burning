@@ -3144,7 +3144,7 @@ async fn late_stage_request_changes_triggers_completion_round_like_conditional()
 }
 
 #[tokio::test]
-async fn cycle_advanced_emitted_when_entering_implementation_from_completion_round() {
+async fn cycle_advanced_not_emitted_when_entering_implementation_from_completion_round() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -3180,7 +3180,7 @@ async fn cycle_advanced_emitted_when_entering_implementation_from_completion_rou
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
 
-    // Should have completion_round_advanced followed by cycle_advanced.
+    // Should have completion_round_advanced but no cycle_advanced.
     let round_events: Vec<_> = events
         .iter()
         .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
@@ -3192,8 +3192,8 @@ async fn cycle_advanced_emitted_when_entering_implementation_from_completion_rou
         .filter(|e| e.event_type == JournalEventType::CycleAdvanced)
         .collect();
     assert!(
-        !cycle_events.is_empty(),
-        "cycle_advanced should be emitted when entering implementation from completion round"
+        cycle_events.is_empty(),
+        "cycle_advanced should not be emitted when entering implementation from completion round"
     );
 }
 

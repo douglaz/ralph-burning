@@ -505,22 +505,37 @@ where
             }
         };
 
-        // Link requirements run to task
-        let mut current = self.store.read_task(base_dir, &task.task_id)?;
-        current.requirements_run_id = Some(run_id.clone());
-        current.updated_at = Utc::now();
-        self.store.write_task(base_dir, &current)?;
+        // Link requirements run to task. If the link write fails, the
+        // requirements run remains addressable via `requirements show` but the
+        // task must transition to `failed` with an explicit linking failure class.
+        let link_result: AppResult<()> = (|| {
+            let mut current = self.store.read_task(base_dir, &task.task_id)?;
+            current.requirements_run_id = Some(run_id.clone());
+            current.updated_at = Utc::now();
+            self.store.write_task(base_dir, &current)?;
 
-        DaemonTaskService::append_journal_event(
-            self.store,
-            base_dir,
-            super::model::DaemonJournalEventType::RequirementsHandoff,
-            json!({
-                "task_id": task.task_id,
-                "requirements_run_id": run_id,
-                "dispatch_mode": "requirements_quick",
-            }),
-        )?;
+            DaemonTaskService::append_journal_event(
+                self.store,
+                base_dir,
+                super::model::DaemonJournalEventType::RequirementsHandoff,
+                json!({
+                    "task_id": task.task_id,
+                    "requirements_run_id": run_id,
+                    "dispatch_mode": "requirements_quick",
+                }),
+            )?;
+            Ok(())
+        })();
+        if let Err(e) = link_result {
+            let _ = DaemonTaskService::mark_failed(
+                self.store,
+                base_dir,
+                &task.task_id,
+                "requirements_linking_failed",
+                &e.to_string(),
+            );
+            return Err(e);
+        }
 
         // Derive seed and create project from completed requirements run
         let handoff = match req_service::extract_seed_handoff(req_store, base_dir, &run_id) {
@@ -634,22 +649,39 @@ where
             // Empty-question draft: run already completed. Extract seed and
             // switch to Workflow mode so the caller continues into the standard
             // claim/project/dispatch path (same pattern as requirements_quick).
-            let mut current = self.store.read_task(base_dir, &task.task_id)?;
-            current.requirements_run_id = Some(run_id.clone());
-            current.updated_at = Utc::now();
-            self.store.write_task(base_dir, &current)?;
+            //
+            // Link write is guarded: if it fails, the task transitions to
+            // `failed` with an explicit linking failure class while the
+            // requirements run remains addressable via `requirements show`.
+            let link_result: AppResult<()> = (|| {
+                let mut current = self.store.read_task(base_dir, &task.task_id)?;
+                current.requirements_run_id = Some(run_id.clone());
+                current.updated_at = Utc::now();
+                self.store.write_task(base_dir, &current)?;
 
-            DaemonTaskService::append_journal_event(
-                self.store,
-                base_dir,
-                super::model::DaemonJournalEventType::RequirementsHandoff,
-                json!({
-                    "task_id": task.task_id,
-                    "requirements_run_id": run_id,
-                    "dispatch_mode": "requirements_draft",
-                    "empty_questions": true,
-                }),
-            )?;
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RequirementsHandoff,
+                    json!({
+                        "task_id": task.task_id,
+                        "requirements_run_id": run_id,
+                        "dispatch_mode": "requirements_draft",
+                        "empty_questions": true,
+                    }),
+                )?;
+                Ok(())
+            })();
+            if let Err(e) = link_result {
+                let _ = DaemonTaskService::mark_failed(
+                    self.store,
+                    base_dir,
+                    &task.task_id,
+                    "requirements_linking_failed",
+                    &e.to_string(),
+                );
+                return Err(e);
+            }
 
             let handoff = match req_service::extract_seed_handoff(req_store, base_dir, &run_id) {
                 Ok(h) => h,

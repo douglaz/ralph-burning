@@ -1360,57 +1360,8 @@ where
             }
         }
 
-        // When entering implementation from a completion round restart,
-        // emit cycle_advanced since we're starting new implementation work.
-        if stage_id == semantics.planning_stage
-            && cursor.completion_round > 1
-            && stage_index + 1 < stage_plan.len()
-            && stage_plan[stage_index + 1].stage_id == semantics.execution_stage
-        {
-            let next_cycle = cursor.cycle + 1;
-            record_cycle_advance(snapshot, next_cycle, semantics.execution_stage);
-            *seq += 1;
-            let cycle_event = journal::cycle_advanced_event(
-                *seq,
-                Utc::now(),
-                run_id,
-                semantics.planning_stage,
-                cursor.cycle,
-                next_cycle,
-                semantics.execution_stage,
-            );
-            let cycle_event_line = journal::serialize_event(&cycle_event)?;
-            if let Err(error) = journal_store.append_event(base_dir, project_id, &cycle_event_line)
-            {
-                *seq -= 1;
-                return fail_run_result(
-                    &AppError::StageCommitFailed {
-                        stage_id,
-                        details: format!(
-                            "failed to persist cycle_advanced event for completion round: {}",
-                            error
-                        ),
-                    },
-                    stage_id,
-                    run_id,
-                    seq,
-                    snapshot,
-                    journal_store,
-                    run_snapshot_write,
-                    base_dir,
-                    project_id,
-                    origin,
-                )
-                .await;
-            }
-            // Update cursor cycle for subsequent stages.
-            cursor = StageCursor::new(
-                cursor.stage,
-                next_cycle,
-                cursor.attempt,
-                cursor.completion_round,
-            )?;
-        }
+        // Completion-round restarts only advance `completion_round`; `cycle`
+        // remains remediation-only state.
 
         if stage_index + 1 == stage_plan.len() {
             complete_run(

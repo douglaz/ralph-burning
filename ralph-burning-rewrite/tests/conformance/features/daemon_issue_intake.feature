@@ -69,3 +69,16 @@ Feature: Daemon Issue Watchers and Requirements Handoff
     When "daemon status" is run
     Then the output includes "waiting_for_requirements"
     And the output includes "requirements_run=req-123"
+
+  # DAEMON-INTAKE-009
+  Scenario: DAEMON-INTAKE-009 - Requirements draft waiting/resume completes workflow
+    Given a workspace is initialized with a git repository
+    And a watched issue with "/rb requirements draft" command
+    And the stub returns non-empty questions
+    When the first daemon cycle processes the task
+    Then the task transitions to waiting_for_requirements
+    When the linked requirements run is externally completed with a seed
+    And the second daemon cycle runs
+    Then the task resumes from waiting
+    And the project is created from the seed
+    And the task transitions to completed
