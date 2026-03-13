@@ -1139,10 +1139,17 @@ impl DaemonStorePort for FsDaemonStore {
         FileSystem::write_atomic(&Self::lease_path(base_dir, &lease.lease_id), &contents)
     }
 
-    fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<()> {
+    fn remove_lease(
+        &self,
+        base_dir: &Path,
+        lease_id: &str,
+    ) -> AppResult<crate::contexts::automation_runtime::ResourceCleanupOutcome> {
+        use crate::contexts::automation_runtime::ResourceCleanupOutcome;
         match fs::remove_file(Self::lease_path(base_dir, lease_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(ResourceCleanupOutcome::Removed),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ResourceCleanupOutcome::AlreadyAbsent)
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -1198,10 +1205,17 @@ impl DaemonStorePort for FsDaemonStore {
         }
     }
 
-    fn release_writer_lock(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+    fn release_writer_lock(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<crate::contexts::automation_runtime::ResourceCleanupOutcome> {
+        use crate::contexts::automation_runtime::ResourceCleanupOutcome;
         match fs::remove_file(Self::writer_lock_path(base_dir, project_id)) {
-            Ok(()) => Ok(()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Ok(()) => Ok(ResourceCleanupOutcome::Removed),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ResourceCleanupOutcome::AlreadyAbsent)
+            }
             Err(error) => Err(error.into()),
         }
     }

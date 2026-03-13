@@ -5,7 +5,9 @@ use serde_json::json;
 
 use crate::contexts::automation_runtime::model::{TaskStatus, WorktreeLease};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-use crate::contexts::automation_runtime::{DaemonStorePort, WorktreeCleanupOutcome, WorktreePort};
+use crate::contexts::automation_runtime::{
+    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WorktreePort,
+};
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
@@ -32,7 +34,9 @@ pub struct LeaseCleanupFailure {
 }
 
 /// Result of a lease release operation. Distinguishes physical cleanup
-/// (worktree, lease file, writer lock) from post-cleanup journal append.
+/// (worktree, lease file, writer lock) from post-cleanup journal append,
+/// and tracks per-sub-step outcomes so callers like reconcile can enforce
+/// strict cleanup accounting.
 #[derive(Debug, Clone)]
 pub struct ReleaseResult {
     /// Always true when release returns Ok — physical resources were removed.
@@ -44,6 +48,10 @@ pub struct ReleaseResult {
     /// Callers that enforce strict cleanup contracts (e.g. reconcile) use
     /// this to distinguish positive removal from a no-op on missing state.
     pub worktree_already_absent: bool,
+    /// Whether the lease file was already absent when deletion was attempted.
+    pub lease_file_already_absent: bool,
+    /// Whether the writer lock was already absent when release was attempted.
+    pub writer_lock_already_absent: bool,
 }
 
 pub struct LeaseService;
@@ -135,8 +143,8 @@ impl LeaseService {
         let worktree_already_absent = worktree_outcome == WorktreeCleanupOutcome::AlreadyAbsent;
 
         // Worktree removal returned Ok — proceed with lease file + lock cleanup.
-        store.remove_lease(base_dir, &lease.lease_id)?;
-        store.release_writer_lock(base_dir, &project_id)?;
+        let lease_outcome = store.remove_lease(base_dir, &lease.lease_id)?;
+        let lock_outcome = store.release_writer_lock(base_dir, &project_id)?;
 
         // Physical cleanup complete. Journal append is best-effort — failure
         // does not mean resources are retained.
@@ -157,6 +165,8 @@ impl LeaseService {
             resources_released: true,
             journal_error,
             worktree_already_absent,
+            lease_file_already_absent: lease_outcome == ResourceCleanupOutcome::AlreadyAbsent,
+            writer_lock_already_absent: lock_outcome == ResourceCleanupOutcome::AlreadyAbsent,
         })
     }
 
@@ -225,30 +235,57 @@ impl LeaseService {
             let release_result = Self::release(store, worktree, base_dir, repo_root, &lease);
             match release_result {
                 Ok(outcome) => {
-                    // Physical resources released. Journal error is non-fatal.
-                    // Now clear the task's lease reference.
-                    match DaemonTaskService::clear_lease_reference(
-                        store,
-                        base_dir,
-                        &task.task_id,
-                    ) {
-                        Ok(_) => {
-                            report.released_lease_ids.push(lease.lease_id.clone());
-                            report
-                                .removed_worktrees
-                                .push(lease.worktree_path.display().to_string());
-                        }
-                        Err(e) => {
-                            // Lease removed but task reference not cleared — do NOT
-                            // report as released; the task remains visibly inconsistent
-                            // for operator repair.
-                            report.cleanup_failures.push(LeaseCleanupFailure {
-                                lease_id: lease.lease_id.clone(),
-                                task_id: task.task_id.clone(),
-                                details: format!("clear_lease_ref: {e}"),
-                            });
+                    // Check for sub-step anomalies: resources that were already
+                    // absent cannot be positively cleaned up, so record each as a
+                    // distinct cleanup failure.
+                    let mut has_sub_step_failure = false;
+                    if outcome.lease_file_already_absent {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: "lease_file_absent: lease file was already missing during cleanup".to_owned(),
+                        });
+                        has_sub_step_failure = true;
+                    }
+                    if outcome.writer_lock_already_absent {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: "writer_lock_absent: writer lock was already missing during cleanup".to_owned(),
+                        });
+                        has_sub_step_failure = true;
+                    }
+
+                    if !has_sub_step_failure {
+                        // All physical sub-steps positively succeeded — clear
+                        // the task's lease reference.
+                        match DaemonTaskService::clear_lease_reference(
+                            store,
+                            base_dir,
+                            &task.task_id,
+                        ) {
+                            Ok(_) => {
+                                report.released_lease_ids.push(lease.lease_id.clone());
+                                report
+                                    .removed_worktrees
+                                    .push(lease.worktree_path.display().to_string());
+                            }
+                            Err(e) => {
+                                // Lease removed but task reference not cleared — do NOT
+                                // report as released; the task remains visibly inconsistent
+                                // for operator repair.
+                                report.cleanup_failures.push(LeaseCleanupFailure {
+                                    lease_id: lease.lease_id.clone(),
+                                    task_id: task.task_id.clone(),
+                                    details: format!("clear_lease_ref: {e}"),
+                                });
+                            }
                         }
                     }
+                    // else: sub-step failure — do NOT count as released; leave task
+                    // lease reference intact so inconsistent state stays visible for
+                    // operator recovery.
+
                     if let Some(je) = outcome.journal_error {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),

@@ -33,6 +33,17 @@ pub enum WorktreeCleanupOutcome {
     AlreadyAbsent,
 }
 
+/// Outcome of removing a durable resource (lease file, writer lock).
+/// Distinguishes positive removal from a no-op on already-absent state so
+/// callers like reconcile can enforce explicit cleanup accounting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResourceCleanupOutcome {
+    /// The resource file existed and was successfully deleted.
+    Removed,
+    /// The resource file was not present at deletion time.
+    AlreadyAbsent,
+}
+
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;
     fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask>;
@@ -42,7 +53,7 @@ pub trait DaemonStorePort {
     fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>>;
     fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease>;
     fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()>;
-    fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<()>;
+    fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<ResourceCleanupOutcome>;
 
     fn read_daemon_journal(&self, base_dir: &Path) -> AppResult<Vec<DaemonJournalEvent>>;
     fn append_daemon_journal_event(
@@ -57,7 +68,7 @@ pub trait DaemonStorePort {
         project_id: &ProjectId,
         lease_id: &str,
     ) -> AppResult<()>;
-    fn release_writer_lock(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<()>;
+    fn release_writer_lock(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<ResourceCleanupOutcome>;
 }
 
 pub trait WorktreePort {
