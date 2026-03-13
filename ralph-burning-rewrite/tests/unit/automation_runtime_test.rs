@@ -880,8 +880,8 @@ fn reconcile_reports_only_successful_releases() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
 
-    // Create a task and a stale lease, but no actual worktree — release will
-    // still succeed because remove_worktree errors are deferred.
+    // Create a task and a stale lease, but no actual worktree — reconcile
+    // must treat the missing worktree as a cleanup failure (not a release).
     let mut task = sample_task();
     task.task_id = "reconcile-test".to_owned();
     task.status = TaskStatus::Active;
@@ -899,7 +899,7 @@ fn reconcile_reports_only_successful_releases() {
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
 
-    // Create the writer lock so release can succeed
+    // Create the writer lock
     let project_id = ralph_burning::shared::domain::ProjectId::new("demo".to_owned())
         .expect("valid id");
     store
@@ -921,6 +921,27 @@ fn reconcile_reports_only_successful_releases() {
     assert_eq!("lease-reconcile-test", report.stale_lease_ids[0]);
     assert_eq!(1, report.failed_task_ids.len());
     assert_eq!("reconcile-test", report.failed_task_ids[0]);
+
+    // Missing worktree is a cleanup failure — lease is NOT released
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "missing worktree must not be counted as a successful release"
+    );
+    assert_eq!(1, report.cleanup_failures.len());
+    assert_eq!("lease-reconcile-test", report.cleanup_failures[0].lease_id);
+    assert!(
+        report.cleanup_failures[0].details.contains("worktree_absent"),
+        "details should indicate worktree was absent, got: {}",
+        report.cleanup_failures[0].details
+    );
+
+    // Lease must remain durable for operator recovery
+    let leases = store.list_leases(temp.path()).expect("list leases");
+    assert_eq!(
+        1,
+        leases.len(),
+        "lease should remain durable when worktree is absent"
+    );
 }
 
 #[test]
@@ -963,7 +984,7 @@ impl WorktreePort for FailingWorktreeAdapter {
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<()> {
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "simulated worktree removal failure",
@@ -1013,11 +1034,14 @@ impl WorktreePort for SuccessWorktreeAdapter {
         _repo_root: &std::path::Path,
         worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<()> {
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+        use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
         if worktree_path.exists() {
             std::fs::remove_dir_all(worktree_path)?;
+            Ok(WorktreeCleanupOutcome::Removed)
+        } else {
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent)
         }
-        Ok(())
     }
 
     fn rebase_onto_default_branch(
@@ -1052,6 +1076,10 @@ fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
         last_heartbeat: Utc::now() - Duration::hours(1),
     };
     store.write_lease(temp.path(), &lease).expect("write lease");
+
+    // Create the worktree directory so reconcile's pre-check passes and the
+    // FailingWorktreeAdapter's remove_worktree is actually reached.
+    std::fs::create_dir_all(temp.path().join("some-worktree")).expect("create worktree dir");
 
     // Create the writer lock
     let project_id =

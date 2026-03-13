@@ -5,7 +5,7 @@ use serde_json::json;
 
 use crate::contexts::automation_runtime::model::{TaskStatus, WorktreeLease};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-use crate::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
+use crate::contexts::automation_runtime::{DaemonStorePort, WorktreeCleanupOutcome, WorktreePort};
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
@@ -40,6 +40,10 @@ pub struct ReleaseResult {
     /// If the LeaseReleased journal append failed after physical cleanup,
     /// this contains the error description. Resources are still released.
     pub journal_error: Option<String>,
+    /// Whether the worktree was already absent when removal was attempted.
+    /// Callers that enforce strict cleanup contracts (e.g. reconcile) use
+    /// this to distinguish positive removal from a no-op on missing state.
+    pub worktree_already_absent: bool,
 }
 
 pub struct LeaseService;
@@ -126,9 +130,11 @@ impl LeaseService {
 
         // Attempt worktree removal first. If it fails, keep all durable lease
         // state (lease file, writer lock) intact so a later reconcile can retry.
-        worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)?;
+        let worktree_outcome =
+            worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)?;
+        let worktree_already_absent = worktree_outcome == WorktreeCleanupOutcome::AlreadyAbsent;
 
-        // Worktree removal succeeded — proceed with lease file + lock cleanup.
+        // Worktree removal returned Ok — proceed with lease file + lock cleanup.
         store.remove_lease(base_dir, &lease.lease_id)?;
         store.release_writer_lock(base_dir, &project_id)?;
 
@@ -150,6 +156,7 @@ impl LeaseService {
         Ok(ReleaseResult {
             resources_released: true,
             journal_error,
+            worktree_already_absent,
         })
     }
 
@@ -194,6 +201,22 @@ impl LeaseService {
                     "stale lease heartbeat exceeded ttl",
                 )?;
                 report.failed_task_ids.push(task.task_id.clone());
+            }
+
+            // Reconcile enforces strict cleanup: a stale lease whose worktree is
+            // already absent cannot be positively cleaned up.  Leave the durable
+            // lease state visible for operator recovery instead of silently clearing
+            // it.  This distinguishes "already absent" from "removed successfully".
+            if !lease.worktree_path.exists() {
+                report.cleanup_failures.push(LeaseCleanupFailure {
+                    lease_id: lease.lease_id.clone(),
+                    task_id: task.task_id.clone(),
+                    details: format!(
+                        "worktree_absent: referenced worktree path '{}' does not exist",
+                        lease.worktree_path.display()
+                    ),
+                });
+                continue;
             }
 
             // Release order: worktree removal → lease file → writer lock → journal.

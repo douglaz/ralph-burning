@@ -22,6 +22,17 @@ pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;
 
+/// Distinguishes a worktree that was actively removed from one that was
+/// already absent when cleanup was attempted. Callers use this to enforce
+/// policy (e.g. reconcile treats `AlreadyAbsent` as a cleanup failure).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorktreeCleanupOutcome {
+    /// The worktree directory existed and was successfully removed.
+    Removed,
+    /// The worktree directory was not present at cleanup time.
+    AlreadyAbsent,
+}
+
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;
     fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask>;
@@ -64,7 +75,7 @@ pub trait WorktreePort {
         repo_root: &Path,
         worktree_path: &Path,
         task_id: &str,
-    ) -> AppResult<()>;
+    ) -> AppResult<WorktreeCleanupOutcome>;
     fn rebase_onto_default_branch(
         &self,
         repo_root: &Path,

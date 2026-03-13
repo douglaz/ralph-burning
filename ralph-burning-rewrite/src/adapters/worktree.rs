@@ -2,7 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::contexts::automation_runtime::WorktreePort;
+use crate::contexts::automation_runtime::{WorktreeCleanupOutcome, WorktreePort};
 use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::shared::error::{AppError, AppResult};
 
@@ -146,9 +146,9 @@ impl WorktreePort for WorktreeAdapter {
         repo_root: &Path,
         worktree_path: &Path,
         task_id: &str,
-    ) -> AppResult<()> {
+    ) -> AppResult<WorktreeCleanupOutcome> {
         if !worktree_path.exists() {
-            return Ok(());
+            return Ok(WorktreeCleanupOutcome::AlreadyAbsent);
         }
 
         let output = Self::git(
@@ -174,7 +174,7 @@ impl WorktreePort for WorktreeAdapter {
             })?;
         }
 
-        Ok(())
+        Ok(WorktreeCleanupOutcome::Removed)
     }
 
     fn rebase_onto_default_branch(

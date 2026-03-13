@@ -576,8 +576,27 @@ fn daemon_reconcile_fails_stale_claimed_task() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon reconcile");
-    assert!(output.status.success());
 
+    // Stale lease with missing worktree → cleanup failure → non-zero exit
+    assert!(
+        !output.status.success(),
+        "reconcile should fail when worktree is absent"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Cleanup Failures"),
+        "should report cleanup failures, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("lease-stale"),
+        "should include lease id, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("task-stale"),
+        "should include task id, got: {stdout}"
+    );
+
+    // Task should still be marked as Failed with reconciliation_timeout
     let task_path = temp_dir
         .path()
         .join(".ralph-burning/daemon/tasks/task-stale.json");
@@ -587,6 +606,15 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     assert_eq!(
         Some("reconciliation_timeout"),
         task.failure_class.as_deref()
+    );
+
+    // Lease should remain durable (not released)
+    assert!(
+        temp_dir
+            .path()
+            .join(".ralph-burning/daemon/leases/lease-stale.json")
+            .exists(),
+        "lease should remain durable when worktree is absent"
     );
 }
 
