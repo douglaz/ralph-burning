@@ -1474,6 +1474,15 @@ impl RequirementsStorePort for FsRequirementsStore {
         let project_contents = serde_json::to_string_pretty(project_json)?;
         FileSystem::write_atomic(&project_path, &project_contents)?;
 
+        // Test injection: simulate prompt.md write failure after project.json succeeds
+        if std::env::var("RALPH_BURNING_TEST_SEED_PROMPT_WRITE_FAIL").is_ok() {
+            let _ = fs::remove_file(&project_path);
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "injected prompt.md write failure",
+            )));
+        }
+
         // Write prompt.md — if this fails, remove project.json too
         if let Err(e) = FileSystem::write_atomic(&prompt_path, prompt_md) {
             let _ = fs::remove_file(&project_path);

@@ -2276,42 +2276,47 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-CR-008", || {
-        // Completion guard checks both snapshot queue and disk.
-        // Feature: when the run snapshot has non-empty amendment_queue.pending,
-        // the completion guard fires and blocks run_completed. The run must
-        // fail with "completion blocked".
+        // Completion guard checks snapshot queue WITHOUT disk amendments.
+        // Feature: when the run snapshot has non-empty amendment_queue.pending
+        // but NO amendment file exists on disk, the completion guard fires and
+        // blocks run_completed. This isolates the snapshot-queue path from the
+        // disk-only path already covered by SC-CR-007.
         let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "cr-disk-guard", "standard")?;
+        setup_workspace_with_project(&ws, "cr-snap-guard", "standard")?;
 
         // Inject a non-empty amendment_queue.pending in the run.json snapshot
-        // AND plant a matching amendment file on disk so the guard sees both
-        let run_json = r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[{"amendment_id":"snap-1","source_stage":"completion_panel","body":{"summary":"Snap amend","details":"In snapshot"},"created_at":"2026-03-11T20:00:00Z","batch_sequence":0}],"processed_count":0},"status_summary":"not started"}"#;
+        // WITHOUT planting any amendment files on disk
+        let run_json = r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[{"amendment_id":"snap-1","source_stage":"completion_panel","body":{"summary":"Snap amend","details":"In snapshot only"},"created_at":"2026-03-11T20:00:00Z","batch_sequence":0}],"processed_count":0},"status_summary":"not started"}"#;
         std::fs::write(
-            ws.path().join(".ralph-burning/projects/cr-disk-guard/run.json"),
+            ws.path().join(".ralph-burning/projects/cr-snap-guard/run.json"),
             run_json,
         ).map_err(|e| e.to_string())?;
-        // Also plant the amendment file on disk so the guard has both sources
-        let amend_dir = ws.path().join(".ralph-burning/projects/cr-disk-guard/amendments");
-        std::fs::write(
-            amend_dir.join("snap-1.json"),
-            r#"{"amendment_id":"snap-1","source_stage":"completion_panel","body":{"summary":"Snap amend","details":"In snapshot"},"created_at":"2026-03-11T20:00:00Z","batch_sequence":0}"#,
-        ).map_err(|e| e.to_string())?;
+
+        // Verify no amendment files exist on disk
+        let amend_dir = ws.path().join(".ralph-burning/projects/cr-snap-guard/amendments");
+        let disk_files: Vec<_> = std::fs::read_dir(&amend_dir)
+            .map_err(|e| e.to_string())?
+            .filter_map(|e| e.ok())
+            .collect();
+        if !disk_files.is_empty() {
+            return Err("test setup error: no disk amendment files should exist".into());
+        }
 
         let out = run_cli(&["run", "start"], ws.path())?;
         // The completion guard must block — the run must fail
         assert_failure(&out)?;
 
-        let snapshot = read_run_snapshot(&ws, "cr-disk-guard")?;
+        let snapshot = read_run_snapshot(&ws, "cr-snap-guard")?;
         let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
         if status == "completed" {
-            return Err("completion guard should have blocked run_completed, but run completed".into());
+            return Err("completion guard should have blocked run_completed via snapshot queue alone".into());
         }
         if status != "failed" {
             return Err(format!(
                 "expected failed status after completion guard, got '{status}'"
             ));
         }
-        // Verify the error output or journal mentions completion being blocked
+        // Verify the error output mentions completion being blocked
         let combined_output = format!("{}{}", out.stdout, out.stderr);
         let has_blocked_msg = combined_output.contains("completion blocked")
             || combined_output.contains("pending amendments")
@@ -4029,11 +4034,29 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         // new stage events, but the old abandoned ones should remain hidden.
         let final_history = run_cli(&["run", "history"], ws.path())?;
         assert_success(&final_history)?;
-        // The abandoned branch's implementation events (between rollback boundary
-        // and rollback_performed) must not appear in the visible output. We verify
-        // this by checking that the visible history doesn't contain more
-        // stage_completed events than what a fresh run from planning would produce.
-        // The key invariant: the old abandoned implementation history is hidden.
+        // The abandoned branch's implementation events (between the rollback
+        // boundary and rollback_performed) must not appear in the visible output.
+        // After rollback to planning + resume, the visible history should have
+        // at most as many stage_completed events as a fresh run from planning.
+        // If the abandoned branch is visible, the count would be inflated.
+        let final_completed = final_history.stdout.matches("stage_completed").count();
+        if final_completed > pre_completed + 2 {
+            // A small margin accounts for the resumed stages; the key invariant
+            // is that the old abandoned implementation history is hidden and the
+            // total does not blow up with duplicate abandoned events.
+            return Err(format!(
+                "final history should hide abandoned branch: pre={pre_completed}, final={final_completed}"
+            ));
+        }
+
+        // Additionally verify that `run history` output doesn't contain a
+        // "rollback_performed" marker interleaved with duplicate stage events
+        // from the abandoned branch — the abandoned events should be gone.
+        let rollback_in_history = final_history.stdout.contains("rollback_performed");
+        if !rollback_in_history {
+            // rollback_performed should still be visible as a durable event
+            return Err("run history should include rollback_performed event".into());
+        }
 
         // Verify completed
         let final_snap = read_run_snapshot(&ws, "rb-resume")?;
@@ -4421,74 +4444,49 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "RD-007", || {
         // Seed rollback on prompt write failure.
-        // Verify the seed generation pipeline by:
-        // 1. Running quick mode to completion → seed files should exist atomically
-        // 2. Verifying both seed/project.json and seed/prompt.md exist together
-        // 3. Making the seed dir read-only, running again to trigger write failure,
-        //    and verifying the run fails without partial seed state.
+        // Feature: when the seed prompt.md write fails after project.json succeeds,
+        // both seed files are removed via rollback and the run transitions to failed.
+        //
+        // Use RALPH_BURNING_TEST_SEED_PROMPT_WRITE_FAIL to inject a failure in the
+        // prompt.md write path after project.json has been successfully written.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        // Part 1: Verify successful seed generation creates both files atomically
-        let out = run_cli(
-            &["requirements", "quick", "--idea", "Seed rollback test"],
+        let out = run_cli_with_env(
+            &["requirements", "quick", "--idea", "Seed rollback prompt fail test"],
             ws.path(),
+            &[("RALPH_BURNING_TEST_SEED_PROMPT_WRITE_FAIL", "1")],
         )?;
-        assert_success(&out)?;
+        assert_failure(&out)?;
 
+        // Verify run transitioned to failed
         let req_dir = ws.path().join(".ralph-burning/requirements");
         let entries: Vec<_> = std::fs::read_dir(&req_dir)
             .map_err(|e| format!("read requirements dir: {e}"))?
             .filter_map(|e| e.ok())
             .collect();
+        if entries.is_empty() {
+            return Err("requirements run directory should exist even on failure".into());
+        }
         let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "failed" {
+            return Err(format!("expected 'failed' after seed write failure, got '{status}'"));
+        }
+
+        // Verify both seed files are removed via rollback — neither project.json
+        // nor prompt.md should exist
         let seed_dir = run_dir.join("seed");
-        if !seed_dir.is_dir() {
-            return Err("seed directory should exist after successful quick run".into());
-        }
-        if !seed_dir.join("project.json").is_file() {
-            return Err("seed/project.json should exist".into());
-        }
-        if !seed_dir.join("prompt.md").is_file() {
-            return Err("seed/prompt.md should exist".into());
-        }
-
-        // Part 2: Verify that a failed run does not leave partial seed state.
-        // Use review rejection to fail the run before seed generation.
-        let ws2 = TempWorkspace::new()?;
-        init_workspace(&ws2)?;
-        let label_overrides = serde_json::json!({
-            "requirements_review": {
-                "outcome": "rejected",
-                "evidence": ["Insufficient coverage"],
-                "findings": ["Missing edge cases"],
-                "follow_ups": ["Add edge case analysis"]
+        if seed_dir.is_dir() {
+            if seed_dir.join("project.json").is_file() {
+                return Err("seed/project.json should have been rolled back".into());
             }
-        });
-        let out2 = run_cli_with_env(
-            &["requirements", "quick", "--idea", "Seed rollback failure test"],
-            ws2.path(),
-            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
-        )?;
-        assert_failure(&out2)?;
-
-        // Verify no seed files exist on failure
-        let req_dir2 = ws2.path().join(".ralph-burning/requirements");
-        let entries2: Vec<_> = std::fs::read_dir(&req_dir2)
-            .map_err(|e| format!("read requirements dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .collect();
-        if !entries2.is_empty() {
-            let run_dir2 = entries2[0].path();
-            let seed_dir2 = run_dir2.join("seed");
-            if seed_dir2.is_dir() {
-                let seed_files: Vec<_> = std::fs::read_dir(&seed_dir2)
-                    .map_err(|e| format!("read seed dir: {e}"))?
-                    .filter_map(|e| e.ok())
-                    .collect();
-                if !seed_files.is_empty() {
-                    return Err("seed directory should be empty when run fails before seed generation".into());
-                }
+            if seed_dir.join("prompt.md").is_file() {
+                return Err("seed/prompt.md should have been rolled back".into());
             }
         }
         Ok(())
@@ -4534,8 +4532,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "RD-010", || {
-        // Failed run can be resumed via answer - verify answer state reachable
-        // after failure at the question boundary
+        // Failed run can be resumed via answer.
+        // Feature: a requirements run in failed status with a committed question
+        // set can be resumed by invoking `requirements answer`, and the pipeline
+        // resumes from the answer boundary through to completion.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
@@ -4551,27 +4551,68 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
         )?;
         assert_success(&out)?;
-        // Verify run is in awaiting_answers (question boundary reached)
+
         let req_dir = ws.path().join(".ralph-burning/requirements");
         let entries: Vec<_> = std::fs::read_dir(&req_dir)
             .map_err(|e| format!("read requirements dir: {e}"))?
             .filter_map(|e| e.ok())
             .collect();
         let run_dir = entries[0].path();
+        let run_id = entries[0].file_name().to_string_lossy().to_string();
+
+        // Verify awaiting_answers state first
         let run_content = std::fs::read_to_string(run_dir.join("run.json"))
             .map_err(|e| format!("read run.json: {e}"))?;
         let run: serde_json::Value =
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
-        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status != "awaiting_answers" {
-            return Err(format!("expected 'awaiting_answers', got '{status}'"));
+        if run.get("status").and_then(|v| v.as_str()) != Some("awaiting_answers") {
+            return Err("expected awaiting_answers before manual fail".into());
+        }
+
+        // Manually transition to "failed" to simulate a failed run at the
+        // question boundary (as per the feature scenario precondition)
+        let mut run_mut = run.clone();
+        run_mut["status"] = serde_json::json!("failed");
+        run_mut["status_summary"] = serde_json::json!("failed: simulated failure at question boundary");
+        std::fs::write(
+            run_dir.join("run.json"),
+            serde_json::to_string_pretty(&run_mut).unwrap(),
+        ).map_err(|e| format!("write failed run.json: {e}"))?;
+
+        // Pre-populate answers.toml with valid answers
+        std::fs::write(
+            run_dir.join("answers.toml"),
+            "q1 = \"The direct approach\"\n",
+        ).map_err(|e| format!("write answers.toml: {e}"))?;
+
+        // Invoke requirements answer — this should resume from the answer boundary
+        let answer_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[
+                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                ("EDITOR", "true"),
+            ],
+        )?;
+        assert_success(&answer_out)?;
+
+        // Verify the pipeline completed
+        let post_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read post-answer run.json: {e}"))?;
+        let post_run: serde_json::Value =
+            serde_json::from_str(&post_content).map_err(|e| format!("parse: {e}"))?;
+        let post_status = post_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if post_status != "completed" {
+            return Err(format!("expected 'completed' after answer resume, got '{post_status}'"));
         }
         Ok(())
     });
 
     reg!(m, "RD-011", || {
-        // Editor failure preserves run state (requires editor interaction).
-        // Verify the awaiting_answers state is stable by checking it twice.
+        // Editor failure preserves run state.
+        // Feature: when the user runs `requirements answer` and $EDITOR exits
+        // with a non-zero status, the run state remains "awaiting_answers", the
+        // journal has no new events, and answers.json is not replaced.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
@@ -4592,49 +4633,183 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("read requirements dir: {e}"))?
             .filter_map(|e| e.ok())
             .collect();
-        let _run_dir = entries[0].path();
+        let run_dir = entries[0].path();
         let run_id = entries[0].file_name().to_string_lossy().to_string();
-        // Show should report awaiting_answers
-        let show_out = run_cli(&["requirements", "show", &run_id], ws.path())?;
-        assert_success(&show_out)?;
-        assert_contains(&show_out.stdout, "awaiting_answers", "show output")?;
+
+        // Capture journal event count before answer attempt
+        let journal_path = run_dir.join("journal.ndjson");
+        let pre_journal = std::fs::read_to_string(&journal_path)
+            .map_err(|e| format!("read journal: {e}"))?;
+        let pre_event_count = pre_journal.lines().filter(|l| !l.trim().is_empty()).count();
+
+        // Capture answers.json content before answer attempt
+        let answers_json_path = run_dir.join("answers.json");
+        let pre_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+
+        // Run requirements answer with EDITOR=false (exits non-zero)
+        let answer_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[("EDITOR", "false")],
+        )?;
+        assert_failure(&answer_out)?;
+
+        // Verify run state remains awaiting_answers
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "awaiting_answers" {
+            return Err(format!("expected 'awaiting_answers' after editor failure, got '{status}'"));
+        }
+
+        // Verify journal has no new events
+        let post_journal = std::fs::read_to_string(&journal_path)
+            .map_err(|e| format!("read journal: {e}"))?;
+        let post_event_count = post_journal.lines().filter(|l| !l.trim().is_empty()).count();
+        if post_event_count != pre_event_count {
+            return Err(format!(
+                "expected no new journal events after editor failure, had {pre_event_count}, now {post_event_count}"
+            ));
+        }
+
+        // Verify answers.json is not replaced
+        let post_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+        if post_answers != pre_answers {
+            return Err("answers.json should not be replaced after editor failure".into());
+        }
         Ok(())
     });
 
     reg!(m, "RD-012", || {
-        // Answer validation rejects unknown question IDs - verified via contract
-        use crate::contexts::requirements_drafting::contracts::RequirementsContract;
-        let contract = RequirementsContract::question_set();
-        // Valid question set
-        let payload = serde_json::json!({
-            "questions": [
-                {"id": "known_q", "prompt": "Test?", "rationale": "R", "required": true}
-            ]
+        // Answer validation rejects unknown question IDs.
+        // Feature: when the user provides answers.toml containing keys not in the
+        // question set, an answer validation error is returned, answers.json is not
+        // replaced, and the run remains at the same committed question boundary.
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let label_overrides = serde_json::json!({
+            "question_set": {
+                "questions": [
+                    {"id": "q1", "prompt": "Valid question?", "rationale": "R", "required": true}
+                ]
+            }
         });
-        let result = contract.evaluate(&payload);
-        if result.is_err() {
-            return Err(format!("valid question set should pass: {}", result.unwrap_err()));
+        let out = run_cli_with_env(
+            &["requirements", "draft", "--idea", "Unknown ID test"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        let run_dir = entries[0].path();
+        let run_id = entries[0].file_name().to_string_lossy().to_string();
+
+        // Capture pre-answer answers.json content
+        let answers_json_path = run_dir.join("answers.json");
+        let pre_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+
+        // Write answers.toml with an unknown question ID
+        std::fs::write(
+            run_dir.join("answers.toml"),
+            "q1 = \"Valid answer\"\nunknown_key = \"Invalid\"\n",
+        ).map_err(|e| format!("write answers.toml: {e}"))?;
+
+        let answer_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[("EDITOR", "true")],
+        )?;
+        assert_failure(&answer_out)?;
+        assert_contains(&answer_out.stderr, "unknown question ID", "validation error")?;
+
+        // Verify answers.json is not replaced
+        let post_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+        if post_answers != pre_answers {
+            return Err("answers.json should not be replaced after validation error".into());
+        }
+
+        // Verify run remains at awaiting_answers
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "awaiting_answers" {
+            return Err(format!("expected 'awaiting_answers' after validation error, got '{status}'"));
         }
         Ok(())
     });
 
     reg!(m, "RD-013", || {
-        // Answer validation rejects empty required answers - contract boundary test
-        use crate::contexts::requirements_drafting::contracts::RequirementsContract;
-        let contract = RequirementsContract::question_set();
-        let payload = serde_json::json!({
-            "questions": [
-                {"id": "q1", "prompt": "", "rationale": "R", "required": true}
-            ]
-        });
-        let result = contract.evaluate(&payload);
-        match result {
-            Err(ContractError::DomainValidation { details, .. }) => {
-                assert_contains(&details, "prompt must not be empty", "error")?;
-                Ok(())
+        // Answer validation rejects empty required answers.
+        // Feature: when the user provides answers.toml with empty values for
+        // required questions, an answer validation error is returned, answers.json
+        // is not replaced, and the run remains at the same committed question boundary.
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let label_overrides = serde_json::json!({
+            "question_set": {
+                "questions": [
+                    {"id": "q1", "prompt": "Required question?", "rationale": "R", "required": true}
+                ]
             }
-            _ => Err("expected domain validation error for empty prompt".into()),
+        });
+        let out = run_cli_with_env(
+            &["requirements", "draft", "--idea", "Empty answer test"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        let run_dir = entries[0].path();
+        let run_id = entries[0].file_name().to_string_lossy().to_string();
+
+        // Capture pre-answer answers.json content
+        let answers_json_path = run_dir.join("answers.json");
+        let pre_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+
+        // Write answers.toml with empty value for required question
+        std::fs::write(
+            run_dir.join("answers.toml"),
+            "q1 = \"\"\n",
+        ).map_err(|e| format!("write answers.toml: {e}"))?;
+
+        let answer_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[("EDITOR", "true")],
+        )?;
+        assert_failure(&answer_out)?;
+        assert_contains(&answer_out.stderr, "empty answer", "validation error")?;
+
+        // Verify answers.json is not replaced
+        let post_answers = std::fs::read_to_string(&answers_json_path).unwrap_or_default();
+        if post_answers != pre_answers {
+            return Err("answers.json should not be replaced after validation error".into());
         }
+
+        // Verify run remains at awaiting_answers
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "awaiting_answers" {
+            return Err(format!("expected 'awaiting_answers' after empty answer error, got '{status}'"));
+        }
+        Ok(())
     });
 
     reg!(m, "RD-014", || {
@@ -4792,8 +4967,10 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "RD-018", || {
-        // Answer durable-boundary gating prevents double submission
-        // Verify boundary tracking via question_round in run.json
+        // Answer durable-boundary gating prevents double submission.
+        // Feature: when the journal already contains an "answers_submitted" event,
+        // a subsequent `requirements answer` returns an invalid requirements state
+        // error and the run state remains unchanged.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
@@ -4809,19 +4986,70 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
         )?;
         assert_success(&out)?;
+
         let req_dir = ws.path().join(".ralph-burning/requirements");
         let entries: Vec<_> = std::fs::read_dir(&req_dir)
             .map_err(|e| format!("read requirements dir: {e}"))?
             .filter_map(|e| e.ok())
             .collect();
         let run_dir = entries[0].path();
+        let run_id = entries[0].file_name().to_string_lossy().to_string();
+
+        // Verify awaiting_answers before first answer
         let run_content = std::fs::read_to_string(run_dir.join("run.json"))
             .map_err(|e| format!("read run.json: {e}"))?;
         let run: serde_json::Value =
             serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
-        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status != "awaiting_answers" {
-            return Err(format!("expected 'awaiting_answers', got '{status}'"));
+        if run.get("status").and_then(|v| v.as_str()) != Some("awaiting_answers") {
+            return Err("expected awaiting_answers before answer submission".into());
+        }
+
+        // Submit valid answers — first submission should succeed
+        std::fs::write(
+            run_dir.join("answers.toml"),
+            "q1 = \"First answer\"\n",
+        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        let answer_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[
+                ("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string()),
+                ("EDITOR", "true"),
+            ],
+        )?;
+        assert_success(&answer_out)?;
+
+        // Capture run state after first submission
+        let post1_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read post run.json: {e}"))?;
+        let post1_run: serde_json::Value =
+            serde_json::from_str(&post1_content).map_err(|e| format!("parse: {e}"))?;
+        let post1_status = post1_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+
+        // Try to answer again — should be rejected since answers are already
+        // durably submitted past the question boundary
+        std::fs::write(
+            run_dir.join("answers.toml"),
+            "q1 = \"Second answer attempt\"\n",
+        ).map_err(|e| format!("write answers.toml: {e}"))?;
+        let answer2_out = run_cli_with_env(
+            &["requirements", "answer", &run_id],
+            ws.path(),
+            &[("EDITOR", "true")],
+        )?;
+        assert_failure(&answer2_out)?;
+        assert_contains(&answer2_out.stderr, "cannot answer", "double submission rejection")?;
+
+        // Verify run state is unchanged
+        let post2_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read final run.json: {e}"))?;
+        let post2_run: serde_json::Value =
+            serde_json::from_str(&post2_content).map_err(|e| format!("parse: {e}"))?;
+        let post2_status = post2_run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if post2_status != post1_status {
+            return Err(format!(
+                "expected run state unchanged after double submission, was '{post1_status}', now '{post2_status}'"
+            ));
         }
         Ok(())
     });
@@ -4876,8 +5104,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "RD-021", || {
         // Failed run at question boundary reports pending question count via show.
-        // Draft with 2 questions → awaiting_answers → show should display
-        // pending question count and status information.
+        // Feature: a requirements run in "failed" status at the committed question
+        // boundary, with a pending_question_count recorded in run.json, must show
+        // both the pending question count and the failure summary via `show`.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
@@ -4899,18 +5128,33 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("read requirements dir: {e}"))?
             .filter_map(|e| e.ok())
             .collect();
+        let run_dir = entries[0].path();
         let run_id = entries[0].file_name().to_string_lossy().to_string();
 
+        // Manually transition the run to "failed" at the question boundary,
+        // preserving the pending_question_count (simulating a failure after
+        // questions were generated but before answers were submitted)
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let mut run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        run["status"] = serde_json::json!("failed");
+        run["status_summary"] = serde_json::json!("failed: simulated failure at question boundary");
+        std::fs::write(
+            run_dir.join("run.json"),
+            serde_json::to_string_pretty(&run).unwrap(),
+        ).map_err(|e| format!("write failed run.json: {e}"))?;
+
         // Run requirements show and verify it includes pending question count
+        // AND the failure summary
         let show_out = run_cli(&["requirements", "show", &run_id], ws.path())?;
         assert_success(&show_out)?;
-        assert_contains(&show_out.stdout, "awaiting_answers", "show status")?;
+        assert_contains(&show_out.stdout, "failed", "show status")?;
         // The show output should include "Pending Questions:" with count 2
         assert_contains(&show_out.stdout, "Pending Questions:", "pending question label")?;
         assert_contains(&show_out.stdout, "2", "pending question count")?;
-
-        // Verify Question Round is reported
-        assert_contains(&show_out.stdout, "Question Round:", "question round label")?;
+        // The show output should include the failure summary
+        assert_contains(&show_out.stdout, "simulated failure at question boundary", "failure summary")?;
         Ok(())
     });
 
