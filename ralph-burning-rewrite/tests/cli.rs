@@ -4,7 +4,7 @@ use std::process::Command;
 
 use chrono::{Duration, Utc};
 use ralph_burning::contexts::automation_runtime::model::{
-    DaemonTask, RoutingSource, TaskStatus, WorktreeLease,
+    DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
 };
 use ralph_burning::shared::domain::FlowPreset;
 use tempfile::tempdir;
@@ -294,6 +294,9 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             lease_id: Some("lease-active".to_owned()),
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
     write_worktree_lease(
@@ -329,6 +332,9 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             lease_id: None,
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
 
@@ -370,6 +376,9 @@ fn daemon_retry_transitions_failed_task_to_pending() {
             lease_id: None,
             failure_class: Some("daemon_dispatch_failed".to_owned()),
             failure_message: Some("boom".to_owned()),
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
 
@@ -414,6 +423,9 @@ fn daemon_abort_claimed_task_releases_lease() {
             lease_id: Some("lease-claimed".to_owned()),
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
     write_worktree_lease(
@@ -477,6 +489,9 @@ fn daemon_abort_active_task_releases_lease() {
             lease_id: Some("lease-active-abort".to_owned()),
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
     write_worktree_lease(
@@ -537,6 +552,9 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             lease_id: Some("lease-stale".to_owned()),
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
     write_worktree_lease(
@@ -599,6 +617,9 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
             lease_id: None,
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
 
@@ -668,6 +689,9 @@ fn daemon_start_single_iteration_processes_pending_task() {
             lease_id: None,
             failure_class: None,
             failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
         },
     );
 
@@ -4085,4 +4109,153 @@ fn conformance_run_failure_exits_non_zero_with_single_report() {
         stderr.contains("NONEXISTENT-FAIL-FAST-TEST"),
         "error should mention the unknown scenario ID"
     );
+}
+
+// ── Daemon waiting/resume E2E tests ─────────────────────────────────────────
+
+#[test]
+fn daemon_status_shows_waiting_for_requirements_task() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-waiting".to_owned(),
+            issue_ref: "repo#99".to_owned(),
+            project_id: "demo-waiting".to_owned(),
+            project_name: Some("Waiting".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: Some("abc12345".to_owned()),
+            requirements_run_id: Some("req-20260313".to_owned()),
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon status");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("waiting_for_requirements"),
+        "status should show waiting_for_requirements, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("requirements_run=req-20260313"),
+        "status should show requirements_run_id, got: {stdout}"
+    );
+}
+
+#[test]
+fn daemon_status_shows_dispatch_mode() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-dispatch".to_owned(),
+            issue_ref: "repo#100".to_owned(),
+            project_id: "demo-dispatch".to_owned(),
+            project_name: Some("Dispatch".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsQuick,
+            source_revision: Some("beef1234".to_owned()),
+            requirements_run_id: None,
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon status");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("dispatch=requirements_quick"),
+        "status should show dispatch mode, got: {stdout}"
+    );
+}
+
+#[test]
+fn daemon_abort_waiting_task_succeeds() {
+    let temp_dir = initialize_workspace_fixture();
+    let now = Utc::now();
+
+    write_daemon_task(
+        temp_dir.path(),
+        &DaemonTask {
+            task_id: "task-waiting-abort".to_owned(),
+            issue_ref: "repo#101".to_owned(),
+            project_id: "demo-waiting-abort".to_owned(),
+            project_name: Some("WaitingAbort".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: None,
+            requirements_run_id: Some("req-abort-test".to_owned()),
+        },
+    );
+
+    let output = Command::new(binary())
+        .args(["daemon", "abort", "task-waiting-abort"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run daemon abort");
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Aborted task task-waiting-abort"),
+        "should confirm abort, got: {stdout}"
+    );
+
+    // Verify task is now aborted
+    let task_path = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/tasks/task-waiting-abort.json");
+    let task_json = fs::read_to_string(task_path).expect("read task");
+    let task: DaemonTask = serde_json::from_str(&task_json).expect("parse task");
+    assert_eq!(TaskStatus::Aborted, task.status);
 }

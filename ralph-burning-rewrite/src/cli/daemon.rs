@@ -2,9 +2,10 @@ use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
-    FsRuntimeLogWriteStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
+use crate::adapters::issue_watcher::FileIssueWatcher;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 use crate::contexts::automation_runtime::lease_service::LeaseService;
@@ -75,6 +76,9 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
     let log_write = FsRuntimeLogWriteStore;
     let amendment_queue = FsAmendmentQueueStore;
 
+    let issue_watcher = FileIssueWatcher;
+    let requirements_store = FsRequirementsStore;
+
     let daemon_loop = DaemonLoop::new(
         &daemon_store,
         &worktree,
@@ -87,7 +91,10 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
         &log_write,
         &amendment_queue,
         &agent_service,
-    );
+    )
+    .with_watcher(&issue_watcher)
+    .with_requirements_store(&requirements_store);
+
     let loop_config = DaemonLoopConfig {
         poll_interval: std::time::Duration::from_secs(poll_seconds),
         single_iteration,
@@ -120,9 +127,19 @@ async fn handle_status() -> AppResult<()> {
         let heartbeat = lease
             .map(|lease| lease.last_heartbeat.to_rfc3339())
             .unwrap_or_else(|| "-".to_owned());
+        let req_run = task
+            .requirements_run_id
+            .as_deref()
+            .unwrap_or("-");
         println!(
-            "{}  {}  lease={}  heartbeat={}  issue={}",
-            task.task_id, task.status, lease_id, heartbeat, task.issue_ref
+            "{}  {}  dispatch={}  lease={}  heartbeat={}  issue={}  requirements_run={}",
+            task.task_id,
+            task.status,
+            task.dispatch_mode,
+            lease_id,
+            heartbeat,
+            task.issue_ref,
+            req_run,
         );
     }
 

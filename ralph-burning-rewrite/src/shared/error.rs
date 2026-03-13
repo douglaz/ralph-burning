@@ -156,6 +156,15 @@ pub enum AppError {
         branch_name: String,
         details: String,
     },
+    #[error("watcher ingestion failed for issue '{issue_ref}': {details}")]
+    WatcherIngestionFailed { issue_ref: String, details: String },
+    #[error("requirements handoff failed for task '{task_id}': {details}")]
+    RequirementsHandoffFailed { task_id: String, details: String },
+    #[error("duplicate watched issue '{issue_ref}' with source_revision '{source_revision}'")]
+    DuplicateWatchedIssue {
+        issue_ref: String,
+        source_revision: String,
+    },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {
         file: String,

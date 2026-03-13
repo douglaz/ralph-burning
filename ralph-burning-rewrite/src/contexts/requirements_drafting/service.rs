@@ -989,6 +989,84 @@ where
     }
 }
 
+// ── Daemon-facing helpers ───────────────────────────────────────────────────
+
+/// Read a requirements run status without needing the full service.
+/// Used by the daemon to check whether a linked requirements run is complete.
+pub fn read_requirements_run_status(
+    store: &dyn RequirementsStorePort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<RequirementsRun> {
+    store.read_run(base_dir, run_id)
+}
+
+/// Check if a requirements run has completed and produced a seed.
+/// Returns `true` if the run is in `Completed` status.
+pub fn is_requirements_run_complete(
+    store: &dyn RequirementsStorePort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<bool> {
+    let run = store.read_run(base_dir, run_id)?;
+    Ok(run.status == RequirementsStatus::Completed)
+}
+
+/// Extract seed handoff data from a completed requirements run.
+/// Returns the project seed payload and the seed prompt path.
+pub fn extract_seed_handoff(
+    store: &dyn RequirementsStorePort,
+    base_dir: &Path,
+    run_id: &str,
+) -> AppResult<SeedHandoff> {
+    let run = store.read_run(base_dir, run_id)?;
+    if run.status != RequirementsStatus::Completed {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!(
+                "requirements run is in '{}' status, expected 'completed'",
+                run.status
+            ),
+        });
+    }
+
+    let seed_id = run.latest_seed_id.as_deref().ok_or_else(|| {
+        AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: "completed requirements run has no seed_id".to_owned(),
+        }
+    })?;
+
+    let seed_json = store.read_payload(base_dir, run_id, seed_id)?;
+    let seed: super::model::ProjectSeedPayload =
+        serde_json::from_value(seed_json).map_err(|e| AppError::RequirementsHandoffFailed {
+            task_id: run_id.to_owned(),
+            details: format!("failed to parse seed payload: {e}"),
+        })?;
+
+    let seed_prompt_path = store.seed_prompt_path(base_dir, run_id);
+
+    Ok(SeedHandoff {
+        project_id: seed.project_id,
+        project_name: seed.project_name,
+        flow: seed.flow,
+        prompt_body: seed.prompt_body,
+        prompt_path: seed_prompt_path,
+        recommended_flow: run.recommended_flow,
+    })
+}
+
+/// Seed handoff data extracted from a completed requirements run.
+#[derive(Debug, Clone)]
+pub struct SeedHandoff {
+    pub project_id: String,
+    pub project_name: String,
+    pub flow: FlowPreset,
+    pub prompt_body: String,
+    pub prompt_path: std::path::PathBuf,
+    pub recommended_flow: Option<FlowPreset>,
+}
+
 // ── Show result ─────────────────────────────────────────────────────────────
 
 /// Read model for `requirements show`.

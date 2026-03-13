@@ -2325,3 +2325,73 @@ mod service_integration {
         }
     }
 }
+
+// ── Daemon handoff helper tests ─────────────────────────────────────────────
+
+mod daemon_handoff {
+    use ralph_burning::contexts::requirements_drafting::model::RequirementsStatus;
+    use ralph_burning::contexts::requirements_drafting::service::{
+        is_requirements_run_complete, read_requirements_run_status,
+    };
+    use ralph_burning::contexts::requirements_drafting::model::RequirementsRun;
+    use ralph_burning::adapters::fs::FsRequirementsStore;
+    use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+    use chrono::Utc;
+
+    #[test]
+    fn is_requirements_run_complete_returns_false_for_drafting() {
+        let store = FsRequirementsStore;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_id = "req-test-drafting";
+        let run = RequirementsRun::new_draft(
+            run_id.to_owned(),
+            "test idea".to_owned(),
+            Utc::now(),
+        );
+        store.create_run_dir(temp.path(), run_id).expect("create dir");
+        store.write_run(temp.path(), run_id, &run).expect("write run");
+
+        let complete = is_requirements_run_complete(&store, temp.path(), run_id)
+            .expect("check completeness");
+        assert!(!complete);
+    }
+
+    #[test]
+    fn is_requirements_run_complete_returns_true_for_completed() {
+        let store = FsRequirementsStore;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_id = "req-test-completed";
+        let mut run = RequirementsRun::new_quick(
+            run_id.to_owned(),
+            "test idea".to_owned(),
+            Utc::now(),
+        );
+        run.status = RequirementsStatus::Completed;
+        run.status_summary = "completed".to_owned();
+        store.create_run_dir(temp.path(), run_id).expect("create dir");
+        store.write_run(temp.path(), run_id, &run).expect("write run");
+
+        let complete = is_requirements_run_complete(&store, temp.path(), run_id)
+            .expect("check completeness");
+        assert!(complete);
+    }
+
+    #[test]
+    fn read_requirements_run_status_returns_run() {
+        let store = FsRequirementsStore;
+        let temp = tempfile::tempdir().expect("tempdir");
+        let run_id = "req-test-status";
+        let run = RequirementsRun::new_draft(
+            run_id.to_owned(),
+            "test idea".to_owned(),
+            Utc::now(),
+        );
+        store.create_run_dir(temp.path(), run_id).expect("create dir");
+        store.write_run(temp.path(), run_id, &run).expect("write run");
+
+        let loaded = read_requirements_run_status(&store, temp.path(), run_id)
+            .expect("read run status");
+        assert_eq!(RequirementsStatus::Drafting, loaded.status);
+        assert_eq!("test idea", loaded.idea);
+    }
+}

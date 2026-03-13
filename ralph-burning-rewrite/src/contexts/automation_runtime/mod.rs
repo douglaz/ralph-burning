@@ -8,17 +8,19 @@ pub mod lease_service;
 pub mod model;
 pub mod routing;
 pub mod task_service;
+pub mod watcher;
 
 pub const CONTEXT_NAME: &str = "automation_runtime";
 
 pub use daemon_loop::{DaemonLoop, DaemonLoopConfig};
 pub use lease_service::{LeaseService, ReconcileReport};
 pub use model::{
-    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, RoutingResolution, RoutingSource,
-    TaskStatus, WorktreeLease,
+    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, RoutingResolution,
+    RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
+pub use watcher::IssueWatcherPort;
 
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;

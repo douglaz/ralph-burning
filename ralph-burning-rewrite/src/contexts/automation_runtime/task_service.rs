@@ -5,7 +5,8 @@ use serde_json::json;
 
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{
-    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, TaskStatus, WorktreeLease,
+    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, TaskStatus,
+    WatchedIssueMeta, WorktreeLease,
 };
 use crate::contexts::automation_runtime::routing::RoutingEngine;
 use crate::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
@@ -21,6 +22,8 @@ pub struct CreateTaskInput {
     pub prompt: Option<String>,
     pub routing_command: Option<String>,
     pub routing_labels: Vec<String>,
+    pub dispatch_mode: DispatchMode,
+    pub source_revision: Option<String>,
 }
 
 pub struct DaemonTaskService;
@@ -76,6 +79,9 @@ impl DaemonTaskService {
             lease_id: None,
             failure_class: None,
             failure_message: None,
+            dispatch_mode: input.dispatch_mode,
+            source_revision: input.source_revision,
+            requirements_run_id: None,
         };
 
         store.create_task(base_dir, &task)?;
@@ -302,6 +308,151 @@ impl DaemonTaskService {
         task.clear_lease();
         task.updated_at = Utc::now();
         store.write_task(base_dir, &task)?;
+        Ok(task)
+    }
+
+    /// Create a task from a watched issue, enforcing idempotency by
+    /// `(issue_ref, source_revision)`. If a non-terminal task already exists
+    /// for the same issue_ref and source_revision, the call is a no-op.
+    /// If a prior task for the same issue_ref is terminal and a newer
+    /// source_revision appears, a fresh task may be created.
+    pub fn create_task_from_watched_issue(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        routing_engine: &RoutingEngine,
+        default_flow: FlowPreset,
+        issue: &WatchedIssueMeta,
+        dispatch_mode: DispatchMode,
+    ) -> AppResult<Option<DaemonTask>> {
+        let issue_ref = normalize_required("issue_ref", &issue.issue_ref)?;
+        let source_revision = normalize_required("source_revision", &issue.source_revision)?;
+
+        let existing_tasks = store.list_tasks(base_dir)?;
+
+        // Check for exact (issue_ref, source_revision) match on non-terminal task
+        for task in &existing_tasks {
+            if task.issue_ref == issue_ref && !task.is_terminal() {
+                if task.source_revision.as_deref() == Some(source_revision.as_str()) {
+                    // Idempotent: same issue + same revision, already tracked
+                    return Ok(None);
+                }
+                // Different source_revision but same issue_ref with non-terminal task
+                return Err(AppError::DuplicateWatchedIssue {
+                    issue_ref,
+                    source_revision,
+                });
+            }
+        }
+
+        let resolution = routing_engine.resolve_flow(
+            issue.routing_command.as_deref(),
+            &issue.labels,
+            default_flow,
+        )?;
+
+        let task_id = format!(
+            "watch-{}-{}",
+            issue_ref.replace('/', "-").replace('#', ""),
+            &source_revision[..source_revision.len().min(8)]
+        );
+        validate_identifier(&task_id)?;
+
+        let now = Utc::now();
+        let task = DaemonTask {
+            task_id,
+            issue_ref: issue_ref.clone(),
+            project_id: format!(
+                "watched-{}",
+                issue_ref.replace('/', "-").replace('#', "")
+            ),
+            project_name: Some(issue.title.clone()),
+            prompt: Some(issue.body.clone()),
+            routing_command: issue.routing_command.clone(),
+            routing_labels: issue.labels.clone(),
+            resolved_flow: Some(resolution.flow),
+            routing_source: Some(resolution.source),
+            routing_warnings: resolution.warnings.clone(),
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode,
+            source_revision: Some(source_revision),
+            requirements_run_id: None,
+        };
+
+        store.create_task(base_dir, &task)?;
+        Self::append_journal_event(
+            store,
+            base_dir,
+            DaemonJournalEventType::WatcherIngestion,
+            json!({
+                "task_id": task.task_id,
+                "issue_ref": task.issue_ref,
+                "source_revision": task.source_revision,
+                "dispatch_mode": task.dispatch_mode,
+                "flow": resolution.flow,
+            }),
+        )?;
+
+        Ok(Some(task))
+    }
+
+    /// Transition an active task to waiting_for_requirements.
+    /// Releases the lease and writer lock, leaving no external resources held.
+    pub fn mark_waiting_for_requirements(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+        requirements_run_id: &str,
+    ) -> AppResult<DaemonTask> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        task.transition_to(TaskStatus::WaitingForRequirements, Utc::now())?;
+        task.requirements_run_id = Some(requirements_run_id.to_owned());
+        task.clear_lease();
+        store.write_task(base_dir, &task)?;
+        Self::append_journal_event(
+            store,
+            base_dir,
+            DaemonJournalEventType::RequirementsWaiting,
+            json!({
+                "task_id": task.task_id,
+                "requirements_run_id": requirements_run_id,
+            }),
+        )?;
+        Ok(task)
+    }
+
+    /// Resume a waiting task back to pending for re-processing by the daemon.
+    pub fn resume_from_waiting(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+    ) -> AppResult<DaemonTask> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        if task.status != TaskStatus::WaitingForRequirements {
+            return Err(AppError::TaskStateTransitionInvalid {
+                task_id: task.task_id.clone(),
+                from: task.status.as_str().to_owned(),
+                to: TaskStatus::Pending.as_str().to_owned(),
+            });
+        }
+        task.transition_to(TaskStatus::Pending, Utc::now())?;
+        // Switch to workflow dispatch now that requirements are complete
+        task.dispatch_mode = DispatchMode::Workflow;
+        store.write_task(base_dir, &task)?;
+        Self::append_journal_event(
+            store,
+            base_dir,
+            DaemonJournalEventType::RequirementsResumed,
+            json!({
+                "task_id": task.task_id,
+                "requirements_run_id": task.requirements_run_id,
+            }),
+        )?;
         Ok(task)
     }
 

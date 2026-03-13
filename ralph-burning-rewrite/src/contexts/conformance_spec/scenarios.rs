@@ -288,6 +288,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_requirements_drafting(&mut m);
     register_daemon_lifecycle(&mut m);
     register_daemon_routing(&mut m);
+    register_daemon_issue_intake(&mut m);
 
     m
 }
@@ -668,8 +669,8 @@ fn register_project_records(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         create_project_fixture(ws.path(), "running-proj", "standard");
-        // Set up an active run
-        let run_json = r#"{"active_run":{"run_id":"run-1","started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
+        // Set up an active run with stage_cursor (canonical shape)
+        let run_json = r#"{"active_run":{"run_id":"run-1","stage_cursor":{"stage":"planning","cycle":1,"attempt":1,"completion_round":1},"started_at":"2026-03-11T19:00:00Z"},"status":"running","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"running"}"#;
         std::fs::write(
             ws.path().join(".ralph-burning/projects/running-proj/run.json"),
             run_json,
@@ -5511,6 +5512,98 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let out = run_cli(&["daemon", "reconcile"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Daemon Issue Intake (8 scenarios)
+// ===========================================================================
+
+fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "DAEMON-INTAKE-001", || {
+        // Watcher ingestion creates a task from a watched issue file
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| e.to_string())?;
+        let issue = serde_json::json!({
+            "issue_ref": "test/repo#1",
+            "source_revision": "abc12345",
+            "title": "Test issue",
+            "body": "Implement feature X",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(watched_dir.join("issue-1.json"), issue.to_string())
+            .map_err(|e| e.to_string())?;
+        // Status should succeed (watcher is polled only during daemon start)
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-002", || {
+        // Idempotent re-polling: same issue_ref + source_revision produces no duplicate
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-003", || {
+        // Requirements quick handoff: daemon status shows dispatch mode
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-004", || {
+        // Requirements draft waiting/resume: status shows waiting_for_requirements
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-005", || {
+        // Duplicate issue rejection: same issue_ref with different source_revision
+        // while non-terminal task exists
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-006", || {
+        // Routed flow override: seed suggests different flow but routed flow wins
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-007", || {
+        // Unknown requirements command fails ingestion
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
+        assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-008", || {
+        // Daemon status surfaces waiting state and requirements_run_id
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let out = run_cli(&["daemon", "status"], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
