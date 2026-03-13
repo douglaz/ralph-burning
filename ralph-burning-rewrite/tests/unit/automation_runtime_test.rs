@@ -1286,6 +1286,63 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
 }
 
 // ---------------------------------------------------------------------------
+// Claim journal failure + release failure: task must end Failed with lease retained
+// ---------------------------------------------------------------------------
+
+#[test]
+fn claim_journal_failure_with_release_failure_marks_failed_retains_lease() {
+    // When LeaseAcquired journal fails AND LeaseService::release() also fails
+    // (e.g. worktree removal fails), the task must end up Failed with
+    // claim_journal_failed and the lease_id must NOT be cleared (since the
+    // lease/worktree/lock remain on disk).
+    let temp = tempdir().expect("tempdir");
+    let failing_worktree = FailingWorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    // fail_after=0: the very first journal append (LeaseAcquired) will fail.
+    let store = FailingJournalStore::new(0);
+
+    let mut task = sample_task();
+    task.task_id = "double-fail-test".to_owned();
+    task.project_id = "double-fail-proj".to_owned();
+    store
+        .create_task(temp.path(), &task)
+        .expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &failing_worktree,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "double-fail-test",
+        FlowPreset::Standard,
+        300,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    let task_after = store
+        .read_task(temp.path(), "double-fail-test")
+        .expect("read task");
+    assert_eq!(
+        TaskStatus::Failed,
+        task_after.status,
+        "task must be Failed when both journal and release fail"
+    );
+    assert_eq!(
+        Some("claim_journal_failed".to_owned()),
+        task_after.failure_class,
+        "failure class must be claim_journal_failed"
+    );
+    // lease_id should NOT be cleared because the lease is still on disk
+    assert!(
+        task_after.lease_id.is_some(),
+        "lease_id must be retained when release fails (lease remains on disk)"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Panic-safe CLI lock release (RAII guard drop)
 // ---------------------------------------------------------------------------
 

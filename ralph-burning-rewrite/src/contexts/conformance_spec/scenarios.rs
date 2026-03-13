@@ -3270,9 +3270,21 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-RESUME-011", || {
-        // Run start exits non-zero when writer lock is held
+        // Run start exits non-zero when writer lock is held, and no run-state
+        // mutation occurs for the project.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "india-lock", "standard")?;
+
+        // Snapshot run.json and journal before the attempt
+        let run_before = std::fs::read_to_string(
+            ws.path().join(".ralph-burning/projects/india-lock/run.json"),
+        )
+        .map_err(|e| format!("read run.json before: {e}"))?;
+        let journal_before = std::fs::read_to_string(
+            ws.path().join(".ralph-burning/projects/india-lock/journal.ndjson"),
+        )
+        .map_err(|e| format!("read journal before: {e}"))?;
+
         // Pre-create the writer lock
         let lock_dir = ws.path().join(".ralph-burning/daemon/leases");
         std::fs::create_dir_all(&lock_dir).map_err(|e| format!("create lock dir: {e}"))?;
@@ -3281,6 +3293,27 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "writer lock", "stderr")?;
+
+        // Verify no run-state mutation occurred
+        let run_after = std::fs::read_to_string(
+            ws.path().join(".ralph-burning/projects/india-lock/run.json"),
+        )
+        .map_err(|e| format!("read run.json after: {e}"))?;
+        let journal_after = std::fs::read_to_string(
+            ws.path().join(".ralph-burning/projects/india-lock/journal.ndjson"),
+        )
+        .map_err(|e| format!("read journal after: {e}"))?;
+
+        if run_before != run_after {
+            return Err(format!(
+                "run.json was mutated despite lock-held failure.\nbefore: {run_before}\nafter: {run_after}"
+            ));
+        }
+        if journal_before != journal_after {
+            return Err(format!(
+                "journal.ndjson was mutated despite lock-held failure.\nbefore: {journal_before}\nafter: {journal_after}"
+            ));
+        }
         Ok(())
     });
 
@@ -5651,6 +5684,10 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
+        // Also set up a project fixture for free-proj so the daemon's
+        // ensure_project / workflow dispatch has something to work with.
+        create_project_fixture(ws.path(), "free-proj", "standard");
+
         let now = chrono::Utc::now();
         // Task 1: its project lock is already held → claim will fail
         let task1_json = serde_json::json!({
@@ -5697,15 +5734,44 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
-        // The daemon should NOT fail entirely — it processes what it can
-        // (the second task) and continues. The first task is skipped due to lock.
-        // We verify the output mentions processing (claiming) the free task.
-        let combined = format!("{}{}", out.stdout, out.stderr);
-        // At minimum, the daemon should have attempted the second task
-        let attempted_second = combined.contains("free-task");
-        if !attempted_second {
+
+        // Verify: the locked task was skipped (still pending)
+        let task1_after: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&task1_path)
+                .map_err(|e| format!("read task1 after: {e}"))?,
+        )
+        .map_err(|e| format!("parse task1: {e}"))?;
+        let task1_status = task1_after
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if task1_status != "pending" {
             return Err(format!(
-                "expected daemon to attempt 'free-task' after skipping 'locked-task', output: {combined}"
+                "locked-task should remain 'pending' but is '{task1_status}'"
+            ));
+        }
+
+        // Verify: the second task was claimed and processed (status changed from pending)
+        let task2_after: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&task2_path)
+                .map_err(|e| format!("read task2 after: {e}"))?,
+        )
+        .map_err(|e| format!("parse task2: {e}"))?;
+        let task2_status = task2_after
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if task2_status == "pending" {
+            return Err(format!(
+                "free-task should have been claimed/processed but is still 'pending'"
+            ));
+        }
+
+        // Verify output mentions the free task was attempted
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        if !combined.contains("free-task") {
+            return Err(format!(
+                "expected daemon output to mention 'free-task', output: {combined}"
             ));
         }
         Ok(())
@@ -5723,23 +5789,66 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             );
         }
 
-        // Additionally verify a daemon start round-trip preserves CWD
+        // Verify CWD is unchanged across a daemon cycle that actually dispatches
+        // a pending task through worktree-backed execution.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+
+        // Create a project fixture so ensure_project succeeds during dispatch.
+        create_project_fixture(ws.path(), "cwd-proj", "standard");
+
+        // Create a pending task so real worktree dispatch occurs.
+        let now = chrono::Utc::now();
+        let task_json = serde_json::json!({
+            "task_id": "cwd-test-task",
+            "issue_ref": "repo#cwd",
+            "project_id": "cwd-proj",
+            "status": "pending",
+            "created_at": now.to_rfc3339(),
+            "updated_at": now.to_rfc3339(),
+            "attempt_count": 0,
+            "dispatch_mode": "workflow",
+            "routing_labels": [],
+            "resolved_flow": "standard",
+            "routing_source": "default"
+        });
+        let task_path = ws.path().join(".ralph-burning/daemon/tasks/cwd-test-task.json");
+        std::fs::write(&task_path, serde_json::to_string_pretty(&task_json).unwrap())
+            .map_err(|e| format!("write task: {e}"))?;
+
         let cwd_before = std::env::current_dir()
             .map_err(|e| format!("get cwd: {e}"))?;
         let out = run_cli(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
         )?;
-        assert_success(&out)?;
+        // We don't assert_success because the task dispatch may fail (no git repo
+        // for worktree creation), but the CWD must still be unchanged regardless.
         let cwd_after = std::env::current_dir()
             .map_err(|e| format!("get cwd: {e}"))?;
         if cwd_before != cwd_after {
             return Err(format!(
-                "CWD changed: before={}, after={}",
+                "CWD changed during dispatch: before={}, after={}",
                 cwd_before.display(),
                 cwd_after.display()
+            ));
+        }
+
+        // Verify the task was actually attempted (status changed from pending)
+        let task_after: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&task_path)
+                .map_err(|e| format!("read task after: {e}"))?,
+        )
+        .map_err(|e| format!("parse task: {e}"))?;
+        let task_status = task_after
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("pending");
+        let combined = format!("{}{}", out.stdout, out.stderr);
+        // Task must have been attempted — either status changed or output mentions it
+        if task_status == "pending" && !combined.contains("cwd-test-task") {
+            return Err(format!(
+                "task was never attempted during dispatch, output: {combined}"
             ));
         }
         Ok(())

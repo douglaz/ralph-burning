@@ -184,41 +184,75 @@ impl DaemonTaskService {
                 "ttl_seconds": lease.ttl_seconds,
             }),
         ) {
-            // LeaseAcquired journal failed before TaskClaimed: roll back to
-            // Pending with no lease/worktree/writer lock, or mark Failed with
-            // explicit failure class if rollback itself fails.
-            let release_err = LeaseService::release(store, worktree, base_dir, repo_root, &lease)
-                .err();
-            let rollback_result = (|| -> AppResult<()> {
-                task.status = TaskStatus::Pending;
-                task.clear_lease();
-                task.updated_at = Utc::now();
-                store.write_task(base_dir, &task)?;
-                // Append compensating evidence so the journal explains the cleanup.
-                let _ = Self::append_journal_event(
-                    store,
-                    base_dir,
-                    DaemonJournalEventType::ClaimRollback,
-                    json!({
-                        "task_id": task.task_id,
-                        "reason": format!("LeaseAcquired journal failed: {journal_err}"),
-                        "rollback_target": "pending",
-                        "lease_released": release_err.is_none(),
-                    }),
-                );
-                Ok(())
-            })();
-            if rollback_result.is_err() {
-                // Rollback failed: force to Failed with explicit class + clear lease_id.
+            // LeaseAcquired journal failed before TaskClaimed: only restore to
+            // Pending if lease/worktree/writer-lock cleanup fully succeeds.
+            // If cleanup fails, persist a terminal Failed state so the durable
+            // model never hides retained claim resources.
+            let release_result =
+                LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+            if release_result.is_ok() {
+                // All claim resources released — safe to restore Pending.
+                let rollback_result = (|| -> AppResult<()> {
+                    task.status = TaskStatus::Pending;
+                    task.clear_lease();
+                    task.updated_at = Utc::now();
+                    store.write_task(base_dir, &task)?;
+                    let _ = Self::append_journal_event(
+                        store,
+                        base_dir,
+                        DaemonJournalEventType::ClaimRollback,
+                        json!({
+                            "task_id": task.task_id,
+                            "reason": format!("LeaseAcquired journal failed: {journal_err}"),
+                            "rollback_target": "pending",
+                            "lease_released": true,
+                        }),
+                    );
+                    Ok(())
+                })();
+                if rollback_result.is_err() {
+                    // Task-write failed after successful release: mark Failed.
+                    let _ = (|| -> AppResult<()> {
+                        let mut t = store.read_task(base_dir, &task.task_id)?;
+                        t.transition_to(TaskStatus::Failed, Utc::now())?;
+                        t.set_failure(
+                            "claim_journal_failed",
+                            &format!(
+                                "LeaseAcquired journal failed and rollback write failed: {journal_err}"
+                            ),
+                        );
+                        t.clear_lease();
+                        store.write_task(base_dir, &t)?;
+                        Ok(())
+                    })();
+                }
+            } else {
+                // Release failed — claim resources (lease/worktree/lock) remain
+                // on disk. Mark terminal so durable state is truthful.
+                let release_err = release_result.unwrap_err();
                 let _ = (|| -> AppResult<()> {
                     let mut t = store.read_task(base_dir, &task.task_id)?;
                     t.transition_to(TaskStatus::Failed, Utc::now())?;
                     t.set_failure(
                         "claim_journal_failed",
-                        &format!("LeaseAcquired journal failed and rollback failed: {journal_err}"),
+                        &format!(
+                            "LeaseAcquired journal failed and lease release failed: {journal_err}; release: {release_err}"
+                        ),
                     );
-                    t.clear_lease();
+                    // Do NOT clear lease_id — the lease is still on disk.
                     store.write_task(base_dir, &t)?;
+                    let _ = Self::append_journal_event(
+                        store,
+                        base_dir,
+                        DaemonJournalEventType::ClaimRollback,
+                        json!({
+                            "task_id": task.task_id,
+                            "reason": format!("LeaseAcquired journal failed: {journal_err}"),
+                            "rollback_target": "failed",
+                            "lease_released": false,
+                            "release_error": release_err.to_string(),
+                        }),
+                    );
                     Ok(())
                 })();
             }
