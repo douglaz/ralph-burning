@@ -5606,112 +5606,174 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "DAEMON-INTAKE-003", || {
-        // Requirements quick handoff: task is created with RequirementsQuick dispatch,
-        // then when processed the seed is derived and task transitions through to
-        // workflow mode with project metadata populated.
+        // Requirements quick handoff: create a watched issue with /rb requirements
+        // quick, run a daemon cycle, and verify the requirements pipeline runs,
+        // the task is linked to the completed requirements run, and the task has
+        // project metadata populated from the seed.
+        //
+        // NOTE: the daemon may fail at the worktree step (no git repo in temp
+        // workspace), but the requirements handoff artifacts must be durable.
         use crate::adapters::fs::FsDaemonStore;
-        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
-        use crate::contexts::automation_runtime::routing::RoutingEngine;
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::shared::domain::FlowPreset;
+        use crate::contexts::automation_runtime::DaemonStorePort;
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+
+        // Write a watched issue file for the daemon's FileIssueWatcher
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#3",
+            "source_revision": "rev33333",
+            "title": "Quick test",
+            "body": "/rb requirements quick\n\nImplement feature",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(
+            watched_dir.join("issue-3.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        ).map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Run one daemon cycle — requirements_quick completes the requirements
+        // run and derives the seed. The subsequent worktree/workflow step may
+        // fail in a non-git temp workspace, but the requirements handoff and
+        // project metadata should be durably persisted on the task.
+        let _out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+        // Don't assert_success — the worktree step may fail in a non-git
+        // temp workspace. The key invariant is the requirements handoff state.
+
+        // Verify the task was created and processed
         let store = FsDaemonStore;
-        let routing = RoutingEngine::new();
-        let issue = WatchedIssueMeta {
-            issue_ref: "test/repo#3".to_owned(),
-            source_revision: "rev33333".to_owned(),
-            title: "Quick test".to_owned(),
-            body: "/rb requirements quick\n\nImplement feature".to_owned(),
-            labels: vec![],
-            routing_command: None,
-        };
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let task = tasks.iter()
+            .find(|t| t.issue_ref == "test/repo#3")
+            .ok_or("no task created for issue test/repo#3")?;
 
-        // Resolve dispatch mode
-        let mode = crate::contexts::automation_runtime::watcher::resolve_dispatch_mode(&issue)
-            .map_err(|e| e.to_string())?;
-        if mode != DispatchMode::RequirementsQuick {
-            return Err(format!("expected RequirementsQuick, got {}", mode));
+        // Task should have a linked requirements_run_id
+        if task.requirements_run_id.is_none() {
+            return Err("requirements_run_id should be set after quick handoff".to_owned());
+        }
+        let run_id = task.requirements_run_id.as_ref().unwrap();
+
+        // The linked requirements run should be completed
+        let req_run_path = ws.path()
+            .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+        let run_content = std::fs::read_to_string(&req_run_path)
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value = serde_json::from_str(&run_content)
+            .map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected requirements run 'completed', got '{status}'"));
         }
 
-        // Create task with RequirementsQuick dispatch
-        let result = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, mode,
-        ).map_err(|e| e.to_string())?;
-        let task = result.ok_or("expected a task to be created")?;
-        if task.dispatch_mode != DispatchMode::RequirementsQuick {
-            return Err(format!("wrong dispatch_mode: {}", task.dispatch_mode));
+        // Task should have project metadata populated from seed
+        if task.project_id.is_empty() {
+            return Err("project_id should be populated from seed".to_owned());
         }
-        if task.requirements_run_id.is_some() {
-            return Err("requirements_run_id should not be set yet".to_owned());
+        if task.project_name.is_none() {
+            return Err("project_name should be populated from seed".to_owned());
         }
 
-        // Verify daemon status shows the task
-        let out = run_cli(&["daemon", "status"], ws.path())?;
-        assert_success(&out)?;
-        assert_contains(&out.stdout, "dispatch=requirements_quick", "status output")?;
+        // Task dispatch_mode should be Workflow (transitioned from RequirementsQuick)
+        if task.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow {
+            return Err(format!(
+                "expected Workflow dispatch_mode after quick handoff, got {}",
+                task.dispatch_mode
+            ));
+        }
+
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-004", || {
-        // Requirements draft: task enters waiting_for_requirements when processed
+        // Requirements draft: create a watched issue with /rb requirements draft,
+        // override the stub to return non-empty questions, run a daemon cycle,
+        // and verify the task enters waiting_for_requirements with a real
+        // requirements run in awaiting_answers status.
         use crate::adapters::fs::FsDaemonStore;
-        use crate::contexts::automation_runtime::model::{DispatchMode, TaskStatus, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::model::TaskStatus;
         use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::contexts::automation_runtime::routing::RoutingEngine;
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+
+        // Write a watched issue file
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#4",
+            "source_revision": "rev44444",
+            "title": "Draft test",
+            "body": "/rb requirements draft\n\nPlan feature",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(
+            watched_dir.join("issue-4.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        ).map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Override question_set to return non-empty questions so the draft
+        // path reaches awaiting_answers instead of completing directly.
+        let label_overrides = serde_json::json!({
+            "question_set": {
+                "questions": [
+                    {"id": "q1", "prompt": "What authentication?", "rationale": "Auth", "required": true},
+                    {"id": "q2", "prompt": "Which database?", "rationale": "Schema", "required": true}
+                ]
+            }
+        });
+
+        // Run one daemon cycle with the label override
+        let out = run_cli_with_env(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string())],
+        )?;
+        assert_success(&out)?;
+
+        // Verify the task was created and entered waiting_for_requirements
         let store = FsDaemonStore;
-        let routing = RoutingEngine::new();
-        let issue = WatchedIssueMeta {
-            issue_ref: "test/repo#4".to_owned(),
-            source_revision: "rev44444".to_owned(),
-            title: "Draft test".to_owned(),
-            body: "/rb requirements draft\n\nPlan feature".to_owned(),
-            labels: vec![],
-            routing_command: None,
-        };
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let task = tasks.iter()
+            .find(|t| t.issue_ref == "test/repo#4")
+            .ok_or("no task created for issue test/repo#4")?;
 
-        let mode = crate::contexts::automation_runtime::watcher::resolve_dispatch_mode(&issue)
-            .map_err(|e| e.to_string())?;
-        if mode != DispatchMode::RequirementsDraft {
-            return Err(format!("expected RequirementsDraft, got {}", mode));
+        if task.status != TaskStatus::WaitingForRequirements {
+            return Err(format!("expected waiting_for_requirements, got {}", task.status));
         }
-
-        let result = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, mode,
-        ).map_err(|e| e.to_string())?;
-        let task = result.ok_or("expected a task to be created")?;
-        if task.dispatch_mode != DispatchMode::RequirementsDraft {
-            return Err(format!("wrong dispatch_mode: {}", task.dispatch_mode));
-        }
-
-        // Simulate the state transitions that handle_requirements_draft performs:
-        // Pending -> Claimed -> Active -> WaitingForRequirements
-        let mut t = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
-        let now = chrono::Utc::now();
-        t.transition_to(TaskStatus::Claimed, now).map_err(|e| e.to_string())?;
-        t.transition_to(TaskStatus::Active, now).map_err(|e| e.to_string())?;
-        store.write_task(ws.path(), &t).map_err(|e| e.to_string())?;
-
-        DaemonTaskService::mark_waiting_for_requirements(
-            &store, ws.path(), &task.task_id, "req-draft-004",
-        ).map_err(|e| e.to_string())?;
-
-        let final_task = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
-        if final_task.status != TaskStatus::WaitingForRequirements {
-            return Err(format!("expected waiting_for_requirements, got {}", final_task.status));
-        }
-        if final_task.lease_id.is_some() {
+        if task.lease_id.is_some() {
             return Err("task in waiting state should have no lease".to_owned());
         }
-        if final_task.requirements_run_id.as_deref() != Some("req-draft-004") {
-            return Err(format!("wrong requirements_run_id: {:?}", final_task.requirements_run_id));
+        if task.requirements_run_id.is_none() {
+            return Err("requirements_run_id should be set".to_owned());
         }
+
+        // The linked requirements run should be in awaiting_answers status
+        let run_id = task.requirements_run_id.as_ref().unwrap();
+        let req_run_path = ws.path()
+            .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+        let run_content = std::fs::read_to_string(&req_run_path)
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value = serde_json::from_str(&run_content)
+            .map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "awaiting_answers" {
+            return Err(format!("expected requirements run 'awaiting_answers', got '{status}'"));
+        }
+
+        // Verify answers.toml template was written
+        let answers_path = ws.path()
+            .join(format!(".ralph-burning/requirements/{run_id}/answers.toml"));
+        if !answers_path.is_file() {
+            return Err("answers.toml template should be written for draft".to_owned());
+        }
+
         Ok(())
     });
 
@@ -5760,42 +5822,88 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "DAEMON-INTAKE-006", || {
-        // Routed flow override: task has routed flow that differs from default
+        // Routed flow override: create a watched issue with /rb flow quick_dev and
+        // /rb requirements quick, run a daemon cycle. The stub's project_seed
+        // payload recommends "standard" flow, but the routed flow "quick_dev"
+        // must be authoritative. Verify the warning is persisted on the task.
         use crate::adapters::fs::FsDaemonStore;
-        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
-        use crate::contexts::automation_runtime::routing::RoutingEngine;
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::shared::domain::FlowPreset;
+        use crate::contexts::automation_runtime::DaemonStorePort;
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+
+        // Write a watched issue with both a flow routing command and requirements quick
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#6",
+            "source_revision": "rev66666",
+            "title": "Override test",
+            "body": "/rb requirements quick\n\nBuild something",
+            "labels": [],
+            "routing_command": "/rb flow quick_dev"
+        });
+        std::fs::write(
+            watched_dir.join("issue-6.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        ).map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Run one daemon cycle — the stub seed recommends "standard" but the
+        // routing command says "quick_dev". The subsequent worktree step may
+        // fail in a non-git workspace, but the routing warning should be
+        // durably persisted on the task.
+        let _out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+
+        // Verify the task used the routed flow (quick_dev), not the seed's recommendation
         let store = FsDaemonStore;
-        let routing = RoutingEngine::new();
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let task = tasks.iter()
+            .find(|t| t.issue_ref == "test/repo#6")
+            .ok_or("no task created for issue test/repo#6")?;
 
-        // Issue with explicit flow routing command
-        let issue = WatchedIssueMeta {
-            issue_ref: "test/repo#6".to_owned(),
-            source_revision: "rev66666".to_owned(),
-            title: "Override test".to_owned(),
-            body: "Body".to_owned(),
-            labels: vec![],
-            routing_command: Some("/rb flow quick_dev".to_owned()),
-        };
-
-        let result = DaemonTaskService::create_task_from_watched_issue(
-            &store, ws.path(), &routing, FlowPreset::Standard, &issue, DispatchMode::Workflow,
-        ).map_err(|e| e.to_string())?;
-        let task = result.ok_or("expected a task to be created")?;
-        // Routed flow should be quick_dev (from command), not standard (default)
-        if task.resolved_flow != Some(FlowPreset::QuickDev) {
+        if task.resolved_flow != Some(crate::shared::domain::FlowPreset::QuickDev) {
             return Err(format!("expected quick_dev, got {:?}", task.resolved_flow));
         }
+
+        // Verify that the flow-override warning is persisted on the task
+        if task.routing_warnings.is_empty() {
+            return Err("routing_warnings should contain the flow override warning".to_owned());
+        }
+        let has_override_warning = task.routing_warnings.iter()
+            .any(|w| w.contains("seed suggests flow") && w.contains("authoritative"));
+        if !has_override_warning {
+            return Err(format!(
+                "expected flow override warning in routing_warnings, got: {:?}",
+                task.routing_warnings
+            ));
+        }
+
+        // Verify the daemon journal also recorded the warning
+        let journal_path = ws.path().join(".ralph-burning/daemon/journal.ndjson");
+        if journal_path.is_file() {
+            let journal = std::fs::read_to_string(&journal_path)
+                .map_err(|e| format!("read daemon journal: {e}"))?;
+            let has_journal_warning = journal.lines()
+                .any(|line| line.contains("routing_warning"));
+            if !has_journal_warning {
+                return Err("daemon journal should contain routing_warning event".to_owned());
+            }
+        }
+
         Ok(())
     });
 
     reg!(m, "DAEMON-INTAKE-007", || {
-        // Unknown requirements command fails ingestion
+        // Unknown or malformed requirements commands fail ingestion and create
+        // no task. Tests both the parser and the full watcher + daemon path.
+        use crate::adapters::fs::FsDaemonStore;
         use crate::contexts::automation_runtime::watcher;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+
+        // --- Parser-level validation ---
 
         // Malformed: unknown subcommand
         let result = watcher::parse_requirements_command("/rb requirements unknown");
@@ -5821,6 +5929,45 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         if result4.is_some() {
             return Err("expected None for non-requirements command".to_owned());
         }
+
+        // --- Full daemon path: malformed command prevents task creation ---
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Write a watched issue with a malformed requirements command
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#7",
+            "source_revision": "rev77777",
+            "title": "Malformed test",
+            "body": "/rb requirements unknown\n\nBad command",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(
+            watched_dir.join("issue-7.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        ).map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Run one daemon cycle — the watcher should skip this issue
+        let out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        // No task should have been created for the malformed issue
+        let store = FsDaemonStore;
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let matching = tasks.iter().filter(|t| t.issue_ref == "test/repo#7").count();
+        if matching != 0 {
+            return Err(format!(
+                "expected 0 tasks for malformed command, found {matching}"
+            ));
+        }
+
         Ok(())
     });
 

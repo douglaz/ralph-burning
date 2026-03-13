@@ -248,4 +248,5 @@ pub enum DaemonJournalEventType {
     RequirementsHandoff,
     RequirementsWaiting,
     RequirementsResumed,
+    RoutingWarning,
 }

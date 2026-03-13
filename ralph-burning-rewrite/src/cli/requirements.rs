@@ -52,7 +52,15 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             )
         {
             for (label, payload) in overrides {
-                adapter = adapter.with_label_payload(label, payload);
+                // Support both short labels ("question_set") and full labels
+                // ("requirements:question_set"). The invocation contract uses the
+                // full "requirements:<stage>" form internally.
+                let full_label = if label.starts_with("requirements:") {
+                    label
+                } else {
+                    format!("requirements:{label}")
+                };
+                adapter = adapter.with_label_payload(full_label, payload);
             }
         }
     }

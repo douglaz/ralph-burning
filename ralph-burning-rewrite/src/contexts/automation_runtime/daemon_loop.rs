@@ -251,15 +251,25 @@ where
                         Ok(handoff) => {
                             // Populate task with seed-derived project metadata
                             let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
-                            if handoff.flow != routed_flow {
-                                println!(
-                                    "daemon: seed suggests flow '{}' but routed flow '{}' is authoritative for task '{}'",
-                                    handoff.flow.as_str(),
-                                    routed_flow.as_str(),
-                                    task.task_id,
-                                );
-                            }
                             let mut t = self.store.read_task(base_dir, &task.task_id)?;
+                            if handoff.flow != routed_flow {
+                                let warning = format!(
+                                    "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                                    handoff.flow.as_str(),
+                                    routed_flow.as_str()
+                                );
+                                t.routing_warnings.push(warning.clone());
+                                DaemonTaskService::append_journal_event(
+                                    self.store,
+                                    base_dir,
+                                    super::model::DaemonJournalEventType::RoutingWarning,
+                                    json!({
+                                        "task_id": task.task_id,
+                                        "warning": warning,
+                                    }),
+                                )?;
+                                println!("daemon: {warning} for task '{}'", task.task_id);
+                            }
                             t.project_id = handoff.project_id;
                             t.project_name = Some(handoff.project_name);
                             t.prompt = Some(handoff.prompt_body);
@@ -529,17 +539,28 @@ where
 
         // Use routed flow, not the seed's recommended flow (routed flow is authoritative)
         let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
-        if handoff.flow != routed_flow {
-            println!(
-                "daemon: seed suggests flow '{}' but routed flow '{}' is authoritative",
-                handoff.flow.as_str(),
-                routed_flow.as_str()
-            );
-        }
 
         // Update task to workflow mode with seed-derived project metadata.
         // The caller will continue into the standard claim/project/dispatch path.
         let mut updated = self.store.read_task(base_dir, &task.task_id)?;
+        if handoff.flow != routed_flow {
+            let warning = format!(
+                "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                handoff.flow.as_str(),
+                routed_flow.as_str()
+            );
+            updated.routing_warnings.push(warning.clone());
+            DaemonTaskService::append_journal_event(
+                self.store,
+                base_dir,
+                super::model::DaemonJournalEventType::RoutingWarning,
+                json!({
+                    "task_id": task.task_id,
+                    "warning": warning,
+                }),
+            )?;
+            println!("daemon: {warning}");
+        }
         updated.dispatch_mode = DispatchMode::Workflow;
         updated.resolved_flow = Some(routed_flow);
         updated.project_id = handoff.project_id.clone();
@@ -556,14 +577,16 @@ where
     }
 
     /// Handle requirements_draft dispatch: transition through Pending → Claimed
-    /// → Active, invoke requirements draft to generate questions, then transition
-    /// to WaitingForRequirements state (which releases all resources).
+    /// → Active, invoke requirements draft to generate questions, then either
+    /// transition to WaitingForRequirements (if questions need answers) or
+    /// extract the seed and switch to Workflow mode (if the run completed
+    /// directly with empty questions).
     async fn handle_requirements_draft(
         &self,
         base_dir: &Path,
         task: &DaemonTask,
     ) -> AppResult<()> {
-        let _req_store = self.requirements_store.ok_or_else(|| {
+        let req_store = self.requirements_store.ok_or_else(|| {
             AppError::RequirementsHandoffFailed {
                 task_id: task.task_id.clone(),
                 details: "no requirements store configured for daemon".to_owned(),
@@ -600,43 +623,124 @@ where
             }
         };
 
-        // Transition Active → WaitingForRequirements, releasing all resources
-        match DaemonTaskService::mark_waiting_for_requirements(
-            self.store,
-            base_dir,
-            &task.task_id,
-            &run_id,
-        ) {
-            Ok(_) => {
+        // Check the requirements run status after draft() completes.
+        // If the question set was empty, the run completes directly (no user
+        // answers needed). Only enter WaitingForRequirements when answers are
+        // actually pending.
+        let run_complete =
+            req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
+
+        if run_complete {
+            // Empty-question draft: run already completed. Extract seed and
+            // switch to Workflow mode so the caller continues into the standard
+            // claim/project/dispatch path (same pattern as requirements_quick).
+            let mut current = self.store.read_task(base_dir, &task.task_id)?;
+            current.requirements_run_id = Some(run_id.clone());
+            current.updated_at = Utc::now();
+            self.store.write_task(base_dir, &current)?;
+
+            DaemonTaskService::append_journal_event(
+                self.store,
+                base_dir,
+                super::model::DaemonJournalEventType::RequirementsHandoff,
+                json!({
+                    "task_id": task.task_id,
+                    "requirements_run_id": run_id,
+                    "dispatch_mode": "requirements_draft",
+                    "empty_questions": true,
+                }),
+            )?;
+
+            let handoff = match req_service::extract_seed_handoff(req_store, base_dir, &run_id) {
+                Ok(h) => h,
+                Err(e) => {
+                    let _ = DaemonTaskService::mark_failed(
+                        self.store,
+                        base_dir,
+                        &task.task_id,
+                        "seed_handoff_failed",
+                        &e.to_string(),
+                    );
+                    return Err(e);
+                }
+            };
+
+            let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
+            let mut updated = self.store.read_task(base_dir, &task.task_id)?;
+            if handoff.flow != routed_flow {
+                let warning = format!(
+                    "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                    handoff.flow.as_str(),
+                    routed_flow.as_str()
+                );
+                updated.routing_warnings.push(warning.clone());
                 DaemonTaskService::append_journal_event(
                     self.store,
                     base_dir,
-                    super::model::DaemonJournalEventType::RequirementsHandoff,
+                    super::model::DaemonJournalEventType::RoutingWarning,
                     json!({
                         "task_id": task.task_id,
-                        "requirements_run_id": run_id,
-                        "dispatch_mode": "requirements_draft",
+                        "warning": warning,
                     }),
                 )?;
-                println!(
-                    "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
-                    task.task_id, run_id
-                );
+                println!("daemon: {warning}");
             }
-            Err(e) => {
-                // Requirements run is still addressable via `requirements show`
-                let _ = DaemonTaskService::mark_failed(
-                    self.store,
-                    base_dir,
-                    &task.task_id,
-                    "requirements_linking_failed",
-                    &e.to_string(),
-                );
-                return Err(e);
-            }
-        }
+            updated.dispatch_mode = DispatchMode::Workflow;
+            updated.resolved_flow = Some(routed_flow);
+            updated.project_id = handoff.project_id.clone();
+            updated.project_name = Some(handoff.project_name.clone());
+            updated.prompt = Some(handoff.prompt_body.clone());
+            self.store.write_task(base_dir, &updated)?;
 
-        Ok(())
+            println!(
+                "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', continuing to workflow",
+                task.task_id, run_id
+            );
+
+            // Return Ok — task is now Workflow mode with project metadata.
+            // The caller in process_task will NOT fall through to standard
+            // dispatch since handle_requirements_draft returns (not falls through).
+            // We need the caller to re-read and re-process this task next cycle.
+            Ok(())
+        } else {
+            // Non-empty questions: transition Active → WaitingForRequirements
+            match DaemonTaskService::mark_waiting_for_requirements(
+                self.store,
+                base_dir,
+                &task.task_id,
+                &run_id,
+            ) {
+                Ok(_) => {
+                    DaemonTaskService::append_journal_event(
+                        self.store,
+                        base_dir,
+                        super::model::DaemonJournalEventType::RequirementsHandoff,
+                        json!({
+                            "task_id": task.task_id,
+                            "requirements_run_id": run_id,
+                            "dispatch_mode": "requirements_draft",
+                        }),
+                    )?;
+                    println!(
+                        "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
+                        task.task_id, run_id
+                    );
+                }
+                Err(e) => {
+                    // Requirements run is still addressable via `requirements show`
+                    let _ = DaemonTaskService::mark_failed(
+                        self.store,
+                        base_dir,
+                        &task.task_id,
+                        "requirements_linking_failed",
+                        &e.to_string(),
+                    );
+                    return Err(e);
+                }
+            }
+
+            Ok(())
+        }
     }
 
     async fn drive_dispatch(
@@ -907,6 +1011,7 @@ where
 
 /// Build a requirements service for daemon-initiated requirements runs.
 /// Uses the same stub backend and filesystem stores as the CLI.
+/// Honors `RALPH_BURNING_TEST_LABEL_OVERRIDES` for test-seam parity with the CLI.
 fn build_requirements_service(
 ) -> crate::contexts::requirements_drafting::service::RequirementsService<
     crate::adapters::stub_backend::StubBackendAdapter,
@@ -919,7 +1024,26 @@ fn build_requirements_service(
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::requirements_drafting::service::RequirementsService;
 
-    let adapter = StubBackendAdapter::default();
+    let mut adapter = StubBackendAdapter::default();
+
+    // Test-only seam: same label override mechanism as the CLI handler.
+    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
+        if let Ok(overrides) =
+            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
+                &overrides_json,
+            )
+        {
+            for (label, payload) in overrides {
+                let full_label = if label.starts_with("requirements:") {
+                    label
+                } else {
+                    format!("requirements:{label}")
+                };
+                adapter = adapter.with_label_payload(full_label, payload);
+            }
+        }
+    }
+
     let raw_output_store = FsRawOutputStore;
     let session_store = FsSessionStore;
     let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
