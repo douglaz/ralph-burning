@@ -879,6 +879,21 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         project_id: &ProjectId,
         amendment: &crate::contexts::project_run_record::model::QueuedAmendment,
     ) -> AppResult<()> {
+        // Test-only injection seam: fail amendment writes after N successful writes.
+        // Format: "N" where N is the number of successful writes before failure.
+        // E.g., "1" means the first write succeeds, the second fails.
+        if let Ok(after_str) = std::env::var("RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER") {
+            use std::sync::atomic::{AtomicU32, Ordering};
+            static WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
+            let threshold: u32 = after_str.parse().unwrap_or(0);
+            let current = WRITE_COUNT.fetch_add(1, Ordering::SeqCst);
+            if current >= threshold {
+                return Err(AppError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected amendment write failure for testing",
+                )));
+            }
+        }
         let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.json", amendment.amendment_id));
