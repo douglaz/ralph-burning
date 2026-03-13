@@ -65,8 +65,19 @@ pub fn build_agent_execution_service(
             adapter = adapter.with_invoke_failure(stage_id);
         }
     }
+    // Test-only seam: configure a stage to fail the first N invocations, then succeed.
+    // Format: "stage_id:count" e.g. "implementation:1"
+    if let Ok(spec) = std::env::var("RALPH_BURNING_TEST_TRANSIENT_FAILURE") {
+        if let Some((stage_str, count_str)) = spec.split_once(':') {
+            if let (Ok(stage_id), Ok(count)) = (stage_str.parse::<StageId>(), count_str.parse::<u32>()) {
+                adapter = adapter.with_transient_failure(stage_id, count);
+            }
+        }
+    }
     // Test-only seam: JSON map from stage-id string to payload JSON.
+    // Values may be a single object or an array of objects (payload sequence).
     // Example: {"completion_panel": {"outcome":"conditionally_approved",...}}
+    // Example sequence: {"qa": [{"outcome":"request_changes",...}, {"outcome":"approved",...}]}
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_STAGE_OVERRIDES") {
         if let Ok(overrides) =
             serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
@@ -75,7 +86,11 @@ pub fn build_agent_execution_service(
         {
             for (stage_str, payload) in overrides {
                 if let Ok(stage_id) = stage_str.parse::<StageId>() {
-                    adapter = adapter.with_stage_payload(stage_id, payload);
+                    if let Some(arr) = payload.as_array() {
+                        adapter = adapter.with_stage_payload_sequence(stage_id, arr.clone());
+                    } else {
+                        adapter = adapter.with_stage_payload(stage_id, payload);
+                    }
                 }
             }
         }

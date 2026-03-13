@@ -99,8 +99,17 @@ pub fn run_scenarios(
 
         let scenario_start = Instant::now();
 
+        // Test-only seam: force a specific executor to fail for CLI fail-fast testing.
+        let forced_fail = std::env::var("RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR")
+            .ok()
+            .map_or(false, |id| id == scenario.id);
+
         // Execute with panic catching for isolation
-        let exec_result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor()));
+        let exec_result = if forced_fail {
+            Ok(Err("forced failure via RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR".to_owned()))
+        } else {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor()))
+        };
         let scenario_duration = scenario_start.elapsed();
 
         match exec_result {

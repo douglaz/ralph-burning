@@ -3945,28 +3945,44 @@ fn conformance_list_validates_no_duplicate_ids() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("Total:"),
-        "output should include a total count"
-    );
+    assert!(stdout.contains("Total:"), "output should include a total count");
+    assert!(stdout.contains("SC-START-001"), "should list SC-START-001");
+    assert!(stdout.contains("workspace-init-fresh"), "should list workspace-init-fresh");
 }
 
 #[test]
-fn conformance_list_duplicate_ids_detected_in_unit() {
-    // Real duplicate-ID detection is tested in the unit suite with synthetic feature files
-    // (see conformance_spec_test::discover_scenarios_from_rejects_duplicate_ids_in_features).
-    // At the CLI surface, verify that conformance list exits with meaningful content
-    // when the corpus is valid (no duplicates).
+fn conformance_list_fails_on_duplicate_ids() {
+    // Inject a duplicate-ID feature file into the real features directory, run
+    // conformance list, verify it fails with a duplicate-ID diagnostic, then clean up.
+    let features_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/conformance/features");
+    let dup_file = features_dir.join("_zzz_duplicate_id_test.feature");
+
+    // Write a feature file that duplicates an existing ID (SC-START-001)
+    fs::write(
+        &dup_file,
+        "Feature: Duplicate ID Test\n\n  # SC-START-001\n  Scenario: Duplicate scenario for testing\n    Given nothing\n",
+    )
+    .expect("write duplicate feature file");
+
     let output = Command::new(binary())
         .args(["conformance", "list"])
         .output()
-        .expect("run conformance list");
+        .expect("run conformance list with duplicate");
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Verify scenario IDs appear in the output
-    assert!(stdout.contains("SC-START-001"), "should list SC-START-001");
-    assert!(stdout.contains("workspace-init-fresh"), "should list workspace-init-fresh");
+    // Clean up before assertions so the file is always removed
+    let _ = fs::remove_file(&dup_file);
+
+    assert!(
+        !output.status.success(),
+        "conformance list should fail on duplicate IDs: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("duplicate") || stderr.contains("SC-START-001"),
+        "error should mention duplicate scenario ID: {stderr}"
+    );
 }
 
 #[test]
@@ -3997,37 +4013,58 @@ fn conformance_run_fail_fast_reports_summary_once() {
 
 #[test]
 fn conformance_run_fail_fast_stops_and_reports_not_run() {
-    // Run two scenarios where the first should pass and the second should fail.
-    // SC-EVAL-004 tests schema validation failure (pure contract test, always passes).
-    // Use a scenario that is likely to fail when run in isolation to verify fail-fast.
-    // Instead, run the full suite with --filter on a single scenario that internally
-    // injects failure. SC-START-012 injects a stage failure and verifies it, so it
-    // passes as a conformance scenario. For true fail-fast CLI testing, we run
-    // a known passing scenario and verify the summary format.
+    // Force a specific early scenario to fail, run the full suite, and verify
+    // fail-fast behavior: non-zero exit, failed=1, not_run > 0.
     let output = Command::new(binary())
-        .args(["conformance", "run", "--filter", "SC-START-012"])
+        .env("RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR", "workspace-init-fresh")
+        .args(["conformance", "run"])
         .output()
-        .expect("run conformance with scenario");
+        .expect("run conformance with forced failure");
+
+    assert!(
+        !output.status.success(),
+        "conformance run should exit non-zero when a scenario fails"
+    );
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.contains("Conformance Summary"),
         "output should include summary"
     );
-    // Verify the summary is reported exactly once (no double-reporting)
+    // Verify summary is reported exactly once (no double-reporting)
     assert_eq!(
         stderr.matches("Conformance Summary").count(),
         1,
-        "summary should be printed exactly once, not double-reported"
+        "summary should be printed exactly once"
+    );
+    // Verify fail-fast: failed=1 and not_run > 0
+    assert!(
+        stderr.contains("Failed:    1"),
+        "should report exactly 1 failed scenario: {stderr}"
+    );
+    assert!(
+        stderr.contains("Not run:"),
+        "should report not-run count: {stderr}"
+    );
+    // Verify not_run count is > 0 (fail-fast stopped remaining scenarios)
+    // Parse the Not run count
+    let not_run_line = stderr.lines()
+        .find(|l| l.contains("Not run:"))
+        .unwrap_or("");
+    let not_run_count: usize = not_run_line
+        .split_whitespace()
+        .last()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+    assert!(
+        not_run_count > 0,
+        "fail-fast should leave remaining scenarios as not run, got {not_run_count}"
     );
 }
 
 #[test]
 fn conformance_run_failure_exits_non_zero_with_single_report() {
-    // Run a conformance scenario that exercises the fail-fast path.
-    // SC-START-012 injects a stage failure internally but the conformance scenario
-    // itself verifies the failure handling, so it passes. To test actual non-zero
-    // exit, we use an unknown filter (which fails before execution).
+    // Unknown filter causes non-zero exit before execution
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "NONEXISTENT-FAIL-FAST-TEST"])
         .output()
