@@ -54,3 +54,6 @@ mod requirements_drafting_test;
 
 #[path = "unit/automation_runtime_test.rs"]
 mod automation_runtime_test;
+
+#[path = "unit/conformance_spec_test.rs"]
+mod conformance_spec_test;

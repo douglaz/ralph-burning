@@ -1,0 +1,45 @@
+name: Conformance Gate
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  conformance:
+    name: Build, Test, and Conformance Gate
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build (locked)
+        working-directory: ralph-burning-rewrite
+        run: cargo build --locked
+
+      - name: Run unit and integration tests
+        working-directory: ralph-burning-rewrite
+        run: cargo test --locked
+
+      - name: Run conformance gate
+        working-directory: ralph-burning-rewrite
+        run: cargo run --locked -- conformance run

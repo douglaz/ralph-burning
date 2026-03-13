@@ -156,6 +156,29 @@ pub enum AppError {
         branch_name: String,
         details: String,
     },
+    #[error("conformance parse error in {file} line {line}: {details}")]
+    ConformanceParseFailed {
+        file: String,
+        line: usize,
+        details: String,
+    },
+    #[error("conformance discovery failed: {details}")]
+    ConformanceDiscoveryFailed { details: String },
+    #[error("conformance registry drift: {details}")]
+    ConformanceRegistryDrift { details: String },
+    #[error("conformance filter failed: unknown scenario ID '{scenario_id}'")]
+    ConformanceFilterFailed { scenario_id: String },
+    #[error("cutover guard violation in {file} line {line}: {pattern}")]
+    ConformanceCutoverViolation {
+        file: String,
+        line: usize,
+        pattern: String,
+    },
+    #[error("conformance scenario '{scenario_id}' failed: {details}")]
+    ConformanceScenarioFailed {
+        scenario_id: String,
+        details: String,
+    },
     #[error(transparent)]
     Io(#[from] std::io::Error),
     #[error(transparent)]
