@@ -289,8 +289,18 @@ impl LeaseService {
                     // Check for sub-step anomalies: resources that were already
                     // absent cannot be positively cleaned up, and real I/O errors
                     // on sub-steps are recorded with the specific step name.
+                    // Also check worktree_already_absent to handle the race where
+                    // the worktree disappears between the pre-check and release().
                     let mut has_sub_step_failure = false;
 
+                    if outcome.worktree_already_absent {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: "worktree_absent_during_release: worktree disappeared between pre-check and release".to_owned(),
+                        });
+                        has_sub_step_failure = true;
+                    }
                     if outcome.lease_file_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),

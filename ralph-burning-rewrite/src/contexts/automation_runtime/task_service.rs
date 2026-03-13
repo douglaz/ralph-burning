@@ -235,16 +235,25 @@ impl DaemonTaskService {
                     })();
                 }
             } else {
-                // Physical release failed — claim resources (lease/worktree/lock)
-                // remain on disk. Mark terminal so durable state is truthful.
-                let release_err = release_result.unwrap_err();
+                // Physical release failed or partial — claim resources
+                // (lease/worktree/lock) may remain on disk. Mark terminal so
+                // durable state is truthful.
+                // release_result may be Ok(partial) or Err(e): handle both.
+                let release_detail = match &release_result {
+                    Ok(r) => format!(
+                        "partial cleanup (resources_released=false, worktree_absent={}, lease_file_absent={}, writer_lock_absent={}, lease_file_error={:?}, writer_lock_error={:?})",
+                        r.worktree_already_absent, r.lease_file_already_absent,
+                        r.writer_lock_already_absent, r.lease_file_error, r.writer_lock_error
+                    ),
+                    Err(e) => e.to_string(),
+                };
                 let _ = (|| -> AppResult<()> {
                     let mut t = store.read_task(base_dir, &task.task_id)?;
                     t.transition_to(TaskStatus::Failed, Utc::now())?;
                     t.set_failure(
                         "claim_journal_failed",
                         &format!(
-                            "LeaseAcquired journal failed and lease release failed: {journal_err}; release: {release_err}"
+                            "LeaseAcquired journal failed and lease release failed: {journal_err}; release: {release_detail}"
                         ),
                     );
                     // Do NOT clear lease_id — the lease is still on disk.
@@ -258,7 +267,7 @@ impl DaemonTaskService {
                             "reason": format!("LeaseAcquired journal failed: {journal_err}"),
                             "rollback_target": "failed",
                             "lease_released": false,
-                            "release_error": release_err.to_string(),
+                            "release_error": release_detail,
                         }),
                     );
                     Ok(())

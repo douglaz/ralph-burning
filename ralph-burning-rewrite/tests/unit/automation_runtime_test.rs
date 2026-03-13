@@ -2408,6 +2408,284 @@ fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
 }
 
 // ---------------------------------------------------------------------------
+// Claim journal failure + partial release (Ok with resources_released=false)
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort that fails journal appends AND returns AlreadyAbsent for
+/// remove_lease, so release() returns Ok(ReleaseResult { resources_released: false }).
+/// This exercises the claim rollback path where release_result is Ok but partial.
+struct JournalFailPartialReleaseStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for JournalFailPartialReleaseStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        _base_dir: &std::path::Path,
+        _lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+        // Always return AlreadyAbsent so release() gets resources_released=false
+        Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        _base_dir: &std::path::Path,
+        _event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Always fail journal appends
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated journal failure",
+        )
+        .into())
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+        self.inner.release_writer_lock(base_dir, project_id)
+    }
+}
+
+#[test]
+fn claim_journal_failure_with_partial_release_marks_failed_retains_lease() {
+    // When LeaseAcquired journal fails AND release() returns Ok with
+    // resources_released=false (partial cleanup), the task must end up Failed
+    // with lease_id retained. Previously this path panicked via unwrap_err()
+    // on an Ok value.
+    let temp = tempdir().expect("tempdir");
+    let store = JournalFailPartialReleaseStore {
+        inner: FsDaemonStore,
+    };
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    let mut task = sample_task();
+    task.task_id = "partial-release-test".to_owned();
+    task.project_id = "partial-proj".to_owned();
+    store
+        .create_task(temp.path(), &task)
+        .expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &worktree_adapter,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "partial-release-test",
+        FlowPreset::Standard,
+        300,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    let task_after = store
+        .read_task(temp.path(), "partial-release-test")
+        .expect("read task");
+    assert_eq!(
+        TaskStatus::Failed,
+        task_after.status,
+        "task must be Failed when journal fails and release is partial"
+    );
+    assert_eq!(
+        Some("claim_journal_failed".to_owned()),
+        task_after.failure_class,
+        "failure class must be claim_journal_failed"
+    );
+    // lease_id must NOT be cleared — partial cleanup means resources remain
+    assert!(
+        task_after.lease_id.is_some(),
+        "lease_id must be retained when release returns Ok with resources_released=false"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile worktree disappearance race: worktree vanishes between pre-check
+// and release()
+// ---------------------------------------------------------------------------
+
+/// A worktree adapter where remove_worktree always returns AlreadyAbsent,
+/// simulating the race where the worktree disappears between the pre-check
+/// and the actual removal attempt.
+struct DisappearingWorktreeAdapter;
+
+impl WorktreePort for DisappearingWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/task/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _branch_name: &str,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        std::fs::create_dir_all(worktree_path)?;
+        Ok(())
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+        // Always report AlreadyAbsent — simulates the race condition
+        Ok(ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn reconcile_worktree_race_reports_cleanup_failure() {
+    // When the worktree exists at pre-check time but disappears before
+    // release() removes it, reconcile must NOT count the lease as released.
+    // Previously this race went undetected because only the pre-check
+    // enforced the missing-worktree policy.
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+
+    let mut task = sample_task();
+    task.task_id = "wt-race-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // Create worktree directory so the pre-check passes
+    let wt_path = temp.path().join("wt-race-dir");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-wt-race".to_owned(),
+        task_id: "wt-race-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/wt-race-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-wt-race")
+        .expect("acquire lock");
+
+    // Use DisappearingWorktreeAdapter: worktree exists for pre-check but
+    // remove_worktree returns AlreadyAbsent (simulating race).
+    let worktree_adapter = DisappearingWorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "lease must NOT be counted as released when worktree disappeared during release"
+    );
+    assert!(
+        report.has_cleanup_failures(),
+        "should have cleanup failures for worktree race"
+    );
+    assert!(
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("worktree_absent_during_release")),
+        "should report worktree_absent_during_release, got: {:?}",
+        report.cleanup_failures
+    );
+}
+
+// ---------------------------------------------------------------------------
 // No process-global CWD dependency: structural assertion
 // ---------------------------------------------------------------------------
 
