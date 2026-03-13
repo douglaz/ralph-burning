@@ -1119,7 +1119,7 @@ where
         lease: &crate::contexts::automation_runtime::model::WorktreeLease,
     ) -> AppResult<()> {
         let release_result =
-            LeaseService::release(self.store, self.worktree, base_dir, repo_root, lease);
+            LeaseService::release(self.store, self.worktree, base_dir, repo_root, lease, crate::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent);
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.

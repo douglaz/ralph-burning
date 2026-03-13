@@ -8,7 +8,7 @@ use crate::adapters::fs::{
 use crate::adapters::issue_watcher::FileIssueWatcher;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
-use crate::contexts::automation_runtime::lease_service::LeaseService;
+use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use crate::contexts::automation_runtime::model::TaskStatus;
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::DaemonStorePort;
@@ -250,7 +250,7 @@ async fn cleanup_aborted_task(
             continue;
         }
 
-        let release_result = LeaseService::release(store, worktree, base_dir, base_dir, &lease);
+        let release_result = LeaseService::release(store, worktree, base_dir, base_dir, &lease, ReleaseMode::Idempotent);
         return match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.

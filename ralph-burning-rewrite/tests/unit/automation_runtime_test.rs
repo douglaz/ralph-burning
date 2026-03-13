@@ -3,7 +3,7 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::FsDaemonStore;
 use ralph_burning::adapters::worktree::WorktreeAdapter;
-use ralph_burning::contexts::automation_runtime::lease_service::LeaseService;
+use ralph_burning::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use ralph_burning::contexts::automation_runtime::model::{
     DaemonTask, DispatchMode, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
@@ -2120,6 +2120,7 @@ fn release_with_lease_file_error_sets_resources_released_false() {
         temp.path(),
         temp.path(),
         &lease,
+        ReleaseMode::Idempotent,
     )
     .expect("release returns Ok with sub-step failures");
 
@@ -2184,6 +2185,7 @@ fn release_with_writer_lock_error_sets_resources_released_false() {
         temp.path(),
         temp.path(),
         &lease,
+        ReleaseMode::Idempotent,
     )
     .expect("release returns Ok with sub-step failures");
 
@@ -2245,6 +2247,7 @@ fn release_full_success_sets_resources_released_true_and_emits_journal() {
         temp.path(),
         temp.path(),
         &lease,
+        ReleaseMode::Idempotent,
     )
     .expect("release succeeds");
 
@@ -2309,6 +2312,7 @@ fn abort_cleanup_preserves_lease_reference_on_partial_failure() {
         temp.path(),
         temp.path(),
         &lease,
+        ReleaseMode::Idempotent,
     );
     match release_result {
         Ok(ref r) if r.resources_released => {
@@ -2325,14 +2329,14 @@ fn abort_cleanup_preserves_lease_reference_on_partial_failure() {
         Err(e) => panic!("unexpected release error: {e}"),
     }
 
-    // Verify: task's lease_id must still be set
+    // Verify: task's lease_id must still be set (real I/O error on lease file)
     let task_after = store
         .read_task(temp.path(), "abort-partial-test")
         .expect("read task");
     assert_eq!(
         task_after.lease_id.as_deref(),
         Some("lease-abort-partial"),
-        "lease_id must NOT be cleared when release partially fails"
+        "lease_id must NOT be cleared when release partially fails due to I/O error"
     );
 }
 
@@ -2380,6 +2384,7 @@ fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
         temp.path(),
         temp.path(),
         &lease,
+        ReleaseMode::Idempotent,
     );
     match release_result {
         Ok(ref r) if r.resources_released => {
@@ -2408,11 +2413,148 @@ fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
 }
 
 // ---------------------------------------------------------------------------
+// Idempotent release: missing worktree is treated as success for abort/daemon-loop
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_idempotent_mode_treats_missing_worktree_as_success() {
+    // When a worktree is already absent, Idempotent mode must report
+    // resources_released=true (no real I/O errors). This is the contract
+    // that daemon abort and daemon-loop cleanup rely on: missing worktrees
+    // are common during abort and must not cause partial-failure errors.
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+
+    let mut task = sample_task();
+    task.task_id = "idempotent-wt-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // Do NOT create the worktree directory — it's already absent
+    let wt_path = temp.path().join("wt-missing-idempotent");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-idempotent-wt".to_owned(),
+        task_id: "idempotent-wt-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/idempotent-wt-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-idempotent-wt")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ReleaseMode::Idempotent,
+    )
+    .expect("release succeeds in idempotent mode");
+
+    assert!(
+        result.resources_released,
+        "resources_released must be true in Idempotent mode when worktree is already absent"
+    );
+    assert!(
+        result.worktree_already_absent,
+        "worktree_already_absent flag should still be set"
+    );
+
+    // In contrast, Strict mode should report resources_released=false
+    // for the same scenario. This is tested implicitly by reconcile tests.
+}
+
+#[test]
+fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
+    // Simulates daemon abort when the worktree is already gone: release()
+    // with Idempotent mode must succeed, and the caller clears lease_id.
+    // This is the regression the review caught: the strict AlreadyAbsent
+    // policy leaked into abort and caused it to fail with partial cleanup.
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+
+    let mut task = sample_task();
+    task.task_id = "abort-missing-wt".to_owned();
+    task.status = TaskStatus::Aborted;
+    task.lease_id = Some("lease-abort-missing-wt".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // Missing worktree — common during abort
+    let wt_path = temp.path().join("wt-abort-missing");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-abort-missing-wt".to_owned(),
+        task_id: "abort-missing-wt".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/abort-missing-wt".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-abort-missing-wt")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+
+    // Simulate cleanup_aborted_task with Idempotent mode
+    let release_result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ReleaseMode::Idempotent,
+    );
+    match release_result {
+        Ok(ref r) if r.resources_released => {
+            ralph_burning::contexts::automation_runtime::DaemonTaskService::clear_lease_reference(
+                &store,
+                temp.path(),
+                "abort-missing-wt",
+            )
+            .expect("clear lease ref");
+        }
+        Ok(_) => panic!("Idempotent release with missing worktree should have resources_released=true"),
+        Err(e) => panic!("unexpected release error: {e}"),
+    }
+
+    // Verify: lease_id cleared, lease file removed
+    let task_after = store
+        .read_task(temp.path(), "abort-missing-wt")
+        .expect("read task");
+    assert!(
+        task_after.lease_id.is_none(),
+        "lease_id must be cleared after successful idempotent release"
+    );
+    assert!(
+        !temp.path().join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json").exists(),
+        "lease file must be removed"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Claim journal failure + partial release (Ok with resources_released=false)
 // ---------------------------------------------------------------------------
 
-/// A DaemonStorePort that fails journal appends AND returns AlreadyAbsent for
-/// remove_lease, so release() returns Ok(ReleaseResult { resources_released: false }).
+/// A DaemonStorePort that fails journal appends AND returns a real I/O error
+/// for remove_lease, so release() returns Ok(ReleaseResult { resources_released: false }).
 /// This exercises the claim rollback path where release_result is Ok but partial.
 struct JournalFailPartialReleaseStore {
     inner: FsDaemonStore,
@@ -2471,8 +2613,13 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         _base_dir: &std::path::Path,
         _lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
-        // Always return AlreadyAbsent so release() gets resources_released=false
-        Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
+        // Return a real I/O error so release() gets resources_released=false
+        // regardless of ReleaseMode.
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated lease file deletion failure",
+        )
+        .into())
     }
     fn read_daemon_journal(
         &self,

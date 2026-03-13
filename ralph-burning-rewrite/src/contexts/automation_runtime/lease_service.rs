@@ -33,17 +33,32 @@ pub struct LeaseCleanupFailure {
     pub details: String,
 }
 
+/// Controls how `release()` treats `AlreadyAbsent` outcomes from cleanup
+/// sub-steps. `Reconcile` uses `Strict` so that missing resources are
+/// surfaced as cleanup failures; all other callers use `Idempotent` so
+/// that idempotent cleanup (e.g., abort where worktree is already gone)
+/// succeeds without creating dangling task-to-lease references.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReleaseMode {
+    /// `AlreadyAbsent` sub-step outcomes are treated as successful cleanup.
+    /// Only real I/O errors make `resources_released` false.
+    Idempotent,
+    /// `AlreadyAbsent` sub-step outcomes are treated as partial failure.
+    /// Used by `reconcile()` where the strict pre-check already exists.
+    Strict,
+}
+
 /// Result of a lease release operation. Distinguishes physical cleanup
 /// (worktree, lease file, writer lock) from post-cleanup journal append,
 /// and tracks per-sub-step outcomes so callers can enforce strict cleanup
 /// accounting.
 #[derive(Debug, Clone)]
 pub struct ReleaseResult {
-    /// True only when every physical cleanup sub-step positively succeeded:
-    /// worktree removed (not already absent), lease file deleted (not already
-    /// absent, no error), and writer lock released (not already absent, no
-    /// error). Callers must only clear durable lease references when this is
-    /// true.
+    /// Whether physical cleanup succeeded according to the chosen
+    /// `ReleaseMode`. In `Idempotent` mode, true unless a real I/O error
+    /// occurred. In `Strict` mode, true only when every sub-step positively
+    /// succeeded (not already absent, no error). Callers must only clear
+    /// durable lease references when this is true.
     pub resources_released: bool,
     /// If the LeaseReleased journal append failed after physical cleanup,
     /// this contains the error description. Only set when `resources_released`
@@ -153,6 +168,7 @@ impl LeaseService {
         base_dir: &Path,
         repo_root: &Path,
         lease: &WorktreeLease,
+        mode: ReleaseMode,
     ) -> AppResult<ReleaseResult> {
         let project_id = ProjectId::new(lease.project_id.clone())?;
 
@@ -181,14 +197,22 @@ impl LeaseService {
                 Err(e) => (false, Some(e.to_string())),
             };
 
-        // Determine whether every sub-step positively succeeded. Only then
-        // is the lease considered fully released and safe for callers to clear
-        // durable references.
-        let resources_released = !worktree_already_absent
-            && !lease_file_already_absent
-            && !writer_lock_already_absent
-            && lease_file_error.is_none()
-            && writer_lock_error.is_none();
+        // Determine whether cleanup succeeded under the chosen policy.
+        // In Strict mode (reconcile), already-absent sub-steps count as
+        // failure. In Idempotent mode (abort, daemon-loop), only real I/O
+        // errors prevent release.
+        let resources_released = match mode {
+            ReleaseMode::Idempotent => {
+                lease_file_error.is_none() && writer_lock_error.is_none()
+            }
+            ReleaseMode::Strict => {
+                !worktree_already_absent
+                    && !lease_file_already_absent
+                    && !writer_lock_already_absent
+                    && lease_file_error.is_none()
+                    && writer_lock_error.is_none()
+            }
+        };
 
         // Only emit LeaseReleased when all sub-steps succeeded. Partial
         // cleanup must not record a release event — the lease state remains
@@ -283,7 +307,7 @@ impl LeaseService {
             // Release order: worktree removal → lease file → writer lock → journal.
             // If physical release fails (e.g. worktree removal), the lease remains
             // durable for a later reconcile pass. The task is already terminal.
-            let release_result = Self::release(store, worktree, base_dir, repo_root, &lease);
+            let release_result = Self::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Strict);
             match release_result {
                 Ok(outcome) => {
                     // Check for sub-step anomalies: resources that were already

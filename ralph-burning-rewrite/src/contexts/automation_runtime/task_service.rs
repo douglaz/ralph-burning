@@ -3,7 +3,7 @@ use std::path::Path;
 use chrono::Utc;
 use serde_json::json;
 
-use crate::contexts::automation_runtime::lease_service::LeaseService;
+use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use crate::contexts::automation_runtime::model::{
     DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, TaskStatus,
     WatchedIssueMeta, WorktreeLease,
@@ -167,7 +167,7 @@ impl DaemonTaskService {
         task.transition_to(TaskStatus::Claimed, now)?;
         task.attach_lease(lease.lease_id.clone());
         store.write_task(base_dir, &task).map_err(|error| {
-            let _ = LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+            let _ = LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
             error
         })?;
 
@@ -189,7 +189,7 @@ impl DaemonTaskService {
             // If physical cleanup fails, persist a terminal Failed state so the
             // durable model never hides retained claim resources.
             let release_result =
-                LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+                LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
             let resources_released = release_result
                 .as_ref()
                 .map_or(false, |r| r.resources_released);
@@ -288,7 +288,7 @@ impl DaemonTaskService {
             // TaskClaimed journal failed: attempt lease release and mark failed.
             // Only clear lease_id if physical resources were actually released.
             let release_result =
-                LeaseService::release(store, worktree, base_dir, repo_root, &lease);
+                LeaseService::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Idempotent);
             let resources_released = release_result
                 .as_ref()
                 .map_or(false, |r| r.resources_released);
