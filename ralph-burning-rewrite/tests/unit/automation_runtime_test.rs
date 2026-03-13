@@ -1112,8 +1112,9 @@ fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
         report.cleanup_failures[0].lease_id
     );
     assert!(
-        report.cleanup_failures[0].details.contains("release:"),
-        "details should indicate release failure"
+        report.cleanup_failures[0].details.contains("worktree_remove:"),
+        "details should indicate worktree removal failure, got: {}",
+        report.cleanup_failures[0].details
     );
 
     // The lease file should still exist on disk (durable for later reconcile)
@@ -1756,6 +1757,321 @@ fn reconcile_both_substeps_absent_reports_both_failures() {
     assert!(
         failure_details.iter().any(|d| d.contains("writer_lock_absent")),
         "should report writer_lock_absent, got: {failure_details:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile sub-step failure: real I/O errors on lease file or writer lock
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that returns real errors (not `AlreadyAbsent`)
+/// for configurable sub-steps (lease file deletion, writer lock release) while
+/// delegating everything else to the inner FsDaemonStore.
+struct SubStepErrorStore {
+    inner: FsDaemonStore,
+    lease_file_error: bool,
+    writer_lock_error: bool,
+}
+
+impl SubStepErrorStore {
+    fn new(lease_file_error: bool, writer_lock_error: bool) -> Self {
+        Self {
+            inner: FsDaemonStore,
+            lease_file_error,
+            writer_lock_error,
+        }
+    }
+}
+
+impl DaemonStorePort for SubStepErrorStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+        if self.lease_file_error {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated lease file deletion failure",
+            )
+            .into())
+        } else {
+            self.inner.remove_lease(base_dir, lease_id)
+        }
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+        if self.writer_lock_error {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated writer lock release failure",
+            )
+            .into())
+        } else {
+            self.inner.release_writer_lock(base_dir, project_id)
+        }
+    }
+}
+
+#[test]
+fn reconcile_lease_file_delete_error_reports_specific_failure() {
+    // Worktree exists and is removed, but lease file deletion returns a real
+    // I/O error → reconcile must record the specific sub-step name and NOT
+    // count the lease as released.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(true, false);
+
+    let mut task = sample_task();
+    task.task_id = "lease-file-err-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-lease-file-err");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-lfe-test".to_owned(),
+        task_id: "lease-file-err-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/lease-file-err-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-lfe-test")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "lease must NOT be counted as released when lease file deletion errors"
+    );
+    assert!(
+        report.has_cleanup_failures(),
+        "should have cleanup failures"
+    );
+    assert!(
+        report.cleanup_failures.iter().any(|f| f.details.contains("lease_file_delete:")),
+        "should report lease_file_delete sub-step failure, got: {:?}",
+        report.cleanup_failures
+    );
+    assert!(
+        report.cleanup_failures.iter().any(|f| f.details.contains("simulated lease file deletion failure")),
+        "should include the original error message, got: {:?}",
+        report.cleanup_failures
+    );
+}
+
+#[test]
+fn reconcile_writer_lock_release_error_reports_specific_failure() {
+    // Worktree exists and is removed, lease file is removed, but writer lock
+    // release returns a real I/O error → reconcile must record the specific
+    // sub-step name and NOT count the lease as released.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(false, true);
+
+    let mut task = sample_task();
+    task.task_id = "lock-err-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-lock-err");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-lock-err".to_owned(),
+        task_id: "lock-err-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/lock-err-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-lock-err")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "lease must NOT be counted as released when writer lock release errors"
+    );
+    assert!(
+        report.has_cleanup_failures(),
+        "should have cleanup failures"
+    );
+    assert!(
+        report.cleanup_failures.iter().any(|f| f.details.contains("writer_lock_release:")),
+        "should report writer_lock_release sub-step failure, got: {:?}",
+        report.cleanup_failures
+    );
+    assert!(
+        report.cleanup_failures.iter().any(|f| f.details.contains("simulated writer lock release failure")),
+        "should include the original error message, got: {:?}",
+        report.cleanup_failures
+    );
+}
+
+#[test]
+fn reconcile_both_substep_errors_reports_both_failures() {
+    // Both lease file deletion and writer lock release return real I/O errors
+    // → reconcile must record both as distinct cleanup failures.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(true, true);
+
+    let mut task = sample_task();
+    task.task_id = "both-err-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-both-err");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-both-err".to_owned(),
+        task_id: "both-err-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/both-err-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "lease must NOT be counted as released"
+    );
+    let failure_details: Vec<&str> = report
+        .cleanup_failures
+        .iter()
+        .map(|f| f.details.as_str())
+        .collect();
+    assert!(
+        failure_details.iter().any(|d| d.contains("lease_file_delete:")),
+        "should report lease_file_delete, got: {failure_details:?}"
+    );
+    assert!(
+        failure_details.iter().any(|d| d.contains("writer_lock_release:")),
+        "should report writer_lock_release, got: {failure_details:?}"
     );
 }
 

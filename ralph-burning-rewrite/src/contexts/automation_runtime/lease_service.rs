@@ -52,6 +52,14 @@ pub struct ReleaseResult {
     pub lease_file_already_absent: bool,
     /// Whether the writer lock was already absent when release was attempted.
     pub writer_lock_already_absent: bool,
+    /// If lease-file deletion returned a real I/O error (not `AlreadyAbsent`),
+    /// this contains the error description so callers can report the specific
+    /// failing sub-step.
+    pub lease_file_error: Option<String>,
+    /// If writer-lock release returned a real I/O error (not `AlreadyAbsent`),
+    /// this contains the error description so callers can report the specific
+    /// failing sub-step.
+    pub writer_lock_error: Option<String>,
 }
 
 pub struct LeaseService;
@@ -143,8 +151,23 @@ impl LeaseService {
         let worktree_already_absent = worktree_outcome == WorktreeCleanupOutcome::AlreadyAbsent;
 
         // Worktree removal returned Ok — proceed with lease file + lock cleanup.
-        let lease_outcome = store.remove_lease(base_dir, &lease.lease_id)?;
-        let lock_outcome = store.release_writer_lock(base_dir, &project_id)?;
+        // Capture each sub-step outcome individually instead of propagating
+        // errors immediately, so callers can report the specific failing step.
+        let (lease_file_already_absent, lease_file_error) =
+            match store.remove_lease(base_dir, &lease.lease_id) {
+                Ok(ResourceCleanupOutcome::Removed) => (false, None),
+                Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
+                Err(e) => (false, Some(e.to_string())),
+            };
+
+        // Always attempt writer-lock release even if lease-file deletion failed,
+        // so the operator sees the full picture of what succeeded and what didn't.
+        let (writer_lock_already_absent, writer_lock_error) =
+            match store.release_writer_lock(base_dir, &project_id) {
+                Ok(ResourceCleanupOutcome::Removed) => (false, None),
+                Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
+                Err(e) => (false, Some(e.to_string())),
+            };
 
         // Physical cleanup complete. Journal append is best-effort — failure
         // does not mean resources are retained.
@@ -165,8 +188,10 @@ impl LeaseService {
             resources_released: true,
             journal_error,
             worktree_already_absent,
-            lease_file_already_absent: lease_outcome == ResourceCleanupOutcome::AlreadyAbsent,
-            writer_lock_already_absent: lock_outcome == ResourceCleanupOutcome::AlreadyAbsent,
+            lease_file_already_absent,
+            writer_lock_already_absent,
+            lease_file_error,
+            writer_lock_error,
         })
     }
 
@@ -236,9 +261,10 @@ impl LeaseService {
             match release_result {
                 Ok(outcome) => {
                     // Check for sub-step anomalies: resources that were already
-                    // absent cannot be positively cleaned up, so record each as a
-                    // distinct cleanup failure.
+                    // absent cannot be positively cleaned up, and real I/O errors
+                    // on sub-steps are recorded with the specific step name.
                     let mut has_sub_step_failure = false;
+
                     if outcome.lease_file_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
@@ -247,11 +273,27 @@ impl LeaseService {
                         });
                         has_sub_step_failure = true;
                     }
+                    if let Some(ref err) = outcome.lease_file_error {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: format!("lease_file_delete: {err}"),
+                        });
+                        has_sub_step_failure = true;
+                    }
                     if outcome.writer_lock_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
                             task_id: task.task_id.clone(),
                             details: "writer_lock_absent: writer lock was already missing during cleanup".to_owned(),
+                        });
+                        has_sub_step_failure = true;
+                    }
+                    if let Some(ref err) = outcome.writer_lock_error {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: task.task_id.clone(),
+                            details: format!("writer_lock_release: {err}"),
                         });
                         has_sub_step_failure = true;
                     }
@@ -300,7 +342,7 @@ impl LeaseService {
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: lease.lease_id.clone(),
                         task_id: task.task_id.clone(),
-                        details: format!("release: {e}"),
+                        details: format!("worktree_remove: {e}"),
                     });
                 }
             }
