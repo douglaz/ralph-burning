@@ -1050,7 +1050,7 @@ where
 
                     // Advance completion round and restart from the flow's planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
-                    let next_cursor = cursor.advance_completion_round(semantics.planning_stage);
+                    let next_cursor = cursor.advance_completion_round(semantics.planning_stage)?;
                     snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
@@ -1160,7 +1160,12 @@ where
                 ReviewOutcome::RequestChanges
                     if semantics.remediation_trigger_stages.contains(&stage_id) =>
                 {
-                    let next_cycle = cursor.cycle + 1;
+                    let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
+                        AppError::StageCursorOverflow {
+                            field: "cycle",
+                            value: cursor.cycle,
+                        }
+                    })?;
                     if next_cycle > retry_policy.max_remediation_cycles() {
                         return fail_run_result(
                             &AppError::RemediationExhausted {
@@ -1181,7 +1186,7 @@ where
                     }
 
                     let next_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
-                    let next_cursor = cursor.advance_cycle(semantics.execution_stage);
+                    let next_cursor = cursor.advance_cycle(semantics.execution_stage)?;
                     record_cycle_advance(snapshot, next_cursor.cycle, semantics.execution_stage);
                     *seq += 1;
                     let cycle_advanced = journal::cycle_advanced_event(
@@ -1724,7 +1729,7 @@ where
                 );
 
                 if will_retry {
-                    cursor = cursor.retry();
+                    cursor = cursor.retry()?;
                     continue;
                 }
 
@@ -2478,12 +2483,27 @@ fn derive_resume_state(
                 last_completed_stage = Some(stage_id);
             }
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
-                current_cycle = detail_u32(event, "to_cycle").unwrap_or(current_cycle + 1);
+                current_cycle = match detail_u32(event, "to_cycle") {
+                    Some(to_cycle) => to_cycle,
+                    None => current_cycle.checked_add(1).ok_or_else(|| {
+                        AppError::StageCursorOverflow {
+                            field: "cycle",
+                            value: current_cycle,
+                        }
+                    })?,
+                };
                 next_stage_index = execution_stage_index;
             }
             crate::contexts::project_run_record::model::JournalEventType::CompletionRoundAdvanced => {
-                current_completion_round = detail_u32(event, "to_round")
-                    .unwrap_or(current_completion_round + 1);
+                current_completion_round = match detail_u32(event, "to_round") {
+                    Some(to_round) => to_round,
+                    None => current_completion_round.checked_add(1).ok_or_else(|| {
+                        AppError::StageCursorOverflow {
+                            field: "completion_round",
+                            value: current_completion_round,
+                        }
+                    })?,
+                };
                 next_stage_index = planning_stage_index;
             }
             crate::contexts::project_run_record::model::JournalEventType::RunCompleted => {

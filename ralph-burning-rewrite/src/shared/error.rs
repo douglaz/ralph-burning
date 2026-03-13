@@ -16,6 +16,8 @@ pub enum AppError {
     WorkspaceConflict { path: PathBuf },
     #[error("invalid {field}: must be greater than zero")]
     InvalidStageCursorField { field: &'static str },
+    #[error("stage cursor overflow for {field}: cannot increment {value}")]
+    StageCursorOverflow { field: &'static str, value: u32 },
     #[error("invalid identifier '{value}': identifiers must be non-empty single path segments")]
     InvalidIdentifier { value: String },
     #[error(
