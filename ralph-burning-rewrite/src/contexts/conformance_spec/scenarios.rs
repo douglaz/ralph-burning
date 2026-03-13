@@ -42,7 +42,10 @@ impl Drop for TempWorkspace {
 // ---------------------------------------------------------------------------
 
 fn binary_path() -> PathBuf {
-    std::env::current_exe().expect("current executable path")
+    let exe = std::env::current_exe().expect("current executable path");
+    // Canonicalize to an absolute path so the binary can be found even when the
+    // child process runs in a different working directory (e.g. a temp workspace).
+    exe.canonicalize().unwrap_or(exe)
 }
 
 struct CmdOutput {
@@ -5602,7 +5605,7 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
-// Daemon Issue Intake (8 scenarios)
+// Daemon Issue Intake (10 scenarios)
 // ===========================================================================
 
 fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -6250,6 +6253,83 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!(
                 "project directory missing at {}",
                 project_path.display()
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "DAEMON-INTAKE-010", || {
+        // Requirements draft with empty questions: the default stub returns an
+        // empty question set, so draft() completes directly. The daemon should
+        // requeue the task as Pending with Workflow dispatch_mode and a linked
+        // requirements_run_id instead of stranding it in Active.
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{DispatchMode, TaskStatus};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Write a watched issue with /rb requirements draft (no label overrides,
+        // so the stub returns empty questions → run completes directly).
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#10",
+            "source_revision": "rev10101",
+            "title": "Empty-question draft test",
+            "body": "/rb requirements draft\n\nSimple feature",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(
+            watched_dir.join("issue-10.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        ).map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Run one daemon cycle (no label overrides → empty questions → immediate completion)
+        let out = run_cli(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        // Verify the task was requeued as Pending with Workflow dispatch_mode
+        let store = FsDaemonStore;
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let task = tasks.iter()
+            .find(|t| t.issue_ref == "test/repo#10")
+            .ok_or("no task created for issue test/repo#10")?;
+
+        if task.status != TaskStatus::Pending {
+            return Err(format!(
+                "expected task requeued as 'pending', got '{}'",
+                task.status
+            ));
+        }
+        if task.dispatch_mode != DispatchMode::Workflow {
+            return Err(format!(
+                "expected dispatch_mode 'workflow', got '{}'",
+                task.dispatch_mode
+            ));
+        }
+        if task.requirements_run_id.is_none() {
+            return Err("requirements_run_id should be set after empty-question draft".to_owned());
+        }
+
+        // The linked requirements run should be completed (not awaiting_answers)
+        let run_id = task.requirements_run_id.as_ref().unwrap();
+        let req_run_path = ws.path()
+            .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+        let run_content = std::fs::read_to_string(&req_run_path)
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value = serde_json::from_str(&run_content)
+            .map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!(
+                "expected requirements run 'completed', got '{status}'"
             ));
         }
 

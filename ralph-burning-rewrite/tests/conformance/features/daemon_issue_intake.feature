@@ -82,3 +82,13 @@ Feature: Daemon Issue Watchers and Requirements Handoff
     Then the task resumes from waiting
     And the project is created from the seed
     And the task transitions to completed
+
+  # DAEMON-INTAKE-010
+  Scenario: DAEMON-INTAKE-010 - Requirements draft with empty questions requeues for workflow
+    Given a workspace is initialized
+    And a watched issue with "/rb requirements draft" command
+    And the stub returns empty questions
+    When the daemon processes the task
+    Then the task is requeued as pending with dispatch_mode "workflow"
+    And the task has a linked requirements_run_id
+    And the requirements run is completed (not awaiting_answers)

@@ -795,15 +795,22 @@ where
                 return Err(e);
             }
 
+            // Transition Active → Pending so the next daemon cycle picks this
+            // task up as a standard Workflow task with project metadata already
+            // populated. We cannot fall through to claim/dispatch in the same
+            // cycle because handle_requirements_draft returns (not falls through)
+            // and the task has no lease or worktree yet.
+            {
+                let mut t = self.store.read_task(base_dir, &task.task_id)?;
+                t.transition_to(TaskStatus::Pending, Utc::now())?;
+                self.store.write_task(base_dir, &t)?;
+            }
+
             println!(
-                "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', continuing to workflow",
+                "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
                 task.task_id, run_id
             );
 
-            // Return Ok — task is now Workflow mode with project metadata.
-            // The caller in process_task will NOT fall through to standard
-            // dispatch since handle_requirements_draft returns (not falls through).
-            // We need the caller to re-read and re-process this task next cycle.
             Ok(())
         } else {
             // Non-empty questions: transition Active → WaitingForRequirements

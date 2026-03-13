@@ -791,3 +791,32 @@ fn post_link_metadata_failure_transitions_waiting_task_to_failed() {
         failed.requirements_run_id
     );
 }
+
+#[test]
+fn active_task_can_transition_to_pending_for_requeue() {
+    // Tests the state transition needed when an empty-question requirements_draft
+    // completes directly and the task needs to be requeued for workflow dispatch.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    task.dispatch_mode = DispatchMode::RequirementsDraft;
+    task.requirements_run_id = Some("req-empty-draft".to_owned());
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Simulate the empty-question draft requeue: Active → Pending with Workflow mode
+    let mut t = store.read_task(temp.path(), &task.task_id).expect("read");
+    t.dispatch_mode = DispatchMode::Workflow;
+    t.transition_to(TaskStatus::Pending, Utc::now())
+        .expect("Active → Pending transition should succeed");
+    store.write_task(temp.path(), &t).expect("write");
+
+    let requeued = store.read_task(temp.path(), &task.task_id).expect("read");
+    assert_eq!(TaskStatus::Pending, requeued.status);
+    assert_eq!(DispatchMode::Workflow, requeued.dispatch_mode);
+    assert_eq!(
+        Some("req-empty-draft".to_owned()),
+        requeued.requirements_run_id
+    );
+}
