@@ -35,18 +35,21 @@ pub struct LeaseCleanupFailure {
 
 /// Result of a lease release operation. Distinguishes physical cleanup
 /// (worktree, lease file, writer lock) from post-cleanup journal append,
-/// and tracks per-sub-step outcomes so callers like reconcile can enforce
-/// strict cleanup accounting.
+/// and tracks per-sub-step outcomes so callers can enforce strict cleanup
+/// accounting.
 #[derive(Debug, Clone)]
 pub struct ReleaseResult {
-    /// Always true when release returns Ok — physical resources were removed.
+    /// True only when every physical cleanup sub-step positively succeeded:
+    /// worktree removed (not already absent), lease file deleted (not already
+    /// absent, no error), and writer lock released (not already absent, no
+    /// error). Callers must only clear durable lease references when this is
+    /// true.
     pub resources_released: bool,
     /// If the LeaseReleased journal append failed after physical cleanup,
-    /// this contains the error description. Resources are still released.
+    /// this contains the error description. Only set when `resources_released`
+    /// is true, since journal append is skipped on partial failure.
     pub journal_error: Option<String>,
     /// Whether the worktree was already absent when removal was attempted.
-    /// Callers that enforce strict cleanup contracts (e.g. reconcile) use
-    /// this to distinguish positive removal from a no-op on missing state.
     pub worktree_already_absent: bool,
     /// Whether the lease file was already absent when deletion was attempted.
     pub lease_file_already_absent: bool,
@@ -60,6 +63,15 @@ pub struct ReleaseResult {
     /// this contains the error description so callers can report the specific
     /// failing sub-step.
     pub writer_lock_error: Option<String>,
+}
+
+impl ReleaseResult {
+    /// Returns true if any cleanup sub-step failed or found already-absent
+    /// state. Callers should not clear durable lease references when this
+    /// returns true.
+    pub fn has_cleanup_failures(&self) -> bool {
+        !self.resources_released
+    }
 }
 
 pub struct LeaseService;
@@ -169,23 +181,37 @@ impl LeaseService {
                 Err(e) => (false, Some(e.to_string())),
             };
 
-        // Physical cleanup complete. Journal append is best-effort — failure
-        // does not mean resources are retained.
-        let journal_error = DaemonTaskService::append_journal_event(
-            store,
-            base_dir,
-            crate::contexts::automation_runtime::model::DaemonJournalEventType::LeaseReleased,
-            json!({
-                "task_id": lease.task_id,
-                "lease_id": lease.lease_id,
-                "project_id": lease.project_id,
-            }),
-        )
-        .err()
-        .map(|e| e.to_string());
+        // Determine whether every sub-step positively succeeded. Only then
+        // is the lease considered fully released and safe for callers to clear
+        // durable references.
+        let resources_released = !worktree_already_absent
+            && !lease_file_already_absent
+            && !writer_lock_already_absent
+            && lease_file_error.is_none()
+            && writer_lock_error.is_none();
+
+        // Only emit LeaseReleased when all sub-steps succeeded. Partial
+        // cleanup must not record a release event — the lease state remains
+        // visible for operator recovery.
+        let journal_error = if resources_released {
+            DaemonTaskService::append_journal_event(
+                store,
+                base_dir,
+                crate::contexts::automation_runtime::model::DaemonJournalEventType::LeaseReleased,
+                json!({
+                    "task_id": lease.task_id,
+                    "lease_id": lease.lease_id,
+                    "project_id": lease.project_id,
+                }),
+            )
+            .err()
+            .map(|e| e.to_string())
+        } else {
+            None
+        };
 
         Ok(ReleaseResult {
-            resources_released: true,
+            resources_released,
             journal_error,
             worktree_already_absent,
             lease_file_already_absent,

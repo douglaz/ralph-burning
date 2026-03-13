@@ -251,13 +251,21 @@ async fn cleanup_aborted_task(
         }
 
         let release_result = LeaseService::release(store, worktree, base_dir, base_dir, &lease);
-        let clear_result =
-            DaemonTaskService::clear_lease_reference(store, base_dir, task_id).map(|_| ());
-        return match (release_result, clear_result) {
-            (Ok(_), Ok(())) => Ok(()),
-            (Err(error), Ok(())) => Err(error),
-            (Ok(_), Err(error)) => Err(error),
-            (Err(error), Err(_)) => Err(error),
+        return match release_result {
+            Ok(ref r) if r.resources_released => {
+                // All sub-steps succeeded — safe to clear durable lease reference.
+                DaemonTaskService::clear_lease_reference(store, base_dir, task_id)
+                    .map(|_| ())
+            }
+            Ok(_) => {
+                // Partial cleanup: some resources remain. Do NOT clear lease
+                // reference so inconsistent state stays visible for operator
+                // recovery.
+                Err(AppError::LeaseCleanupPartialFailure {
+                    task_id: task_id.to_owned(),
+                })
+            }
+            Err(error) => Err(error),
         };
     }
 }

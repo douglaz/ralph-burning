@@ -2076,6 +2076,338 @@ fn reconcile_both_substep_errors_reports_both_failures() {
 }
 
 // ---------------------------------------------------------------------------
+// Non-reconcile release callers: shared release() contract regression
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_with_lease_file_error_sets_resources_released_false() {
+    // When lease-file deletion fails during release(), `resources_released`
+    // must be false so non-reconcile callers do not silently clear durable
+    // lease references.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(true, false);
+
+    let mut task = sample_task();
+    task.task_id = "release-lfe-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-release-lfe");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-release-lfe".to_owned(),
+        task_id: "release-lfe-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/release-lfe-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-release-lfe")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+    )
+    .expect("release returns Ok with sub-step failures");
+
+    assert!(
+        !result.resources_released,
+        "resources_released must be false when lease-file deletion fails"
+    );
+    assert!(
+        result.has_cleanup_failures(),
+        "has_cleanup_failures must be true"
+    );
+    assert!(
+        result.lease_file_error.is_some(),
+        "should report lease_file_error"
+    );
+
+    // LeaseReleased journal event must NOT have been emitted
+    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    assert!(
+        !journal.iter().any(|e| e.event_type
+            == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
+        "LeaseReleased must not be emitted on partial cleanup failure"
+    );
+}
+
+#[test]
+fn release_with_writer_lock_error_sets_resources_released_false() {
+    // When writer-lock release fails, `resources_released` must be false.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(false, true);
+
+    let mut task = sample_task();
+    task.task_id = "release-wle-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-release-wle");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-release-wle".to_owned(),
+        task_id: "release-wle-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/release-wle-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-release-wle")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+    )
+    .expect("release returns Ok with sub-step failures");
+
+    assert!(
+        !result.resources_released,
+        "resources_released must be false when writer-lock release fails"
+    );
+    assert!(
+        result.writer_lock_error.is_some(),
+        "should report writer_lock_error"
+    );
+
+    // LeaseReleased journal event must NOT have been emitted
+    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    assert!(
+        !journal.iter().any(|e| e.event_type
+            == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
+        "LeaseReleased must not be emitted on partial cleanup failure"
+    );
+}
+
+#[test]
+fn release_full_success_sets_resources_released_true_and_emits_journal() {
+    // When all sub-steps succeed, `resources_released` must be true and
+    // LeaseReleased journal event must be emitted.
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+
+    let mut task = sample_task();
+    task.task_id = "release-ok-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-release-ok");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-release-ok".to_owned(),
+        task_id: "release-ok-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/release-ok-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-release-ok")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+    )
+    .expect("release succeeds");
+
+    assert!(
+        result.resources_released,
+        "resources_released must be true when all sub-steps succeed"
+    );
+    assert!(
+        !result.has_cleanup_failures(),
+        "has_cleanup_failures must be false"
+    );
+
+    // LeaseReleased journal event MUST have been emitted
+    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    assert!(
+        journal.iter().any(|e| e.event_type
+            == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
+        "LeaseReleased must be emitted on full cleanup success"
+    );
+}
+
+#[test]
+fn abort_cleanup_preserves_lease_reference_on_partial_failure() {
+    // Simulates the abort cleanup path: when release() returns Ok but with
+    // partial failures, the task's lease_id must NOT be cleared.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(true, false); // lease file error
+
+    let mut task = sample_task();
+    task.task_id = "abort-partial-test".to_owned();
+    task.status = TaskStatus::Active;
+    task.lease_id = Some("lease-abort-partial".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-abort-partial");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-abort-partial".to_owned(),
+        task_id: "abort-partial-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/abort-partial-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-abort-partial")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+
+    // Simulate what cleanup_aborted_task does: release, then conditionally clear
+    let release_result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+    );
+    match release_result {
+        Ok(ref r) if r.resources_released => {
+            ralph_burning::contexts::automation_runtime::DaemonTaskService::clear_lease_reference(
+                &store,
+                temp.path(),
+                "abort-partial-test",
+            )
+            .expect("clear lease ref");
+        }
+        Ok(_) => {
+            // Partial failure — do NOT clear lease reference
+        }
+        Err(e) => panic!("unexpected release error: {e}"),
+    }
+
+    // Verify: task's lease_id must still be set
+    let task_after = store
+        .read_task(temp.path(), "abort-partial-test")
+        .expect("read task");
+    assert_eq!(
+        task_after.lease_id.as_deref(),
+        Some("lease-abort-partial"),
+        "lease_id must NOT be cleared when release partially fails"
+    );
+}
+
+#[test]
+fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
+    // Simulates the daemon-loop release_task_lease path: when release()
+    // returns Ok but with partial failures, the task's lease_id must NOT
+    // be cleared.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(false, true); // writer lock error
+
+    let mut task = sample_task();
+    task.task_id = "loop-partial-test".to_owned();
+    task.status = TaskStatus::Active;
+    task.lease_id = Some("lease-loop-partial".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-loop-partial");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-loop-partial".to_owned(),
+        task_id: "loop-partial-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/loop-partial-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-loop-partial")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+
+    // Simulate what release_task_lease does: release, then conditionally clear
+    let release_result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+    );
+    match release_result {
+        Ok(ref r) if r.resources_released => {
+            ralph_burning::contexts::automation_runtime::DaemonTaskService::clear_lease_reference(
+                &store,
+                temp.path(),
+                "loop-partial-test",
+            )
+            .expect("clear lease ref");
+        }
+        Ok(_) => {
+            // Partial failure — do NOT clear lease reference
+        }
+        Err(e) => panic!("unexpected release error: {e}"),
+    }
+
+    // Verify: task's lease_id must still be set
+    let task_after = store
+        .read_task(temp.path(), "loop-partial-test")
+        .expect("read task");
+    assert_eq!(
+        task_after.lease_id.as_deref(),
+        Some("lease-loop-partial"),
+        "lease_id must NOT be cleared when release partially fails"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // No process-global CWD dependency: structural assertion
 // ---------------------------------------------------------------------------
 
