@@ -24,7 +24,17 @@ pub fn features_dir() -> &'static Path {
 pub fn discover_scenarios() -> AppResult<Vec<ScenarioMeta>> {
     let dir = match std::env::var("RALPH_BURNING_TEST_FEATURES_DIR") {
         Ok(override_dir) if !override_dir.is_empty() => std::path::PathBuf::from(override_dir),
-        _ => features_dir().to_path_buf(),
+        _ => {
+            let compile_time = features_dir().to_path_buf();
+            if compile_time.is_dir() {
+                compile_time
+            } else {
+                // Fallback for Nix-built binaries where CARGO_MANIFEST_DIR
+                // points to the build sandbox path that no longer exists at
+                // runtime.  Resolve relative to CWD instead.
+                std::path::PathBuf::from("tests/conformance/features")
+            }
+        }
     };
     discover_scenarios_from(&dir)
 }

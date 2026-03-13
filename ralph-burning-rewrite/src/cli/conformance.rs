@@ -65,8 +65,15 @@ fn handle_run(filter: Option<String>) -> AppResult<()> {
     runner::validate_registry(&scenarios, &registry)?;
 
     // Phase 3: Cutover guard
-    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
-    cutover_guard::check_cutover_guard(src_dir)?;
+    let compile_time_src = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let src_dir = if compile_time_src.is_dir() {
+        compile_time_src.to_path_buf()
+    } else {
+        // Fallback for Nix-built binaries where CARGO_MANIFEST_DIR
+        // points to the build sandbox.  Resolve relative to CWD.
+        std::path::PathBuf::from("src")
+    };
+    cutover_guard::check_cutover_guard(&src_dir)?;
 
     // Phase 4: Filter resolution
     let selected: Vec<&_> = if let Some(ref filter_id) = filter {
