@@ -249,32 +249,58 @@ where
                     // Derive seed handoff before resuming so task has project metadata
                     match req_service::extract_seed_handoff(req_store, base_dir, run_id) {
                         Ok(handoff) => {
-                            // Populate task with seed-derived project metadata
+                            // Populate task with seed-derived project metadata.
+                            // Guard: if any post-seed write fails, the task
+                            // transitions to `failed` while the requirements
+                            // run and seed remain addressable.
                             let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
-                            let mut t = self.store.read_task(base_dir, &task.task_id)?;
-                            if handoff.flow != routed_flow {
-                                let warning = format!(
-                                    "seed suggests flow '{}' but routed flow '{}' is authoritative",
-                                    handoff.flow.as_str(),
-                                    routed_flow.as_str()
-                                );
-                                t.routing_warnings.push(warning.clone());
-                                DaemonTaskService::append_journal_event(
+                            let metadata_result: AppResult<()> = (|| {
+                                let mut t = self.store.read_task(base_dir, &task.task_id)?;
+                                if handoff.flow != routed_flow {
+                                    let warning = format!(
+                                        "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                                        handoff.flow.as_str(),
+                                        routed_flow.as_str()
+                                    );
+                                    t.routing_warnings.push(warning.clone());
+                                    // Journal append is best-effort for warnings
+                                    if let Err(je) = DaemonTaskService::append_journal_event(
+                                        self.store,
+                                        base_dir,
+                                        super::model::DaemonJournalEventType::RoutingWarning,
+                                        json!({
+                                            "task_id": task.task_id,
+                                            "warning": warning,
+                                        }),
+                                    ) {
+                                        eprintln!(
+                                            "daemon: warning: failed to append RoutingWarning journal event for task '{}': {je}",
+                                            task.task_id
+                                        );
+                                    }
+                                    println!("daemon: {warning} for task '{}'", task.task_id);
+                                }
+                                t.project_id = handoff.project_id;
+                                t.project_name = Some(handoff.project_name);
+                                t.prompt = Some(handoff.prompt_body);
+                                t.resolved_flow = Some(routed_flow);
+                                self.store.write_task(base_dir, &t)?;
+                                Ok(())
+                            })();
+                            if let Err(e) = metadata_result {
+                                let _ = DaemonTaskService::mark_failed(
                                     self.store,
                                     base_dir,
-                                    super::model::DaemonJournalEventType::RoutingWarning,
-                                    json!({
-                                        "task_id": task.task_id,
-                                        "warning": warning,
-                                    }),
-                                )?;
-                                println!("daemon: {warning} for task '{}'", task.task_id);
+                                    &task.task_id,
+                                    "requirements_linking_failed",
+                                    &format!("post-seed metadata update failed: {e}"),
+                                );
+                                println!(
+                                    "daemon: post-seed metadata update failed for task '{}': {e}",
+                                    task.task_id
+                                );
+                                continue;
                             }
-                            t.project_id = handoff.project_id;
-                            t.project_name = Some(handoff.project_name);
-                            t.prompt = Some(handoff.prompt_body);
-                            t.resolved_flow = Some(routed_flow);
-                            self.store.write_task(base_dir, &t)?;
 
                             match DaemonTaskService::resume_from_waiting(
                                 self.store,
@@ -557,31 +583,53 @@ where
 
         // Update task to workflow mode with seed-derived project metadata.
         // The caller will continue into the standard claim/project/dispatch path.
-        let mut updated = self.store.read_task(base_dir, &task.task_id)?;
-        if handoff.flow != routed_flow {
-            let warning = format!(
-                "seed suggests flow '{}' but routed flow '{}' is authoritative",
-                handoff.flow.as_str(),
-                routed_flow.as_str()
-            );
-            updated.routing_warnings.push(warning.clone());
-            DaemonTaskService::append_journal_event(
+        // Guard: if any post-link write fails, the task transitions to `failed`
+        // with an explicit failure class while the requirements run and seed
+        // remain addressable.
+        let metadata_result: AppResult<()> = (|| {
+            let mut updated = self.store.read_task(base_dir, &task.task_id)?;
+            if handoff.flow != routed_flow {
+                let warning = format!(
+                    "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                    handoff.flow.as_str(),
+                    routed_flow.as_str()
+                );
+                updated.routing_warnings.push(warning.clone());
+                // Journal append is best-effort for warnings
+                if let Err(je) = DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RoutingWarning,
+                    json!({
+                        "task_id": task.task_id,
+                        "warning": warning,
+                    }),
+                ) {
+                    eprintln!(
+                        "daemon: warning: failed to append RoutingWarning journal event for task '{}': {je}",
+                        task.task_id
+                    );
+                }
+                println!("daemon: {warning}");
+            }
+            updated.dispatch_mode = DispatchMode::Workflow;
+            updated.resolved_flow = Some(routed_flow);
+            updated.project_id = handoff.project_id.clone();
+            updated.project_name = Some(handoff.project_name.clone());
+            updated.prompt = Some(handoff.prompt_body.clone());
+            self.store.write_task(base_dir, &updated)?;
+            Ok(())
+        })();
+        if let Err(e) = metadata_result {
+            let _ = DaemonTaskService::mark_failed(
                 self.store,
                 base_dir,
-                super::model::DaemonJournalEventType::RoutingWarning,
-                json!({
-                    "task_id": task.task_id,
-                    "warning": warning,
-                }),
-            )?;
-            println!("daemon: {warning}");
+                &task.task_id,
+                "requirements_linking_failed",
+                &format!("post-link metadata update failed: {e}"),
+            );
+            return Err(e);
         }
-        updated.dispatch_mode = DispatchMode::Workflow;
-        updated.resolved_flow = Some(routed_flow);
-        updated.project_id = handoff.project_id.clone();
-        updated.project_name = Some(handoff.project_name.clone());
-        updated.prompt = Some(handoff.prompt_body.clone());
-        self.store.write_task(base_dir, &updated)?;
 
         println!(
             "daemon: requirements_quick seed ready for task '{}', run_id='{}', continuing to workflow",
@@ -698,31 +746,54 @@ where
             };
 
             let routed_flow = task.resolved_flow.unwrap_or(handoff.flow);
-            let mut updated = self.store.read_task(base_dir, &task.task_id)?;
-            if handoff.flow != routed_flow {
-                let warning = format!(
-                    "seed suggests flow '{}' but routed flow '{}' is authoritative",
-                    handoff.flow.as_str(),
-                    routed_flow.as_str()
-                );
-                updated.routing_warnings.push(warning.clone());
-                DaemonTaskService::append_journal_event(
+
+            // Guard: if any post-link write fails, the task transitions to
+            // `failed` with an explicit failure class while the requirements
+            // run and seed remain addressable.
+            let metadata_result: AppResult<()> = (|| {
+                let mut updated = self.store.read_task(base_dir, &task.task_id)?;
+                if handoff.flow != routed_flow {
+                    let warning = format!(
+                        "seed suggests flow '{}' but routed flow '{}' is authoritative",
+                        handoff.flow.as_str(),
+                        routed_flow.as_str()
+                    );
+                    updated.routing_warnings.push(warning.clone());
+                    // Journal append is best-effort for warnings
+                    if let Err(je) = DaemonTaskService::append_journal_event(
+                        self.store,
+                        base_dir,
+                        super::model::DaemonJournalEventType::RoutingWarning,
+                        json!({
+                            "task_id": task.task_id,
+                            "warning": warning,
+                        }),
+                    ) {
+                        eprintln!(
+                            "daemon: warning: failed to append RoutingWarning journal event for task '{}': {je}",
+                            task.task_id
+                        );
+                    }
+                    println!("daemon: {warning}");
+                }
+                updated.dispatch_mode = DispatchMode::Workflow;
+                updated.resolved_flow = Some(routed_flow);
+                updated.project_id = handoff.project_id.clone();
+                updated.project_name = Some(handoff.project_name.clone());
+                updated.prompt = Some(handoff.prompt_body.clone());
+                self.store.write_task(base_dir, &updated)?;
+                Ok(())
+            })();
+            if let Err(e) = metadata_result {
+                let _ = DaemonTaskService::mark_failed(
                     self.store,
                     base_dir,
-                    super::model::DaemonJournalEventType::RoutingWarning,
-                    json!({
-                        "task_id": task.task_id,
-                        "warning": warning,
-                    }),
-                )?;
-                println!("daemon: {warning}");
+                    &task.task_id,
+                    "requirements_linking_failed",
+                    &format!("post-link metadata update failed: {e}"),
+                );
+                return Err(e);
             }
-            updated.dispatch_mode = DispatchMode::Workflow;
-            updated.resolved_flow = Some(routed_flow);
-            updated.project_id = handoff.project_id.clone();
-            updated.project_name = Some(handoff.project_name.clone());
-            updated.prompt = Some(handoff.prompt_body.clone());
-            self.store.write_task(base_dir, &updated)?;
 
             println!(
                 "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', continuing to workflow",
@@ -743,7 +814,10 @@ where
                 &run_id,
             ) {
                 Ok(_) => {
-                    DaemonTaskService::append_journal_event(
+                    // Journal append is supplementary — linking already
+                    // succeeded inside mark_waiting_for_requirements.
+                    // Log but do not propagate failure.
+                    if let Err(e) = DaemonTaskService::append_journal_event(
                         self.store,
                         base_dir,
                         super::model::DaemonJournalEventType::RequirementsHandoff,
@@ -752,7 +826,12 @@ where
                             "requirements_run_id": run_id,
                             "dispatch_mode": "requirements_draft",
                         }),
-                    )?;
+                    ) {
+                        eprintln!(
+                            "daemon: warning: failed to append RequirementsHandoff journal event for task '{}': {e}",
+                            task.task_id
+                        );
+                    }
                     println!(
                         "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
                         task.task_id, run_id

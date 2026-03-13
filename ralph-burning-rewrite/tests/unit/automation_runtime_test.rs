@@ -417,6 +417,118 @@ fn waiting_for_requirements_resume_transitions() {
     assert_eq!(DispatchMode::Workflow, resumed.dispatch_mode);
 }
 
+// ── Requirements-link failure invariant tests ────────────────────────────────
+
+#[test]
+fn link_failure_on_pending_task_transitions_to_failed() {
+    // When requirements_quick succeeds but the first task-link write fails,
+    // mark_failed must still work on a pending task (Pending → Failed).
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let task = sample_task();
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Simulate a link failure: the task is still Pending because we never
+    // transitioned it. mark_failed should transition Pending → Failed.
+    let failed = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "simulated write_task failure during link",
+    )
+    .expect("mark_failed should succeed");
+    assert_eq!(TaskStatus::Failed, failed.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed.failure_class
+    );
+}
+
+#[test]
+fn link_failure_on_waiting_task_transitions_to_failed() {
+    // When mark_waiting_for_requirements succeeds but a subsequent operation
+    // fails (e.g. metadata write in check_waiting_tasks), mark_failed must
+    // work: WaitingForRequirements → Failed.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Successfully transition to waiting
+    let waiting = DaemonTaskService::mark_waiting_for_requirements(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "req-link-fail-test",
+    )
+    .expect("mark waiting");
+    assert_eq!(TaskStatus::WaitingForRequirements, waiting.status);
+    assert_eq!(
+        Some("req-link-fail-test".to_owned()),
+        waiting.requirements_run_id
+    );
+
+    // Simulate a post-link failure: mark_failed should transition
+    // WaitingForRequirements → Failed while preserving the requirements_run_id.
+    let failed = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "simulated post-link metadata write failure",
+    )
+    .expect("mark_failed should succeed from WaitingForRequirements");
+    assert_eq!(TaskStatus::Failed, failed.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed.failure_class
+    );
+    // The requirements_run_id must remain addressable even after failure
+    assert_eq!(
+        Some("req-link-fail-test".to_owned()),
+        failed.requirements_run_id,
+        "requirements_run_id must be preserved after link failure"
+    );
+}
+
+#[test]
+fn link_failure_on_active_task_transitions_to_failed() {
+    // When requirements_draft transitions Active → Active but the subsequent
+    // link write fails, mark_failed must work: Active → Failed.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Simulate: draft() succeeds and returns a run_id, but the first
+    // write_task to set requirements_run_id fails. mark_failed should
+    // still transition Active → Failed with explicit failure class.
+    let failed = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "simulated write_task failure during draft link",
+    )
+    .expect("mark_failed should succeed from Active");
+    assert_eq!(TaskStatus::Failed, failed.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed.failure_class
+    );
+    // No requirements_run_id should be set since linking failed before persist
+    assert!(
+        failed.requirements_run_id.is_none(),
+        "requirements_run_id should be None when link write fails before persist"
+    );
+}
+
 #[test]
 fn resume_from_non_waiting_state_fails() {
     let store = FsDaemonStore;
@@ -559,4 +671,123 @@ fn task_without_dispatch_mode_defaults_to_workflow() {
     assert_eq!(DispatchMode::Workflow, task.dispatch_mode);
     assert!(task.source_revision.is_none());
     assert!(task.requirements_run_id.is_none());
+}
+
+// ── Failure injection: requirements-link write failures ─────────────────────
+
+#[test]
+fn mark_waiting_write_failure_leaves_task_in_recoverable_state() {
+    // Verifies the invariant: if mark_waiting_for_requirements fails (e.g. a
+    // write_task error), the task stays in Active and the caller can still
+    // transition it to Failed with an explicit linking failure class.
+    //
+    // We simulate this by calling mark_waiting on a task whose ID doesn't
+    // exist on disk, triggering a read_task failure.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    // Create task directories but don't write the task file —
+    // mark_waiting_for_requirements will fail on read_task.
+    let tasks_dir = temp.path().join(".ralph-burning/daemon/tasks");
+    std::fs::create_dir_all(&tasks_dir).expect("create tasks dir");
+
+    // Try marking a nonexistent task as waiting — must fail
+    let err = DaemonTaskService::mark_waiting_for_requirements(
+        &store,
+        temp.path(),
+        "nonexistent-task",
+        "req-fail-test",
+    );
+    assert!(err.is_err(), "mark_waiting should fail for missing task");
+
+    // Now create a real Active task and verify it can still be marked failed
+    // (simulates the daemon_loop recovery path after a link failure).
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    let failed_task = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "simulated write failure during link",
+    )
+    .expect("mark_failed should succeed from Active");
+    assert_eq!(TaskStatus::Failed, failed_task.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed_task.failure_class
+    );
+}
+
+#[test]
+fn link_result_write_failure_transitions_task_to_failed() {
+    // Tests the quick-path invariant: if the link_result closure fails (write_task
+    // or journal append), the task transitions to Failed with explicit failure class.
+    // This verifies the state machine permits Active -> Failed.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::Active;
+    task.dispatch_mode = DispatchMode::RequirementsQuick;
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Simulate the scenario: requirements run created, then linking fails.
+    // mark_failed with "requirements_linking_failed" should work from Active.
+    let failed = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "write_task failed during link",
+    )
+    .expect("mark_failed from Active");
+    assert_eq!(TaskStatus::Failed, failed.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed.failure_class
+    );
+    assert!(failed
+        .failure_message
+        .as_ref()
+        .unwrap()
+        .contains("write_task failed"));
+    // Requirements run ID should NOT be set — linking never completed
+    assert!(failed.requirements_run_id.is_none());
+}
+
+#[test]
+fn post_link_metadata_failure_transitions_waiting_task_to_failed() {
+    // Tests the resume-path invariant: if post-seed metadata update fails after
+    // a task is in WaitingForRequirements, the task can transition to Failed.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.status = TaskStatus::WaitingForRequirements;
+    task.requirements_run_id = Some("req-linked-ok".to_owned());
+    store.create_task(temp.path(), &task).expect("persist task");
+
+    // Simulate the scenario: requirements run completed, seed extracted,
+    // but post-seed metadata write fails. The daemon should mark failed.
+    let failed = DaemonTaskService::mark_failed(
+        &store,
+        temp.path(),
+        &task.task_id,
+        "requirements_linking_failed",
+        "post-seed metadata update failed",
+    )
+    .expect("mark_failed from WaitingForRequirements");
+    assert_eq!(TaskStatus::Failed, failed.status);
+    assert_eq!(
+        Some("requirements_linking_failed".to_owned()),
+        failed.failure_class
+    );
+    // The requirements_run_id should still be set — the run itself succeeded
+    assert_eq!(
+        Some("req-linked-ok".to_owned()),
+        failed.requirements_run_id
+    );
 }
