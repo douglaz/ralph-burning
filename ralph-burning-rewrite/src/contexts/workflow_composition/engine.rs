@@ -1954,13 +1954,7 @@ where
     S: SessionStorePort,
 {
     let request = InvocationRequest {
-        invocation_id: format!(
-            "{}-{}-c{}-a{}",
-            run_id.as_str(),
-            stage_entry.stage_id.as_str(),
-            cursor.cycle,
-            cursor.attempt
-        ),
+        invocation_id: history_record_base_id(run_id, stage_entry.stage_id, cursor, 0),
         project_root: project_root.to_path_buf(),
         working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
         contract: InvocationContract::Stage(stage_entry.contract),

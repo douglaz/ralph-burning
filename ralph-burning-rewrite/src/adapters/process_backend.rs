@@ -18,6 +18,9 @@ use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
+const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
+const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
+
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
     pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
@@ -52,7 +55,15 @@ impl ManagedChild {
             return Ok(());
         };
 
-        send_sigterm(pid)
+        send_signal(pid, "-TERM")
+    }
+
+    async fn send_sigkill(&self) -> std::io::Result<()> {
+        let Some(pid) = self.pid().await else {
+            return Ok(());
+        };
+
+        send_signal(pid, "-KILL")
     }
 
     async fn wait(&self) -> std::io::Result<ExitStatus> {
@@ -77,7 +88,7 @@ impl ManagedChild {
                 return Ok(status);
             }
 
-            tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::time::sleep(CHILD_WAIT_POLL_INTERVAL).await;
         }
     }
 }
@@ -94,9 +105,9 @@ impl ProcessBackendAdapter {
         children.insert(invocation_id.to_owned(), child);
     }
 
-    async fn active_child(&self, invocation_id: &str) -> Option<Arc<ManagedChild>> {
-        let children = self.active_children.lock().await;
-        children.get(invocation_id).cloned()
+    async fn take_active_child(&self, invocation_id: &str) -> Option<Arc<ManagedChild>> {
+        let mut children = self.active_children.lock().await;
+        children.remove(invocation_id)
     }
 
     async fn remove_child_if_same(&self, invocation_id: &str, child: &Arc<ManagedChild>) {
@@ -612,7 +623,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
     }
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
-        let Some(active_child) = self.active_child(invocation_id).await else {
+        let Some(active_child) = self.take_active_child(invocation_id).await else {
             return Ok(());
         };
 
@@ -626,18 +637,19 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 details: format!("failed to send SIGTERM to invocation '{invocation_id}': {error}"),
             })?;
 
-        let wait_result = active_child.wait().await;
-        self.remove_child_if_same(invocation_id, &active_child)
-            .await;
-
-        wait_result
-            .map(|_| ())
-            .map_err(|error| AppError::InvocationFailed {
+        match tokio::time::timeout(CANCEL_GRACE_PERIOD, active_child.wait()).await {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(error)) => Err(AppError::InvocationFailed {
                 backend: "process".to_owned(),
                 contract_id: invocation_id.to_owned(),
                 failure_class: FailureClass::TransportFailure,
                 details: format!("failed to reap invocation '{invocation_id}': {error}"),
-            })
+            }),
+            Err(_) => {
+                spawn_background_reap(invocation_id.to_owned(), active_child);
+                Ok(())
+            }
+        }
     }
 }
 
@@ -654,9 +666,9 @@ struct ChildOutput {
     stderr: Vec<u8>,
 }
 
-fn send_sigterm(pid: u32) -> std::io::Result<()> {
+fn send_signal(pid: u32, signal: &str) -> std::io::Result<()> {
     let output = std::process::Command::new("kill")
-        .arg("-TERM")
+        .arg(signal)
         .arg(pid.to_string())
         .output()?;
 
@@ -671,12 +683,20 @@ fn send_sigterm(pid: u32) -> std::io::Result<()> {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             if stderr.trim().is_empty() {
-                format!("kill -TERM {pid} exited with status {}", output.status)
+                format!("kill {signal} {pid} exited with status {}", output.status)
             } else {
                 stderr.trim().to_owned()
             },
         ))
     }
+}
+
+fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
+    tokio::spawn(async move {
+        let _ = child.send_sigkill().await;
+        let _ = child.wait().await;
+        drop(invocation_id);
+    });
 }
 
 async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {

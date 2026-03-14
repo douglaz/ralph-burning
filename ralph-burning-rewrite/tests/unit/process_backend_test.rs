@@ -78,6 +78,18 @@ fn process_exists(pid: u32) -> bool {
         .unwrap_or(false)
 }
 
+fn process_is_running(pid: u32) -> bool {
+    let Ok(stat) = fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+
+    let Some((_, rest)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+
+    !rest.starts_with('Z')
+}
+
 struct PathGuard {
     original: Option<std::ffi::OsString>,
 }
@@ -699,6 +711,141 @@ async fn cancellation_reaps_long_running_child_before_returning() {
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "invoke should complete after cancel");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_returns_promptly_when_child_ignores_sigterm() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let pid_dir = tempdir().expect("create pid dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+    let pid_file = pid_dir.path().join("claude-ignore-term.pid");
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        &format!(
+            "#!/bin/sh\ntrap '' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nexec sleep 300\n",
+            pid_file.to_string_lossy()
+        ),
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+    let invocation_id = request.invocation_id.clone();
+
+    let adapter_clone = adapter.clone();
+    let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
+
+    for _ in 0..40 {
+        if pid_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let pid: u32 = fs::read_to_string(&pid_file)
+        .expect("read child pid")
+        .trim()
+        .parse()
+        .expect("parse child pid");
+    assert!(
+        process_is_running(pid),
+        "child should still be running before cancel"
+    );
+
+    let started = tokio::time::Instant::now();
+    tokio::time::timeout(Duration::from_secs(2), adapter.cancel(&invocation_id))
+        .await
+        .expect("cancel should return within the bounded grace period")
+        .expect("cancel should succeed");
+    assert!(
+        started.elapsed() < Duration::from_secs(2),
+        "cancel should return promptly for a SIGTERM-ignoring child"
+    );
+
+    {
+        let children = adapter.active_children.lock().await;
+        assert!(
+            !children.contains_key(&invocation_id),
+            "child should be removed from active_children before cancel returns"
+        );
+    }
+
+    for _ in 0..40 {
+        if !process_is_running(pid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !process_is_running(pid),
+        "background reap task should eventually force-kill the child"
+    );
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(result.is_ok(), "invoke should complete after background reap");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn dropping_child_handle_uses_kill_on_drop_safety_net() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let pid_dir = tempdir().expect("create pid dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+    let pid_file = pid_dir.path().join("claude-kill-on-drop.pid");
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        &format!(
+            "#!/bin/sh\necho \"$$\" > \"{}\"\ncat > /dev/null\nexec sleep 300\n",
+            pid_file.to_string_lossy()
+        ),
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+    let adapter_clone = adapter.clone();
+    let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
+
+    for _ in 0..40 {
+        if pid_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let pid: u32 = fs::read_to_string(&pid_file)
+        .expect("read child pid")
+        .trim()
+        .parse()
+        .expect("parse child pid");
+    assert!(
+        process_is_running(pid),
+        "child should be running before dropping the handle"
+    );
+
+    handle.abort();
+    let join_error = handle.await.expect_err("invoke task should be cancelled");
+    assert!(join_error.is_cancelled(), "invoke task should abort cleanly");
+    assert!(
+        process_is_running(pid),
+        "dropping the invoke task alone should not kill the child while the adapter still holds it"
+    );
+
+    drop(adapter);
+
+    for _ in 0..40 {
+        if !process_is_running(pid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        !process_is_running(pid),
+        "dropping the last child handle should terminate the child via kill_on_drop(true)"
+    );
 }
 
 // ── active_children cleanup after success ───────────────────────────────────
