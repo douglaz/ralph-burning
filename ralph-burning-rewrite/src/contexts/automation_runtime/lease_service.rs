@@ -3,7 +3,9 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
-use crate::contexts::automation_runtime::model::{LeaseRecord, TaskStatus, WorktreeLease};
+use crate::contexts::automation_runtime::model::{
+    saturating_heartbeat_deadline, LeaseRecord, TaskStatus, WorktreeLease,
+};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
     DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WorktreePort,
@@ -391,7 +393,9 @@ impl LeaseService {
 
         for lease in leases {
             let is_stale = ttl_override_seconds
-                .map(|ttl| now > lease.last_heartbeat + chrono::Duration::seconds(ttl as i64))
+                .map(|ttl| {
+                    now > saturating_heartbeat_deadline(lease.last_heartbeat, ttl)
+                })
                 .unwrap_or_else(|| lease.is_stale_at(now));
             if !is_stale {
                 continue;
@@ -574,7 +578,7 @@ impl LeaseService {
 
             let is_stale = ttl_override_seconds
                 .map(|ttl| {
-                    now > cli_lease.last_heartbeat + chrono::Duration::seconds(ttl as i64)
+                    now > saturating_heartbeat_deadline(cli_lease.last_heartbeat, ttl)
                 })
                 .unwrap_or_else(|| cli_lease.is_stale_at(now));
             if !is_stale {

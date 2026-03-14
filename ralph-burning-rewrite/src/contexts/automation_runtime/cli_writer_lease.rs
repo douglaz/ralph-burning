@@ -120,13 +120,19 @@ impl CliWriterLeaseGuard {
         }
     }
 
-    /// Acquire the project writer lock, persist a `CliWriterLease` record, and
-    /// spawn a heartbeat task. If the lease record write fails, rollback
-    /// attempts to release the writer lock. When rollback succeeds, only the
-    /// original write error is returned. When rollback fails (I/O error or
-    /// owner mismatch), returns `AcquisitionRollbackFailed` preserving both
-    /// the original failure and a warning that the writer lock may still be
-    /// held.
+    /// Persist a `CliWriterLease` record, acquire the project writer lock, and
+    /// spawn a heartbeat task.
+    ///
+    /// **Crash-safety invariant:** the durable CLI lease record is written
+    /// _before_ the writer lock is acquired, so a crash after persistence
+    /// but before `acquire()` returns can never strand a writer lock without
+    /// a matching reconcile-visible lease record.
+    ///
+    /// On contention (writer lock already held), the prewritten lease is
+    /// deleted.  If cleanup succeeds the original `ProjectWriterLockHeld`
+    /// error is returned with no leftover lease.  If cleanup fails
+    /// (`AlreadyAbsent` or I/O error), `AcquisitionRollbackFailed` is
+    /// returned preserving both failure causes.
     pub fn acquire(
         store: Arc<dyn DaemonStorePort + Send + Sync>,
         base_dir: &Path,
@@ -136,10 +142,9 @@ impl CliWriterLeaseGuard {
     ) -> AppResult<Self> {
         let lease_id = format!("cli-{}", uuid::Uuid::new_v4());
 
-        // Step 1: acquire the writer lock with our lease_id as content.
-        store.acquire_writer_lock(base_dir, &project_id, &lease_id)?;
-
-        // Step 2: persist the CLI lease record.
+        // Step 1: persist the CLI lease record BEFORE acquiring the writer
+        // lock. This guarantees a reconcile-visible record exists whenever a
+        // CLI-held writer lock can be stranded.
         let now = Utc::now();
         let lease = CliWriterLease {
             lease_id: lease_id.clone(),
@@ -149,28 +154,21 @@ impl CliWriterLeaseGuard {
             ttl_seconds,
             last_heartbeat: now,
         };
-        if let Err(e) = store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease)) {
-            // Rollback: release writer lock. Propagate rollback failure so
-            // callers know whether the lock may still be held.
-            match store.release_writer_lock(base_dir, &project_id, &lease_id) {
-                Ok(WriterLockReleaseOutcome::Released)
-                | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
-                    // Lock cleaned up — return only the original error.
+        store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease))?;
+
+        // Step 2: acquire the writer lock with our lease_id as content.
+        if let Err(e) = store.acquire_writer_lock(base_dir, &project_id, &lease_id) {
+            // Contention: roll back the prewritten lease record.
+            match store.remove_lease(base_dir, &lease_id) {
+                Ok(_) => {
+                    // Lease cleaned up — return the original contention error.
                     return Err(e);
                 }
-                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                Err(cleanup_err) => {
                     return Err(AppError::AcquisitionRollbackFailed {
                         trigger: e.to_string(),
                         rollback_details: format!(
-                            "project writer lock may still be held: owner mismatch (actual: {actual_owner})"
-                        ),
-                    });
-                }
-                Err(rollback_err) => {
-                    return Err(AppError::AcquisitionRollbackFailed {
-                        trigger: e.to_string(),
-                        rollback_details: format!(
-                            "project writer lock may still be held: {rollback_err}"
+                            "prewritten CLI lease cleanup failed: {cleanup_err}"
                         ),
                     });
                 }

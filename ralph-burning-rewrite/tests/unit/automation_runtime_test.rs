@@ -4808,16 +4808,26 @@ fn release_writer_lock_failure_after_worktree_removal_preserves_lease_file() {
 }
 
 // ---------------------------------------------------------------------------
-// CLI acquisition rollback: lease persistence + lock release both fail
+// CLI crash-safe acquisition: lease persistence before writer-lock acquisition
 // ---------------------------------------------------------------------------
 
-/// A DaemonStorePort wrapper that fails `write_lease_record` and
-/// `release_writer_lock` to test combined rollback failure reporting.
-struct CliAcquireRollbackFailStore {
+/// A DaemonStorePort wrapper that tracks call order to prove CLI lease
+/// persistence occurs before writer-lock acquisition.
+struct CliAcquireOrderTrackingStore {
     inner: FsDaemonStore,
+    operations: std::sync::Mutex<Vec<&'static str>>,
 }
 
-impl DaemonStorePort for CliAcquireRollbackFailStore {
+impl CliAcquireOrderTrackingStore {
+    fn new() -> Self {
+        Self {
+            inner: FsDaemonStore,
+            operations: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl DaemonStorePort for CliAcquireOrderTrackingStore {
     fn list_tasks(
         &self,
         base_dir: &std::path::Path,
@@ -4880,15 +4890,11 @@ impl DaemonStorePort for CliAcquireRollbackFailStore {
     }
     fn write_lease_record(
         &self,
-        _base_dir: &std::path::Path,
-        _lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+        base_dir: &std::path::Path,
+        lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        // Simulate lease-record persistence failure
-        Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "simulated CLI lease write failure",
-        )
-        .into())
+        self.operations.lock().unwrap().push("write_lease_record");
+        self.inner.write_lease_record(base_dir, lease)
     }
     fn remove_lease(
         &self,
@@ -4920,42 +4926,218 @@ impl DaemonStorePort for CliAcquireRollbackFailStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
+        self.operations.lock().unwrap().push("acquire_writer_lock");
         self.inner
             .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
-        _base_dir: &std::path::Path,
-        _project_id: &ralph_burning::shared::domain::ProjectId,
-        _expected_owner: &str,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
     ) -> ralph_burning::shared::error::AppResult<
         ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
     > {
-        // Simulate writer-lock release failure during rollback
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "simulated rollback lock release failure",
-        )
-        .into())
+        self.inner
+            .release_writer_lock(base_dir, project_id, expected_owner)
     }
 }
 
 #[tokio::test]
-async fn cli_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
-    // When CLI lease-record persistence fails and rollback lock release also
-    // fails, the returned error must include both the lease-write failure and
-    // the "writer lock may still be held" warning.
+async fn cli_acquire_persists_lease_before_writer_lock() {
+    // Proves the crash-safety invariant: the durable CLI lease record is
+    // written before the writer lock is acquired.
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("cli-rb-fail".to_owned()).expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new(
+        "order-test".to_owned(),
+    )
+    .expect("valid id");
+
+    let tracking_store = Arc::new(CliAcquireOrderTrackingStore::new());
+    let store: Arc<dyn DaemonStorePort + Send + Sync> = Arc::clone(&tracking_store) as _;
+
+    let guard = CliWriterLeaseGuard::acquire(
+        store,
+        temp.path(),
+        project_id,
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let ops = tracking_store.operations.lock().unwrap();
+    assert!(
+        ops.len() >= 2,
+        "should have at least write_lease_record and acquire_writer_lock, got: {ops:?}"
+    );
+    assert_eq!(
+        ops[0], "write_lease_record",
+        "first operation must be lease persistence, got: {ops:?}"
+    );
+    assert_eq!(
+        ops[1], "acquire_writer_lock",
+        "second operation must be lock acquisition, got: {ops:?}"
+    );
+
+    drop(guard);
+}
+
+// ---------------------------------------------------------------------------
+// CLI contention rollback: lock held + prewritten-lease cleanup failure
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that delegates `write_lease_record` (succeeds),
+/// always fails `acquire_writer_lock` with ProjectWriterLockHeld, and fails
+/// `remove_lease` with an I/O error. This tests the contention + cleanup
+/// failure path in the reordered acquire().
+struct CliContentionCleanupFailStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for CliContentionCleanupFailStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        _base_dir: &std::path::Path,
+        _lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
+        // Simulate prewritten-lease cleanup failure
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated lease cleanup failure",
+        )
+        .into())
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        _base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        _lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Simulate lock contention
+        Err(AppError::ProjectWriterLockHeld {
+            project_id: project_id.to_string(),
+        })
+    }
+    fn release_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
+    > {
+        self.inner
+            .release_writer_lock(base_dir, project_id, expected_owner)
+    }
+}
+
+#[tokio::test]
+async fn cli_contention_cleanup_failure_reports_both_causes() {
+    // When writer-lock acquisition fails (contention) and the prewritten CLI
+    // lease cleanup also fails, the returned error must preserve both the
+    // contention cause and the cleanup failure cause.
+    let temp = tempdir().expect("tempdir");
+    let project_id = ralph_burning::shared::domain::ProjectId::new(
+        "contention-fail".to_owned(),
+    )
+    .expect("valid id");
+
+    // Pre-hold the writer lock with a different owner to verify it stays intact.
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "competing-writer")
+        .expect("pre-acquire");
 
     let store: Arc<dyn DaemonStorePort + Send + Sync> =
-        Arc::new(CliAcquireRollbackFailStore { inner: FsDaemonStore });
+        Arc::new(CliContentionCleanupFailStore { inner: FsDaemonStore });
 
     let result = CliWriterLeaseGuard::acquire(
         store,
         temp.path(),
-        project_id,
+        project_id.clone(),
         CLI_LEASE_TTL_SECONDS,
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     );
@@ -4963,31 +5145,40 @@ async fn cli_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         Err(e) => e,
         Ok(guard) => {
             drop(guard);
-            panic!("acquire should fail");
+            panic!("acquire should fail on contention");
         }
     };
 
     let err_msg = format!("{err}");
-    // Must include the original lease-write failure
-    assert!(
-        err_msg.contains("simulated CLI lease write failure"),
-        "error should include lease-write failure, got: {err_msg}"
-    );
-    // Must include the "writer lock may still be held" warning
-    assert!(
-        err_msg.contains("writer lock may still be held"),
-        "error should include lock-held warning, got: {err_msg}"
-    );
-    // Must include the rollback failure detail
-    assert!(
-        err_msg.contains("simulated rollback lock release failure"),
-        "error should include rollback failure detail, got: {err_msg}"
-    );
     // Must be an AcquisitionRollbackFailed variant
     assert!(
         matches!(err, AppError::AcquisitionRollbackFailed { .. }),
         "error should be AcquisitionRollbackFailed, got: {err:?}"
     );
+    // Must include the contention cause
+    assert!(
+        err_msg.contains("contention-fail"),
+        "error should include contention project id, got: {err_msg}"
+    );
+    // Must include the cleanup failure
+    assert!(
+        err_msg.contains("simulated lease cleanup failure"),
+        "error should include cleanup failure detail, got: {err_msg}"
+    );
+
+    // The competing writer's lock must remain untouched.
+    let lock_err = FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "third-party")
+        .expect_err("competing writer lock must still be held");
+    assert!(
+        matches!(lock_err, AppError::ProjectWriterLockHeld { .. }),
+        "lock should still be held by competing-writer"
+    );
+
+    // Cleanup
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "competing-writer")
+        .expect("cleanup");
 }
 
 // ---------------------------------------------------------------------------
@@ -5474,4 +5665,114 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
     store
         .release_writer_lock(temp.path(), &project_id, "after-rollback")
         .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile: oversized TTL override must not reclaim fresh leases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease() {
+    // A ttl_override_seconds value above i64::MAX must be saturated to
+    // i64::MAX, preventing fresh leases from being marked stale.
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let now = Utc::now();
+
+    // Create a fresh worktree lease with a matching task.
+    let mut task = sample_task();
+    task.task_id = "oversized-ttl-task".to_owned();
+    task.project_id = "oversized-proj".to_owned();
+    task.status = TaskStatus::Active;
+    task.lease_id = Some("lease-oversized-ttl-task".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-oversized");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let wt_lease = WorktreeLease {
+        lease_id: "lease-oversized-ttl-task".to_owned(),
+        task_id: "oversized-ttl-task".to_owned(),
+        project_id: "oversized-proj".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/oversized-ttl-task".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    store
+        .write_lease(temp.path(), &wt_lease)
+        .expect("write worktree lease");
+    let project_id = ralph_burning::shared::domain::ProjectId::new(
+        "oversized-proj".to_owned(),
+    )
+    .expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-oversized-ttl-task")
+        .expect("acquire lock for worktree");
+
+    // Inject a fresh CLI lease with matching writer lock.
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-oversized-ttl".to_owned(),
+        project_id: "cli-oversized-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    store
+        .write_lease_record(
+            temp.path(),
+            &LeaseRecord::CliWriter(cli_lease),
+        )
+        .expect("write cli lease");
+    let cli_project_id = ralph_burning::shared::domain::ProjectId::new(
+        "cli-oversized-proj".to_owned(),
+    )
+    .expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &cli_project_id, "cli-oversized-ttl")
+        .expect("acquire lock for cli");
+
+    let worktree_adapter = WorktreeAdapter;
+
+    // Use u64::MAX as the oversized TTL — must saturate, not wrap negative.
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(u64::MAX),
+        now,
+    )
+    .expect("reconcile");
+
+    assert_eq!(
+        0,
+        report.stale_lease_ids.len(),
+        "stale_leases should be 0 with oversized TTL, got: {:?}",
+        report.stale_lease_ids
+    );
+    assert_eq!(
+        0,
+        report.released_lease_ids.len(),
+        "released_leases should be 0 with oversized TTL"
+    );
+    assert_eq!(
+        0,
+        report.failed_task_ids.len(),
+        "failed_tasks should be 0 with oversized TTL"
+    );
+    assert!(
+        report.cleanup_failures.is_empty(),
+        "no cleanup failures expected"
+    );
+
+    // Cleanup
+    store
+        .release_writer_lock(temp.path(), &project_id, "lease-oversized-ttl-task")
+        .expect("cleanup wt lock");
+    store
+        .release_writer_lock(temp.path(), &cli_project_id, "cli-oversized-ttl")
+        .expect("cleanup cli lock");
 }

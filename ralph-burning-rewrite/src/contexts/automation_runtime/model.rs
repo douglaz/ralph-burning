@@ -207,7 +207,32 @@ pub struct WorktreeLease {
 }
 
 fn lease_heartbeat_deadline(last_heartbeat: DateTime<Utc>, ttl_seconds: u64) -> DateTime<Utc> {
-    last_heartbeat + Duration::seconds(ttl_seconds.min(i64::MAX as u64) as i64)
+    saturating_heartbeat_deadline(last_heartbeat, ttl_seconds)
+}
+
+/// Compute a heartbeat deadline with saturating semantics. If the TTL value
+/// is too large for `chrono::Duration` or the resulting `DateTime` overflows,
+/// returns `DateTime::MAX_UTC` so the lease is never considered stale.
+pub fn saturating_heartbeat_deadline(
+    last_heartbeat: DateTime<Utc>,
+    ttl_seconds: u64,
+) -> DateTime<Utc> {
+    let ttl_i64 = ttl_seconds.min(i64::MAX as u64) as i64;
+    match Duration::try_seconds(ttl_i64) {
+        Some(dur) => last_heartbeat
+            .checked_add_signed(dur)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC),
+        None => DateTime::<Utc>::MAX_UTC,
+    }
+}
+
+/// Convert a `u64` TTL to a bounded `i64` suitable for
+/// `chrono::Duration::try_seconds()`. Values above `i64::MAX` are saturated
+/// to `i64::MAX` rather than wrapping negative. Callers must still use
+/// `try_seconds()` (not `seconds()`) because chrono's `TimeDelta` may reject
+/// even `i64::MAX`.
+pub fn saturating_ttl_seconds(ttl: u64) -> i64 {
+    ttl.min(i64::MAX as u64) as i64
 }
 
 impl WorktreeLease {

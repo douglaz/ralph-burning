@@ -4717,6 +4717,90 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
 }
 
 // ---------------------------------------------------------------------------
+// Oversized TTL override must not reclaim a fresh CLI-held writer lock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+    select_active_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+
+    // Inject a fresh CLI lease record and matching writer lock.
+    let leases_dir = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-fresh-oversized".to_owned(),
+        project_id: "oversized-ttl-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json =
+        serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-fresh-oversized.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+    fs::write(
+        leases_dir.join("writer-oversized-ttl-proj.lock"),
+        "cli-fresh-oversized",
+    )
+    .expect("write writer lock");
+
+    // Run daemon reconcile with u64::MAX as TTL override.
+    // The saturating conversion must prevent the fresh lease from being
+    // marked stale — no leases should be reclaimed.
+    let output = Command::new(binary())
+        .args([
+            "daemon",
+            "reconcile",
+            "--ttl-seconds",
+            "18446744073709551615",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "reconcile should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("stale_leases=0"),
+        "should report 0 stale leases with oversized TTL, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("released_leases=0"),
+        "should report 0 released leases with oversized TTL, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("failed_tasks=0"),
+        "should report 0 failed tasks with oversized TTL, got: {stdout}"
+    );
+
+    // CLI lease file and writer lock must still exist.
+    assert!(
+        leases_dir.join("cli-fresh-oversized.json").exists(),
+        "CLI lease file must not be removed by oversized TTL reconcile"
+    );
+    assert!(
+        leases_dir
+            .join("writer-oversized-ttl-proj.lock")
+            .exists(),
+        "writer lock must not be released by oversized TTL reconcile"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Daemon lifecycle conformance regression tests
 // ---------------------------------------------------------------------------
 
