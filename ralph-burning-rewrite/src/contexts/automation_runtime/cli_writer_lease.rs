@@ -11,7 +11,9 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::contexts::automation_runtime::model::{CliWriterLease, LeaseRecord};
-use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
+use crate::contexts::automation_runtime::{
+    DaemonStorePort, ResourceCleanupOutcome, WriterLockReleaseOutcome,
+};
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
@@ -160,9 +162,20 @@ impl CliWriterLeaseGuard {
         if let Err(e) = store.acquire_writer_lock(base_dir, &project_id, &lease_id) {
             // Contention: roll back the prewritten lease record.
             match store.remove_lease(base_dir, &lease_id) {
-                Ok(_) => {
+                Ok(ResourceCleanupOutcome::Removed) => {
                     // Lease cleaned up — return the original contention error.
                     return Err(e);
+                }
+                Ok(ResourceCleanupOutcome::AlreadyAbsent) => {
+                    // The prewritten lease vanished unexpectedly — treat as a
+                    // combined acquisition/cleanup failure so the caller knows
+                    // the rollback state is uncertain.
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: e.to_string(),
+                        rollback_details:
+                            "prewritten CLI lease was already absent at rollback time"
+                                .to_owned(),
+                    });
                 }
                 Err(cleanup_err) => {
                     return Err(AppError::AcquisitionRollbackFailed {

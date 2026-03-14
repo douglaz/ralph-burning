@@ -5182,6 +5182,202 @@ async fn cli_contention_cleanup_failure_reports_both_causes() {
 }
 
 // ---------------------------------------------------------------------------
+// CLI contention rollback: lock held + prewritten lease already absent
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that delegates `write_lease_record` (succeeds),
+/// always fails `acquire_writer_lock` with ProjectWriterLockHeld, and returns
+/// `AlreadyAbsent` from `remove_lease`. This tests the contention +
+/// already-absent rollback path.
+struct CliContentionLeaseAbsentStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for CliContentionLeaseAbsentStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        _base_dir: &std::path::Path,
+        _lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
+        // Simulate the prewritten lease being already absent at rollback time
+        Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        _base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        _lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Simulate lock contention
+        Err(AppError::ProjectWriterLockHeld {
+            project_id: project_id.to_string(),
+        })
+    }
+    fn release_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
+    > {
+        self.inner
+            .release_writer_lock(base_dir, project_id, expected_owner)
+    }
+}
+
+#[tokio::test]
+async fn cli_contention_lease_already_absent_reports_rollback_failure() {
+    // When writer-lock acquisition fails (contention) and the prewritten CLI
+    // lease is already absent at rollback time, the returned error must be
+    // AcquisitionRollbackFailed preserving both the contention cause and the
+    // already-absent detail.
+    let temp = tempdir().expect("tempdir");
+    let project_id = ralph_burning::shared::domain::ProjectId::new(
+        "absent-rollback".to_owned(),
+    )
+    .expect("valid id");
+
+    // Pre-hold the writer lock with a different owner to verify it stays intact.
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "competing-writer")
+        .expect("pre-acquire");
+
+    let store: Arc<dyn DaemonStorePort + Send + Sync> =
+        Arc::new(CliContentionLeaseAbsentStore { inner: FsDaemonStore });
+
+    let result = CliWriterLeaseGuard::acquire(
+        store,
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    );
+    let err = match result {
+        Err(e) => e,
+        Ok(guard) => {
+            drop(guard);
+            panic!("acquire should fail on contention");
+        }
+    };
+
+    let err_msg = format!("{err}");
+    // Must be an AcquisitionRollbackFailed variant
+    assert!(
+        matches!(err, AppError::AcquisitionRollbackFailed { .. }),
+        "error should be AcquisitionRollbackFailed, got: {err:?}"
+    );
+    // Must include the contention cause
+    assert!(
+        err_msg.contains("absent-rollback"),
+        "error should include contention project id, got: {err_msg}"
+    );
+    // Must include the already-absent detail
+    assert!(
+        err_msg.contains("already absent"),
+        "error should include already-absent detail, got: {err_msg}"
+    );
+
+    // The competing writer's lock must remain untouched.
+    let lock_err = FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "third-party")
+        .expect_err("competing writer lock must still be held");
+    assert!(
+        matches!(lock_err, AppError::ProjectWriterLockHeld { .. }),
+        "lock should still be held by competing-writer"
+    );
+
+    // Cleanup
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "competing-writer")
+        .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
 // Worktree acquisition rollback: lease persistence fails + lock release fails
 // ---------------------------------------------------------------------------
 
