@@ -3837,12 +3837,12 @@ fn reconcile_stale_cli_lease_missing_writer_lock_reports_cleanup_failure() {
 
 #[test]
 fn reconcile_stale_cli_lease_missing_lease_file_reports_cleanup_failure() {
-    // This tests the race where the lease file disappears between
-    // list_lease_records and remove_lease.
-    let store = FsDaemonStore;
+    // Exercises the race where the CLI lease file disappears between
+    // list_lease_records and remove_lease. Uses SubStepAbsentStore so the
+    // lease is visible during listing but remove_lease returns AlreadyAbsent.
+    let store = SubStepAbsentStore::new(true, false);
     let temp = tempdir().expect("tempdir");
 
-    // Write a CLI lease, then manually delete it to simulate a race.
     let cli_lease = CliWriterLease {
         lease_id: "cli-race".to_owned(),
         project_id: "race-proj".to_owned(),
@@ -3860,11 +3860,6 @@ fn reconcile_stale_cli_lease_missing_lease_file_reports_cleanup_failure() {
         .acquire_writer_lock(temp.path(), &project_id, "cli-race")
         .expect("acquire lock");
 
-    // Delete the lease file to simulate it disappearing
-    store
-        .remove_lease(temp.path(), "cli-race")
-        .expect("pre-remove");
-
     let worktree_adapter = WorktreeAdapter;
     let report = LeaseService::reconcile(
         &store,
@@ -3876,22 +3871,25 @@ fn reconcile_stale_cli_lease_missing_lease_file_reports_cleanup_failure() {
     )
     .expect("reconcile");
 
-    // The lease was in the initial list, so it is stale, but the file
-    // was already absent when remove was attempted → cleanup failure.
-    // Note: list_lease_records was called and returned the lease before
-    // we deleted it, but now reconcile calls list_lease_records again
-    // in pass 2 and won't see it. So stale count should be 0.
-    // Actually — reconcile calls list_lease_records at the start of
-    // pass 2. Since we pre-removed the lease file, it won't appear.
-    assert!(
-        report.stale_lease_ids.is_empty(),
-        "pre-removed lease should not appear in list"
-    );
+    // The lease was listed and identified as stale.
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert_eq!("cli-race", report.stale_lease_ids[0]);
 
-    // Clean up the writer lock
-    store
-        .release_writer_lock(temp.path(), &project_id, "cli-race")
-        .expect("cleanup");
+    // Writer lock released OK, but lease file was "already absent"
+    // at removal time → cleanup failure, not a successful release.
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "absent lease file should prevent counting as released"
+    );
+    assert_eq!(1, report.cleanup_failures.len());
+    assert!(
+        report.cleanup_failures[0]
+            .details
+            .contains("lease_file_absent"),
+        "details should mention lease_file_absent, got: {}",
+        report.cleanup_failures[0].details
+    );
+    assert_eq!(None, report.cleanup_failures[0].task_id);
 }
 
 #[test]

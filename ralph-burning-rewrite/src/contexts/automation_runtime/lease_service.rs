@@ -197,14 +197,7 @@ impl LeaseService {
             match store.release_writer_lock(base_dir, &project_id, &lease.lease_id) {
                 Ok(WriterLockReleaseOutcome::Released) => (false, false, None),
                 Ok(WriterLockReleaseOutcome::AlreadyAbsent) => (true, false, None),
-                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => (
-                    false,
-                    true,
-                    Some(format!(
-                        "owner_mismatch: expected '{}', found '{actual_owner}'",
-                        lease.lease_id
-                    )),
-                ),
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { .. }) => (false, true, None),
                 Err(e) => (false, false, Some(e.to_string())),
             };
 

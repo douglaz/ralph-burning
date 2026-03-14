@@ -1243,29 +1243,93 @@ impl DaemonStorePort for FsDaemonStore {
         expected_owner: &str,
     ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
         use crate::contexts::automation_runtime::WriterLockReleaseOutcome;
+        use std::io::Read as _;
         let path = Self::writer_lock_path(base_dir, project_id);
-        match fs::read_to_string(&path) {
-            Ok(contents) => {
-                if contents == expected_owner {
-                    match fs::remove_file(&path) {
-                        Ok(()) => Ok(WriterLockReleaseOutcome::Released),
-                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                            // Race: file disappeared between read and delete.
-                            Ok(WriterLockReleaseOutcome::AlreadyAbsent)
-                        }
-                        Err(error) => Err(error.into()),
-                    }
-                } else {
-                    Ok(WriterLockReleaseOutcome::OwnerMismatch {
-                        actual_owner: contents,
-                    })
-                }
+
+        // Open the file via fd so we can verify the inode has not changed
+        // between the content check and the unlink, closing the TOCTOU
+        // window that would otherwise let a replaced lock be deleted.
+        let mut file = match fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            Err(e) => return Err(e.into()),
+        };
+
+        let mut contents = String::new();
+        file.read_to_string(&mut contents)?;
+
+        if contents != expected_owner {
+            return Ok(WriterLockReleaseOutcome::OwnerMismatch {
+                actual_owner: contents,
+            });
+        }
+
+        // Content matches — now verify the path still points to the same
+        // file we read from (inode comparison). This prevents deleting a
+        // replacement lock that was created between the read and unlink.
+        #[cfg(test)]
+        release_lock_testing::invoke_post_read_hook();
+
+        {
+            use std::os::unix::fs::MetadataExt;
+            let fd_meta = file.metadata()?;
+            let path_meta = match fs::metadata(&path) {
+                Ok(m) => m,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
+                }
+                Err(e) => return Err(e.into()),
+            };
+            if fd_meta.ino() != path_meta.ino() || fd_meta.dev() != path_meta.dev() {
+                // The file at the path is a different file than the one we
+                // verified — another writer replaced it. Fail closed.
+                return Ok(WriterLockReleaseOutcome::OwnerMismatch {
+                    actual_owner: "(replaced)".to_owned(),
+                });
+            }
+        }
+
+        // Close the fd before unlinking.
+        drop(file);
+
+        match fs::remove_file(&path) {
+            Ok(()) => Ok(WriterLockReleaseOutcome::Released),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Race: file disappeared between inode check and unlink.
                 Ok(WriterLockReleaseOutcome::AlreadyAbsent)
             }
-            Err(error) => Err(error.into()),
+            Err(e) => Err(e.into()),
         }
+    }
+}
+
+// ── Test hook for TOCTOU-safe writer-lock release ───────────────────────────
+
+#[cfg(test)]
+pub mod release_lock_testing {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static POST_READ_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    /// Set a hook that fires inside `release_writer_lock` after the content
+    /// read but before the inode comparison. Used by tests to inject a file
+    /// replacement that simulates the TOCTOU race window.
+    pub fn set_post_read_hook(f: impl FnOnce() + 'static) {
+        POST_READ_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(f));
+        });
+    }
+
+    pub(crate) fn invoke_post_read_hook() {
+        POST_READ_HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().take() {
+                f();
+            }
+        });
     }
 }
 
@@ -1598,3 +1662,59 @@ fn requirements_run_root(base_dir: &Path, run_id: &str) -> PathBuf {
         .join(REQUIREMENTS_DIR)
         .join(run_id)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
+    use crate::shared::domain::ProjectId;
+    use tempfile::tempdir;
+
+    #[test]
+    fn release_writer_lock_detects_replaced_file_via_inode() {
+        // Regression: exercises the TOCTOU window where a lock file is
+        // replaced between the content read and the unlink. The post-read
+        // hook simulates another writer deleting and recreating the lock
+        // after the content check passes but before the inode comparison.
+        let store = FsDaemonStore;
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("toctou-test".to_owned()).expect("valid id");
+
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("acquire");
+
+        let lock_path =
+            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path_clone = lock_path.clone();
+
+        // Install hook: after content read matches "owner-A", replace
+        // the file on disk with a new inode containing "owner-B".
+        release_lock_testing::set_post_read_hook(move || {
+            std::fs::remove_file(&lock_path_clone).expect("remove old lock");
+            std::fs::write(&lock_path_clone, "owner-B").expect("write replacement");
+        });
+
+        let outcome = store
+            .release_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("release should not error");
+
+        // The inode changed, so release must fail closed.
+        assert!(
+            matches!(outcome, WriterLockReleaseOutcome::OwnerMismatch { .. }),
+            "expected OwnerMismatch due to inode change, got: {outcome:?}"
+        );
+
+        // The replacement lock must survive — it was NOT deleted.
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).expect("read replacement"),
+            "owner-B",
+            "replacement lock must not be deleted"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&lock_path).expect("cleanup");
+    }
+}
+
