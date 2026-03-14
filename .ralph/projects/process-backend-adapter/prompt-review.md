@@ -1,3 +1,44 @@
+---
+artifact: prompt-review
+project: process-backend-adapter
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-14T17:19:07Z
+---
+
+I’m validating the prompt against the referenced code so the review is grounded in the actual interfaces and call sites. I’ll inspect the adapter trait, the current stub adapter, CLI wiring, and the engine prompt/timeout code first.
+The referenced paths are not at repo root; I’m locating the actual crate layout before reviewing the prompt details. Then I’ll reconcile the prompt’s file references with what exists.
+I found the crate under `ralph-burning-rewrite/`. Next I’m reading the actual trait and engine code to spot where the original prompt is underspecified or mismatched with the implementation surface.
+I have the main integration points. I’m drilling into the request/envelope types and the engine call site now, because several ambiguities depend on exact field names and existing prompt context.
+The main remaining question is what “prompt enrichment” can realistically pull from existing data structures without inventing new plumbing. I’m checking the current invocation context and project record model to see what the prompt can actually include.
+I’ve confirmed the engine already passes remediation and amendments only in `payload.context`. I’m checking session persistence next, because the original prompt says what to return from the adapter but not how that interacts with the existing session manager.
+The missing pieces are mostly around error semantics and unsupported backends. I’m checking the error types now so the rewritten prompt can specify how subprocess failures should map into existing `AppError` variants instead of leaving that to guesswork.
+One important ambiguity is whether this adapter must handle requirements-generation calls too, not just workflow stages. The trait is domain-neutral, and `InvocationContract` has a `Requirements` branch, so I’m checking whether that path is exercised through the same service.
+A larger integration gap showed up: the default `QaValidator` backend is `OpenRouter`, while the proposed adapter only supports `claude` and `codex`. That means most flows would still fail under the new default unless the prompt either adds `OpenRouter` support or explicitly changes backend selection policy.
+I’ve got enough to rewrite the prompt accurately. I’m doing one last pass on how project prompts are read from disk so the refined prompt can name the right inputs and edge cases for the engine prompt builder.
+One more structural check: the prompt asks for richer engine prompts, but the current stage execution helper only receives `project_root`, cursor, and remediation context. I’m verifying whether the required data is already available there or if the function signatures must also change.
+The test constraint needs tightening too. The prompt says existing tests won’t be affected because they use the stub directly, but CLI and daemon tests may still hit `build_agent_execution_service()` and would start defaulting to `process`. I’m checking whether that assumption is actually true.
+I want to sanity-check the backend commands in the prompt itself before I rewrite it. If the cited CLI syntax is wrong, that’s a feasibility problem in the prompt, not just an implementation detail.
+The local CLI check found a concrete problem: the Codex command in the original prompt does not match the installed CLI surface. I’m checking the session-resume subcommand too so the refined prompt can describe a viable Codex invocation path instead of a guessed one.
+The adapter prompt path also needs to say what happens to `InvocationPayload.context`; otherwise remediation/amendment data never reaches the real backend. I’m checking existing dependencies so the refined prompt can safely require temp files for Codex schema/output handling if needed.
+I have enough to write the review. I’m folding in the concrete feasibility findings from the local CLI help and the repo shape so the refined prompt is implementable without hidden follow-up decisions.
+A subtle prompt-enrichment issue showed up: `PayloadRecord` does not store `run_id`, so “prior stage outputs from the current cycle” is ambiguous if you just scan `history/payloads/`. I’m checking whether the payload ID format or journal already provides a stable way to recover the current-run records.
+I found a reliable way to identify prior outputs: use `stage_completed` journal events for the current `run_id` and cycle, then load the referenced payload IDs. I’m wrapping that into the refined prompt so prompt enrichment is testable instead of hand-wavy.
+# Prompt Review
+
+## Issues Found
+- The scope says "self-hosting readiness" but only the workflow `run` path is wired; `requirements` CLI and daemon requirements drafting still construct stub-backed services directly. This matters because the prompt overstates the user-visible outcome.
+- The prompt ignores that `QaValidator` defaults to `OpenRouter`. A Claude/Codex-only adapter cannot execute most built-in flows unless the prompt explicitly defines unsupported-family behavior or required config overrides.
+- The Codex invocation spec does not match the installed CLI surface. In this environment, `codex exec` uses `--output-schema <FILE>` and `--output-last-message <FILE>` and optional `--json` JSONL events, not "stdout is JSON directly".
+- The subprocess working directory is undefined. `InvocationRequest.project_root` currently points at `.ralph-burning/projects/<id>`, which is a record directory, not the repo/worktree root where Claude/Codex should edit files.
+- The prompt never defines how `InvocationPayload.prompt` and `InvocationPayload.context` are merged before invoking the backend. Without that, remediation and amendment context can be silently dropped.
+- Timeout and cancellation are specified at the wrong layer. `AgentExecutionService::invoke()` already owns timeout and cancellation; duplicating that inside the adapter creates races and unclear responsibility.
+- Error mapping is underspecified. Missing executables, unsupported backend families, non-zero exits, invalid outer envelopes, invalid inner JSON, and cancellation all need explicit `AppError` and `FailureClass` behavior to keep retries deterministic.
+- Prompt enrichment asks for project prompt and prior stage outputs but does not define how to recover "current cycle" data. The durable source is current-run `stage_completed` journal events and their `payload_id`s, not a blind scan of `history/payloads/`.
+- The testing claim is inaccurate. Many CLI and conformance tests shell out to `run start`, `run resume`, and `daemon start` without a backend override, so defaulting to `process` will break them unless the harness is updated.
+- Required dependency and API changes are missing. `tokio::process::Command` needs the Tokio `process` feature, SIGTERM needs an explicit implementation choice, and Codex session behavior is incomplete for new vs resumed sessions.
+
+## Refined Prompt
 ### Implement ProcessBackendAdapter for workflow-stage subprocess backends
 
 #### Objective
