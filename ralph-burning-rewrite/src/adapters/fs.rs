@@ -1269,11 +1269,16 @@ impl DaemonStorePort for FsDaemonStore {
         // ── Phase 2: atomic rename-to-staging ───────────────────────────
         // Content matches. Atomically move the lock file to a staging path
         // so the subsequent delete cannot affect a replacement lock that
-        // appeared after our read.
+        // appeared after our read. The staging target is unique per releaser
+        // (keyed by expected_owner) so two concurrent releasers cannot
+        // clobber each other's staging file.
         #[cfg(test)]
         release_lock_testing::invoke_pre_rename_hook();
 
-        let staging = path.with_extension("lock.releasing");
+        let staging = path.with_extension(format!(
+            "lock.releasing.{}",
+            expected_owner.replace('/', "_")
+        ));
         match fs::rename(&path, &staging) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -1340,9 +1345,9 @@ impl DaemonStorePort for FsDaemonStore {
         }
 
         // ── Phase 4: delete the verified staging file ───────────────────
-        // The staging path is exclusively ours — no other process targets
-        // it — so this delete operates on the exact file instance we
-        // verified. There is no TOCTOU gap.
+        // The staging path is unique per expected_owner, so no concurrent
+        // releaser can rename a different lock onto our staging slot. This
+        // delete operates on the exact file instance we verified.
         drop(file);
 
         #[cfg(test)]
@@ -1874,7 +1879,7 @@ mod tests {
 
         let lock_path =
             FsDaemonStore::writer_lock_path(temp.path(), &project_id);
-        let staging_path = lock_path.with_extension("lock.releasing");
+        let staging_path = lock_path.with_extension("lock.releasing.owner-A");
         let lock_path_clone = lock_path.clone();
         let staging_clone = staging_path.clone();
 
@@ -1907,6 +1912,69 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(&lock_path).expect("cleanup");
+    }
+
+    #[test]
+    fn release_writer_lock_unique_staging_prevents_cross_releaser_clobber() {
+        // Regression: with a shared staging path, releaser B could rename
+        // its lock onto releaser A's staging file between A's inode check
+        // and A's final delete, causing A to delete B's validated lock.
+        // With per-owner staging paths this race is impossible: each
+        // releaser stages to a distinct path.
+        let store = FsDaemonStore;
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("staging-race".to_owned()).expect("valid id");
+
+        // Acquire lock as owner-A.
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("acquire A");
+
+        let lock_path =
+            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+
+        // Compute both staging paths to verify they are distinct.
+        let staging_a = lock_path.with_extension("lock.releasing.owner-A");
+        let staging_b = lock_path.with_extension("lock.releasing.owner-B");
+        assert_ne!(staging_a, staging_b, "staging paths must differ per owner");
+
+        // Release owner-A. After inode verification passes but before the
+        // staging file is deleted, simulate owner-B's release placing its
+        // own staging file at the owner-B staging path.
+        let staging_b_clone = staging_b.clone();
+        release_lock_testing::set_post_verify_hook(move || {
+            // Simulate owner-B having renamed its lock to its own staging
+            // path. With the old fixed staging path, this would have
+            // clobbered owner-A's staging; now it lands on a separate path.
+            std::fs::write(&staging_b_clone, "owner-B")
+                .expect("write B staging");
+        });
+
+        let outcome = store
+            .release_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("release A should not error");
+
+        assert!(
+            matches!(outcome, WriterLockReleaseOutcome::Released),
+            "expected Released for owner-A, got: {outcome:?}"
+        );
+
+        // Owner-A's staging file was deleted.
+        assert!(
+            !staging_a.exists(),
+            "owner-A staging must be deleted after release"
+        );
+
+        // Owner-B's staging file survived — not clobbered by A's delete.
+        assert_eq!(
+            std::fs::read_to_string(&staging_b).expect("read B staging"),
+            "owner-B",
+            "owner-B staging must survive owner-A's release"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&staging_b).expect("cleanup B staging");
     }
 }
 
