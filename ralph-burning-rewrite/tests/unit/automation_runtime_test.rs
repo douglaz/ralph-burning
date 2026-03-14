@@ -13,7 +13,7 @@ use ralph_burning::contexts::automation_runtime::task_service::{
 };
 use ralph_burning::contexts::automation_runtime::watcher::parse_requirements_command;
 use ralph_burning::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
-use ralph_burning::shared::domain::FlowPreset;
+use ralph_burning::shared::domain::{BackendFamily, FlowPreset};
 use ralph_burning::shared::error::AppError;
 
 fn sample_task() -> DaemonTask {
@@ -2907,4 +2907,286 @@ fn daemon_loop_process_cycle_does_not_call_set_current_dir() {
         !source.contains("set_current_dir"),
         "daemon_loop.rs must not call set_current_dir"
     );
+}
+
+// ── Daemon requirements dispatch honors workspace backend/model defaults ────
+
+/// Helper: create a workspace.toml with explicit backend/model defaults in a
+/// temp directory and return the loaded `EffectiveConfig`.
+fn setup_workspace_with_defaults(
+    base_dir: &std::path::Path,
+    default_backend: &str,
+    default_model: &str,
+) -> ralph_burning::contexts::workspace_governance::config::EffectiveConfig {
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    let toml_content = format!(
+        r#"version = 1
+created_at = "2026-03-14T00:00:00Z"
+
+[settings]
+default_backend = "{default_backend}"
+default_model = "{default_model}"
+"#
+    );
+    std::fs::write(ws_dir.join("workspace.toml"), &toml_content).expect("write workspace.toml");
+    ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+        .expect("load effective config")
+}
+
+/// Helper: build a `RequirementsService` with workspace defaults from an
+/// `EffectiveConfig`, using a shared `StubBackendAdapter` so the test can
+/// inspect recorded invocations afterward. This replicates the daemon's
+/// `build_requirements_service` construction pattern.
+fn build_test_requirements_service_with_defaults(
+    adapter: ralph_burning::adapters::stub_backend::StubBackendAdapter,
+    effective_config: &ralph_burning::contexts::workspace_governance::config::EffectiveConfig,
+) -> ralph_burning::contexts::requirements_drafting::service::RequirementsService<
+    ralph_burning::adapters::stub_backend::StubBackendAdapter,
+    ralph_burning::adapters::fs::FsRawOutputStore,
+    ralph_burning::adapters::fs::FsSessionStore,
+    ralph_burning::adapters::fs::FsRequirementsStore,
+> {
+    use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+    use ralph_burning::contexts::agent_execution::service::BackendSelectionConfig;
+    use ralph_burning::contexts::agent_execution::AgentExecutionService;
+    use ralph_burning::contexts::requirements_drafting::service::RequirementsService;
+
+    let workspace_defaults =
+        BackendSelectionConfig::from_effective_config(effective_config).expect("build defaults");
+    let raw_output_store = FsRawOutputStore;
+    let session_store = FsSessionStore;
+    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
+    let requirements_store = FsRequirementsStore;
+    RequirementsService::new(agent_service, requirements_store)
+        .with_workspace_defaults(workspace_defaults)
+}
+
+#[tokio::test]
+async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
+    // Regression: daemon-driven requirements_quick must resolve the same
+    // backend family and model ID as the direct CLI requirements path for a
+    // workspace with explicit defaults. Uses the StubBackendAdapter's
+    // recording seam to verify the actual resolved target at invocation time.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with explicit defaults (codex / gpt-5-codex)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+
+    // Build the service the same way the daemon does after the fix
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    // Run requirements quick
+    let _run_id = req_svc
+        .quick(base_dir, "Test idea for quick", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    // Verify the recorded invocations used the workspace defaults
+    let invocations = adapter.recorded_invocations();
+    assert!(
+        !invocations.is_empty(),
+        "at least one invocation should have been recorded"
+    );
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "invocation '{}' should use workspace default backend (codex), got {:?}",
+            inv.contract_label,
+            inv.resolved_target.backend.family
+        );
+        assert_eq!(
+            "gpt-5-codex",
+            inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            inv.contract_label,
+            inv.resolved_target.model.model_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
+    // Regression: daemon-driven requirements_draft must resolve the same
+    // backend family and model ID as the direct CLI requirements path for a
+    // workspace with explicit defaults.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with explicit defaults (codex / gpt-5-codex)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+
+    // Build the service the same way the daemon does after the fix
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    // Run requirements draft
+    let _run_id = req_svc
+        .draft(base_dir, "Test idea for draft", Utc::now())
+        .await
+        .expect("requirements draft should succeed");
+
+    // Verify the recorded invocations used the workspace defaults
+    let invocations = adapter.recorded_invocations();
+    assert!(
+        !invocations.is_empty(),
+        "at least one invocation should have been recorded"
+    );
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "invocation '{}' should use workspace default backend (codex), got {:?}",
+            inv.contract_label,
+            inv.resolved_target.backend.family
+        );
+        assert_eq!(
+            "gpt-5-codex",
+            inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            inv.contract_label,
+            inv.resolved_target.model.model_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
+    // When workspace defaults are unset, daemon requirements behavior remains
+    // unchanged and falls back to existing role defaults. Requirements stages
+    // use different roles (Planner, Reviewer), so each invocation gets its
+    // own role's default backend/model rather than a single shared default.
+    use ralph_burning::shared::domain::BackendRole;
+
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace without backend/model defaults
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Test with no defaults", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    // Each invocation should use its role's built-in default (no workspace override).
+    // Verify that no invocation was overridden to a non-default backend.
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    // Requirements stages only use Planner and Reviewer roles.
+    // Planner default: Claude / opus-4.1
+    // Reviewer default: Claude / sonnet-4.0
+    for inv in &invocations {
+        let expected = if inv.contract_label.contains("review") {
+            BackendRole::Reviewer.default_target()
+        } else {
+            BackendRole::Planner.default_target()
+        };
+        assert_eq!(
+            expected.backend.family,
+            inv.resolved_target.backend.family,
+            "without workspace defaults, invocation '{}' should use role default backend",
+            inv.contract_label
+        );
+        assert_eq!(
+            expected.model.model_id,
+            inv.resolved_target.model.model_id,
+            "without workspace defaults, invocation '{}' should use role default model",
+            inv.contract_label
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_partial_defaults_backend_only() {
+    // Partial defaults: default_backend alone selects that backend's default model.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"codex\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Backend-only default", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "backend-only default should select codex family"
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_partial_defaults_model_only() {
+    // Partial defaults: default_model alone overrides only the model on the
+    // role's default backend (Planner → Claude).
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_model = \"sonnet-4.0\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Model-only default", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    for inv in &invocations {
+        // Backend should remain the Planner role default (Claude)
+        assert_eq!(
+            BackendFamily::Claude,
+            inv.resolved_target.backend.family,
+            "model-only default should keep role default backend (claude)"
+        );
+        assert_eq!(
+            "sonnet-4.0",
+            inv.resolved_target.model.model_id,
+            "model-only default should override to sonnet-4.0"
+        );
+    }
 }

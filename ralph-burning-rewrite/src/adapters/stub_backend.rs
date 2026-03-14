@@ -11,8 +11,15 @@ use crate::contexts::agent_execution::model::{
     RawOutputReference, TokenCounts,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
-use crate::shared::domain::{FailureClass, SessionPolicy, StageId};
+use crate::shared::domain::{FailureClass, ResolvedBackendTarget, SessionPolicy, StageId};
 use crate::shared::error::{AppError, AppResult};
+
+/// A recorded invocation target, captured by `StubBackendAdapter` for test assertions.
+#[derive(Debug, Clone)]
+pub struct RecordedInvocation {
+    pub contract_label: String,
+    pub resolved_target: ResolvedBackendTarget,
+}
 
 #[derive(Clone)]
 pub struct StubBackendAdapter {
@@ -29,6 +36,7 @@ pub struct StubBackendAdapter {
     label_payload_overrides: Arc<Mutex<HashMap<String, Vec<Value>>>>,
     label_payload_counters: HashMap<String, Arc<AtomicU32>>,
     cancelled_invocations: Arc<Mutex<Vec<String>>>,
+    recorded_invocations: Arc<Mutex<Vec<RecordedInvocation>>>,
 }
 
 impl Default for StubBackendAdapter {
@@ -45,6 +53,7 @@ impl Default for StubBackendAdapter {
             label_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
             label_payload_counters: HashMap::new(),
             cancelled_invocations: Arc::new(Mutex::new(Vec::new())),
+            recorded_invocations: Arc::new(Mutex::new(Vec::new())),
         }
     }
 }
@@ -118,6 +127,14 @@ impl StubBackendAdapter {
         self.cancelled_invocations
             .lock()
             .expect("cancelled invocation lock poisoned")
+            .clone()
+    }
+
+    /// Return a clone of the recorded invocation targets for test assertions.
+    pub fn recorded_invocations(&self) -> Vec<RecordedInvocation> {
+        self.recorded_invocations
+            .lock()
+            .expect("recorded invocation lock poisoned")
             .clone()
     }
 
@@ -215,6 +232,15 @@ impl AgentExecutionPort for StubBackendAdapter {
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         let contract_label = request.contract.label();
+
+        // Record the invocation target for test assertions.
+        self.recorded_invocations
+            .lock()
+            .expect("recorded invocation lock poisoned")
+            .push(RecordedInvocation {
+                contract_label: contract_label.clone(),
+                resolved_target: request.resolved_target.clone(),
+            });
 
         if request.cancellation_token.is_cancelled() {
             return Err(AppError::InvocationCancelled {
