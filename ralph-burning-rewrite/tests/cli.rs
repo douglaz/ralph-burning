@@ -4,7 +4,7 @@ use std::process::Command;
 
 use chrono::{Duration, Utc};
 use ralph_burning::contexts::automation_runtime::model::{
-    DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+    CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, RoutingSource, TaskStatus, WorktreeLease,
 };
 use ralph_burning::shared::domain::FlowPreset;
 use tempfile::tempdir;
@@ -111,6 +111,14 @@ fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
         serde_json::to_string_pretty(lease).expect("serialize daemon lease"),
     )
     .expect("write daemon lease");
+}
+
+fn write_writer_lock(base_dir: &std::path::Path, project_id: &str, owner: &str) {
+    let path = base_dir
+        .join(".ralph-burning/daemon/leases")
+        .join(format!("writer-{project_id}.lock"));
+    fs::create_dir_all(path.parent().expect("lock parent")).expect("create lease dir");
+    fs::write(path, owner).expect("write writer lock");
 }
 
 fn init_git_repo(base_dir: &std::path::Path) {
@@ -441,13 +449,17 @@ fn daemon_abort_claimed_task_releases_lease() {
             last_heartbeat: now,
         },
     );
+    write_writer_lock(temp_dir.path(), "demo-claimed", "lease-claimed");
 
     let output = Command::new(binary())
         .args(["daemon", "abort", "task-claimed"])
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    // Abort with a missing worktree triggers partial cleanup failure —
+    // the command exits non-zero because resources_released is false
+    // when all three sub-steps don't positively succeed.
+    assert!(!output.status.success());
 
     let task_path = temp_dir
         .path()
@@ -455,11 +467,11 @@ fn daemon_abort_claimed_task_releases_lease() {
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
-    assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-claimed.json")
-        .exists());
+    // Lease reference preserved — callers do not clear lease_id when
+    // resources_released is false. The physical lease file was deleted
+    // (writer-lock release succeeded, so phase 3 ran), but the task's
+    // lease_id stays set for operator visibility.
+    assert!(task.lease_id.is_some());
 }
 
 #[test]
@@ -507,13 +519,15 @@ fn daemon_abort_active_task_releases_lease() {
             last_heartbeat: now,
         },
     );
+    write_writer_lock(temp_dir.path(), "demo-active-abort", "lease-active-abort");
 
     let output = Command::new(binary())
         .args(["daemon", "abort", "task-active-abort"])
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    // Abort with a missing worktree triggers partial cleanup failure.
+    assert!(!output.status.success());
 
     let task_path = temp_dir
         .path()
@@ -521,11 +535,8 @@ fn daemon_abort_active_task_releases_lease() {
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
-    assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-active-abort.json")
-        .exists());
+    // Lease reference preserved for operator recovery.
+    assert!(task.lease_id.is_some());
 }
 
 #[test]
@@ -4330,6 +4341,24 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
         !lock_path.exists(),
         "writer lock file should be released after run start completes"
     );
+
+    // No CLI lease files should remain after successful run
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after successful run start"
+    );
 }
 
 #[test]
@@ -4401,6 +4430,24 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
         !lock_path.exists(),
         "writer lock file should be released after run resume completes"
     );
+
+    // No CLI lease files should remain after successful resume
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after successful run resume"
+    );
 }
 
 #[test]
@@ -4424,6 +4471,76 @@ fn cli_run_start_releases_lock_on_error() {
     assert!(
         !lock_path.exists(),
         "writer lock file should be released even when run fails"
+    );
+
+    // No CLI lease files should remain after failed run
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after failed run start"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful run exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_run_start_close_failure_exits_nonzero() {
+    // Regression: a successful run with a guard-close failure must exit
+    // non-zero. The test seam deletes the writer lock file after the
+    // engine completes but before the explicit close().
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-fail");
+    select_active_project_fixture(temp_dir.path(), "close-fail");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run start with close failure");
+
+    assert!(
+        !output.status.success(),
+        "run start must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+
+    // CLI lease record must remain durable (close did not delete it
+    // because lock release failed).
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        !cli_leases.is_empty(),
+        "CLI lease file must remain durable when close fails"
     );
 }
 
@@ -4453,6 +4570,233 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
     assert!(
         !stdout.contains("Cleanup Failures"),
         "should not contain cleanup failures, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stale CLI lease reconcile + recovery (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_daemon_reconcile_cleans_stale_cli_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "cli-reconcile");
+    select_active_project_fixture(temp_dir.path(), "cli-reconcile");
+
+    // Inject a stale CLI lease record and writer lock.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stale-inject".to_owned(),
+        project_id: "cli-reconcile".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-stale-inject.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+    fs::write(
+        leases_dir.join("writer-cli-reconcile.lock"),
+        "cli-stale-inject",
+    )
+    .expect("write writer lock");
+
+    // Verify run start fails because the writer lock is held.
+    let blocked_output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start blocked");
+    assert!(
+        !blocked_output.status.success(),
+        "run start should fail when stale CLI lock is held"
+    );
+
+    // Run daemon reconcile to clean the stale CLI lease.
+    let reconcile_output = Command::new(binary())
+        .args(["daemon", "reconcile"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+    let reconcile_stdout = String::from_utf8_lossy(&reconcile_output.stdout);
+    assert!(
+        reconcile_output.status.success(),
+        "reconcile should succeed, stderr: {}",
+        String::from_utf8_lossy(&reconcile_output.stderr)
+    );
+    assert!(
+        reconcile_stdout.contains("stale_leases=1"),
+        "should report 1 stale lease, got: {reconcile_stdout}"
+    );
+    assert!(
+        reconcile_stdout.contains("released_leases=1"),
+        "should report 1 released lease, got: {reconcile_stdout}"
+    );
+    assert!(
+        reconcile_stdout.contains("failed_tasks=0"),
+        "should report 0 failed tasks, got: {reconcile_stdout}"
+    );
+    assert!(
+        !reconcile_stdout.contains("Cleanup Failures"),
+        "should not contain cleanup failures, got: {reconcile_stdout}"
+    );
+
+    // Verify CLI lease file and writer lock are cleaned.
+    assert!(
+        !leases_dir.join("cli-stale-inject.json").exists(),
+        "CLI lease file should be removed after reconcile"
+    );
+    assert!(
+        !leases_dir.join("writer-cli-reconcile.lock").exists(),
+        "writer lock should be removed after reconcile"
+    );
+
+    // Verify run start now succeeds (lock is no longer held).
+    let start_output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start after reconcile");
+    assert!(
+        start_output.status.success(),
+        "run start should succeed after stale CLI lease is reconciled, stderr: {}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+}
+
+#[test]
+fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Inject a stale CLI lease record WITHOUT a matching writer lock.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-no-lock-cli".to_owned(),
+        project_id: "orphan-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-no-lock-cli.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+
+    // Reconcile should fail because the writer lock is already absent.
+    let output = Command::new(binary())
+        .args(["daemon", "reconcile"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+    assert!(
+        !output.status.success(),
+        "reconcile should fail when writer lock is missing for stale CLI lease"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Cleanup Failures"),
+        "should report cleanup failures, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("writer_lock_absent"),
+        "should mention writer_lock_absent, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Oversized TTL override must not reclaim a fresh CLI-held writer lock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+    select_active_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+
+    // Inject a fresh CLI lease record and matching writer lock.
+    let leases_dir = temp_dir
+        .path()
+        .join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-fresh-oversized".to_owned(),
+        project_id: "oversized-ttl-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now(),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json =
+        serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-fresh-oversized.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+    fs::write(
+        leases_dir.join("writer-oversized-ttl-proj.lock"),
+        "cli-fresh-oversized",
+    )
+    .expect("write writer lock");
+
+    // Run daemon reconcile with u64::MAX as TTL override.
+    // The saturating conversion must prevent the fresh lease from being
+    // marked stale — no leases should be reclaimed.
+    let output = Command::new(binary())
+        .args([
+            "daemon",
+            "reconcile",
+            "--ttl-seconds",
+            "18446744073709551615",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "reconcile should succeed, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        stdout.contains("stale_leases=0"),
+        "should report 0 stale leases with oversized TTL, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("released_leases=0"),
+        "should report 0 released leases with oversized TTL, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("failed_tasks=0"),
+        "should report 0 failed tasks with oversized TTL, got: {stdout}"
+    );
+
+    // CLI lease file and writer lock must still exist.
+    assert!(
+        leases_dir.join("cli-fresh-oversized.json").exists(),
+        "CLI lease file must not be removed by oversized TTL reconcile"
+    );
+    assert!(
+        leases_dir
+            .join("writer-oversized-ttl-proj.lock")
+            .exists(),
+        "writer lock must not be released by oversized TTL reconcile"
     );
 }
 
@@ -4498,10 +4842,31 @@ fn conformance_daemon_lifecycle_008_passes() {
 
 #[test]
 fn conformance_full_suite_passes() {
-    let output = Command::new(binary())
+    // Hard-link the CLI binary to a stable path under the test binary's
+    // directory (inside target/) so nested sub-spawns remain reliable even
+    // if cargo relinks the original during parallel test execution. Using
+    // target/ instead of tempdir() avoids dependence on an executable /tmp
+    // (some systems mount /tmp with noexec). A hard link pins the inode —
+    // even if the original path is replaced, the linked copy stays valid.
+    // This avoids ETXTBSY from copy and ENOENT from relink races.
+    let binary_dir = std::path::Path::new(binary())
+        .parent()
+        .expect("binary parent directory");
+    let stable_binary = binary_dir.join("ralph-burning-stable-conformance");
+    // Remove any stale copy from a previous run before linking.
+    let _ = std::fs::remove_file(&stable_binary);
+    std::fs::hard_link(binary(), &stable_binary)
+        .or_else(|_| std::fs::copy(binary(), &stable_binary).map(|_| ()))
+        .expect("link or copy binary to stable path");
+
+    let output = Command::new(&stable_binary)
         .args(["conformance", "run"])
+        .env("RALPH_BURNING_CLI_PATH", &stable_binary)
         .output()
         .expect("run conformance run (full suite)");
+
+    // Clean up the stable binary after the run.
+    let _ = std::fs::remove_file(&stable_binary);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

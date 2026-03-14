@@ -206,13 +206,180 @@ pub struct WorktreeLease {
     pub last_heartbeat: DateTime<Utc>,
 }
 
+fn lease_heartbeat_deadline(last_heartbeat: DateTime<Utc>, ttl_seconds: u64) -> DateTime<Utc> {
+    saturating_heartbeat_deadline(last_heartbeat, ttl_seconds)
+}
+
+/// Compute a heartbeat deadline with saturating semantics. If the TTL value
+/// is too large for `chrono::Duration` or the resulting `DateTime` overflows,
+/// returns `DateTime::MAX_UTC` so the lease is never considered stale.
+pub fn saturating_heartbeat_deadline(
+    last_heartbeat: DateTime<Utc>,
+    ttl_seconds: u64,
+) -> DateTime<Utc> {
+    let ttl_i64 = ttl_seconds.min(i64::MAX as u64) as i64;
+    match Duration::try_seconds(ttl_i64) {
+        Some(dur) => last_heartbeat
+            .checked_add_signed(dur)
+            .unwrap_or(DateTime::<Utc>::MAX_UTC),
+        None => DateTime::<Utc>::MAX_UTC,
+    }
+}
+
+/// Convert a `u64` TTL to a bounded `i64` suitable for
+/// `chrono::Duration::try_seconds()`. Values above `i64::MAX` are saturated
+/// to `i64::MAX` rather than wrapping negative. Callers must still use
+/// `try_seconds()` (not `seconds()`) because chrono's `TimeDelta` may reject
+/// even `i64::MAX`.
+pub fn saturating_ttl_seconds(ttl: u64) -> i64 {
+    ttl.min(i64::MAX as u64) as i64
+}
+
 impl WorktreeLease {
     pub fn heartbeat_deadline(&self) -> DateTime<Utc> {
-        self.last_heartbeat + Duration::seconds(self.ttl_seconds.min(i64::MAX as u64) as i64)
+        lease_heartbeat_deadline(self.last_heartbeat, self.ttl_seconds)
     }
 
     pub fn is_stale_at(&self, now: DateTime<Utc>) -> bool {
         now > self.heartbeat_deadline()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CliWriterLease {
+    pub lease_id: String,
+    pub project_id: String,
+    pub owner: String,
+    pub acquired_at: DateTime<Utc>,
+    pub ttl_seconds: u64,
+    pub last_heartbeat: DateTime<Utc>,
+}
+
+impl CliWriterLease {
+    pub fn heartbeat_deadline(&self) -> DateTime<Utc> {
+        lease_heartbeat_deadline(self.last_heartbeat, self.ttl_seconds)
+    }
+
+    pub fn is_stale_at(&self, now: DateTime<Utc>) -> bool {
+        now > self.heartbeat_deadline()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "LeaseRecordWire", into = "TaggedLeaseRecord")]
+pub enum LeaseRecord {
+    Worktree(WorktreeLease),
+    CliWriter(CliWriterLease),
+}
+
+impl LeaseRecord {
+    pub fn lease_id(&self) -> &str {
+        match self {
+            Self::Worktree(lease) => &lease.lease_id,
+            Self::CliWriter(lease) => &lease.lease_id,
+        }
+    }
+
+    pub fn project_id(&self) -> &str {
+        match self {
+            Self::Worktree(lease) => &lease.project_id,
+            Self::CliWriter(lease) => &lease.project_id,
+        }
+    }
+
+    pub fn acquired_at(&self) -> &DateTime<Utc> {
+        match self {
+            Self::Worktree(lease) => &lease.acquired_at,
+            Self::CliWriter(lease) => &lease.acquired_at,
+        }
+    }
+
+    pub fn is_stale_at(&self, now: DateTime<Utc>) -> bool {
+        match self {
+            Self::Worktree(lease) => lease.is_stale_at(now),
+            Self::CliWriter(lease) => lease.is_stale_at(now),
+        }
+    }
+}
+
+impl From<WorktreeLease> for LeaseRecord {
+    fn from(value: WorktreeLease) -> Self {
+        Self::Worktree(value)
+    }
+}
+
+impl From<CliWriterLease> for LeaseRecord {
+    fn from(value: CliWriterLease) -> Self {
+        Self::CliWriter(value)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(untagged)]
+enum LeaseRecordWire {
+    Tagged(TaggedLeaseRecord),
+    LegacyWorktree(LegacyWorktreeLease),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "lease_kind", rename_all = "snake_case")]
+enum TaggedLeaseRecord {
+    Worktree(WorktreeLease),
+    CliWriter(CliWriterLease),
+}
+
+impl From<LeaseRecord> for TaggedLeaseRecord {
+    fn from(value: LeaseRecord) -> Self {
+        match value {
+            LeaseRecord::Worktree(lease) => Self::Worktree(lease),
+            LeaseRecord::CliWriter(lease) => Self::CliWriter(lease),
+        }
+    }
+}
+
+impl From<TaggedLeaseRecord> for LeaseRecord {
+    fn from(value: TaggedLeaseRecord) -> Self {
+        match value {
+            TaggedLeaseRecord::Worktree(lease) => Self::Worktree(lease),
+            TaggedLeaseRecord::CliWriter(lease) => Self::CliWriter(lease),
+        }
+    }
+}
+
+impl From<LeaseRecordWire> for LeaseRecord {
+    fn from(value: LeaseRecordWire) -> Self {
+        match value {
+            LeaseRecordWire::Tagged(record) => record.into(),
+            LeaseRecordWire::LegacyWorktree(lease) => Self::Worktree(lease.into()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LegacyWorktreeLease {
+    lease_id: String,
+    task_id: String,
+    project_id: String,
+    worktree_path: PathBuf,
+    branch_name: String,
+    acquired_at: DateTime<Utc>,
+    ttl_seconds: u64,
+    last_heartbeat: DateTime<Utc>,
+}
+
+impl From<LegacyWorktreeLease> for WorktreeLease {
+    fn from(value: LegacyWorktreeLease) -> Self {
+        Self {
+            lease_id: value.lease_id,
+            task_id: value.task_id,
+            project_id: value.project_id,
+            worktree_path: value.worktree_path,
+            branch_name: value.branch_name,
+            acquired_at: value.acquired_at,
+            ttl_seconds: value.ttl_seconds,
+            last_heartbeat: value.last_heartbeat,
+        }
     }
 }
 

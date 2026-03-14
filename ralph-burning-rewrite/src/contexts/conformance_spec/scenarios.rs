@@ -41,6 +41,12 @@ impl Drop for TempWorkspace {
 // ---------------------------------------------------------------------------
 
 fn binary_path() -> PathBuf {
+    // Allow callers (e.g. integration tests) to pin the CLI binary to a stable
+    // path so nested sub-spawns remain reliable even if cargo relinks the
+    // original binary during parallel test execution.
+    if let Ok(override_path) = std::env::var("RALPH_BURNING_CLI_PATH") {
+        return PathBuf::from(override_path);
+    }
     let exe = std::env::current_exe().expect("current executable path");
     // Canonicalize to an absolute path so the binary can be found even when the
     // child process runs in a different working directory (e.g. a temp workspace).

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::shared::domain::ProjectId;
 use crate::shared::error::AppResult;
 
+pub mod cli_writer_lease;
 pub mod daemon_loop;
 pub mod lease_service;
 pub mod model;
@@ -17,9 +18,10 @@ pub use lease_service::{
     LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult,
 };
 pub use model::{
-    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, RoutingResolution,
-    RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
+    CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
+    LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
+pub use cli_writer_lease::CliWriterLeaseGuard;
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;
@@ -46,6 +48,19 @@ pub enum ResourceCleanupOutcome {
     AlreadyAbsent,
 }
 
+/// Outcome of an owner-aware writer-lock release. Distinguishes positive
+/// removal from absence and ownership mismatch so callers can enforce
+/// strict cleanup accounting and avoid deleting a lock owned by another writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriterLockReleaseOutcome {
+    /// The lock file contents matched the expected owner and was removed.
+    Released,
+    /// The lock file was not present at release time.
+    AlreadyAbsent,
+    /// The lock file exists but contains a different owner token.
+    OwnerMismatch { actual_owner: String },
+}
+
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;
     fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask>;
@@ -55,6 +70,9 @@ pub trait DaemonStorePort {
     fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>>;
     fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease>;
     fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()>;
+    fn list_lease_records(&self, base_dir: &Path) -> AppResult<Vec<LeaseRecord>>;
+    fn read_lease_record(&self, base_dir: &Path, lease_id: &str) -> AppResult<LeaseRecord>;
+    fn write_lease_record(&self, base_dir: &Path, lease: &LeaseRecord) -> AppResult<()>;
     fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<ResourceCleanupOutcome>;
 
     fn read_daemon_journal(&self, base_dir: &Path) -> AppResult<Vec<DaemonJournalEvent>>;
@@ -74,7 +92,8 @@ pub trait DaemonStorePort {
         &self,
         base_dir: &Path,
         project_id: &ProjectId,
-    ) -> AppResult<ResourceCleanupOutcome>;
+        expected_owner: &str,
+    ) -> AppResult<WriterLockReleaseOutcome>;
 }
 
 pub trait WorktreePort {

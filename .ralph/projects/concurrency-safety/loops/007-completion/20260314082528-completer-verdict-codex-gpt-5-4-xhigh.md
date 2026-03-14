@@ -1,0 +1,35 @@
+---
+artifact: completer-verdict
+loop: 7
+project: concurrency-safety
+backend: codex(gpt-5.4-xhigh)
+role: completer
+created_at: 2026-03-14T08:25:28Z
+---
+
+Reviewing `prompt.md`, the implemented CLI lease/reconcile paths, and the test surface from a requirement-traceability perspective rather than the planner’s implementation summary. I’ll confirm the code paths actually match the acceptance criteria, then run the prescribed verification commands if the tree is in a runnable state.
+I’m gathering the exact requirement text and locating the lease-related code and tests before making any claim about completeness. After that I’ll validate behavior by running the requested commands rather than relying on the loop summaries.
+`prompt.md` is not at the repo root, so I’m locating the actual task prompt file and then reading the implementation and tests around `cli_writer_lease`, `run`, and reconcile. I also noted one untracked completion artifact, which I’ll ignore unless it conflicts with the source tree.
+I have the core CLI guard and reconcile service loaded now. Next I’m checking the remaining halves of `run.rs` and `lease_service.rs`, then I’ll trace the storage model and test coverage to see whether the code actually satisfies the strict cleanup/accounting requirements.
+The lease model is explicit and backward-compatible at the serde boundary, which is one of the more subtle requirements. I’m reading the source prompt now and then I’ll cross-check the filesystem adapter and tests, since the remaining risks are in cleanup semantics and verification coverage rather than the high-level shape.
+I’ve got the prompt and the main implementation paths. The remaining validation is in the adapter semantics and test matrix: lock file ownership checks, reconcile accounting, stale CLI recovery, and preservation of the `daemon_loop.rs` CWD invariant.
+The CLI and unit tests cover the exact stale-CLI scenarios the prompt called out. I’m checking the lower-level lock-release implementation now because the main remaining risk is whether reconcile and guard cleanup are actually safe against replaced lock files, not just whether the happy-path tests exist.
+The implementation itself looks aligned so far. I’m now checking whether the acceptance criteria are actually exercised end-to-end, especially lock contention on live CLI runs and the required verification commands, because that’s where a “planner complete” claim usually breaks down.
+I’ve finished the source and test traceability pass. The remaining step is the hard check: run the exact build, test, and conformance commands from the prompt in `ralph-burning-rewrite` and see whether anything fails or exposes an untested gap.
+The first required command passed cleanly. I’m running the full test suite next; if this fails, that alone is enough to reject completion regardless of the planner summary.
+The CLI suite is progressing cleanly, including the stale CLI reconcile cases and the daemon CWD regression cases. I’m waiting on the remaining unit/conformance-related tests to finish before I call the suite green.
+`cargo test` passed in full, including the dedicated CLI stale-lease tests and both CWD-safety regressions. I’m running the standalone conformance suite now because the prompt requires it explicitly, even though the test suite already exercised conformance-related paths.
+Conformance is also green so far, including `DAEMON-LIFECYCLE-007` and `DAEMON-LIFECYCLE-008`, which are the two regressions most directly tied to this task. I’m waiting for the full 218-scenario run to complete so the verdict is based on the exact prompt verification, not a subset.
+The acceptance-critical conformance scenarios are already confirmed, and the rest of the suite is still passing. I’m letting the standalone run finish so the final verdict can reference the exact verification outcome without caveats.
+# Verdict: COMPLETE
+
+The project satisfies all requirements:
+- CLI `run start` and `run resume` now acquire a lease-backed project writer lock before workflow execution or resume mutation via [src/cli/run.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/run.rs) and [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs), while still contending on the shared project writer-lock file from [src/adapters/fs.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/fs.rs) and preserving `ProjectWriterLockHeld` behavior.
+- CLI-held locks are represented explicitly as `LeaseRecord::CliWriter` in [src/contexts/automation_runtime/model.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/model.rs), with backward-compatible deserialization for legacy worktree lease files and no fake task IDs or worktree paths.
+- `daemon reconcile` now scans stale CLI writer leases separately in [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs), releases the writer lock before deleting the CLI lease record, does not touch daemon tasks or worktrees for CLI leases, and accounts for them as `stale_leases`/`released_leases` without incrementing `failed_tasks`.
+- Strict cleanup semantics are implemented and covered: already-absent or I/O-failing CLI cleanup sub-steps are reported as cleanup failures rather than successful releases, and stale CLI cleanup is verified to allow a subsequent `run start` to succeed in [tests/unit/automation_runtime_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs) and [tests/cli.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/cli.rs).
+- Normal success, failure unwind, and explicit-close behavior for CLI-held locks is validated: the guard owns both lease and lock lifecycle, heartbeats use the required long-running safety policy, and close failures surface non-zero while leaving durable recovery state visible in [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs), [tests/unit/automation_runtime_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs), and [tests/cli.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/cli.rs).
+- Daemon CWD safety remains intact: [src/contexts/automation_runtime/daemon_loop.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/daemon_loop.rs) contains no `set_current_dir`, and the invariant is still enforced by [tests/unit/automation_runtime_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs) and [src/contexts/conformance_spec/scenarios.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/conformance_spec/scenarios.rs).
+- Required verification passed: `nix develop -c cargo build`, `nix develop -c cargo test`, and `nix develop -c cargo run -- conformance run` all succeeded; the standalone conformance run finished `218/218` passing.
+
+---

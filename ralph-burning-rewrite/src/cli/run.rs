@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::sync::Arc;
 
 use clap::{Args, Subcommand};
 
@@ -11,42 +11,16 @@ use crate::adapters::fs::{
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
-use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::automation_runtime::cli_writer_lease::{
+    CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
+};
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::{ProjectId, StageId};
+use crate::shared::domain::StageId;
 use crate::shared::error::{AppError, AppResult};
-
-/// RAII guard that releases the per-project writer lock on drop.
-struct WriterLockGuard<'a> {
-    store: &'a dyn DaemonStorePort,
-    base_dir: &'a Path,
-    project_id: ProjectId,
-}
-
-impl Drop for WriterLockGuard<'_> {
-    fn drop(&mut self) {
-        let _ = self
-            .store
-            .release_writer_lock(self.base_dir, &self.project_id);
-    }
-}
-
-fn acquire_cli_writer_lock<'a>(
-    store: &'a dyn DaemonStorePort,
-    base_dir: &'a Path,
-    project_id: ProjectId,
-) -> AppResult<WriterLockGuard<'a>> {
-    store.acquire_writer_lock(base_dir, &project_id, "cli")?;
-    Ok(WriterLockGuard {
-        store,
-        base_dir,
-        project_id,
-    })
-}
 
 #[derive(Debug, Args)]
 pub struct RunCommand {
@@ -176,9 +150,16 @@ async fn handle_start() -> AppResult<()> {
         });
     }
 
-    // Acquire per-project writer lock before any run-state mutation
-    let daemon_store = FsDaemonStore;
-    let _lock_guard = acquire_cli_writer_lock(&daemon_store, &current_dir, project_id.clone())?;
+    // Acquire per-project writer lock with lease record before any run-state mutation
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    let lock_guard = CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        &current_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )?;
 
     let effective_config = EffectiveConfig::load(&current_dir)?;
 
@@ -206,6 +187,20 @@ async fn handle_start() -> AppResult<()> {
         &effective_config,
     )
     .await?;
+
+    // Test-only injection seam: delete the writer lock file before close()
+    // to exercise close-failure handling at the CLI level.
+    if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
+        let lock_path = current_dir.join(format!(
+            ".ralph-burning/daemon/leases/writer-{}.lock",
+            project_id.as_str()
+        ));
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match final_snapshot.status {
@@ -253,9 +248,16 @@ async fn handle_resume() -> AppResult<()> {
         });
     }
 
-    // Acquire per-project writer lock before any run-state mutation
-    let daemon_store = FsDaemonStore;
-    let _lock_guard = acquire_cli_writer_lock(&daemon_store, &current_dir, project_id.clone())?;
+    // Acquire per-project writer lock with lease record before any run-state mutation
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    let lock_guard = CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        &current_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )?;
 
     let effective_config = EffectiveConfig::load(&current_dir)?;
     let agent_service = build_agent_execution_service();
@@ -283,6 +285,10 @@ async fn handle_resume() -> AppResult<()> {
         &effective_config,
     )
     .await?;
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match final_snapshot.status {
