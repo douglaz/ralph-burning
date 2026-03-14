@@ -4330,6 +4330,24 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
         !lock_path.exists(),
         "writer lock file should be released after run start completes"
     );
+
+    // No CLI lease files should remain after successful run
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after successful run start"
+    );
 }
 
 #[test]
@@ -4401,6 +4419,24 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
         !lock_path.exists(),
         "writer lock file should be released after run resume completes"
     );
+
+    // No CLI lease files should remain after successful resume
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after successful run resume"
+    );
 }
 
 #[test]
@@ -4424,6 +4460,24 @@ fn cli_run_start_releases_lock_on_error() {
     assert!(
         !lock_path.exists(),
         "writer lock file should be released even when run fails"
+    );
+
+    // No CLI lease files should remain after failed run
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        cli_leases.is_empty(),
+        "no CLI lease file should remain after failed run start"
     );
 }
 

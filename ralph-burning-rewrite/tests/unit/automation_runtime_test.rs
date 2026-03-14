@@ -3515,3 +3515,184 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
         "no invocations should occur when service construction fails"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CLI writer-lease guard: acquisition, heartbeat, and cleanup
+// ---------------------------------------------------------------------------
+
+use std::sync::Arc;
+
+use ralph_burning::contexts::automation_runtime::cli_writer_lease::{
+    CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
+};
+
+fn arc_store() -> Arc<dyn DaemonStorePort + Send + Sync> {
+    Arc::new(FsDaemonStore)
+}
+
+#[tokio::test]
+async fn cli_lease_guard_creates_reconcile_visible_lease_record() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("lease-guard-test".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    // Lease record should be reconcile-visible via list_lease_records
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
+    assert_eq!(1, records.len(), "one lease record expected");
+    match &records[0] {
+        LeaseRecord::CliWriter(cli) => {
+            assert_eq!("lease-guard-test", cli.project_id);
+            assert_eq!("cli", cli.owner);
+            assert_eq!(CLI_LEASE_TTL_SECONDS, cli.ttl_seconds);
+        }
+        LeaseRecord::Worktree(_) => panic!("expected CliWriter lease record"),
+    }
+
+    // Writer lock should be held
+    let err = FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "contender")
+        .expect_err("lock should be held");
+    assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+    drop(guard);
+
+    // After drop: both cleaned up
+    let records_after = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list after");
+    assert!(
+        records_after.is_empty(),
+        "lease record should be removed after drop"
+    );
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "post-drop")
+        .expect("lock should be available after guard drop");
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn cli_lease_guard_heartbeat_advances_last_heartbeat() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("hb-advance-test".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        1, // 1-second heartbeat for fast testing
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    let record_before = FsDaemonStore
+        .read_lease_record(temp.path(), &lease_id)
+        .expect("read before");
+    let hb_before = match &record_before {
+        LeaseRecord::CliWriter(cli) => cli.last_heartbeat,
+        _ => panic!("expected CliWriter"),
+    };
+
+    // Wait for heartbeat to tick
+    tokio::time::sleep(tokio::time::Duration::from_millis(1500)).await;
+
+    let record_after = FsDaemonStore
+        .read_lease_record(temp.path(), &lease_id)
+        .expect("read after");
+    let hb_after = match &record_after {
+        LeaseRecord::CliWriter(cli) => cli.last_heartbeat,
+        _ => panic!("expected CliWriter"),
+    };
+
+    assert!(
+        hb_after > hb_before,
+        "heartbeat should advance last_heartbeat, before={hb_before}, after={hb_after}"
+    );
+
+    drop(guard);
+}
+
+#[tokio::test]
+async fn cli_lease_guard_drop_cleans_up_on_error_path() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("err-cleanup-test".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    // Simulate error: drop without awaiting completion
+    drop(guard);
+
+    // Both lease record and writer lock should be cleaned up
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.is_empty(),
+        "lease record should be removed on error-path drop"
+    );
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "post-error")
+        .expect("lock should be available after error-path drop");
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn cli_lease_guard_failed_lock_leaves_no_lease_record() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("contention-guard-test".to_owned())
+            .expect("valid id");
+
+    // Pre-hold the lock
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "blocker")
+        .expect("pre-acquire");
+
+    let result = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    );
+    assert!(result.is_err(), "acquire should fail when lock is held");
+
+    // No lease record should exist
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.is_empty(),
+        "no lease record should be written on failed lock acquisition"
+    );
+
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id)
+        .expect("cleanup blocker");
+}

@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use crate::shared::domain::ProjectId;
 use crate::shared::error::AppResult;
 
+pub mod cli_writer_lease;
 pub mod daemon_loop;
 pub mod lease_service;
 pub mod model;
@@ -20,6 +21,7 @@ pub use model::{
     CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
     LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
+pub use cli_writer_lease::CliWriterLeaseGuard;
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;
