@@ -3,6 +3,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::contexts::agent_execution::model::RawOutputReference;
@@ -33,6 +35,8 @@ const RUN_FILE: &str = "run.json";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
+const JOURNAL_APPEND_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER";
+const AMENDMENT_WRITE_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER";
 
 /// Required subdirectories inside a project.
 const PROJECT_SUBDIRS: &[&str] = &[
@@ -44,6 +48,68 @@ const PROJECT_SUBDIRS: &[&str] = &[
     "amendments",
     "rollback",
 ];
+
+static JOURNAL_APPEND_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static JOURNAL_APPEND_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static AMENDMENT_WRITE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static AMENDMENT_WRITE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+
+fn maybe_inject_project_failpoint(
+    env_var: &str,
+    project_id: &ProjectId,
+    counter: &AtomicU32,
+    config_state: &OnceLock<Mutex<Option<String>>>,
+    error_message: &str,
+) -> AppResult<()> {
+    let Ok(raw_config) = env::var(env_var) else {
+        clear_failpoint_state(counter, config_state);
+        return Ok(());
+    };
+
+    let Some((target_project, threshold)) = parse_failpoint_config(&raw_config) else {
+        return Ok(());
+    };
+
+    let state = config_state.get_or_init(|| Mutex::new(None));
+    let mut current_config = state.lock().expect("failpoint config lock poisoned");
+    if current_config.as_deref() != Some(raw_config.as_str()) {
+        counter.store(0, Ordering::SeqCst);
+        *current_config = Some(raw_config.clone());
+    }
+    drop(current_config);
+
+    if target_project.is_some_and(|target| target != project_id.as_str()) {
+        return Ok(());
+    }
+
+    let current = counter.fetch_add(1, Ordering::SeqCst);
+    if current >= threshold {
+        return Err(AppError::Io(std::io::Error::other(
+            error_message.to_owned(),
+        )));
+    }
+
+    Ok(())
+}
+
+fn clear_failpoint_state(counter: &AtomicU32, config_state: &OnceLock<Mutex<Option<String>>>) {
+    let Some(state) = config_state.get() else {
+        return;
+    };
+    let mut current_config = state.lock().expect("failpoint config lock poisoned");
+    if current_config.take().is_some() {
+        counter.store(0, Ordering::SeqCst);
+    }
+}
+
+fn parse_failpoint_config(raw: &str) -> Option<(Option<&str>, u32)> {
+    if let Ok(threshold) = raw.parse::<u32>() {
+        return Some((None, threshold));
+    }
+
+    let (project_id, threshold) = raw.split_once(':')?;
+    Some((Some(project_id), threshold.parse().ok()?))
+}
 
 pub struct FileSystem;
 
@@ -473,6 +539,13 @@ impl JournalStorePort for FsJournalStore {
     }
 
     fn append_event(&self, base_dir: &Path, project_id: &ProjectId, line: &str) -> AppResult<()> {
+        maybe_inject_project_failpoint(
+            JOURNAL_APPEND_FAIL_AFTER_ENV,
+            project_id,
+            &JOURNAL_APPEND_FAIL_COUNT,
+            &JOURNAL_APPEND_FAIL_CONFIG,
+            "injected journal append failure for testing",
+        )?;
         let path = FileSystem::project_root(base_dir, project_id).join(JOURNAL_FILE);
         FileSystem::append_line(&path, line)
     }
@@ -882,20 +955,16 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         amendment: &crate::contexts::project_run_record::model::QueuedAmendment,
     ) -> AppResult<()> {
         // Test-only injection seam: fail amendment writes after N successful writes.
-        // Format: "N" where N is the number of successful writes before failure.
-        // E.g., "1" means the first write succeeds, the second fails.
-        if let Ok(after_str) = std::env::var("RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER") {
-            use std::sync::atomic::{AtomicU32, Ordering};
-            static WRITE_COUNT: AtomicU32 = AtomicU32::new(0);
-            let threshold: u32 = after_str.parse().unwrap_or(0);
-            let current = WRITE_COUNT.fetch_add(1, Ordering::SeqCst);
-            if current >= threshold {
-                return Err(AppError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    "injected amendment write failure for testing",
-                )));
-            }
-        }
+        // Format: "N" or "<project_id>:N" where N is the number of successful
+        // writes before failure. E.g., "1" means the first write succeeds, the
+        // second fails.
+        maybe_inject_project_failpoint(
+            AMENDMENT_WRITE_FAIL_AFTER_ENV,
+            project_id,
+            &AMENDMENT_WRITE_FAIL_COUNT,
+            &AMENDMENT_WRITE_FAIL_CONFIG,
+            "injected amendment write failure for testing",
+        )?;
         let dir = FileSystem::project_root(base_dir, project_id).join("amendments");
         fs::create_dir_all(&dir)?;
         let path = dir.join(format!("{}.json", amendment.amendment_id));
@@ -1308,9 +1377,7 @@ impl DaemonStorePort for FsDaemonStore {
                         Ok(()) => {
                             let _ = fs::remove_file(&staging);
                         }
-                        Err(link_err)
-                            if link_err.kind() == std::io::ErrorKind::AlreadyExists =>
-                        {
+                        Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                             // Canonical lock was recreated — leave staged
                             // artifact durable and return error.
                             return Err(AppError::Io(std::io::Error::new(
@@ -1345,9 +1412,7 @@ impl DaemonStorePort for FsDaemonStore {
                         Ok(()) => {
                             let _ = fs::remove_file(&staging);
                         }
-                        Err(link_err)
-                            if link_err.kind() == std::io::ErrorKind::AlreadyExists =>
-                        {
+                        Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                             // Canonical lock was recreated — leave staged
                             // artifact durable and return error.
                             return Err(AppError::Io(std::io::Error::new(
@@ -1838,15 +1903,13 @@ mod tests {
         // the swap and restores the replacement lock.
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("toctou-test".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("toctou-test".to_owned()).expect("valid id");
 
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
         let lock_path_clone = lock_path.clone();
 
         // Install hook: after content read matches "owner-A", replace
@@ -1886,23 +1949,20 @@ mod tests {
         // removes the staging copy, never the canonical path.
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("post-check".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("post-check".to_owned()).expect("valid id");
 
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
         let lock_path_clone = lock_path.clone();
 
         // Install hook: after inode verification passes, create a new
         // lock at the canonical path to simulate a new writer acquiring
         // between our final check and the staging delete.
         release_lock_testing::set_post_verify_hook(move || {
-            std::fs::write(&lock_path_clone, "owner-B")
-                .expect("write new lock");
+            std::fs::write(&lock_path_clone, "owner-B").expect("write new lock");
         });
 
         let outcome = store
@@ -1934,15 +1994,13 @@ mod tests {
         // any lock artifact at the canonical path.
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("post-rename-fail".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("post-rename-fail".to_owned()).expect("valid id");
 
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
         let staging_path = lock_path.with_extension("lock.releasing.owner-A");
         let lock_path_clone = lock_path.clone();
         let staging_clone = staging_path.clone();
@@ -1952,12 +2010,10 @@ mod tests {
         // staging file becoming unavailable while a new writer acquires.
         release_lock_testing::set_post_rename_hook(move || {
             std::fs::remove_file(&staging_clone).expect("remove staging");
-            std::fs::write(&lock_path_clone, "owner-B")
-                .expect("write replacement lock");
+            std::fs::write(&lock_path_clone, "owner-B").expect("write replacement lock");
         });
 
-        let result = store
-            .release_writer_lock(temp.path(), &project_id, "owner-A");
+        let result = store.release_writer_lock(temp.path(), &project_id, "owner-A");
 
         // Must return an error (verification failed — staging metadata
         // could not be read).
@@ -1987,16 +2043,14 @@ mod tests {
         // releaser stages to a distinct path.
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("staging-race".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("staging-race".to_owned()).expect("valid id");
 
         // Acquire lock as owner-A.
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire A");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
 
         // Compute both staging paths to verify they are distinct.
         let staging_a = lock_path.with_extension("lock.releasing.owner-A");
@@ -2011,8 +2065,7 @@ mod tests {
             // Simulate owner-B having renamed its lock to its own staging
             // path. With the old fixed staging path, this would have
             // clobbered owner-A's staging; now it lands on a separate path.
-            std::fs::write(&staging_b_clone, "owner-B")
-                .expect("write B staging");
+            std::fs::write(&staging_b_clone, "owner-B").expect("write B staging");
         });
 
         let outcome = store
@@ -2057,15 +2110,13 @@ mod tests {
         // fails and the code must surface the compound error.
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("rename-back-fail".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("rename-back-fail".to_owned()).expect("valid id");
 
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
         let lock_path_clone = lock_path.clone();
 
         // After rename-to-staging: delete the staging file so
@@ -2078,12 +2129,10 @@ mod tests {
             // Remove staging so fs::metadata fails.
             std::fs::remove_file(&staging).expect("remove staging");
             // Put a replacement at canonical so we can verify it survives.
-            std::fs::write(&lock_path_clone, "owner-B")
-                .expect("write replacement");
+            std::fs::write(&lock_path_clone, "owner-B").expect("write replacement");
         });
 
-        let result = store
-            .release_writer_lock(temp.path(), &project_id, "owner-A");
+        let result = store.release_writer_lock(temp.path(), &project_id, "owner-A");
 
         // Must surface an error (not silently return the original error
         // while ignoring the failed restore).
@@ -2127,31 +2176,26 @@ mod tests {
         //   7. staging deleted, canonical owner-C preserved
         let store = FsDaemonStore;
         let temp = tempdir().expect("tempdir");
-        let project_id =
-            ProjectId::new("no-clobber".to_owned()).expect("valid id");
+        let project_id = ProjectId::new("no-clobber".to_owned()).expect("valid id");
 
         store
             .acquire_writer_lock(temp.path(), &project_id, "owner-A")
             .expect("acquire");
 
-        let lock_path =
-            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path = FsDaemonStore::writer_lock_path(temp.path(), &project_id);
         let lock_path_for_pre = lock_path.clone();
         let lock_path_for_post = lock_path.clone();
 
         // Pre-rename hook: replace canonical with a different inode.
         release_lock_testing::set_pre_rename_hook(move || {
-            std::fs::remove_file(&lock_path_for_pre)
-                .expect("remove original lock");
-            std::fs::write(&lock_path_for_pre, "owner-B")
-                .expect("write replacement");
+            std::fs::remove_file(&lock_path_for_pre).expect("remove original lock");
+            std::fs::write(&lock_path_for_pre, "owner-B").expect("write replacement");
         });
 
         // Post-rename hook: simulate owner-C acquiring the canonical lock
         // after staging moved owner-B out of the way.
         release_lock_testing::set_post_rename_hook(move || {
-            std::fs::write(&lock_path_for_post, "owner-C")
-                .expect("write new canonical lock");
+            std::fs::write(&lock_path_for_post, "owner-C").expect("write new canonical lock");
         });
 
         let outcome = store
@@ -2182,4 +2226,3 @@ mod tests {
         std::fs::remove_file(&lock_path).expect("cleanup");
     }
 }
-

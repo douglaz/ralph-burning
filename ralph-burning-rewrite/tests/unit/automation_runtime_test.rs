@@ -3653,9 +3653,8 @@ fn arc_store() -> Arc<dyn DaemonStorePort + Send + Sync> {
 #[tokio::test]
 async fn cli_lease_guard_creates_reconcile_visible_lease_record() {
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("lease-guard-test".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("lease-guard-test".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -3705,9 +3704,8 @@ async fn cli_lease_guard_creates_reconcile_visible_lease_record() {
 #[tokio::test]
 async fn cli_lease_guard_heartbeat_advances_last_heartbeat() {
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("hb-advance-test".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("hb-advance-test".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -3750,9 +3748,8 @@ async fn cli_lease_guard_heartbeat_advances_last_heartbeat() {
 #[tokio::test]
 async fn cli_lease_guard_drop_cleans_up_on_error_path() {
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("err-cleanup-test".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("err-cleanup-test".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -3767,9 +3764,7 @@ async fn cli_lease_guard_drop_cleans_up_on_error_path() {
     drop(guard);
 
     // Both lease record and writer lock should be cleaned up
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
         records.is_empty(),
         "lease record should be removed on error-path drop"
@@ -3804,9 +3799,7 @@ async fn cli_lease_guard_failed_lock_leaves_no_lease_record() {
     assert!(result.is_err(), "acquire should fail when lock is held");
 
     // No lease record should exist
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
         records.is_empty(),
         "no lease record should be written on failed lock acquisition"
@@ -3856,11 +3849,7 @@ fn reconcile_stale_cli_lease_cleans_lease_and_writer_lock() {
     .expect("reconcile");
 
     // Stale CLI lease counted
-    assert_eq!(
-        1,
-        report.stale_lease_ids.len(),
-        "stale_leases should be 1"
-    );
+    assert_eq!(1, report.stale_lease_ids.len(), "stale_leases should be 1");
     assert_eq!("cli-stale-reconcile", report.stale_lease_ids[0]);
 
     // Successfully released
@@ -4041,7 +4030,10 @@ fn reconcile_non_stale_cli_lease_is_not_cleaned() {
     )
     .expect("reconcile");
 
-    assert!(report.stale_lease_ids.is_empty(), "fresh lease should not be stale");
+    assert!(
+        report.stale_lease_ids.is_empty(),
+        "fresh lease should not be stale"
+    );
     assert!(report.released_lease_ids.is_empty());
     assert!(report.cleanup_failures.is_empty());
 
@@ -4099,11 +4091,7 @@ fn reconcile_prunes_stale_cli_lease_after_close_released_writer_lock() {
     .expect("reconcile");
 
     // Accounting invariants:
-    assert_eq!(
-        1,
-        report.stale_lease_ids.len(),
-        "stale_leases should be 1"
-    );
+    assert_eq!(1, report.stale_lease_ids.len(), "stale_leases should be 1");
     assert!(
         report.released_lease_ids.is_empty(),
         "released_leases should be 0 — writer_lock_absent makes the pass a cleanup failure"
@@ -4250,9 +4238,8 @@ fn owner_matched_release_succeeds() {
 fn owner_mismatch_does_not_delete_replaced_lock() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("owner-mismatch".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("owner-mismatch".to_owned())
+        .expect("valid id");
 
     // Acquire with one owner
     store
@@ -4293,9 +4280,8 @@ async fn cli_guard_drop_leaves_lease_durable_on_lock_mismatch() {
     // Simulate: after CLI guard acquires, another writer replaces the lock.
     // On drop, the guard should detect mismatch and NOT delete the lease record.
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("guard-mismatch".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("guard-mismatch".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -4321,9 +4307,7 @@ async fn cli_guard_drop_leaves_lease_durable_on_lock_mismatch() {
     drop(guard);
 
     // CLI lease record must remain durable (not deleted)
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
         records.iter().any(|r| match r {
             LeaseRecord::CliWriter(cli) => cli.lease_id == lease_id,
@@ -4353,8 +4337,7 @@ async fn cli_guard_drop_leaves_lease_durable_on_lock_absent() {
     // must stay durable for reconcile visibility.
     let temp = tempdir().expect("tempdir");
     let project_id =
-        ralph_burning::shared::domain::ProjectId::new("guard-absent".to_owned())
-            .expect("valid id");
+        ralph_burning::shared::domain::ProjectId::new("guard-absent".to_owned()).expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -4377,9 +4360,7 @@ async fn cli_guard_drop_leaves_lease_durable_on_lock_absent() {
     drop(guard);
 
     // CLI lease record must remain durable
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
         records.iter().any(|r| match r {
             LeaseRecord::CliWriter(cli) => cli.lease_id == lease_id,
@@ -4417,10 +4398,11 @@ async fn cli_guard_close_succeeds_and_drop_is_noop() {
     guard.close().expect("close should succeed");
 
     // Both lease record and lock should be cleaned up.
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
-    assert!(records.is_empty(), "lease record should be removed after close");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
+    assert!(
+        records.is_empty(),
+        "lease record should be removed after close"
+    );
     FsDaemonStore
         .acquire_writer_lock(temp.path(), &project_id, "post-close")
         .expect("lock should be available after close");
@@ -4433,8 +4415,7 @@ async fn cli_guard_close_succeeds_and_drop_is_noop() {
 async fn cli_guard_close_fails_when_lock_absent() {
     let temp = tempdir().expect("tempdir");
     let project_id =
-        ralph_burning::shared::domain::ProjectId::new("close-absent".to_owned())
-            .expect("valid id");
+        ralph_burning::shared::domain::ProjectId::new("close-absent".to_owned()).expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -4463,11 +4444,11 @@ async fn cli_guard_close_fails_when_lock_absent() {
     );
 
     // CLI lease record must remain durable.
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
-        records.iter().any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
+        records
+            .iter()
+            .any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
         "CLI lease record must remain when close fails with lock absent"
     );
 
@@ -4480,9 +4461,8 @@ async fn cli_guard_close_fails_when_lock_absent() {
 #[tokio::test]
 async fn cli_guard_close_fails_when_lock_owner_mismatch() {
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("close-mismatch".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("close-mismatch".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -4514,11 +4494,11 @@ async fn cli_guard_close_fails_when_lock_owner_mismatch() {
     );
 
     // CLI lease record must remain durable.
-    let records = FsDaemonStore
-        .list_lease_records(temp.path())
-        .expect("list");
+    let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
     assert!(
-        records.iter().any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
+        records
+            .iter()
+            .any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
         "CLI lease record must remain when close fails with owner mismatch"
     );
 
@@ -4542,9 +4522,8 @@ async fn cli_guard_close_lease_delete_failure_keeps_lock_released() {
     // After successful lock release, if lease file delete fails,
     // close returns error but the lock stays released.
     let temp = tempdir().expect("tempdir");
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("close-lease-fail".to_owned())
-            .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("close-lease-fail".to_owned())
+        .expect("valid id");
 
     let guard = CliWriterLeaseGuard::acquire(
         arc_store(),
@@ -4652,7 +4631,11 @@ fn reconcile_stale_cli_lease_owner_mismatch_reports_cleanup_failure() {
 
     // CLI lease record must still exist (not deleted)
     let records = store.list_lease_records(temp.path()).expect("list");
-    assert_eq!(1, records.len(), "CLI lease record must remain after mismatch");
+    assert_eq!(
+        1,
+        records.len(),
+        "CLI lease record must remain after mismatch"
+    );
 
     // The other writer's lock must still be intact
     let err = store
@@ -4785,7 +4768,10 @@ fn release_writer_lock_failure_after_worktree_removal_preserves_lease_file() {
     );
 
     // Worktree should be gone (removal succeeded)
-    assert!(!temp.path().join("wt-lock-fail").exists(), "worktree should be removed");
+    assert!(
+        !temp.path().join("wt-lock-fail").exists(),
+        "worktree should be removed"
+    );
 
     // Lease file must still exist on disk — preserved for recovery
     let leases = store.list_leases(temp.path()).expect("list leases");
@@ -4878,14 +4864,18 @@ impl DaemonStorePort for CliAcquireOrderTrackingStore {
     fn list_lease_records(
         &self,
         base_dir: &std::path::Path,
-    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>,
+    > {
         self.inner.list_lease_records(base_dir)
     }
     fn read_lease_record(
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    > {
         self.inner.read_lease_record(base_dir, lease_id)
     }
     fn write_lease_record(
@@ -4948,10 +4938,8 @@ async fn cli_acquire_persists_lease_before_writer_lock() {
     // Proves the crash-safety invariant: the durable CLI lease record is
     // written before the writer lock is acquired.
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new(
-        "order-test".to_owned(),
-    )
-    .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("order-test".to_owned()).expect("valid id");
 
     let tracking_store = Arc::new(CliAcquireOrderTrackingStore::new());
     let store: Arc<dyn DaemonStorePort + Send + Sync> = Arc::clone(&tracking_store) as _;
@@ -5045,14 +5033,18 @@ impl DaemonStorePort for CliContentionCleanupFailStore {
     fn list_lease_records(
         &self,
         base_dir: &std::path::Path,
-    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>,
+    > {
         self.inner.list_lease_records(base_dir)
     }
     fn read_lease_record(
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    > {
         self.inner.read_lease_record(base_dir, lease_id)
     }
     fn write_lease_record(
@@ -5121,18 +5113,17 @@ async fn cli_contention_cleanup_failure_reports_both_causes() {
     // lease cleanup also fails, the returned error must preserve both the
     // contention cause and the cleanup failure cause.
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new(
-        "contention-fail".to_owned(),
-    )
-    .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("contention-fail".to_owned())
+        .expect("valid id");
 
     // Pre-hold the writer lock with a different owner to verify it stays intact.
     FsDaemonStore
         .acquire_writer_lock(temp.path(), &project_id, "competing-writer")
         .expect("pre-acquire");
 
-    let store: Arc<dyn DaemonStorePort + Send + Sync> =
-        Arc::new(CliContentionCleanupFailStore { inner: FsDaemonStore });
+    let store: Arc<dyn DaemonStorePort + Send + Sync> = Arc::new(CliContentionCleanupFailStore {
+        inner: FsDaemonStore,
+    });
 
     let result = CliWriterLeaseGuard::acquire(
         store,
@@ -5244,14 +5235,18 @@ impl DaemonStorePort for CliContentionLeaseAbsentStore {
     fn list_lease_records(
         &self,
         base_dir: &std::path::Path,
-    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>,
+    > {
         self.inner.list_lease_records(base_dir)
     }
     fn read_lease_record(
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    > {
         self.inner.read_lease_record(base_dir, lease_id)
     }
     fn write_lease_record(
@@ -5317,18 +5312,17 @@ async fn cli_contention_lease_already_absent_reports_rollback_failure() {
     // AcquisitionRollbackFailed preserving both the contention cause and the
     // already-absent detail.
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new(
-        "absent-rollback".to_owned(),
-    )
-    .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("absent-rollback".to_owned())
+        .expect("valid id");
 
     // Pre-hold the writer lock with a different owner to verify it stays intact.
     FsDaemonStore
         .acquire_writer_lock(temp.path(), &project_id, "competing-writer")
         .expect("pre-acquire");
 
-    let store: Arc<dyn DaemonStorePort + Send + Sync> =
-        Arc::new(CliContentionLeaseAbsentStore { inner: FsDaemonStore });
+    let store: Arc<dyn DaemonStorePort + Send + Sync> = Arc::new(CliContentionLeaseAbsentStore {
+        inner: FsDaemonStore,
+    });
 
     let result = CliWriterLeaseGuard::acquire(
         store,
@@ -5444,14 +5438,18 @@ impl DaemonStorePort for WorktreeAcquireRollbackFailStore {
     fn list_lease_records(
         &self,
         base_dir: &std::path::Path,
-    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>,
+    > {
         self.inner.list_lease_records(base_dir)
     }
     fn read_lease_record(
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    > {
         self.inner.read_lease_record(base_dir, lease_id)
     }
     fn write_lease_record(
@@ -5518,7 +5516,9 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
     // and rollback failure details, including the "writer lock may still be
     // held" warning.
     let temp = tempdir().expect("tempdir");
-    let store = WorktreeAcquireRollbackFailStore { inner: FsDaemonStore };
+    let store = WorktreeAcquireRollbackFailStore {
+        inner: FsDaemonStore,
+    };
     let worktree_adapter = SuccessWorktreeAdapter;
     let project_id =
         ralph_burning::shared::domain::ProjectId::new("wt-rb-fail".to_owned()).expect("valid id");
@@ -5594,10 +5594,12 @@ impl WorktreePort for PartialCreateWorktreeAdapter {
     ) -> ralph_burning::shared::error::AppResult<()> {
         // Create the directory (partial side-effect) then fail
         std::fs::create_dir_all(worktree_path)?;
-        Err(ralph_burning::shared::error::AppError::WorktreeCreationFailed {
-            task_id: task_id.to_owned(),
-            details: "simulated partial worktree creation failure".to_owned(),
-        })
+        Err(
+            ralph_burning::shared::error::AppError::WorktreeCreationFailed {
+                task_id: task_id.to_owned(),
+                details: "simulated partial worktree creation failure".to_owned(),
+            },
+        )
     }
 
     fn remove_worktree(
@@ -5684,14 +5686,18 @@ impl DaemonStorePort for LockReleaseFailStore {
     fn list_lease_records(
         &self,
         base_dir: &std::path::Path,
-    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>,
+    > {
         self.inner.list_lease_records(base_dir)
     }
     fn read_lease_record(
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    > {
         self.inner.read_lease_record(base_dir, lease_id)
     }
     fn write_lease_record(
@@ -5760,7 +5766,9 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports
     //      rollback failure details, including the "writer lock may still be
     //      held" warning.
     let temp = tempdir().expect("tempdir");
-    let store = LockReleaseFailStore { inner: FsDaemonStore };
+    let store = LockReleaseFailStore {
+        inner: FsDaemonStore,
+    };
     let worktree_adapter = PartialCreateWorktreeAdapter;
     let project_id =
         ralph_burning::shared::domain::ProjectId::new("wt-partial".to_owned()).expect("valid id");
@@ -5818,8 +5826,8 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
     let temp = tempdir().expect("tempdir");
     let store = FsDaemonStore;
     let worktree_adapter = PartialCreateWorktreeAdapter;
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("wt-partial-ok".to_owned()).expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("wt-partial-ok".to_owned())
+        .expect("valid id");
 
     let err = LeaseService::acquire(
         &store,
@@ -5899,10 +5907,8 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
     store
         .write_lease(temp.path(), &wt_lease)
         .expect("write worktree lease");
-    let project_id = ralph_burning::shared::domain::ProjectId::new(
-        "oversized-proj".to_owned(),
-    )
-    .expect("valid id");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("oversized-proj".to_owned())
+        .expect("valid id");
     store
         .acquire_writer_lock(temp.path(), &project_id, "lease-oversized-ttl-task")
         .expect("acquire lock for worktree");
@@ -5917,15 +5923,11 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
         last_heartbeat: now,
     };
     store
-        .write_lease_record(
-            temp.path(),
-            &LeaseRecord::CliWriter(cli_lease),
-        )
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
         .expect("write cli lease");
-    let cli_project_id = ralph_burning::shared::domain::ProjectId::new(
-        "cli-oversized-proj".to_owned(),
-    )
-    .expect("valid id");
+    let cli_project_id =
+        ralph_burning::shared::domain::ProjectId::new("cli-oversized-proj".to_owned())
+            .expect("valid id");
     store
         .acquire_writer_lock(temp.path(), &cli_project_id, "cli-oversized-ttl")
         .expect("acquire lock for cli");
