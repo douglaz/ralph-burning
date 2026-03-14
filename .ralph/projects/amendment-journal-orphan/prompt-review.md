@@ -1,3 +1,26 @@
+---
+artifact: prompt-review
+project: amendment-journal-orphan
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-14T15:42:15Z
+---
+
+# Prompt Review
+
+## Issues Found
+- The prompt allows two different remedies (`cleanup` or `idempotent reconciliation`) but does not say whether one is sufficient or whether both are preferred. That ambiguity can lead to incomplete fixes or mismatched expectations.
+- The required behavior after a partial journal append is not stated as a precise invariant. Without a clear end state, implementation and tests may optimize for different outcomes.
+- “Record the amendment IDs written” is underspecified. It does not define where that record lives, how long it must persist, or whether it is only in-memory for rollback logic.
+- The failure model is incomplete. It says “journal append fails mid-batch” but does not define the expected durable state after some events have already been appended and others have not.
+- The reconciliation requirement is vague about the source of truth. It does not explicitly state whether journal state or disk state wins when they disagree.
+- The test requirements describe outcomes but not the mechanism. Without guidance on how to inject a deterministic mid-batch append failure, the task may be hard to implement and flaky to verify.
+- The prompt references one source range in `engine.rs`, which may shift. That can cause downstream loops to anchor too tightly to line numbers instead of behavior.
+- “Full batch success still works correctly” is too broad. It should define what to assert so tests are specific and sufficient.
+- Validation requirements name `cargo test`, `cargo build`, and conformance, but do not clarify whether all three must be run or whether conformance is required only if affected paths exist in the current environment.
+- “Do not change any public CLI behavior” is clear, but the prompt does not explicitly permit internal refactors needed to make the failure path testable.
+
+## Refined Prompt
 # Fix amendment journal orphan on mid-batch append failure
 
 ## Objective
