@@ -81,3 +81,39 @@ Track the actual child handle, not just the PID, and make cancellation perform s
 ### Reviewer
 codex
 
+
+## Round 3
+
+### Amendment: PB-CANCEL-TIMEOUT-HANG
+
+### Problem
+`ProcessBackendAdapter::cancel()` sends `SIGTERM` and then blocks on `wait()` in [process_backend.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/process_backend.rs#L614) and [process_backend.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/process_backend.rs#L629). That `wait()` is an unbounded poll loop in [process_backend.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/process_backend.rs#L58). `AgentExecutionService` calls `cancel()` on both timeout and explicit cancellation before returning to the caller in [service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/agent_execution/service.rs#L196). If a child traps or ignores `SIGTERM`, the timeout/cancel path never completes, so the “authoritative” timeout is no longer authoritative.
+
+### Proposed Change
+Make `cancel()` best-effort and non-blocking: remove the child from the map, send `SIGTERM`, and return immediately, or at most use a short bounded grace period with a forced cleanup path. Add a regression test with a fake backend that ignores `SIGTERM` and verify `InvocationTimeout`/`InvocationCancelled` still returns promptly.
+
+### Affected Files
+- [src/adapters/process_backend.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/process_backend.rs) - stop waiting indefinitely inside `cancel()`.
+- [tests/unit/process_backend_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/process_backend_test.rs) - add a TERM-ignoring child test.
+
+### Reviewer
+codex
+
+### Amendment: WF-INVOCATION-ID-COLLISION
+
+### Problem
+Workflow invocation IDs are built from only `run_id`, `stage`, `cycle`, and `attempt` in [engine.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/workflow_composition/engine.rs#L1956). Completion-round restarts reuse the same `cycle` and often reset `attempt` back to `1`, so the same stage in round 2 gets the same `invocation_id` as round 1. That collides with raw-output persistence in [fs.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/fs.rs#L724) and with Codex temp-file naming in [process_backend.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/process_backend.rs#L433). The result is overwritten backend evidence across completion rounds, and stale temp files can alias later invocations if an earlier run exited before cleanup.
+
+### Proposed Change
+Include `completion_round` in `InvocationRequest.invocation_id` for workflow stages, e.g. `...-c{cycle}-a{attempt}-cr{completion_round}`. Add coverage proving backend raw outputs and temp artifacts stay distinct across completion rounds.
+
+### Affected Files
+- [src/contexts/workflow_composition/engine.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/workflow_composition/engine.rs) - make workflow invocation IDs round-aware.
+- [tests/unit/workflow_engine_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/workflow_engine_test.rs) - add coverage for unique backend artifact IDs across completion rounds.
+- [tests/unit/process_backend_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/process_backend_test.rs) - add temp-file/raw-output collision coverage.
+
+Targeted verification I ran: `nix develop -c cargo test process_backend_test` and `nix develop -c cargo test prompt_builder_test`. Both passed, so these are edge-case/spec regressions that current tests do not catch.
+
+### Reviewer
+codex
+
