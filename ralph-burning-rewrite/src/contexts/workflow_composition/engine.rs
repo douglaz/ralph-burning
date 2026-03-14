@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -5,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::adapters::fs::FsRollbackPointStore;
+use crate::adapters::fs::{FsArtifactStore, FsProjectStore, FsRollbackPointStore};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -17,13 +19,14 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
-    ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, LogLevel, PayloadRecord,
-    QueuedAmendment, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
+    ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, JournalEventType, LogLevel,
+    PayloadRecord, QueuedAmendment, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
     AmendmentQueuePort, ArtifactStorePort, JournalStorePort, PayloadArtifactWritePort,
-    RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort, RuntimeLogWritePort,
+    ProjectStorePort, RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    RuntimeLogWritePort,
 };
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
@@ -47,6 +50,87 @@ pub fn standard_stage_plan(prompt_review_enabled: bool) -> Vec<StageId> {
 /// Deterministic stage-to-role mapping per spec.
 pub fn role_for_stage(stage_id: StageId) -> BackendRole {
     BackendRole::for_stage(stage_id)
+}
+
+pub fn build_stage_prompt(
+    artifact_store: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    project_root: &Path,
+    prompt_reference: &str,
+    role: BackendRole,
+    contract: &contracts::StageContract,
+    run_id: &RunId,
+    cursor: &StageCursor,
+    execution_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
+) -> AppResult<String> {
+    let prompt_path = project_root.join(prompt_reference);
+    let project_prompt = fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
+        file: prompt_path.display().to_string(),
+        details: format!(
+            "failed to read project prompt '{}' while building stage prompt: {}",
+            prompt_reference, error
+        ),
+    })?;
+
+    let prior_outputs =
+        load_prior_stage_outputs_this_cycle(artifact_store, base_dir, project_id, project_root, run_id, cursor)?;
+    let schema = serde_json::to_string_pretty(&contract.json_schema())?;
+
+    let mut sections = vec![
+        format!(
+            "# Stage Execution Prompt\n\n{}",
+            stage_role_instruction(role, contract.stage_id)
+        ),
+        format!(
+            "## Original Project Prompt\n\n{}",
+            project_prompt.trim_end()
+        ),
+    ];
+
+    if !prior_outputs.is_empty() {
+        let mut section = String::from("## Prior Stage Outputs This Cycle");
+        for record in prior_outputs {
+            let payload = serde_json::to_string_pretty(&record.payload)?;
+            section.push_str(&format!(
+                "\n\n### {} (`{}`)\n- Payload ID: `{}`\n- Attempt: `{}`\n\n```json\n{}\n```",
+                record.stage_id.display_name(),
+                record.stage_id.as_str(),
+                record.payload_id,
+                record.attempt,
+                payload
+            ));
+        }
+        sections.push(section);
+    }
+
+    if execution_context.is_some()
+        || pending_amendments.is_some_and(|amendments| !amendments.is_empty())
+    {
+        let mut section = String::from("## Remediation / Pending Amendments");
+        if let Some(remediation) = execution_context {
+            section.push_str(&format!(
+                "\n\n### Remediation Context\n\n```json\n{}\n```",
+                serde_json::to_string_pretty(remediation)?
+            ));
+        }
+        if let Some(amendments) = pending_amendments.filter(|amendments| !amendments.is_empty()) {
+            let amendment_bodies: Vec<&str> = amendments.iter().map(|amendment| amendment.body.as_str()).collect();
+            section.push_str(&format!(
+                "\n\n### Pending Amendments\n\n```json\n{}\n```",
+                serde_json::to_string_pretty(&amendment_bodies)?
+            ));
+        }
+        sections.push(section);
+    }
+
+    sections.push(format!(
+        "## Authoritative JSON Schema\n\nThe JSON schema below is authoritative. Return only JSON that conforms exactly to it.\n\n```json\n{}\n```",
+        schema
+    ));
+
+    Ok(sections.join("\n\n"))
 }
 
 /// Resolved target per stage for preflight.
@@ -263,6 +347,8 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
+    let project_record = FsProjectStore.read_project_record(base_dir, project_id)?;
+    let artifact_store = FsArtifactStore;
     let snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
 
     match snapshot.status {
@@ -347,6 +433,7 @@ where
         agent_service,
         run_snapshot_write,
         journal_store,
+        &artifact_store,
         artifact_write,
         log_write,
         amendment_queue_port,
@@ -364,6 +451,7 @@ where
         cancellation_token,
         ExecutionOrigin::Start,
         None,
+        project_record.prompt_reference.as_str(),
         effective_config,
     )
     .await?;
@@ -550,6 +638,7 @@ where
     R: RawOutputPort,
     S: SessionStorePort,
 {
+    let project_record = FsProjectStore.read_project_record(base_dir, project_id)?;
     let mut snapshot = run_snapshot_read.read_run_snapshot(base_dir, project_id)?;
     match snapshot.status {
         RunStatus::Failed | RunStatus::Paused => {}
@@ -663,6 +752,7 @@ where
         agent_service,
         run_snapshot_write,
         journal_store,
+        artifact_store,
         artifact_write,
         log_write,
         amendment_queue_port,
@@ -680,6 +770,7 @@ where
         cancellation_token,
         ExecutionOrigin::Resume,
         execution_context,
+        project_record.prompt_reference.as_str(),
         effective_config,
     )
     .await?;
@@ -768,6 +859,7 @@ async fn execute_run_internal<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
@@ -785,6 +877,7 @@ async fn execute_run_internal<A, R, S>(
     cancellation_token: CancellationToken,
     origin: ExecutionOrigin,
     mut execution_context: Option<Value>,
+    prompt_reference: &str,
     effective_config: &EffectiveConfig,
 ) -> AppResult<RunOutcome>
 where
@@ -820,6 +913,7 @@ where
             agent_service,
             run_snapshot_write,
             journal_store,
+            artifact_store,
             log_write,
             base_dir,
             project_id,
@@ -838,6 +932,7 @@ where
                 .as_deref()
                 .filter(|_| stage_id == semantics.planning_stage),
             &project_root,
+            prompt_reference,
         )
         .await?;
 
@@ -1538,6 +1633,7 @@ async fn execute_stage_with_retry<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     run_snapshot_write: &dyn RunSnapshotWritePort,
     journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
     log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_id: &ProjectId,
@@ -1552,6 +1648,7 @@ async fn execute_stage_with_retry<A, R, S>(
     execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
     project_root: &Path,
+    prompt_reference: &str,
 ) -> AppResult<(StageCursor, ValidatedBundle)>
 where
     A: AgentExecutionPort,
@@ -1662,6 +1759,37 @@ where
             },
         );
 
+        let prompt = match build_stage_prompt(
+            artifact_store,
+            base_dir,
+            project_id,
+            project_root,
+            prompt_reference,
+            stage_entry.role,
+            &stage_entry.contract,
+            run_id,
+            &cursor,
+            execution_context,
+            pending_amendments,
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return fail_run_result(
+                    &error,
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+        };
+
         let request = InvocationRequest {
             invocation_id: format!(
                 "{}-{}-c{}-a{}",
@@ -1676,7 +1804,7 @@ where
             role: stage_entry.role,
             resolved_target: stage_entry.target.clone(),
             payload: InvocationPayload {
-                prompt: format!("Execute stage: {}", stage_id.display_name()),
+                prompt,
                 context: invocation_context(&cursor, execution_context, pending_amendments),
             },
             timeout: Duration::from_secs(3600),
@@ -2342,6 +2470,119 @@ fn invocation_context(
     }
 
     context
+}
+
+fn load_prior_stage_outputs_this_cycle(
+    artifact_store: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    project_root: &Path,
+    run_id: &RunId,
+    cursor: &StageCursor,
+) -> AppResult<Vec<PayloadRecord>> {
+    let journal_path = project_root.join("journal.ndjson");
+    let journal_contents =
+        fs::read_to_string(&journal_path).map_err(|error| AppError::CorruptRecord {
+            file: journal_path.display().to_string(),
+            details: format!("failed to read journal.ndjson while building stage prompt: {}", error),
+        })?;
+    let events = journal::parse_journal(&journal_contents)?;
+
+    let payloads = artifact_store.list_payloads(base_dir, project_id)?;
+    let payloads_by_id: HashMap<String, PayloadRecord> = payloads
+        .into_iter()
+        .map(|record| (record.payload_id.clone(), record))
+        .collect();
+
+    let mut prior_outputs = Vec::new();
+    for event in events {
+        if event.event_type != JournalEventType::StageCompleted {
+            continue;
+        }
+        if detail_string(&event, "run_id")? != run_id.as_str() {
+            continue;
+        }
+        if detail_u32(&event, "cycle") != Some(cursor.cycle) {
+            continue;
+        }
+
+        let payload_id = detail_string(&event, "payload_id")?;
+        let payload = payloads_by_id
+            .get(payload_id)
+            .cloned()
+            .ok_or_else(|| AppError::CorruptRecord {
+                file: "journal.ndjson".to_owned(),
+                details: format!(
+                    "journal references missing payload '{}' while building stage prompt",
+                    payload_id
+                ),
+            })?;
+        prior_outputs.push(payload);
+    }
+
+    Ok(prior_outputs)
+}
+
+fn stage_role_instruction(role: BackendRole, stage_id: StageId) -> String {
+    format!(
+        "You are the {}. Your objective for this {} stage is to {}.",
+        role.display_name(),
+        stage_id.display_name(),
+        stage_objective(stage_id)
+    )
+}
+
+fn stage_objective(stage_id: StageId) -> &'static str {
+    match stage_id {
+        StageId::PromptReview => {
+            "assess whether the project prompt is actionable, identify gaps, and decide readiness"
+        }
+        StageId::Planning => {
+            "produce a concrete implementation plan, assumptions, and readiness assessment"
+        }
+        StageId::Implementation => {
+            "deliver the implementation work, describe the changes made, and record verification"
+        }
+        StageId::Qa => {
+            "validate the implementation against requirements, surface gaps, and determine the QA outcome"
+        }
+        StageId::Review => {
+            "review the completed work for correctness, regressions, and completeness"
+        }
+        StageId::CompletionPanel => {
+            "judge the late-stage outputs, consolidate follow-ups, and decide whether the work can advance"
+        }
+        StageId::AcceptanceQa => {
+            "perform acceptance validation against the intended behavior and remaining risks"
+        }
+        StageId::FinalReview => {
+            "issue the final completion decision and capture any remaining amendments"
+        }
+        StageId::PlanAndImplement => {
+            "produce the plan and implementation details together in a single execution response"
+        }
+        StageId::ApplyFixes => {
+            "apply the requested fixes, summarize the edits, and record the validation performed"
+        }
+        StageId::DocsPlan => {
+            "plan the documentation updates required to support the requested change"
+        }
+        StageId::DocsUpdate => {
+            "update the documentation accurately and summarize what changed"
+        }
+        StageId::DocsValidation => {
+            "validate documentation accuracy, clarity, and completeness"
+        }
+        StageId::CiPlan => {
+            "plan the CI workflow updates needed for the requested change"
+        }
+        StageId::CiUpdate => {
+            "update CI configuration or automation and summarize the changes"
+        }
+        StageId::CiValidation => {
+            "validate the CI changes for correctness, safety, and completeness"
+        }
+    }
 }
 
 fn stage_index_for(stage_plan: &[StagePlan], stage_id: StageId) -> AppResult<usize> {

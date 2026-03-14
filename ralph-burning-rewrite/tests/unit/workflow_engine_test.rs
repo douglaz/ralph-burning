@@ -3065,6 +3065,32 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
 
     for stage_id in prior_stage_ids {
         sequence += 1;
+        let payload_id = format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX);
+        let artifact_id = format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX);
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(
+                base_dir,
+                &pid,
+                &PayloadRecord {
+                    payload_id: payload_id.clone(),
+                    stage_id,
+                    cycle: 1,
+                    attempt: 1,
+                    created_at: started_at,
+                    payload: json!({
+                        "stage": stage_id.as_str(),
+                        "completion_round": u32::MAX,
+                    }),
+                },
+                &ArtifactRecord {
+                    artifact_id: artifact_id.clone(),
+                    payload_id: payload_id.clone(),
+                    stage_id,
+                    created_at: started_at,
+                    content: format!("artifact for {}", stage_id.as_str()),
+                },
+            )
+            .unwrap();
         let stage_completed = journal::stage_completed_event(
             sequence,
             started_at,
@@ -3072,8 +3098,8 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
             stage_id,
             1,
             1,
-            &format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX),
-            &format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX),
+            &payload_id,
+            &artifact_id,
         );
         let line = journal::serialize_event(&stage_completed).unwrap();
         FsJournalStore.append_event(base_dir, &pid, &line).unwrap();

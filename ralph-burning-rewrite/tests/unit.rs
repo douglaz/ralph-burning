@@ -46,6 +46,9 @@ mod stub_backend_test;
 #[path = "unit/process_backend_test.rs"]
 mod process_backend_test;
 
+#[path = "unit/prompt_builder_test.rs"]
+mod prompt_builder_test;
+
 #[path = "unit/workflow_engine_test.rs"]
 mod workflow_engine_test;
 
