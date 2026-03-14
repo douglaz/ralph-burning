@@ -175,6 +175,8 @@ pub enum AppError {
         "lease cleanup partially failed for task '{task_id}': some resources could not be released"
     )]
     LeaseCleanupPartialFailure { task_id: String },
+    #[error("CLI writer-lease guard close failed at step '{step}': {details}")]
+    GuardCloseFailed { step: String, details: String },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {
         file: String,

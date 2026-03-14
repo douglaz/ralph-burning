@@ -1301,19 +1301,37 @@ impl DaemonStorePort for FsDaemonStore {
             let fd_meta = match file.metadata() {
                 Ok(m) => m,
                 Err(e) => {
-                    // fstat on the open fd failed. Restore canonical lock
-                    // visibility before returning the error.
-                    if let Err(restore_err) = fs::rename(&staging, &path) {
-                        // Restore failed — the lock is stranded at the
-                        // staging path. Surface the restore failure so
-                        // callers know the lock is not at the canonical path.
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!(
-                                "writer lock release: verification failed ({e}) \
-                                 and could not restore lock from staging: {restore_err}"
-                            ),
-                        )));
+                    // fstat on the open fd failed. Attempt non-clobbering
+                    // restore via hard_link so we never overwrite a newly
+                    // acquired canonical lock.
+                    match fs::hard_link(&staging, &path) {
+                        Ok(()) => {
+                            let _ = fs::remove_file(&staging);
+                        }
+                        Err(link_err)
+                            if link_err.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            // Canonical lock was recreated — leave staged
+                            // artifact durable and return error.
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!(
+                                    "writer lock release: verification failed ({e}) \
+                                     and canonical lock was recreated; staged artifact preserved"
+                                ),
+                            )));
+                        }
+                        Err(link_err) => {
+                            // Cannot restore — staged artifact remains
+                            // durable for later recovery.
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!(
+                                    "writer lock release: verification failed ({e}) \
+                                     and could not restore lock from staging: {link_err}"
+                                ),
+                            )));
+                        }
                     }
                     return Err(e.into());
                 }
@@ -1321,17 +1339,34 @@ impl DaemonStorePort for FsDaemonStore {
             let staged_meta = match fs::metadata(&staging) {
                 Ok(m) => m,
                 Err(e) => {
-                    // Cannot verify — try to restore canonical lock
-                    // visibility so the lock is not stranded at the
-                    // staging path.
-                    if let Err(restore_err) = fs::rename(&staging, &path) {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!(
-                                "writer lock release: staging verification failed ({e}) \
-                                 and could not restore lock: {restore_err}"
-                            ),
-                        )));
+                    // Cannot verify — attempt non-clobbering restore via
+                    // hard_link so we never overwrite a newly acquired lock.
+                    match fs::hard_link(&staging, &path) {
+                        Ok(()) => {
+                            let _ = fs::remove_file(&staging);
+                        }
+                        Err(link_err)
+                            if link_err.kind() == std::io::ErrorKind::AlreadyExists =>
+                        {
+                            // Canonical lock was recreated — leave staged
+                            // artifact durable and return error.
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!(
+                                    "writer lock release: staging verification failed ({e}) \
+                                     and canonical lock was recreated; staged artifact preserved"
+                                ),
+                            )));
+                        }
+                        Err(link_err) => {
+                            return Err(AppError::Io(std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!(
+                                    "writer lock release: staging verification failed ({e}) \
+                                     and could not restore lock: {link_err}"
+                                ),
+                            )));
+                        }
                     }
                     return Err(e.into());
                 }
@@ -2069,6 +2104,78 @@ mod tests {
             std::fs::read_to_string(&lock_path).expect("read canonical"),
             "owner-B",
             "replacement lock at canonical path must survive"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&lock_path).expect("cleanup");
+    }
+
+    #[test]
+    fn verification_error_recovery_does_not_clobber_reacquired_canonical() {
+        // Regression for fail-closed recovery: after rename-to-staging,
+        // a new writer acquires the canonical lock. If verification then
+        // detects an inode mismatch, the recovery must fail with
+        // AlreadyExists (not clobber the new lock via rename).
+        //
+        // Scenario:
+        //   1. owner-A acquires lock (opens fd, reads content)
+        //   2. pre-rename hook: replace canonical with owner-B (new inode)
+        //   3. rename moves owner-B file to staging
+        //   4. post-rename hook: owner-C creates a new canonical lock
+        //   5. inode check: fd (owner-A) ≠ staging (owner-B) → mismatch
+        //   6. hard_link(staging, canonical) → AlreadyExists (owner-C)
+        //   7. staging deleted, canonical owner-C preserved
+        let store = FsDaemonStore;
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("no-clobber".to_owned()).expect("valid id");
+
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("acquire");
+
+        let lock_path =
+            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path_for_pre = lock_path.clone();
+        let lock_path_for_post = lock_path.clone();
+
+        // Pre-rename hook: replace canonical with a different inode.
+        release_lock_testing::set_pre_rename_hook(move || {
+            std::fs::remove_file(&lock_path_for_pre)
+                .expect("remove original lock");
+            std::fs::write(&lock_path_for_pre, "owner-B")
+                .expect("write replacement");
+        });
+
+        // Post-rename hook: simulate owner-C acquiring the canonical lock
+        // after staging moved owner-B out of the way.
+        release_lock_testing::set_post_rename_hook(move || {
+            std::fs::write(&lock_path_for_post, "owner-C")
+                .expect("write new canonical lock");
+        });
+
+        let outcome = store
+            .release_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("release should not error");
+
+        // Must detect inode mismatch and return OwnerMismatch.
+        assert!(
+            matches!(outcome, WriterLockReleaseOutcome::OwnerMismatch { .. }),
+            "expected OwnerMismatch, got: {outcome:?}"
+        );
+
+        // The canonical lock must be owner-C's — never clobbered.
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).expect("read canonical"),
+            "owner-C",
+            "newly acquired canonical lock must NOT be clobbered by recovery"
+        );
+
+        // Staging file must be cleaned up.
+        let staging = lock_path.with_extension("lock.releasing.owner-A");
+        assert!(
+            !staging.exists(),
+            "staging file should be removed after recovery"
         );
 
         // Cleanup

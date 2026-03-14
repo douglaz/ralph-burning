@@ -11,9 +11,9 @@ use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 use crate::contexts::automation_runtime::model::{CliWriterLease, LeaseRecord};
-use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
 use crate::shared::domain::ProjectId;
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 
 /// Default TTL for CLI writer leases (seconds).
 pub const CLI_LEASE_TTL_SECONDS: u64 = 300;
@@ -43,6 +43,81 @@ impl CliWriterLeaseGuard {
     /// Returns the lease_id assigned to this guard.
     pub fn lease_id(&self) -> &str {
         &self.lease_id
+    }
+
+    /// Explicit fallible shutdown for normal completion paths.
+    ///
+    /// Stops the heartbeat, performs owner-aware writer-lock release, and
+    /// deletes the CLI lease record only after the lock release positively
+    /// succeeds. Returns an error describing the failed sub-step so the
+    /// caller can exit non-zero without rolling back committed artifacts.
+    ///
+    /// After a successful `close()`, the subsequent `Drop` is a no-op.
+    pub fn close(mut self) -> AppResult<()> {
+        self.close_inner()
+    }
+
+    /// Shared shutdown logic used by both `close()` and `Drop`.
+    /// Returns `Ok(())` only when all sub-steps succeed.
+    fn close_inner(&mut self) -> AppResult<()> {
+        // Already closed (idempotent).
+        if self.closed.load(Ordering::Acquire) {
+            return Ok(());
+        }
+
+        // 1. Signal heartbeat shutdown.
+        self.shutdown.notify_one();
+        // 2. Mark closed so the heartbeat task will not start a new tick.
+        self.closed.store(true, Ordering::Release);
+        // 3. Wait for any in-flight heartbeat tick to finish.
+        let _tick_guard = self.tick_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // 4. Abort the heartbeat task.
+        if let Some(handle) = self.heartbeat_handle.take() {
+            handle.abort();
+        }
+
+        // 5. Owner-aware writer-lock release.
+        let lock_outcome = self.store.release_writer_lock(
+            &self.base_dir,
+            &self.project_id,
+            &self.lease_id,
+        );
+
+        match lock_outcome {
+            Ok(WriterLockReleaseOutcome::Released) => {
+                // 6. Lock released — delete the CLI lease record.
+                if let Err(e) = self.store.remove_lease(&self.base_dir, &self.lease_id) {
+                    // Lease file delete failed after successful lock release.
+                    // Lock stays released; lease record stays durable.
+                    return Err(AppError::GuardCloseFailed {
+                        step: "lease_file_delete".to_owned(),
+                        details: e.to_string(),
+                    });
+                }
+                Ok(())
+            }
+            Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
+                // Writer lock absent — keep lease record durable.
+                Err(AppError::GuardCloseFailed {
+                    step: "writer_lock_absent".to_owned(),
+                    details: "writer lock file was already absent at close time".to_owned(),
+                })
+            }
+            Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                // Lock owned by someone else — keep lease record durable.
+                Err(AppError::GuardCloseFailed {
+                    step: "writer_lock_owner_mismatch".to_owned(),
+                    details: format!("lock owned by '{actual_owner}', not this guard"),
+                })
+            }
+            Err(e) => {
+                // I/O error — keep lease record durable.
+                Err(AppError::GuardCloseFailed {
+                    step: "writer_lock_io_error".to_owned(),
+                    details: e.to_string(),
+                })
+            }
+        }
     }
 
     /// Acquire the project writer lock, persist a `CliWriterLease` record, and
@@ -143,36 +218,9 @@ fn heartbeat_tick(
 
 impl Drop for CliWriterLeaseGuard {
     fn drop(&mut self) {
-        // 1. Signal heartbeat shutdown.
-        self.shutdown.notify_one();
-        // 2. Mark closed so the heartbeat task will not start a new tick.
-        self.closed.store(true, Ordering::Release);
-        // 3. Wait for any in-flight heartbeat tick to finish by acquiring the
-        //    tick lock. Once held, no tick can be running or start.
-        let _tick_guard = self.tick_lock.lock().unwrap_or_else(|e| e.into_inner());
-        // 4. Abort the heartbeat task (it may still be sleeping at an await
-        //    point — the abort ensures it does not wake and attempt a tick
-        //    after we release tick_lock).
-        if let Some(handle) = self.heartbeat_handle.take() {
-            handle.abort();
-        }
-
-        // 5. Attempt owner-aware writer-lock release first.
-        let lock_released = matches!(
-            self.store.release_writer_lock(
-                &self.base_dir,
-                &self.project_id,
-                &self.lease_id,
-            ),
-            Ok(crate::contexts::automation_runtime::WriterLockReleaseOutcome::Released)
-        );
-
-        // 6. Only delete the CLI lease record after lock removal succeeds.
-        //    If lock release failed (absent, mismatch, or I/O error), the
-        //    lease record stays durable for later reconcile visibility.
-        if lock_released {
-            let _ = self.store.remove_lease(&self.base_dir, &self.lease_id);
-        }
+        // Best-effort cleanup for unwind/error paths.
+        // After a successful explicit close(), this is a no-op.
+        let _ = self.close_inner();
     }
 }
 

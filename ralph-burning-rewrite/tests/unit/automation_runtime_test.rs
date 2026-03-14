@@ -4125,6 +4125,199 @@ async fn cli_guard_drop_leaves_lease_durable_on_lock_absent() {
 }
 
 // ---------------------------------------------------------------------------
+// Guard explicit close: success and failure invariants
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cli_guard_close_succeeds_and_drop_is_noop() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("close-ok".to_owned()).expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    // Explicit close should succeed.
+    guard.close().expect("close should succeed");
+
+    // Both lease record and lock should be cleaned up.
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(records.is_empty(), "lease record should be removed after close");
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "post-close")
+        .expect("lock should be available after close");
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "post-close")
+        .expect("cleanup");
+}
+
+#[tokio::test]
+async fn cli_guard_close_fails_when_lock_absent() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("close-absent".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    // Remove the lock file behind the guard's back.
+    std::fs::remove_file(
+        temp.path()
+            .join(".ralph-burning/daemon/leases/writer-close-absent.lock"),
+    )
+    .expect("remove lock");
+
+    // Close should fail with writer_lock_absent.
+    let err = guard.close().expect_err("close should fail");
+    let err_msg = format!("{err}");
+    assert!(
+        err_msg.contains("writer_lock_absent"),
+        "error should mention writer_lock_absent, got: {err_msg}"
+    );
+
+    // CLI lease record must remain durable.
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.iter().any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
+        "CLI lease record must remain when close fails with lock absent"
+    );
+
+    // Cleanup
+    FsDaemonStore
+        .remove_lease(temp.path(), &lease_id)
+        .expect("cleanup lease");
+}
+
+#[tokio::test]
+async fn cli_guard_close_fails_when_lock_owner_mismatch() {
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("close-mismatch".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    // Replace the writer lock with a different owner.
+    std::fs::remove_file(
+        temp.path()
+            .join(".ralph-burning/daemon/leases/writer-close-mismatch.lock"),
+    )
+    .expect("remove lock");
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "usurper")
+        .expect("usurp lock");
+
+    // Close should fail with writer_lock_owner_mismatch.
+    let err = guard.close().expect_err("close should fail");
+    let err_msg = format!("{err}");
+    assert!(
+        err_msg.contains("writer_lock_owner_mismatch"),
+        "error should mention writer_lock_owner_mismatch, got: {err_msg}"
+    );
+
+    // CLI lease record must remain durable.
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.iter().any(|r| matches!(r, LeaseRecord::CliWriter(cli) if cli.lease_id == lease_id)),
+        "CLI lease record must remain when close fails with owner mismatch"
+    );
+
+    // Usurper's lock must be untouched.
+    let err = FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "another")
+        .expect_err("usurper's lock should still be held");
+    assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+    // Cleanup
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "usurper")
+        .expect("cleanup lock");
+    FsDaemonStore
+        .remove_lease(temp.path(), &lease_id)
+        .expect("cleanup lease");
+}
+
+#[tokio::test]
+async fn cli_guard_close_lease_delete_failure_keeps_lock_released() {
+    // After successful lock release, if lease file delete fails,
+    // close returns error but the lock stays released.
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("close-lease-fail".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    // Make the lease file non-deletable by replacing it with a directory
+    // containing a file (remove_file on a directory fails).
+    let lease_path = temp
+        .path()
+        .join(format!(".ralph-burning/daemon/leases/{lease_id}.json"));
+    std::fs::remove_file(&lease_path).expect("remove lease file");
+    std::fs::create_dir(&lease_path).expect("create dir at lease path");
+    std::fs::write(lease_path.join("blocker"), "x").expect("write blocker");
+
+    // Close should fail at lease_file_delete step.
+    let err = guard.close().expect_err("close should fail");
+    let err_msg = format!("{err}");
+    assert!(
+        err_msg.contains("lease_file_delete"),
+        "error should mention lease_file_delete, got: {err_msg}"
+    );
+
+    // Writer lock must still be released (the lock release succeeded).
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "after-close")
+        .expect("lock should be available after close");
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "after-close")
+        .expect("cleanup lock");
+
+    // Cleanup the lease dir-file
+    std::fs::remove_file(lease_path.join("blocker")).expect("cleanup blocker");
+    std::fs::remove_dir(&lease_path).expect("cleanup lease dir");
+}
+
+// ---------------------------------------------------------------------------
 // Stale CLI reconcile: owner mismatch reports failure without deleting lease
 // ---------------------------------------------------------------------------
 

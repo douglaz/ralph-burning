@@ -153,7 +153,7 @@ async fn handle_start() -> AppResult<()> {
     // Acquire per-project writer lock with lease record before any run-state mutation
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
         Arc::new(FsDaemonStore);
-    let _lock_guard = CliWriterLeaseGuard::acquire(
+    let lock_guard = CliWriterLeaseGuard::acquire(
         Arc::clone(&daemon_store),
         &current_dir,
         project_id.clone(),
@@ -187,6 +187,20 @@ async fn handle_start() -> AppResult<()> {
         &effective_config,
     )
     .await?;
+
+    // Test-only injection seam: delete the writer lock file before close()
+    // to exercise close-failure handling at the CLI level.
+    if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
+        let lock_path = current_dir.join(format!(
+            ".ralph-burning/daemon/leases/writer-{}.lock",
+            project_id.as_str()
+        ));
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match final_snapshot.status {
@@ -237,7 +251,7 @@ async fn handle_resume() -> AppResult<()> {
     // Acquire per-project writer lock with lease record before any run-state mutation
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
         Arc::new(FsDaemonStore);
-    let _lock_guard = CliWriterLeaseGuard::acquire(
+    let lock_guard = CliWriterLeaseGuard::acquire(
         Arc::clone(&daemon_store),
         &current_dir,
         project_id.clone(),
@@ -271,6 +285,10 @@ async fn handle_resume() -> AppResult<()> {
         &effective_config,
     )
     .await?;
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     let final_snapshot = run_snapshot_read.read_run_snapshot(&current_dir, &project_id)?;
     match final_snapshot.status {

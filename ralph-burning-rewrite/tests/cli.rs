@@ -4482,6 +4482,58 @@ fn cli_run_start_releases_lock_on_error() {
 }
 
 // ---------------------------------------------------------------------------
+// Guard close failure makes successful run exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_run_start_close_failure_exits_nonzero() {
+    // Regression: a successful run with a guard-close failure must exit
+    // non-zero. The test seam deletes the writer lock file after the
+    // engine completes but before the explicit close().
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-fail");
+    select_active_project_fixture(temp_dir.path(), "close-fail");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run start with close failure");
+
+    assert!(
+        !output.status.success(),
+        "run start must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+
+    // CLI lease record must remain durable (close did not delete it
+    // because lock release failed).
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let cli_leases: Vec<_> = std::fs::read_dir(&leases_dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            e.path()
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("cli-") && n.ends_with(".json"))
+        })
+        .collect();
+    assert!(
+        !cli_leases.is_empty(),
+        "CLI lease file must remain durable when close fails"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Reconcile cleanup failure reporting (CLI level)
 // ---------------------------------------------------------------------------
 
