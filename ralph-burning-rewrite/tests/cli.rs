@@ -4758,13 +4758,19 @@ fn conformance_daemon_lifecycle_008_passes() {
 
 #[test]
 fn conformance_full_suite_passes() {
-    // Hard-link the CLI binary to a stable temp path so nested sub-spawns
-    // remain reliable even if cargo relinks the original during parallel
-    // test execution. A hard link pins the inode — even if the original
-    // path is replaced, the linked copy stays valid. This avoids ETXTBSY
-    // from copy and ENOENT from relink races.
-    let tmp_dir = tempdir().expect("create temp dir for stable binary");
-    let stable_binary = tmp_dir.path().join("ralph-burning");
+    // Hard-link the CLI binary to a stable path under the test binary's
+    // directory (inside target/) so nested sub-spawns remain reliable even
+    // if cargo relinks the original during parallel test execution. Using
+    // target/ instead of tempdir() avoids dependence on an executable /tmp
+    // (some systems mount /tmp with noexec). A hard link pins the inode —
+    // even if the original path is replaced, the linked copy stays valid.
+    // This avoids ETXTBSY from copy and ENOENT from relink races.
+    let binary_dir = std::path::Path::new(binary())
+        .parent()
+        .expect("binary parent directory");
+    let stable_binary = binary_dir.join("ralph-burning-stable-conformance");
+    // Remove any stale copy from a previous run before linking.
+    let _ = std::fs::remove_file(&stable_binary);
     std::fs::hard_link(binary(), &stable_binary)
         .or_else(|_| std::fs::copy(binary(), &stable_binary).map(|_| ()))
         .expect("link or copy binary to stable path");
@@ -4774,6 +4780,9 @@ fn conformance_full_suite_passes() {
         .env("RALPH_BURNING_CLI_PATH", &stable_binary)
         .output()
         .expect("run conformance run (full suite)");
+
+    // Clean up the stable binary after the run.
+    let _ = std::fs::remove_file(&stable_binary);
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(

@@ -3924,7 +3924,9 @@ fn reconcile_stale_cli_lease_missing_writer_lock_reports_cleanup_failure() {
     .expect("reconcile");
 
     assert_eq!(1, report.stale_lease_ids.len());
-    // Writer lock was already absent → cleanup failure, not a release
+    // Writer lock was already absent → cleanup failure, not a release.
+    // The lease file is still pruned so later reconcile runs do not
+    // rediscover it, but it is never counted as released.
     assert!(
         report.released_lease_ids.is_empty(),
         "missing writer lock should prevent counting as released"
@@ -3938,6 +3940,14 @@ fn reconcile_stale_cli_lease_missing_writer_lock_reports_cleanup_failure() {
         report.cleanup_failures[0].details
     );
     assert_eq!(None, report.cleanup_failures[0].task_id);
+
+    // The stale lease record should be pruned even though the pass was
+    // a cleanup failure — prevents rediscovery on subsequent reconcile runs.
+    let remaining = store.list_lease_records(temp.path()).expect("list");
+    assert!(
+        remaining.is_empty(),
+        "stale CLI lease should be pruned after writer_lock_absent"
+    );
 }
 
 #[test]
@@ -4046,6 +4056,161 @@ fn reconcile_non_stale_cli_lease_is_not_cleaned() {
     store
         .release_writer_lock(temp.path(), &project_id, "cli-fresh")
         .expect("cleanup lock");
+}
+
+/// Regression test: CLI `close()` successfully releases the writer lock but
+/// lease-file deletion fails at close time. A subsequent `daemon reconcile`
+/// discovers the stale CLI lease, finds the writer lock already absent,
+/// prunes the lease file, but does NOT count the lease as released.
+/// Verifies accounting: `stale_leases == 1`, `released_leases == 0`,
+/// `failed_tasks == 0`, and a follow-up writer-lock acquisition succeeds.
+#[test]
+fn reconcile_prunes_stale_cli_lease_after_close_released_writer_lock() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("close-proj".to_owned()).expect("valid id");
+
+    // Simulate the state left behind when CLI close() releases the writer
+    // lock but fails to delete the lease file: a stale CLI lease record
+    // exists on disk, but no writer lock is held.
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-close-stale".to_owned(),
+        project_id: "close-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
+        .expect("write stale cli lease");
+    // No writer lock on disk — simulates close() having released it.
+
+    let worktree_adapter = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    // Accounting invariants:
+    assert_eq!(
+        1,
+        report.stale_lease_ids.len(),
+        "stale_leases should be 1"
+    );
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "released_leases should be 0 — writer_lock_absent makes the pass a cleanup failure"
+    );
+    assert!(
+        report.failed_task_ids.is_empty(),
+        "failed_tasks should be 0 — CLI leases have no task"
+    );
+
+    // The cleanup failure should mention writer_lock_absent.
+    assert_eq!(1, report.cleanup_failures.len());
+    assert!(
+        report.cleanup_failures[0]
+            .details
+            .contains("writer_lock_absent"),
+        "expected writer_lock_absent detail, got: {}",
+        report.cleanup_failures[0].details
+    );
+    assert_eq!(None, report.cleanup_failures[0].task_id);
+
+    // The stale lease file should be pruned so later reconcile runs do
+    // not rediscover it.
+    let remaining = store.list_lease_records(temp.path()).expect("list");
+    assert!(
+        remaining.is_empty(),
+        "lease record should be pruned after reconcile"
+    );
+
+    // A follow-up writer-lock acquisition should succeed — the project
+    // is no longer blocked by a stale lease.
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "post-reconcile")
+        .expect("writer lock should be available after stale lease pruning");
+    store
+        .release_writer_lock(temp.path(), &project_id, "post-reconcile")
+        .expect("cleanup");
+}
+
+/// Regression test: writer_lock_absent followed by lease-file deletion
+/// failure. Both sub-steps fail — reconcile must record each explicitly,
+/// not increment released_leases, not mutate daemon tasks, and not touch
+/// worktrees.
+#[test]
+fn reconcile_writer_lock_absent_then_lease_delete_failure_records_both() {
+    // Use SubStepAbsentStore with writer_lock_absent=true AND
+    // lease_file_absent=true to simulate both sub-steps failing.
+    let store = SubStepAbsentStore::new(true, true);
+    let temp = tempdir().expect("tempdir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-double-fail".to_owned(),
+        project_id: "double-fail-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
+        .expect("write cli lease");
+
+    let worktree_adapter = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "double failure should not count as released"
+    );
+    assert!(
+        report.failed_task_ids.is_empty(),
+        "CLI leases have no task to fail"
+    );
+
+    // Both sub-step failures should be recorded explicitly.
+    assert_eq!(
+        2,
+        report.cleanup_failures.len(),
+        "expected two cleanup failures (writer_lock_absent + lease_file_absent), got: {:?}",
+        report
+            .cleanup_failures
+            .iter()
+            .map(|f| &f.details)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        report.cleanup_failures[0]
+            .details
+            .contains("writer_lock_absent"),
+        "first failure should be writer_lock_absent, got: {}",
+        report.cleanup_failures[0].details
+    );
+    assert!(
+        report.cleanup_failures[1]
+            .details
+            .contains("lease_file_absent"),
+        "second failure should be lease_file_absent, got: {}",
+        report.cleanup_failures[1].details
+    );
 }
 
 // ---------------------------------------------------------------------------

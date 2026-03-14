@@ -548,12 +548,13 @@ impl LeaseService {
                     }
                 }
                 Err(e) => {
-                    // Physical release failed (e.g. worktree removal) — lease remains
-                    // durable and the task remains terminal but recoverable for later.
+                    // Release setup/validation failure (e.g. corrupt project_id),
+                    // not physical worktree removal — lease remains durable and
+                    // the task remains terminal but recoverable for later.
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: lease.lease_id.clone(),
                         task_id: Some(task.task_id.clone()),
-                        details: format!("worktree_remove: {e}"),
+                        details: format!("release_setup: {e}"),
                     });
                 }
             }
@@ -599,6 +600,11 @@ impl LeaseService {
 
             // Sub-step 1: owner-aware writer-lock release BEFORE lease deletion.
             let mut has_sub_step_failure = false;
+            // Track whether the lock was positively released vs already absent.
+            // When the lock is already absent the cleanup is still a failure,
+            // but we still attempt lease-file deletion to prune the stale
+            // record so later reconcile runs do not rediscover it.
+            let mut writer_lock_absent = false;
             match store.release_writer_lock(base_dir, &project_id, &cli_lease.lease_id) {
                 Ok(WriterLockReleaseOutcome::Released) => {}
                 Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
@@ -610,6 +616,7 @@ impl LeaseService {
                                 .to_owned(),
                     });
                     has_sub_step_failure = true;
+                    writer_lock_absent = true;
                 }
                 Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
                     report.cleanup_failures.push(LeaseCleanupFailure {
@@ -632,14 +639,18 @@ impl LeaseService {
                 }
             }
 
-            // If lock release failed, keep the CLI lease record durable
-            // for later reconcile visibility.
-            if has_sub_step_failure {
+            // If lock release failed for a reason other than already-absent,
+            // keep the CLI lease record durable for later reconcile visibility.
+            // When the lock was already absent, proceed to lease-file deletion
+            // to prune the stale record.
+            if has_sub_step_failure && !writer_lock_absent {
                 continue;
             }
 
-            // Sub-step 2: delete CLI lease record (only after lock release
-            // succeeded).
+            // Sub-step 2: delete CLI lease record. Attempted after positive
+            // lock release OR after writer_lock_absent (to prune the stale
+            // record). In the writer_lock_absent case the overall pass remains
+            // a cleanup failure regardless of deletion outcome.
             match store.remove_lease(base_dir, &cli_lease.lease_id) {
                 Ok(ResourceCleanupOutcome::Removed) => {}
                 Ok(ResourceCleanupOutcome::AlreadyAbsent) => {
