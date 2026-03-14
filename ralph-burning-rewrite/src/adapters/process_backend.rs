@@ -7,7 +7,7 @@ use std::time::Duration;
 use chrono::Utc;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::contexts::agent_execution::model::{
@@ -20,7 +20,7 @@ use crate::shared::error::{AppError, AppResult};
 
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
-    pub active_children: Arc<Mutex<HashMap<String, Child>>>,
+    pub active_children: Arc<Mutex<HashMap<String, u32>>>,
 }
 
 impl ProcessBackendAdapter {
@@ -100,8 +100,9 @@ impl ProcessBackendAdapter {
         }
     }
 
-    /// Spawn a command, write stdin, register the child, wait for exit, read
-    /// captured stdout/stderr, and remove from active_children on every path.
+    /// Spawn a command, write stdin, register the child PID, wait for exit,
+    /// read captured stdout/stderr, and remove from active_children on every
+    /// path. The child is owned locally so `wait()` never holds the mutex.
     async fn spawn_and_wait(
         &self,
         request: &InvocationRequest,
@@ -133,10 +134,11 @@ impl ProcessBackendAdapter {
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
 
-        // Register child in active_children before awaiting
-        {
+        // Register child PID in active_children before awaiting.
+        // The Child itself stays local so wait() is lock-free.
+        if let Some(pid) = child.id() {
             let mut children = self.active_children.lock().await;
-            children.insert(request.invocation_id.clone(), child);
+            children.insert(request.invocation_id.clone(), pid);
         }
 
         // Read stdout/stderr concurrently with waiting for the child
@@ -155,25 +157,10 @@ impl ProcessBackendAdapter {
             buf
         });
 
-        // Wait for exit status
-        let status = {
-            let mut children = self.active_children.lock().await;
-            match children.get_mut(&request.invocation_id) {
-                Some(child) => child.wait().await,
-                None => {
-                    // Removed by cancel — still collect output
-                    let stdout = stdout_task.await.unwrap_or_default();
-                    let stderr = stderr_task.await.unwrap_or_default();
-                    return Ok(ChildOutput {
-                        status: None,
-                        stdout,
-                        stderr,
-                    });
-                }
-            }
-        };
+        // Wait for exit — no lock held, so cancel() can send SIGTERM
+        let status = child.wait().await;
 
-        // Remove from active_children
+        // Remove from active_children on every exit path
         {
             let mut children = self.active_children.lock().await;
             children.remove(&request.invocation_id);
@@ -518,42 +505,43 @@ impl AgentExecutionPort for ProcessBackendAdapter {
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+        // Enforce the same stage-only / supported-family rules as preflight
+        // so that callers bypassing check_capability still get CapabilityMismatch.
+        self.check_capability(&request.resolved_target, &request.contract)
+            .await?;
+
         match request.resolved_target.backend.family {
             BackendFamily::Claude => self.invoke_claude(request).await,
             BackendFamily::Codex => self.invoke_codex(request).await,
-            other => Err(Self::invocation_failed(
-                &request,
-                FailureClass::TransportFailure,
-                format!("ProcessBackendAdapter does not support backend family '{other}'"),
+            // Unreachable after check_capability, but defensive:
+            _ => Err(Self::capability_mismatch(
+                &request.resolved_target,
+                &request.contract,
+                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
             )),
         }
     }
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
-        let mut active_children = self.active_children.lock().await;
-        let Some(child) = active_children.get_mut(invocation_id) else {
-            return Ok(());
-        };
-        let Some(pid) = child.id() else {
-            // Already exited
-            active_children.remove(invocation_id);
-            return Ok(());
+        // Remove the PID from the map first, then drop the lock before
+        // sending SIGTERM so we never hold the mutex across blocking work.
+        let pid = {
+            let mut children = self.active_children.lock().await;
+            match children.remove(invocation_id) {
+                Some(pid) => pid,
+                None => return Ok(()),
+            }
         };
 
-        // Send SIGTERM via the kill command
-        let kill_result = Command::new("kill")
+        // Send SIGTERM synchronously (kill is a near-instant syscall wrapper).
+        let kill_result = std::process::Command::new("kill")
             .arg("-TERM")
             .arg(pid.to_string())
-            .output()
-            .await;
-
-        // Always remove from active_children after signal attempt
-        active_children.remove(invocation_id);
+            .output();
 
         match kill_result {
-            Ok(output) if output.status.success() => Ok(()),
             Ok(_) => {
-                // Non-zero exit from kill — process may already be gone, treat as Ok
+                // Both success and "already exited" non-zero are fine.
                 Ok(())
             }
             Err(error) => Err(AppError::InvocationFailed {

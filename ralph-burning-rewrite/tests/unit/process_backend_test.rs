@@ -540,10 +540,11 @@ async fn cancellation_sends_sigterm_to_long_running_child() {
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
 
-    // Fake claude that sleeps for a long time
+    // Fake claude that sleeps for a long time.
+    // Use `exec` so SIGTERM reaches sleep directly (shell won't mask it).
     write_executable(
         &bin_dir.path().join("claude"),
-        "#!/bin/sh\ncat > /dev/null\nsleep 300\n",
+        "#!/bin/sh\ncat > /dev/null\nexec sleep 300\n",
     );
 
     let adapter = ProcessBackendAdapter::new();
@@ -748,6 +749,60 @@ async fn codex_invalid_last_message_returns_schema_validation_failure() {
             ..
         }
     ));
+}
+
+// ── invoke() rejects Requirements contract with CapabilityMismatch ──────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_rejects_requirements_contract_with_capability_mismatch() {
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.contract = InvocationContract::Requirements {
+        label: "requirements:question_set".to_owned(),
+    };
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("requirements should be rejected at invoke");
+
+    match error {
+        AppError::CapabilityMismatch { details, .. } => {
+            assert!(
+                details.contains("stage"),
+                "should mention stage-only support: {details}"
+            );
+        }
+        other => panic!("expected CapabilityMismatch, got: {other:?}"),
+    }
+}
+
+// ── invoke() rejects OpenRouter with CapabilityMismatch ─────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_rejects_openrouter_with_capability_mismatch() {
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("openrouter should be rejected at invoke");
+
+    match error {
+        AppError::CapabilityMismatch { details, .. } => {
+            assert!(
+                details.contains("only claude and codex"),
+                "should mention supported families: {details}"
+            );
+            assert!(
+                details.contains("default_backend=claude")
+                    || details.contains("default_backend=codex"),
+                "should mention default_backend config: {details}"
+            );
+        }
+        other => panic!("expected CapabilityMismatch, got: {other:?}"),
+    }
 }
 
 // ── Cancel is noop for unknown invocations ──────────────────────────────────
