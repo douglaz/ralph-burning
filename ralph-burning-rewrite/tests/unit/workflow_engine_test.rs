@@ -4035,6 +4035,139 @@ async fn resume_after_partial_journal_failure_no_duplicate_amendments() {
 }
 
 #[tokio::test]
+async fn resume_after_first_journal_append_failure_preserves_pending_amendments() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-resume-after-first-append-fail");
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::CompletionPanel,
+        vec![
+            conditionally_approved_payload(&["fix A", "fix B", "fix C"]),
+            approved_validation_payload(),
+        ],
+    ));
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    {
+        // Standard flow emits 18 successful appends before the first
+        // amendment_queued event, so fail there to exercise the zero-prefix
+        // journal failure case.
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 18);
+        let first_result = engine::execute_standard_run(
+            &agent_service,
+            &FsRunSnapshotStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsAmendmentQueueStore,
+            base_dir,
+            &pid,
+            &config,
+        )
+        .await;
+        assert!(
+            first_result.is_err(),
+            "run should fail on first batch append"
+        );
+    }
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert_eq!(
+        failed_snapshot.completion_rounds, 2,
+        "failed snapshot must preserve the advanced round"
+    );
+    let failed_bodies: Vec<_> = failed_snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .map(|amendment| amendment.body.as_str())
+        .collect();
+    assert_eq!(failed_bodies, vec!["fix A", "fix B", "fix C"]);
+
+    let disk_amendments = FsAmendmentQueueStore
+        .list_pending_amendments(base_dir, &pid)
+        .unwrap();
+    assert!(
+        disk_amendments.is_empty(),
+        "cleanup should remove the batch when the first append fails"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        failed_events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::AmendmentQueued),
+        "the zero-prefix append failure should leave no amendment events"
+    );
+
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+    assert_eq!(snapshot.amendment_queue.processed_count, 3);
+
+    let planning_contexts = adapter_handle.contexts_for(StageId::Planning);
+    assert_eq!(
+        planning_contexts.len(),
+        2,
+        "planning should run once per completion round"
+    );
+    assert_eq!(planning_contexts[1]["completion_round"], 2);
+    let pending_amendments = planning_contexts[1]["pending_amendments"]
+        .as_array()
+        .expect("resume planning should receive preserved amendments");
+    assert_eq!(pending_amendments.len(), 3);
+    assert_eq!(pending_amendments[0].as_str(), Some("fix A"));
+    assert_eq!(pending_amendments[1].as_str(), Some("fix B"));
+    assert_eq!(pending_amendments[2].as_str(), Some("fix C"));
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let amendment_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
+        .collect();
+    assert_eq!(
+        amendment_events.len(),
+        0,
+        "resume should not invent amendment events for the zero-prefix failure case"
+    );
+
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "planning");
+    assert_eq!(run_resumed.details["completion_round"], 2);
+}
+
+#[tokio::test]
 async fn full_batch_success_persists_all_amendments() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

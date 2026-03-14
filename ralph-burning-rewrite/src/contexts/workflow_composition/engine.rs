@@ -1012,13 +1012,21 @@ where
                                 })
                                 .collect();
 
+                            snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                             if let Some(last_index) = last_journaled_amendment_index {
-                                snapshot.completion_rounds =
-                                    snapshot.completion_rounds.max(to_round);
                                 snapshot
                                     .amendment_queue
                                     .pending
                                     .extend(amendments[..=last_index].iter().cloned());
+                            } else {
+                                // Preserve the full requested batch when the first journal append
+                                // fails so resume can restart the new completion round instead of
+                                // skipping a conditional approval outcome with an empty journal
+                                // prefix.
+                                snapshot
+                                    .amendment_queue
+                                    .pending
+                                    .extend(amendments.iter().cloned());
                             }
 
                             let details = if cleanup_errors.is_empty() {
