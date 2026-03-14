@@ -305,19 +305,22 @@ impl LeaseService {
                 }
             };
 
-        // PHASE 3: Lease-file deletion — only attempted when the writer
-        // lock was positively released. If the lock was not released
-        // (AlreadyAbsent, OwnerMismatch, or I/O error), the lease file
-        // stays durable so callers can report the specific lock-release
-        // failure.
-        let (lease_file_already_absent, lease_file_error) = if writer_lock_released {
+        // PHASE 3: Lease-file deletion — only attempted when ALL prior
+        // sub-steps positively succeeded (worktree removed AND writer
+        // lock released). If the worktree was only AlreadyAbsent or
+        // the lock was not released, the lease file stays durable so
+        // callers can report the incomplete cleanup and subsequent
+        // lookups via find_lease_for_task() still discover the lease.
+        let (lease_file_already_absent, lease_file_error) =
+            if writer_lock_released && !worktree_already_absent {
             match store.remove_lease(base_dir, &lease.lease_id) {
                 Ok(ResourceCleanupOutcome::Removed) => (false, None),
                 Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
                 Err(e) => (false, Some(e.to_string())),
             }
         } else {
-            // Lease file preserved — writer-lock release did not succeed.
+            // Lease file preserved — prior sub-steps did not all
+            // positively succeed (worktree absent or lock not released).
             (false, None)
         };
 

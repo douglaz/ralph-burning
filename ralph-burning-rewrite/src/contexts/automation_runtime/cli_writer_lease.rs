@@ -121,8 +121,12 @@ impl CliWriterLeaseGuard {
     }
 
     /// Acquire the project writer lock, persist a `CliWriterLease` record, and
-    /// spawn a heartbeat task. If the lease record write fails, the writer lock
-    /// is released before returning.
+    /// spawn a heartbeat task. If the lease record write fails, rollback
+    /// attempts to release the writer lock. When rollback succeeds, only the
+    /// original write error is returned. When rollback fails (I/O error or
+    /// owner mismatch), returns `AcquisitionRollbackFailed` preserving both
+    /// the original failure and a warning that the writer lock may still be
+    /// held.
     pub fn acquire(
         store: Arc<dyn DaemonStorePort + Send + Sync>,
         base_dir: &Path,

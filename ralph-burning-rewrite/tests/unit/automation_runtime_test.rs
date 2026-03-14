@@ -2735,6 +2735,107 @@ fn release_idempotent_mode_missing_worktree_returns_partial() {
         result.worktree_already_absent,
         "worktree_already_absent flag should be set"
     );
+
+    // Lease file must remain on disk for recovery visibility.
+    let lease_file = temp
+        .path()
+        .join(".ralph-burning")
+        .join("daemon")
+        .join("leases")
+        .join("lease-idempotent-wt.json");
+    assert!(
+        lease_file.exists(),
+        "lease file must remain durable after partial release (worktree absent)"
+    );
+}
+
+#[test]
+fn release_with_absent_worktree_preserves_lease_file_for_subsequent_lookups() {
+    // Regression: when worktree is AlreadyAbsent, the lease file must remain
+    // on disk even though the writer lock is released. Without this, a
+    // subsequent cleanup_aborted_task() call finds no lease via
+    // find_lease_for_task(), sees task.lease_id.is_some(), and incorrectly
+    // clears the durable reference — defeating the fail-closed invariant.
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+
+    let mut task = sample_task();
+    task.task_id = "absent-wt-lease-file".to_owned();
+    task.status = TaskStatus::Aborted;
+    task.lease_id = Some("lease-absent-wt-durable".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // Do NOT create the worktree — it is already absent.
+    let wt_path = temp.path().join("wt-absent-durable");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-absent-wt-durable".to_owned(),
+        task_id: "absent-wt-lease-file".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/absent-wt-durable".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-absent-wt-durable")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ReleaseMode::Idempotent,
+    )
+    .expect("release returns Ok in idempotent mode");
+
+    assert!(
+        !result.resources_released,
+        "resources_released must be false when worktree is already absent"
+    );
+    assert!(
+        result.worktree_already_absent,
+        "worktree_already_absent flag should be set"
+    );
+
+    // Core assertion: lease file must still exist on disk so subsequent
+    // find_lease_for_task() lookups still discover the lease.
+    let lease_file = temp
+        .path()
+        .join(".ralph-burning")
+        .join("daemon")
+        .join("leases")
+        .join("lease-absent-wt-durable.json");
+    assert!(
+        lease_file.exists(),
+        "lease file must remain durable after partial release (worktree absent)"
+    );
+
+    // find_lease_for_task must still return the lease.
+    let found = LeaseService::find_lease_for_task(&store, temp.path(), "absent-wt-lease-file")
+        .expect("find_lease_for_task");
+    assert!(
+        found.is_some(),
+        "find_lease_for_task must still discover the lease after partial release"
+    );
+
+    // Task lease_id must remain set.
+    let task_after = store
+        .read_task(temp.path(), "absent-wt-lease-file")
+        .expect("read task");
+    assert_eq!(
+        task_after.lease_id.as_deref(),
+        Some("lease-absent-wt-durable"),
+        "lease_id must NOT be cleared after partial release"
+    );
 }
 
 #[test]
@@ -2806,6 +2907,27 @@ fn abort_cleanup_with_missing_worktree_returns_partial_in_idempotent_mode() {
         task_after.lease_id.as_deref(),
         Some("lease-abort-missing-wt"),
         "lease_id must NOT be cleared when release partially fails"
+    );
+
+    // Lease file must remain on disk so subsequent find_lease_for_task()
+    // lookups do not incorrectly clear lease_id.
+    let lease_file = temp
+        .path()
+        .join(".ralph-burning")
+        .join("daemon")
+        .join("leases")
+        .join("lease-abort-missing-wt.json");
+    assert!(
+        lease_file.exists(),
+        "lease file must remain durable after partial release (worktree absent)"
+    );
+
+    // find_lease_for_task must still discover the lease.
+    let found = LeaseService::find_lease_for_task(&store, temp.path(), "abort-missing-wt")
+        .expect("find_lease_for_task");
+    assert!(
+        found.is_some(),
+        "find_lease_for_task must still return the lease so cleanup_aborted_task does not clear lease_id"
     );
 }
 
