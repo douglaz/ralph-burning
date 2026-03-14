@@ -1303,17 +1303,36 @@ impl DaemonStorePort for FsDaemonStore {
                 Err(e) => {
                     // fstat on the open fd failed. Restore canonical lock
                     // visibility before returning the error.
-                    let _ = fs::rename(&staging, &path);
+                    if let Err(restore_err) = fs::rename(&staging, &path) {
+                        // Restore failed — the lock is stranded at the
+                        // staging path. Surface the restore failure so
+                        // callers know the lock is not at the canonical path.
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: verification failed ({e}) \
+                                 and could not restore lock from staging: {restore_err}"
+                            ),
+                        )));
+                    }
                     return Err(e.into());
                 }
             };
             let staged_meta = match fs::metadata(&staging) {
                 Ok(m) => m,
                 Err(e) => {
-                    // Cannot verify — restore canonical lock visibility
-                    // before returning the error so the lock is not
-                    // stranded at the staging path.
-                    let _ = fs::rename(&staging, &path);
+                    // Cannot verify — try to restore canonical lock
+                    // visibility so the lock is not stranded at the
+                    // staging path.
+                    if let Err(restore_err) = fs::rename(&staging, &path) {
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: staging verification failed ({e}) \
+                                 and could not restore lock: {restore_err}"
+                            ),
+                        )));
+                    }
                     return Err(e.into());
                 }
             };
@@ -1332,10 +1351,20 @@ impl DaemonStorePort for FsDaemonStore {
                         // delete it.
                         let _ = fs::remove_file(&staging);
                     }
-                    Err(_) => {
+                    Err(restore_err) => {
                         // Cannot restore to canonical path due to an
                         // unexpected I/O error. Leave the staging file
-                        // intact for later recovery — do NOT delete it.
+                        // intact for later recovery. Surface as an I/O
+                        // error rather than masquerading as OwnerMismatch
+                        // so callers know the lock is not at the canonical
+                        // path and the staging artifact is still durable.
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: inode mismatch detected \
+                                 but could not restore replacement lock: {restore_err}"
+                            ),
+                        )));
                     }
                 }
                 return Ok(WriterLockReleaseOutcome::OwnerMismatch {
@@ -1975,6 +2004,75 @@ mod tests {
 
         // Cleanup
         std::fs::remove_file(&staging_b).expect("cleanup B staging");
+    }
+
+    #[test]
+    fn release_writer_lock_rename_back_failure_surfaces_io_error() {
+        // Regression: when staging verification fails AND the rename-back to
+        // canonical also fails, the release must surface an explicit I/O
+        // error (not silently drop the restore failure). This exercises the
+        // recovery path added to satisfy the spec's failure invariants.
+        //
+        // Strategy: use post_rename_hook to delete the staging file AND
+        // place a directory at the staging path. When staged_meta fails
+        // (NotFound — the original staging is gone), the recovery
+        // rename(staging_dir, canonical) fails because rename() of a
+        // directory onto a non-directory path is an error (or ENOENT if
+        // staging_dir was already cleaned up). Either way, the restore
+        // fails and the code must surface the compound error.
+        let store = FsDaemonStore;
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("rename-back-fail".to_owned()).expect("valid id");
+
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("acquire");
+
+        let lock_path =
+            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let lock_path_clone = lock_path.clone();
+
+        // After rename-to-staging: delete the staging file so
+        // fs::metadata(&staging) fails, then create a new file at
+        // canonical. When the code tries rename(&staging, &path) to
+        // restore, staging doesn't exist → rename returns ENOENT →
+        // restore failure is surfaced.
+        release_lock_testing::set_post_rename_hook(move || {
+            let staging = lock_path_clone.with_extension("lock.releasing.owner-A");
+            // Remove staging so fs::metadata fails.
+            std::fs::remove_file(&staging).expect("remove staging");
+            // Put a replacement at canonical so we can verify it survives.
+            std::fs::write(&lock_path_clone, "owner-B")
+                .expect("write replacement");
+        });
+
+        let result = store
+            .release_writer_lock(temp.path(), &project_id, "owner-A");
+
+        // Must surface an error (not silently return the original error
+        // while ignoring the failed restore).
+        assert!(
+            result.is_err(),
+            "expected compound I/O error, got: {result:?}"
+        );
+
+        // The error message must mention the restore failure.
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(
+            err_msg.contains("could not restore lock"),
+            "error should mention restore failure, got: {err_msg}"
+        );
+
+        // The replacement lock at canonical must survive untouched.
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).expect("read canonical"),
+            "owner-B",
+            "replacement lock at canonical path must survive"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&lock_path).expect("cleanup");
     }
 }
 

@@ -4695,8 +4695,20 @@ fn conformance_daemon_lifecycle_008_passes() {
 
 #[test]
 fn conformance_full_suite_passes() {
-    let output = Command::new(binary())
+    // Hard-link the CLI binary to a stable temp path so nested sub-spawns
+    // remain reliable even if cargo relinks the original during parallel
+    // test execution. A hard link pins the inode — even if the original
+    // path is replaced, the linked copy stays valid. This avoids ETXTBSY
+    // from copy and ENOENT from relink races.
+    let tmp_dir = tempdir().expect("create temp dir for stable binary");
+    let stable_binary = tmp_dir.path().join("ralph-burning");
+    std::fs::hard_link(binary(), &stable_binary)
+        .or_else(|_| std::fs::copy(binary(), &stable_binary).map(|_| ()))
+        .expect("link or copy binary to stable path");
+
+    let output = Command::new(&stable_binary)
         .args(["conformance", "run"])
+        .env("RALPH_BURNING_CLI_PATH", &stable_binary)
         .output()
         .expect("run conformance run (full suite)");
 
