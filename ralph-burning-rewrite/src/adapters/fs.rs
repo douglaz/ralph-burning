@@ -1240,12 +1240,29 @@ impl DaemonStorePort for FsDaemonStore {
         &self,
         base_dir: &Path,
         project_id: &ProjectId,
-    ) -> AppResult<crate::contexts::automation_runtime::ResourceCleanupOutcome> {
-        use crate::contexts::automation_runtime::ResourceCleanupOutcome;
-        match fs::remove_file(Self::writer_lock_path(base_dir, project_id)) {
-            Ok(()) => Ok(ResourceCleanupOutcome::Removed),
+        expected_owner: &str,
+    ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
+        use crate::contexts::automation_runtime::WriterLockReleaseOutcome;
+        let path = Self::writer_lock_path(base_dir, project_id);
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                if contents == expected_owner {
+                    match fs::remove_file(&path) {
+                        Ok(()) => Ok(WriterLockReleaseOutcome::Released),
+                        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                            // Race: file disappeared between read and delete.
+                            Ok(WriterLockReleaseOutcome::AlreadyAbsent)
+                        }
+                        Err(error) => Err(error.into()),
+                    }
+                } else {
+                    Ok(WriterLockReleaseOutcome::OwnerMismatch {
+                        actual_owner: contents,
+                    })
+                }
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                Ok(ResourceCleanupOutcome::AlreadyAbsent)
+                Ok(WriterLockReleaseOutcome::AlreadyAbsent)
             }
             Err(error) => Err(error.into()),
         }

@@ -48,6 +48,19 @@ pub enum ResourceCleanupOutcome {
     AlreadyAbsent,
 }
 
+/// Outcome of an owner-aware writer-lock release. Distinguishes positive
+/// removal from absence and ownership mismatch so callers can enforce
+/// strict cleanup accounting and avoid deleting a lock owned by another writer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WriterLockReleaseOutcome {
+    /// The lock file contents matched the expected owner and was removed.
+    Released,
+    /// The lock file was not present at release time.
+    AlreadyAbsent,
+    /// The lock file exists but contains a different owner token.
+    OwnerMismatch { actual_owner: String },
+}
+
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;
     fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask>;
@@ -79,7 +92,8 @@ pub trait DaemonStorePort {
         &self,
         base_dir: &Path,
         project_id: &ProjectId,
-    ) -> AppResult<ResourceCleanupOutcome>;
+        expected_owner: &str,
+    ) -> AppResult<WriterLockReleaseOutcome>;
 }
 
 pub trait WorktreePort {

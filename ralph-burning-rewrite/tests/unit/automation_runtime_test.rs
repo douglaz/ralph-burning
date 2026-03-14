@@ -995,13 +995,13 @@ fn writer_lock_acquire_release_roundtrip() {
 
     // Release and re-acquire should succeed
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "cli")
         .expect("release lock");
     store
         .acquire_writer_lock(temp.path(), &project_id, "cli-3")
         .expect("re-acquire after release");
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "cli-3")
         .expect("final release");
 }
 
@@ -1012,10 +1012,17 @@ fn writer_lock_release_is_idempotent() {
     let project_id =
         ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned()).expect("valid id");
 
-    // Release without acquire should not fail
-    store
-        .release_writer_lock(temp.path(), &project_id)
+    // Release without acquire should return AlreadyAbsent (not an error)
+    let outcome = store
+        .release_writer_lock(temp.path(), &project_id, "any-owner")
         .expect("release without acquire should succeed");
+    assert!(
+        matches!(
+            outcome,
+            ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome::AlreadyAbsent
+        ),
+        "absent lock should return AlreadyAbsent"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1430,10 +1437,12 @@ impl DaemonStorePort for FailingJournalStore {
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
     ) -> ralph_burning::shared::error::AppResult<
-        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
     > {
-        self.inner.release_writer_lock(base_dir, project_id)
+        self.inner
+            .release_writer_lock(base_dir, project_id, expected_owner)
     }
 }
 
@@ -1621,7 +1630,7 @@ fn cli_writer_lock_guard_releases_on_drop() {
 
         // Simulate RAII release (guard drop)
         store
-            .release_writer_lock(temp.path(), &project_id)
+            .release_writer_lock(temp.path(), &project_id, "cli")
             .expect("release lock");
     }
 
@@ -1630,7 +1639,7 @@ fn cli_writer_lock_guard_releases_on_drop() {
         .acquire_writer_lock(temp.path(), &project_id, "cli-3")
         .expect("should be available after RAII release");
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "cli-3")
         .expect("final cleanup");
 }
 
@@ -1766,13 +1775,15 @@ impl DaemonStorePort for SubStepAbsentStore {
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
     ) -> ralph_burning::shared::error::AppResult<
-        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
     > {
         if self.writer_lock_absent {
-            Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
+            Ok(ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome::AlreadyAbsent)
         } else {
-            self.inner.release_writer_lock(base_dir, project_id)
+            self.inner
+                .release_writer_lock(base_dir, project_id, expected_owner)
         }
     }
 }
@@ -2108,8 +2119,9 @@ impl DaemonStorePort for SubStepErrorStore {
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
     ) -> ralph_burning::shared::error::AppResult<
-        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
     > {
         if self.writer_lock_error {
             Err(std::io::Error::new(
@@ -2118,7 +2130,8 @@ impl DaemonStorePort for SubStepErrorStore {
             )
             .into())
         } else {
-            self.inner.release_writer_lock(base_dir, project_id)
+            self.inner
+                .release_writer_lock(base_dir, project_id, expected_owner)
         }
     }
 }
@@ -2936,10 +2949,12 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
+        expected_owner: &str,
     ) -> ralph_burning::shared::error::AppResult<
-        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
     > {
-        self.inner.release_writer_lock(base_dir, project_id)
+        self.inner
+            .release_writer_lock(base_dir, project_id, expected_owner)
     }
 }
 
@@ -3578,7 +3593,7 @@ async fn cli_lease_guard_creates_reconcile_visible_lease_record() {
         .acquire_writer_lock(temp.path(), &project_id, "post-drop")
         .expect("lock should be available after guard drop");
     FsDaemonStore
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "post-drop")
         .expect("cleanup");
 }
 
@@ -3658,7 +3673,7 @@ async fn cli_lease_guard_drop_cleans_up_on_error_path() {
         .acquire_writer_lock(temp.path(), &project_id, "post-error")
         .expect("lock should be available after error-path drop");
     FsDaemonStore
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "post-error")
         .expect("cleanup");
 }
 
@@ -3693,7 +3708,7 @@ async fn cli_lease_guard_failed_lock_leaves_no_lease_record() {
     );
 
     FsDaemonStore
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "blocker")
         .expect("cleanup blocker");
 }
 
@@ -3770,7 +3785,7 @@ fn reconcile_stale_cli_lease_cleans_lease_and_writer_lock() {
         .acquire_writer_lock(temp.path(), &project_id, "post-reconcile")
         .expect("writer lock should be available after reconcile");
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "post-reconcile")
         .expect("cleanup");
 }
 
@@ -3875,7 +3890,7 @@ fn reconcile_stale_cli_lease_missing_lease_file_reports_cleanup_failure() {
 
     // Clean up the writer lock
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "cli-race")
         .expect("cleanup");
 }
 
@@ -3926,6 +3941,323 @@ fn reconcile_non_stale_cli_lease_is_not_cleaned() {
         .remove_lease(temp.path(), "cli-fresh")
         .expect("cleanup lease");
     store
-        .release_writer_lock(temp.path(), &project_id)
+        .release_writer_lock(temp.path(), &project_id, "cli-fresh")
         .expect("cleanup lock");
+}
+
+// ---------------------------------------------------------------------------
+// Owner-aware writer-lock release
+// ---------------------------------------------------------------------------
+
+#[test]
+fn owner_matched_release_succeeds() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("owner-match".to_owned()).expect("valid id");
+
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "my-lease")
+        .expect("acquire");
+    let outcome = store
+        .release_writer_lock(temp.path(), &project_id, "my-lease")
+        .expect("release");
+    assert!(
+        matches!(
+            outcome,
+            ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome::Released
+        ),
+        "owner-matched release should return Released"
+    );
+    // Lock should be gone
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "after")
+        .expect("should be available");
+    store
+        .release_writer_lock(temp.path(), &project_id, "after")
+        .expect("cleanup");
+}
+
+#[test]
+fn owner_mismatch_does_not_delete_replaced_lock() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("owner-mismatch".to_owned())
+            .expect("valid id");
+
+    // Acquire with one owner
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "original-owner")
+        .expect("acquire");
+
+    // Try to release with a different owner
+    let outcome = store
+        .release_writer_lock(temp.path(), &project_id, "wrong-owner")
+        .expect("release should not error");
+    match outcome {
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome::OwnerMismatch {
+            ref actual_owner,
+        } => {
+            assert_eq!("original-owner", actual_owner);
+        }
+        other => panic!("expected OwnerMismatch, got: {other:?}"),
+    }
+
+    // Lock must still exist (not deleted)
+    let err = store
+        .acquire_writer_lock(temp.path(), &project_id, "contender")
+        .expect_err("lock should still be held");
+    assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+    // Cleanup with correct owner
+    store
+        .release_writer_lock(temp.path(), &project_id, "original-owner")
+        .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// CLI guard cleanup leaves lease durable when lock release fails
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn cli_guard_drop_leaves_lease_durable_on_lock_mismatch() {
+    // Simulate: after CLI guard acquires, another writer replaces the lock.
+    // On drop, the guard should detect mismatch and NOT delete the lease record.
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("guard-mismatch".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    // Replace the writer lock behind the guard's back
+    std::fs::remove_file(
+        temp.path()
+            .join(".ralph-burning/daemon/leases/writer-guard-mismatch.lock"),
+    )
+    .expect("remove lock");
+    FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "usurper")
+        .expect("usurp lock");
+
+    drop(guard);
+
+    // CLI lease record must remain durable (not deleted)
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.iter().any(|r| match r {
+            LeaseRecord::CliWriter(cli) => cli.lease_id == lease_id,
+            _ => false,
+        }),
+        "CLI lease record must remain when lock release detected mismatch"
+    );
+
+    // The usurper's lock must still be intact (not deleted by guard)
+    let err = FsDaemonStore
+        .acquire_writer_lock(temp.path(), &project_id, "another")
+        .expect_err("usurper's lock should still be held");
+    assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+    // Cleanup
+    FsDaemonStore
+        .release_writer_lock(temp.path(), &project_id, "usurper")
+        .expect("cleanup lock");
+    FsDaemonStore
+        .remove_lease(temp.path(), &lease_id)
+        .expect("cleanup lease");
+}
+
+#[tokio::test]
+async fn cli_guard_drop_leaves_lease_durable_on_lock_absent() {
+    // If the lock file is already gone when the guard drops, the lease record
+    // must stay durable for reconcile visibility.
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("guard-absent".to_owned())
+            .expect("valid id");
+
+    let guard = CliWriterLeaseGuard::acquire(
+        arc_store(),
+        temp.path(),
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    )
+    .expect("acquire");
+
+    let lease_id = guard.lease_id().to_owned();
+
+    // Remove the lock file behind the guard's back
+    std::fs::remove_file(
+        temp.path()
+            .join(".ralph-burning/daemon/leases/writer-guard-absent.lock"),
+    )
+    .expect("remove lock");
+
+    drop(guard);
+
+    // CLI lease record must remain durable
+    let records = FsDaemonStore
+        .list_lease_records(temp.path())
+        .expect("list");
+    assert!(
+        records.iter().any(|r| match r {
+            LeaseRecord::CliWriter(cli) => cli.lease_id == lease_id,
+            _ => false,
+        }),
+        "CLI lease record must remain when lock was already absent"
+    );
+
+    // Cleanup
+    FsDaemonStore
+        .remove_lease(temp.path(), &lease_id)
+        .expect("cleanup lease");
+}
+
+// ---------------------------------------------------------------------------
+// Stale CLI reconcile: owner mismatch reports failure without deleting lease
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_stale_cli_lease_owner_mismatch_reports_cleanup_failure() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    // Inject a stale CLI lease with a writer lock owned by a different writer.
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stale-mismatch".to_owned(),
+        project_id: "mismatch-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
+        .expect("write cli lease");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("mismatch-proj".to_owned())
+        .expect("valid id");
+    // Acquire the lock with a DIFFERENT owner to simulate mismatch
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "other-writer")
+        .expect("acquire lock as different owner");
+
+    let worktree_adapter = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    // Stale CLI lease counted
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert_eq!("cli-stale-mismatch", report.stale_lease_ids[0]);
+
+    // NOT released (mismatch)
+    assert!(
+        report.released_lease_ids.is_empty(),
+        "owner-mismatch should prevent counting as released"
+    );
+
+    // No tasks failed
+    assert!(report.failed_task_ids.is_empty());
+
+    // Cleanup failure reported with distinct mismatch detail
+    assert_eq!(1, report.cleanup_failures.len());
+    assert!(
+        report.cleanup_failures[0]
+            .details
+            .contains("writer_lock_owner_mismatch"),
+        "details should mention owner_mismatch, got: {}",
+        report.cleanup_failures[0].details
+    );
+    assert_eq!(None, report.cleanup_failures[0].task_id);
+
+    // CLI lease record must still exist (not deleted)
+    let records = store.list_lease_records(temp.path()).expect("list");
+    assert_eq!(1, records.len(), "CLI lease record must remain after mismatch");
+
+    // The other writer's lock must still be intact
+    let err = store
+        .acquire_writer_lock(temp.path(), &project_id, "contender")
+        .expect_err("lock should still be held by other-writer");
+    assert!(matches!(err, AppError::ProjectWriterLockHeld { .. }));
+
+    // Cleanup
+    store
+        .release_writer_lock(temp.path(), &project_id, "other-writer")
+        .expect("cleanup lock");
+    store
+        .remove_lease(temp.path(), "cli-stale-mismatch")
+        .expect("cleanup lease");
+}
+
+// ---------------------------------------------------------------------------
+// Normal stale CLI cleanup allows subsequent lock acquisition
+// ---------------------------------------------------------------------------
+
+#[test]
+fn reconcile_stale_cli_cleanup_allows_subsequent_run_start() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+
+    // Inject stale CLI lease with matching owner in the lock
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stale-reacquire".to_owned(),
+        project_id: "reacquire-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli_lease))
+        .expect("write cli lease");
+    let project_id = ralph_burning::shared::domain::ProjectId::new("reacquire-proj".to_owned())
+        .expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "cli-stale-reacquire")
+        .expect("acquire lock");
+
+    let worktree_adapter = WorktreeAdapter;
+    let report = LeaseService::reconcile(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        Some(0),
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert_eq!(1, report.stale_lease_ids.len());
+    assert_eq!(1, report.released_lease_ids.len());
+    assert!(report.cleanup_failures.is_empty());
+    assert!(report.failed_task_ids.is_empty());
+
+    // Subsequent run start can acquire the lock
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "new-cli-session")
+        .expect("should be able to acquire after stale cleanup");
+
+    // Cleanup
+    store
+        .release_writer_lock(temp.path(), &project_id, "new-cli-session")
+        .expect("cleanup");
 }

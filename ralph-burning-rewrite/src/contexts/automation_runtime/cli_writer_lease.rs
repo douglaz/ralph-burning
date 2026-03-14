@@ -72,7 +72,7 @@ impl CliWriterLeaseGuard {
         };
         if let Err(e) = store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease)) {
             // Invariant: failed acquisition leaves neither lease record nor lock.
-            let _ = store.release_writer_lock(base_dir, &project_id);
+            let _ = store.release_writer_lock(base_dir, &project_id, &lease_id);
             return Err(e);
         }
 
@@ -157,14 +157,22 @@ impl Drop for CliWriterLeaseGuard {
             handle.abort();
         }
 
-        // 5. Cleanup: delete lease record and release writer lock
-        //    independently.  Failure in one must not skip the other.
-        let _ = self
-            .store
-            .remove_lease(&self.base_dir, &self.lease_id);
-        let _ = self
-            .store
-            .release_writer_lock(&self.base_dir, &self.project_id);
+        // 5. Attempt owner-aware writer-lock release first.
+        let lock_released = matches!(
+            self.store.release_writer_lock(
+                &self.base_dir,
+                &self.project_id,
+                &self.lease_id,
+            ),
+            Ok(crate::contexts::automation_runtime::WriterLockReleaseOutcome::Released)
+        );
+
+        // 6. Only delete the CLI lease record after lock removal succeeds.
+        //    If lock release failed (absent, mismatch, or I/O error), the
+        //    lease record stays durable for later reconcile visibility.
+        if lock_released {
+            let _ = self.store.remove_lease(&self.base_dir, &self.lease_id);
+        }
     }
 }
 
@@ -220,7 +228,7 @@ mod tests {
             .acquire_writer_lock(temp.path(), &project_id, "after-drop")
             .expect("lock should be available after drop");
         FsDaemonStore
-            .release_writer_lock(temp.path(), &project_id)
+            .release_writer_lock(temp.path(), &project_id, "after-drop")
             .expect("cleanup");
     }
 
@@ -294,7 +302,7 @@ mod tests {
             .acquire_writer_lock(temp.path(), &project_id, "post-error")
             .expect("lock should be available after error drop");
         FsDaemonStore
-            .release_writer_lock(temp.path(), &project_id)
+            .release_writer_lock(temp.path(), &project_id, "post-error")
             .expect("cleanup");
 
         // Double-check by lease_id
@@ -335,7 +343,7 @@ mod tests {
         );
 
         FsDaemonStore
-            .release_writer_lock(temp.path(), &project_id)
+            .release_writer_lock(temp.path(), &project_id, "blocker")
             .expect("cleanup blocker");
     }
 

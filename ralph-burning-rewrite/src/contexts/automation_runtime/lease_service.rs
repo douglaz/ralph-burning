@@ -6,7 +6,8 @@ use serde_json::json;
 use crate::contexts::automation_runtime::model::{LeaseRecord, TaskStatus, WorktreeLease};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
-    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WorktreePort,
+    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WriterLockReleaseOutcome,
+    WorktreePort,
 };
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
@@ -70,6 +71,8 @@ pub struct ReleaseResult {
     pub lease_file_already_absent: bool,
     /// Whether the writer lock was already absent when release was attempted.
     pub writer_lock_already_absent: bool,
+    /// Whether the writer lock was owned by a different writer at release time.
+    pub writer_lock_owner_mismatch: bool,
     /// If lease-file deletion returned a real I/O error (not `AlreadyAbsent`),
     /// this contains the error description so callers can report the specific
     /// failing sub-step.
@@ -121,7 +124,7 @@ impl LeaseService {
         if let Err(error) =
             worktree.create_worktree(repo_root, &worktree_path, &branch_name, task_id)
         {
-            let _ = store.release_writer_lock(base_dir, project_id);
+            let _ = store.release_writer_lock(base_dir, project_id, &lease_id);
             return Err(error);
         }
 
@@ -138,7 +141,7 @@ impl LeaseService {
         };
         if let Err(error) = store.write_lease(base_dir, &lease) {
             let _ = worktree.remove_worktree(repo_root, &lease.worktree_path, task_id);
-            let _ = store.release_writer_lock(base_dir, project_id);
+            let _ = store.release_writer_lock(base_dir, project_id, &lease.lease_id);
             return Err(error);
         }
 
@@ -190,23 +193,36 @@ impl LeaseService {
 
         // Always attempt writer-lock release even if lease-file deletion failed,
         // so the operator sees the full picture of what succeeded and what didn't.
-        let (writer_lock_already_absent, writer_lock_error) =
-            match store.release_writer_lock(base_dir, &project_id) {
-                Ok(ResourceCleanupOutcome::Removed) => (false, None),
-                Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
-                Err(e) => (false, Some(e.to_string())),
+        let (writer_lock_already_absent, writer_lock_owner_mismatch, writer_lock_error) =
+            match store.release_writer_lock(base_dir, &project_id, &lease.lease_id) {
+                Ok(WriterLockReleaseOutcome::Released) => (false, false, None),
+                Ok(WriterLockReleaseOutcome::AlreadyAbsent) => (true, false, None),
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => (
+                    false,
+                    true,
+                    Some(format!(
+                        "owner_mismatch: expected '{}', found '{actual_owner}'",
+                        lease.lease_id
+                    )),
+                ),
+                Err(e) => (false, false, Some(e.to_string())),
             };
 
         // Determine whether cleanup succeeded under the chosen policy.
         // In Strict mode (reconcile), already-absent sub-steps count as
         // failure. In Idempotent mode (abort, daemon-loop), only real I/O
-        // errors prevent release.
+        // errors prevent release. Owner mismatch is always a failure.
         let resources_released = match mode {
-            ReleaseMode::Idempotent => lease_file_error.is_none() && writer_lock_error.is_none(),
+            ReleaseMode::Idempotent => {
+                lease_file_error.is_none()
+                    && writer_lock_error.is_none()
+                    && !writer_lock_owner_mismatch
+            }
             ReleaseMode::Strict => {
                 !worktree_already_absent
                     && !lease_file_already_absent
                     && !writer_lock_already_absent
+                    && !writer_lock_owner_mismatch
                     && lease_file_error.is_none()
                     && writer_lock_error.is_none()
             }
@@ -238,6 +254,7 @@ impl LeaseService {
             worktree_already_absent,
             lease_file_already_absent,
             writer_lock_already_absent,
+            writer_lock_owner_mismatch,
             lease_file_error,
             writer_lock_error,
         })
@@ -358,6 +375,16 @@ impl LeaseService {
                         });
                         has_sub_step_failure = true;
                     }
+                    if outcome.writer_lock_owner_mismatch {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: Some(task.task_id.clone()),
+                            details:
+                                "writer_lock_owner_mismatch: lock is owned by a different writer"
+                                    .to_owned(),
+                        });
+                        has_sub_step_failure = true;
+                    }
                     if let Some(ref err) = outcome.writer_lock_error {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
@@ -418,9 +445,10 @@ impl LeaseService {
         }
 
         // --- Pass 2: stale CLI writer leases ---
-        // CLI leases have no associated task or worktree. Cleanup is: remove
-        // lease record + release writer lock. Strict mode: AlreadyAbsent on
-        // either sub-step counts as a cleanup failure.
+        // CLI leases have no associated task or worktree. Cleanup order:
+        // 1. Validate project_id (before any side effects).
+        // 2. Owner-aware writer-lock release (before lease deletion).
+        // 3. Delete CLI lease record only after lock release succeeds.
         let all_records = store.list_lease_records(base_dir)?;
         for record in all_records {
             let cli_lease = match record {
@@ -441,16 +469,7 @@ impl LeaseService {
 
             // No task to mark failed — CLI leases are task-independent.
 
-            // Sub-step 1: remove CLI lease record.
-            let (lease_file_already_absent, lease_file_error) =
-                match store.remove_lease(base_dir, &cli_lease.lease_id) {
-                    Ok(ResourceCleanupOutcome::Removed) => (false, None),
-                    Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
-                    Err(e) => (false, Some(e.to_string())),
-                };
-
-            // Sub-step 2: release writer lock (always attempted even if
-            // lease-record deletion failed).
+            // Validate project_id before any cleanup side effects.
             let project_id = match ProjectId::new(cli_lease.project_id.clone()) {
                 Ok(pid) => pid,
                 Err(e) => {
@@ -462,51 +481,70 @@ impl LeaseService {
                     continue;
                 }
             };
-            let (writer_lock_already_absent, writer_lock_error) =
-                match store.release_writer_lock(base_dir, &project_id) {
-                    Ok(ResourceCleanupOutcome::Removed) => (false, None),
-                    Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
-                    Err(e) => (false, Some(e.to_string())),
-                };
 
-            // Strict accounting: AlreadyAbsent or I/O errors are cleanup
-            // failures; only positive removal of both counts as released.
+            // Sub-step 1: owner-aware writer-lock release BEFORE lease deletion.
             let mut has_sub_step_failure = false;
+            match store.release_writer_lock(base_dir, &project_id, &cli_lease.lease_id) {
+                Ok(WriterLockReleaseOutcome::Released) => {}
+                Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details:
+                            "writer_lock_absent: writer lock was already missing during cleanup"
+                                .to_owned(),
+                    });
+                    has_sub_step_failure = true;
+                }
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details: format!(
+                            "writer_lock_owner_mismatch: expected '{}', found '{actual_owner}'",
+                            cli_lease.lease_id
+                        ),
+                    });
+                    has_sub_step_failure = true;
+                }
+                Err(e) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details: format!("writer_lock_release: {e}"),
+                    });
+                    has_sub_step_failure = true;
+                }
+            }
 
-            if lease_file_already_absent {
-                report.cleanup_failures.push(LeaseCleanupFailure {
-                    lease_id: cli_lease.lease_id.clone(),
-                    task_id: None,
-                    details: "lease_file_absent: lease file was already missing during cleanup"
-                        .to_owned(),
-                });
-                has_sub_step_failure = true;
+            // If lock release failed, keep the CLI lease record durable
+            // for later reconcile visibility.
+            if has_sub_step_failure {
+                continue;
             }
-            if let Some(ref err) = lease_file_error {
-                report.cleanup_failures.push(LeaseCleanupFailure {
-                    lease_id: cli_lease.lease_id.clone(),
-                    task_id: None,
-                    details: format!("lease_file_delete: {err}"),
-                });
-                has_sub_step_failure = true;
-            }
-            if writer_lock_already_absent {
-                report.cleanup_failures.push(LeaseCleanupFailure {
-                    lease_id: cli_lease.lease_id.clone(),
-                    task_id: None,
-                    details:
-                        "writer_lock_absent: writer lock was already missing during cleanup"
-                            .to_owned(),
-                });
-                has_sub_step_failure = true;
-            }
-            if let Some(ref err) = writer_lock_error {
-                report.cleanup_failures.push(LeaseCleanupFailure {
-                    lease_id: cli_lease.lease_id.clone(),
-                    task_id: None,
-                    details: format!("writer_lock_release: {err}"),
-                });
-                has_sub_step_failure = true;
+
+            // Sub-step 2: delete CLI lease record (only after lock release
+            // succeeded).
+            match store.remove_lease(base_dir, &cli_lease.lease_id) {
+                Ok(ResourceCleanupOutcome::Removed) => {}
+                Ok(ResourceCleanupOutcome::AlreadyAbsent) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details:
+                            "lease_file_absent: lease file was already missing during cleanup"
+                                .to_owned(),
+                    });
+                    has_sub_step_failure = true;
+                }
+                Err(e) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details: format!("lease_file_delete: {e}"),
+                    });
+                    has_sub_step_failure = true;
+                }
             }
 
             if !has_sub_step_failure {
