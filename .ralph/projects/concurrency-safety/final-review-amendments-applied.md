@@ -219,3 +219,21 @@ Clamp `ttl_override_seconds` to `i64::MAX` before constructing `chrono::Duration
 ### Reviewer
 codex
 
+
+## Round 6
+
+### Amendment: CS-REV-001
+
+### Problem
+[`close()` in `cli_writer_lease.rs`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L57) says `Drop` should become a no-op only after a successful close, but [`close_inner()` marks the guard closed before any cleanup runs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L73). It then treats lease deletion as failed only on `Err(_)` at [`cli_writer_lease.rs:91`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L91), even though [`ResourceCleanupOutcome`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/mod.rs#L44) explicitly distinguishes `Removed` from `AlreadyAbsent`. Because [`Drop` just calls `close_inner()` again](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L256), a failed explicit `close()` is still finalized: there is no best-effort retry on drop, and `close()` can incorrectly report success when `remove_lease()` returned `AlreadyAbsent`.
+
+### Proposed Change
+Separate “heartbeat stopped” from “fully closed”, and only mark the guard closed after `release_writer_lock == Released` and `remove_lease == Removed`. Match `ResourceCleanupOutcome` explicitly so `AlreadyAbsent` becomes a `GuardCloseFailed` variant such as `lease_file_absent`. Keep `Drop` able to make one last best-effort cleanup attempt after a failed explicit `close()`.
+
+### Affected Files
+- [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs) - fix the close state machine and handle `AlreadyAbsent` explicitly
+- [tests/unit/automation_runtime_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs) - add regression coverage for `remove_lease => AlreadyAbsent` and failed-close/drop-retry behavior
+
+### Reviewer
+codex
+
