@@ -38,3 +38,35 @@ Targeted checks run under `nix develop`: `cli_daemon_reconcile_cleans_stale_cli_
 ### Reviewer
 codex
 
+
+## Round 2
+
+### Amendment: CS-LKR-001
+
+### Problem
+In [src/adapters/fs.rs:1306](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/fs.rs#L1306) and [src/adapters/fs.rs:1327](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/fs.rs#L1327), the verification-failure recovery path restores the writer lock with `fs::rename(&staging, &path)`. On Unix, `rename` replaces an existing destination, so if another writer acquires `path` after the original lock was moved to staging, this recovery step can overwrite that new live lock. That breaks the owner-safety guarantee the new lock-release flow is trying to enforce.
+
+### Proposed Change
+Make the recovery path fail closed the same way the inode-mismatch branch already does: never overwrite `path` if it already exists. Use a safe restore strategy such as `hard_link`/`AlreadyExists` handling, or leave the staged lock durable and return an error when canonical `path` has been reacquired.
+
+### Affected Files
+- [src/adapters/fs.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/adapters/fs.rs) - replace the `rename`-back recovery in the verification-error branches with a restore path that cannot clobber a newly acquired canonical lock.
+
+### Reviewer
+codex
+
+### Amendment: CS-LKR-002
+
+### Problem
+`CliWriterLeaseGuard::drop()` silently ignores lease-file deletion failure after a successful lock release at [src/contexts/automation_runtime/cli_writer_lease.rs:173](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L173). Both normal CLI paths only rely on implicit drop cleanup after acquiring the guard at [src/cli/run.rs:156](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/run.rs#L156) and [src/cli/run.rs:240](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/run.rs#L240). If `remove_lease` hits an I/O error on a successful `run start`/`run resume`, the command still exits successfully, but the stale CLI lease is left behind with no writer lock. Later reconcile will hit the strict `writer_lock_absent` failure path at [src/contexts/automation_runtime/lease_service.rs:482](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L482), so the leak becomes a persistent manual-repair state.
+
+### Proposed Change
+Add an explicit fallible shutdown path for normal command completion, such as `CliWriterLeaseGuard::close() -> AppResult<()>`, and call it from `run start`/`run resume` before returning success. Keep `Drop` as best-effort unwind cleanup only. Normal successful CLI runs should not hide lease teardown failures.
+
+### Affected Files
+- [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs) - add a fallible explicit cleanup path and avoid silently swallowing lease deletion failure on the success path.
+- [src/cli/run.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/run.rs) - use the explicit guard shutdown on the normal `start` and `resume` exit paths so cleanup failures surface to the caller.
+
+### Reviewer
+codex
+
