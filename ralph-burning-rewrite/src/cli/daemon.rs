@@ -212,7 +212,9 @@ async fn handle_reconcile(ttl_seconds: Option<u64>) -> AppResult<()> {
         for failure in &report.cleanup_failures {
             println!(
                 "  lease={} task={}: {}",
-                failure.lease_id, failure.task_id, failure.details
+                failure.lease_id,
+                failure.task_id.as_deref().unwrap_or("n/a"),
+                failure.details
             );
         }
         return Err(AppError::ReconcileCleanupFailed {

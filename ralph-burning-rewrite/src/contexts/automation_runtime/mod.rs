@@ -17,8 +17,8 @@ pub use lease_service::{
     LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult,
 };
 pub use model::{
-    DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, RoutingResolution,
-    RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
+    CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
+    LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
@@ -55,6 +55,9 @@ pub trait DaemonStorePort {
     fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>>;
     fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease>;
     fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()>;
+    fn list_lease_records(&self, base_dir: &Path) -> AppResult<Vec<LeaseRecord>>;
+    fn read_lease_record(&self, base_dir: &Path, lease_id: &str) -> AppResult<LeaseRecord>;
+    fn write_lease_record(&self, base_dir: &Path, lease: &LeaseRecord) -> AppResult<()>;
     fn remove_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<ResourceCleanupOutcome>;
 
     fn read_daemon_journal(&self, base_dir: &Path) -> AppResult<Vec<DaemonJournalEvent>>;

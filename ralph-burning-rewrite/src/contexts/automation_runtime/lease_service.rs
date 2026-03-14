@@ -29,7 +29,7 @@ impl ReconcileReport {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseCleanupFailure {
     pub lease_id: String,
-    pub task_id: String,
+    pub task_id: Option<String>,
     pub details: String,
 }
 
@@ -293,7 +293,7 @@ impl LeaseService {
             if !lease.worktree_path.exists() {
                 report.cleanup_failures.push(LeaseCleanupFailure {
                     lease_id: lease.lease_id.clone(),
-                    task_id: task.task_id.clone(),
+                    task_id: Some(task.task_id.clone()),
                     details: format!(
                         "worktree_absent: referenced worktree path '{}' does not exist",
                         lease.worktree_path.display()
@@ -325,7 +325,7 @@ impl LeaseService {
                     if outcome.worktree_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details: "worktree_absent_during_release: worktree disappeared between pre-check and release".to_owned(),
                         });
                         has_sub_step_failure = true;
@@ -333,7 +333,7 @@ impl LeaseService {
                     if outcome.lease_file_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details:
                                 "lease_file_absent: lease file was already missing during cleanup"
                                     .to_owned(),
@@ -343,7 +343,7 @@ impl LeaseService {
                     if let Some(ref err) = outcome.lease_file_error {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details: format!("lease_file_delete: {err}"),
                         });
                         has_sub_step_failure = true;
@@ -351,7 +351,7 @@ impl LeaseService {
                     if outcome.writer_lock_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details:
                                 "writer_lock_absent: writer lock was already missing during cleanup"
                                     .to_owned(),
@@ -361,7 +361,7 @@ impl LeaseService {
                     if let Some(ref err) = outcome.writer_lock_error {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details: format!("writer_lock_release: {err}"),
                         });
                         has_sub_step_failure = true;
@@ -387,7 +387,7 @@ impl LeaseService {
                                 // for operator repair.
                                 report.cleanup_failures.push(LeaseCleanupFailure {
                                     lease_id: lease.lease_id.clone(),
-                                    task_id: task.task_id.clone(),
+                                    task_id: Some(task.task_id.clone()),
                                     details: format!("clear_lease_ref: {e}"),
                                 });
                             }
@@ -400,7 +400,7 @@ impl LeaseService {
                     if let Some(je) = outcome.journal_error {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
-                            task_id: task.task_id.clone(),
+                            task_id: Some(task.task_id.clone()),
                             details: format!("release_journal: {je}"),
                         });
                     }
@@ -410,7 +410,7 @@ impl LeaseService {
                     // durable and the task remains terminal but recoverable for later.
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: lease.lease_id.clone(),
-                        task_id: task.task_id.clone(),
+                        task_id: Some(task.task_id.clone()),
                         details: format!("worktree_remove: {e}"),
                     });
                 }

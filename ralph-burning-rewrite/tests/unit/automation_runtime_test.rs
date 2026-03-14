@@ -5,7 +5,8 @@ use ralph_burning::adapters::fs::FsDaemonStore;
 use ralph_burning::adapters::worktree::WorktreeAdapter;
 use ralph_burning::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use ralph_burning::contexts::automation_runtime::model::{
-    DaemonTask, DispatchMode, TaskStatus, WatchedIssueMeta, WorktreeLease,
+    CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, TaskStatus, WatchedIssueMeta,
+    WorktreeLease,
 };
 use ralph_burning::contexts::automation_runtime::routing::RoutingEngine;
 use ralph_burning::contexts::automation_runtime::task_service::{
@@ -165,6 +166,149 @@ fn lease_ttl_detects_staleness() {
 
     assert!(!lease.is_stale_at(now + Duration::seconds(299)));
     assert!(lease.is_stale_at(now + Duration::seconds(301)));
+}
+
+#[test]
+fn cli_writer_lease_serde_round_trip() {
+    let now = Utc::now();
+    let lease = CliWriterLease {
+        lease_id: "lease-cli-1".to_owned(),
+        project_id: "demo".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+
+    let json = serde_json::to_string(&lease).expect("serialize cli lease");
+    let deserialized: CliWriterLease = serde_json::from_str(&json).expect("deserialize cli lease");
+    assert_eq!(lease, deserialized);
+
+    let record_json = serde_json::to_value(LeaseRecord::CliWriter(lease.clone()))
+        .expect("serialize lease record");
+    assert_eq!(
+        Some("cli_writer"),
+        record_json
+            .get("lease_kind")
+            .and_then(|value| value.as_str())
+    );
+
+    let record: LeaseRecord =
+        serde_json::from_value(record_json).expect("deserialize lease record");
+    assert_eq!(LeaseRecord::CliWriter(lease), record);
+}
+
+#[test]
+fn legacy_worktree_lease_json_deserializes_as_lease_record() {
+    let json = r#"{
+        "lease_id": "lease-legacy-1",
+        "task_id": "task-legacy-1",
+        "project_id": "demo",
+        "worktree_path": "/tmp/demo",
+        "branch_name": "rb/task/task-legacy-1",
+        "acquired_at": "2026-03-14T02:50:39Z",
+        "ttl_seconds": 300,
+        "last_heartbeat": "2026-03-14T02:55:39Z"
+    }"#;
+
+    let record: LeaseRecord =
+        serde_json::from_str(json).expect("deserialize legacy worktree lease");
+
+    match record {
+        LeaseRecord::Worktree(lease) => {
+            assert_eq!("lease-legacy-1", lease.lease_id);
+            assert_eq!("task-legacy-1", lease.task_id);
+            assert_eq!("demo", lease.project_id);
+        }
+        LeaseRecord::CliWriter(_) => panic!("legacy worktree lease must deserialize as worktree"),
+    }
+}
+
+#[test]
+fn cli_writer_lease_staleness_matches_worktree_lease() {
+    let now = Utc::now();
+    let worktree = WorktreeLease {
+        lease_id: "lease-worktree-1".to_owned(),
+        task_id: "task-1".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: "/tmp/demo".into(),
+        branch_name: "rb/task/task-1".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    let cli = CliWriterLease {
+        lease_id: "lease-cli-1".to_owned(),
+        project_id: "demo".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+
+    assert_eq!(worktree.heartbeat_deadline(), cli.heartbeat_deadline());
+    assert_eq!(
+        worktree.is_stale_at(now + Duration::seconds(299)),
+        cli.is_stale_at(now + Duration::seconds(299))
+    );
+    assert_eq!(
+        worktree.is_stale_at(now + Duration::seconds(301)),
+        cli.is_stale_at(now + Duration::seconds(301))
+    );
+}
+
+#[test]
+fn fs_daemon_store_lists_worktree_and_cli_lease_records_from_same_directory() {
+    let store = FsDaemonStore;
+    let temp = tempdir().expect("tempdir");
+    let now = Utc::now();
+    let worktree = WorktreeLease {
+        lease_id: "lease-worktree-1".to_owned(),
+        task_id: "task-1".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: temp.path().join("worktree-task-1"),
+        branch_name: "rb/task/task-1".to_owned(),
+        acquired_at: now,
+        ttl_seconds: 300,
+        last_heartbeat: now,
+    };
+    let cli = CliWriterLease {
+        lease_id: "lease-cli-1".to_owned(),
+        project_id: "demo".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: now + Duration::seconds(1),
+        ttl_seconds: 300,
+        last_heartbeat: now + Duration::seconds(1),
+    };
+
+    store
+        .write_lease(temp.path(), &worktree)
+        .expect("write worktree lease");
+    store
+        .write_lease_record(temp.path(), &LeaseRecord::CliWriter(cli.clone()))
+        .expect("write cli lease record");
+
+    let records = store
+        .list_lease_records(temp.path())
+        .expect("list lease records");
+    assert_eq!(2, records.len());
+    assert!(
+        matches!(&records[0], LeaseRecord::Worktree(lease) if lease.lease_id == worktree.lease_id)
+    );
+    assert!(matches!(&records[1], LeaseRecord::CliWriter(lease) if lease.lease_id == cli.lease_id));
+
+    let worktree_only = store
+        .list_leases(temp.path())
+        .expect("list worktree leases");
+    assert_eq!(vec![worktree.clone()], worktree_only);
+
+    let raw_cli_record = std::fs::read_to_string(
+        temp.path()
+            .join(".ralph-burning/daemon/leases")
+            .join("lease-cli-1.json"),
+    )
+    .expect("read cli lease record");
+    assert!(raw_cli_record.contains("\"lease_kind\": \"cli_writer\""));
 }
 
 #[test]
@@ -1218,6 +1362,26 @@ impl DaemonStorePort for FailingJournalStore {
     ) -> ralph_burning::shared::error::AppResult<()> {
         self.inner.write_lease(base_dir, lease)
     }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
     fn remove_lease(
         &self,
         base_dir: &std::path::Path,
@@ -1541,6 +1705,26 @@ impl DaemonStorePort for SubStepAbsentStore {
     ) -> ralph_burning::shared::error::AppResult<()> {
         self.inner.write_lease(base_dir, lease)
     }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
     fn remove_lease(
         &self,
         base_dir: &std::path::Path,
@@ -1858,6 +2042,26 @@ impl DaemonStorePort for SubStepErrorStore {
         lease: &WorktreeLease,
     ) -> ralph_burning::shared::error::AppResult<()> {
         self.inner.write_lease(base_dir, lease)
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
     }
     fn remove_lease(
         &self,
@@ -2668,6 +2872,26 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
     ) -> ralph_burning::shared::error::AppResult<()> {
         self.inner.write_lease(base_dir, lease)
     }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
     fn remove_lease(
         &self,
         _base_dir: &std::path::Path,
@@ -2990,11 +3214,9 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5-codex",
-            inv.resolved_target.model.model_id,
+            "gpt-5-codex", inv.resolved_target.model.model_id,
             "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
-            inv.contract_label,
-            inv.resolved_target.model.model_id
+            inv.contract_label, inv.resolved_target.model.model_id
         );
     }
 }
@@ -3035,11 +3257,9 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5-codex",
-            inv.resolved_target.model.model_id,
+            "gpt-5-codex", inv.resolved_target.model.model_id,
             "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
-            inv.contract_label,
-            inv.resolved_target.model.model_id
+            inv.contract_label, inv.resolved_target.model.model_id
         );
     }
 }
@@ -3089,14 +3309,12 @@ async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
             BackendRole::Planner.default_target()
         };
         assert_eq!(
-            expected.backend.family,
-            inv.resolved_target.backend.family,
+            expected.backend.family, inv.resolved_target.backend.family,
             "without workspace defaults, invocation '{}' should use role default backend",
             inv.contract_label
         );
         assert_eq!(
-            expected.model.model_id,
-            inv.resolved_target.model.model_id,
+            expected.model.model_id, inv.resolved_target.model.model_id,
             "without workspace defaults, invocation '{}' should use role default model",
             inv.contract_label
         );
@@ -3140,11 +3358,9 @@ async fn daemon_requirements_partial_defaults_backend_only() {
         let expected_model =
             ralph_burning::shared::domain::ModelSpec::default_for_backend(BackendFamily::Codex);
         assert_eq!(
-            expected_model.model_id,
-            inv.resolved_target.model.model_id,
+            expected_model.model_id, inv.resolved_target.model.model_id,
             "backend-only default should select codex's default model ({}), got {}",
-            expected_model.model_id,
-            inv.resolved_target.model.model_id
+            expected_model.model_id, inv.resolved_target.model.model_id
         );
     }
 }
@@ -3185,8 +3401,7 @@ async fn daemon_requirements_partial_defaults_model_only() {
             "model-only default should keep role default backend (claude)"
         );
         assert_eq!(
-            "sonnet-4.0",
-            inv.resolved_target.model.model_id,
+            "sonnet-4.0", inv.resolved_target.model.model_id,
             "model-only default should override to sonnet-4.0"
         );
     }
@@ -3224,7 +3439,9 @@ fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
         );
     match result {
         Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
-        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+        Err(AppError::InvalidConfigValue {
+            ref key, ref value, ..
+        }) => {
             assert_eq!(key, "default_backend");
             assert_eq!(value, "invalid_backend_xyz");
         }
@@ -3276,7 +3493,9 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
         );
     match result {
         Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
-        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+        Err(AppError::InvalidConfigValue {
+            ref key, ref value, ..
+        }) => {
             assert_eq!(key, "default_backend");
             assert_eq!(value, "nonexistent_provider");
         }

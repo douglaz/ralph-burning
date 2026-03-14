@@ -8,7 +8,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::contexts::agent_execution::model::RawOutputReference;
 use crate::contexts::agent_execution::service::RawOutputPort;
 use crate::contexts::agent_execution::session::{PersistedSessions, SessionStorePort};
-use crate::contexts::automation_runtime::model::{DaemonJournalEvent, DaemonTask, WorktreeLease};
+use crate::contexts::automation_runtime::model::{
+    DaemonJournalEvent, DaemonTask, LeaseRecord, WorktreeLease,
+};
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
@@ -1105,6 +1107,31 @@ impl DaemonStorePort for FsDaemonStore {
     }
 
     fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>> {
+        Ok(self
+            .list_lease_records(base_dir)?
+            .into_iter()
+            .filter_map(|record| match record {
+                LeaseRecord::Worktree(lease) => Some(lease),
+                LeaseRecord::CliWriter(_) => None,
+            })
+            .collect())
+    }
+
+    fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease> {
+        match self.read_lease_record(base_dir, lease_id)? {
+            LeaseRecord::Worktree(lease) => Ok(lease),
+            LeaseRecord::CliWriter(_) => Err(AppError::CorruptRecord {
+                file: format!("daemon/leases/{lease_id}.json"),
+                details: "lease record is not a worktree lease".to_owned(),
+            }),
+        }
+    }
+
+    fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()> {
+        self.write_lease_record(base_dir, &LeaseRecord::from(lease.clone()))
+    }
+
+    fn list_lease_records(&self, base_dir: &Path) -> AppResult<Vec<LeaseRecord>> {
         let dir = Self::leases_dir(base_dir);
         if !dir.is_dir() {
             return Ok(Vec::new());
@@ -1123,20 +1150,24 @@ impl DaemonStorePort for FsDaemonStore {
             );
             leases.push(Self::read_json_file(&path, file)?);
         }
-        leases.sort_by_key(|lease: &WorktreeLease| lease.acquired_at);
+        leases.sort_by(|a: &LeaseRecord, b: &LeaseRecord| {
+            a.acquired_at()
+                .cmp(b.acquired_at())
+                .then_with(|| a.lease_id().cmp(b.lease_id()))
+        });
         Ok(leases)
     }
 
-    fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease> {
+    fn read_lease_record(&self, base_dir: &Path, lease_id: &str) -> AppResult<LeaseRecord> {
         Self::read_json_file(
             &Self::lease_path(base_dir, lease_id),
             format!("daemon/leases/{lease_id}.json"),
         )
     }
 
-    fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()> {
+    fn write_lease_record(&self, base_dir: &Path, lease: &LeaseRecord) -> AppResult<()> {
         let contents = serde_json::to_string_pretty(lease)?;
-        FileSystem::write_atomic(&Self::lease_path(base_dir, &lease.lease_id), &contents)
+        FileSystem::write_atomic(&Self::lease_path(base_dir, lease.lease_id()), &contents)
     }
 
     fn remove_lease(
