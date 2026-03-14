@@ -631,6 +631,7 @@ where
         &resume_state.run_id,
         resume_state.cursor.stage,
         resume_state.cursor.cycle,
+        resume_state.cursor.completion_round,
     );
     let run_resumed_line = journal::serialize_event(&run_resumed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &run_resumed_line) {
@@ -1012,6 +1013,10 @@ where
                     // Add amendments to snapshot queue.
                     snapshot.amendment_queue.pending.extend(amendments);
 
+                    // Advance the snapshot before the journal append so fail_run()
+                    // persists the new round if the append itself fails.
+                    snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
+
                     // Emit completion_round_advanced event.
                     let amendment_count = snapshot.amendment_queue.pending.len() as u32;
                     *seq += 1;
@@ -1052,7 +1057,6 @@ where
 
                     // Advance completion round and restart from the flow's planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
-                    snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
                         run_id: run_id.as_str().to_owned(),

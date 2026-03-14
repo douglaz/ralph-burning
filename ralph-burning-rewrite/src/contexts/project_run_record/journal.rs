@@ -117,6 +117,7 @@ pub fn run_resumed_event(
     run_id: &RunId,
     resume_stage: StageId,
     cycle: u32,
+    completion_round: u32,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -126,6 +127,7 @@ pub fn run_resumed_event(
             "run_id": run_id.as_str(),
             "resume_stage": resume_stage.as_str(),
             "cycle": cycle,
+            "completion_round": completion_round,
         }),
     }
 }
