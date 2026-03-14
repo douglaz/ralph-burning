@@ -125,7 +125,14 @@ impl ProcessBackendAdapter {
                 )
             })?;
 
-        // Write stdin and take stdout/stderr handles before registering
+        // Register child PID immediately after spawn and before any async
+        // stdin/stdout work, so cancel() can always find a live child.
+        if let Some(pid) = child.id() {
+            let mut children = self.active_children.lock().await;
+            children.insert(request.invocation_id.clone(), pid);
+        }
+
+        // Write stdin and take stdout/stderr handles
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(stdin_payload.as_bytes()).await;
             let _ = stdin.shutdown().await;
@@ -133,13 +140,6 @@ impl ProcessBackendAdapter {
 
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
-
-        // Register child PID in active_children before awaiting.
-        // The Child itself stays local so wait() is lock-free.
-        if let Some(pid) = child.id() {
-            let mut children = self.active_children.lock().await;
-            children.insert(request.invocation_id.clone(), pid);
-        }
 
         // Read stdout/stderr concurrently with waiting for the child
         let stdout_task = tokio::spawn(async move {
@@ -319,15 +319,15 @@ impl ProcessBackendAdapter {
             })
             .unwrap_or_else(|| "{}".to_owned());
 
-        tokio::fs::write(&schema_path, &schema_json)
-            .await
-            .map_err(|error| {
-                Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!("failed to write schema file: {error}"),
-                )
-            })?;
+        if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+            // Best-effort cleanup of any partial file left behind
+            best_effort_cleanup(&schema_path, &message_path).await;
+            return Err(Self::invocation_failed(
+                &request,
+                FailureClass::TransportFailure,
+                format!("failed to write schema file: {error}"),
+            ));
+        }
 
         let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
             && request.prior_session.is_some();

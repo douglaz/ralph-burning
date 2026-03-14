@@ -901,6 +901,94 @@ async fn stdin_payload_omits_context_section_when_null() {
     );
 }
 
+// ── Cancellation during stdin piping ─────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancellation_during_stdin_blocks_still_delivers_sigterm() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Fake claude that does NOT read stdin, so write_all blocks until the
+    // pipe buffer fills or the process exits. This simulates the window
+    // between spawn and stdin completion.
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\nexec sleep 300\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+    let invocation_id = request.invocation_id.clone();
+
+    let adapter_clone = adapter.clone();
+    let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
+
+    // Wait for child to be registered (it should be registered immediately
+    // after spawn, before stdin writing starts)
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    {
+        let children = adapter.active_children.lock().await;
+        assert!(
+            children.contains_key(&invocation_id),
+            "child should be registered before stdin completes"
+        );
+    }
+
+    // Cancel should deliver SIGTERM even though stdin piping may be blocked
+    adapter
+        .cancel(&invocation_id)
+        .await
+        .expect("cancel should succeed");
+
+    {
+        let children = adapter.active_children.lock().await;
+        assert!(
+            !children.contains_key(&invocation_id),
+            "child should be removed from active_children after cancel"
+        );
+    }
+
+    let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+    assert!(result.is_ok(), "invoke should complete after cancel");
+}
+
+// ── Codex schema-write failure cleanup ──────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_schema_write_failure_cleans_up_partial_files() {
+    let adapter = ProcessBackendAdapter::new();
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+
+    // Remove runtime/temp directory and replace it with a regular file so
+    // the schema write fails (works even when running as root, unlike
+    // read-only directory permissions).
+    let temp_dir = request.project_root.join("runtime/temp");
+    let _ = fs::remove_dir_all(&temp_dir);
+    fs::write(&temp_dir, b"not a directory").expect("create blocking file");
+
+    let error = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("schema write should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("schema file"),
+                "should mention schema file failure: {details}"
+            );
+        }
+        other => panic!("expected TransportFailure for schema write, got: {other:?}"),
+    }
+}
+
 // ── Transport failure includes stderr ───────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
