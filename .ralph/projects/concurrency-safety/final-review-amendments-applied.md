@@ -104,3 +104,81 @@ Do not discard rollback cleanup outcomes. Capture `release_writer_lock()` failur
 ### Reviewer
 codex
 
+
+## Round 4
+
+### Amendment: CONC-001
+
+### Problem
+
+`[P3]` **Mislabeled error in reconcile Pass 1 `Err(e)` arm** — `src/contexts/automation_runtime/lease_service.rs:550-557`
+
+The `release()` method was refactored so that worktree removal errors are now captured in `Ok(ReleaseResult { worktree_error: Some(...) })` (line 267-280) instead of being propagated as `Err`. The only remaining `Err` path from `release()` is `ProjectId::new` at line 255. However, the `Err(e)` match arm in the reconcile worktree-lease loop still carries the old label:
+
+```rust
+Err(e) => {
+    // Physical release failed (e.g. worktree removal) — ...
+    details: format!("worktree_remove: {e}"),
+}
+```
+
+If `ProjectId::new` ever fails (corrupted lease data), the cleanup failure would be mislabeled as `worktree_remove:` when it is actually a `project_id` validation error. The comment is also stale.
+
+This is very low severity — it requires a corrupted `project_id` in a persisted lease file to trigger, which should never happen under normal operation.
+
+### Proposed Change
+
+Update the error label and comment to reflect the actual error source:
+
+```rust
+Err(e) => {
+    // release() setup failed (e.g. invalid project_id) — lease
+    // remains durable and the task remains terminal but recoverable.
+    report.cleanup_failures.push(LeaseCleanupFailure {
+        lease_id: lease.lease_id.clone(),
+        task_id: Some(task.task_id.clone()),
+        details: format!("release_setup: {e}"),
+    });
+}
+```
+
+### Affected Files
+- `src/contexts/automation_runtime/lease_service.rs` - update error label at line 556 and comment at lines 551-552
+
+---
+
+### Reviewer
+claude
+
+### Amendment: RB-REVIEW-20260314-01
+
+### Problem
+A CLI run that fails during lease-file deletion can leave behind a stale CLI lease record that `daemon reconcile` can never clean up. In [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L87) and [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L89), `close()` releases the writer lock first and then returns `GuardCloseFailed` if `remove_lease()` fails. Later, in [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L604) and [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L637), reconcile treats `writer_lock_absent` as a cleanup failure and `continue`s before attempting lease-file deletion.
+
+That means a transient close-time delete failure produces a permanently orphaned stale lease: every future reconcile reports the same failure, never removes the stale record, and old stale CLI leases can keep poisoning reconcile output after later runs on the same project.
+
+### Proposed Change
+Keep the strict accounting, but make the stale record recoverable. The smallest fix is in reconcile: when a stale CLI lease hits `WriterLockReleaseOutcome::AlreadyAbsent`, record the cleanup failure but still attempt to delete the stale CLI lease record, and do not increment `released_leases`. Alternatively, make `close()` fail closed by restoring the writer lock if lease deletion fails. In either case, add a regression test for “close leaves stale CLI lease, later reconcile prunes it without counting it as released.”
+
+### Affected Files
+- [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs) - make stale CLI leases recoverable when the writer lock is already gone.
+- [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs) - align close-path behavior with the recovery model.
+- [tests/unit/automation_runtime_test.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs) - add regression coverage for close-time lease-delete failure followed by reconcile.
+
+### Reviewer
+codex
+
+### Amendment: RB-REVIEW-20260314-02
+
+### Problem
+The new full-suite conformance test executes a copied binary from `tempdir()` in [tests/cli.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/cli.rs#L4766) and [tests/cli.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/cli.rs#L4772). On hardened Linux runners where the system temp mount is `noexec`, that binary cannot be executed, so `cargo test` fails even though the product is fine.
+
+### Proposed Change
+Create the stable binary in an exec-capable location instead of the OS temp dir, such as a temp directory under `std::env::current_exe()?.parent()` or another workspace/target-local directory.
+
+### Affected Files
+- [tests/cli.rs](/root/new-ralph-burning/ralph-burning-rewrite/tests/cli.rs) - move the “stable binary” fixture out of `tempdir()` so the test does not depend on `/tmp` being executable.
+
+### Reviewer
+codex
+
