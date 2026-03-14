@@ -108,6 +108,12 @@ impl PathGuard {
         std::env::set_var("PATH", &new_path);
         Self { original }
     }
+
+    fn replace(dir: &std::path::Path) -> Self {
+        let original = std::env::var_os("PATH");
+        std::env::set_var("PATH", dir);
+        Self { original }
+    }
 }
 
 impl Drop for PathGuard {
@@ -288,24 +294,37 @@ async fn process_backend_reports_missing_binary_as_backend_unavailable() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::Claude);
     let bin_dir = tempdir().expect("create temp dir");
-    let which_path = bin_dir.path().join("which");
     let _env_lock = lock_path_mutex();
-    // Only set path to our dir with a fake `which` that always fails
-    let original_path = std::env::var_os("PATH");
-    std::env::set_var("PATH", bin_dir.path());
-
-    write_executable(&which_path, "#!/bin/sh\nexit 1\n");
+    let _path_guard = PathGuard::replace(bin_dir.path());
 
     let error = adapter
         .check_availability(&request.resolved_target)
         .await
         .expect_err("missing binary should fail");
 
-    // Restore PATH
-    match original_path {
-        Some(v) => std::env::set_var("PATH", v),
-        None => std::env::remove_var("PATH"),
-    }
+    assert!(matches!(error, AppError::BackendUnavailable { .. }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn availability_works_without_which_binary() {
+    let adapter = ProcessBackendAdapter::new();
+    let bin_dir = tempdir().expect("create temp dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::replace(bin_dir.path());
+
+    write_executable(&bin_dir.path().join("codex"), "#!/bin/sh\nexit 0\n");
+
+    let (_dir, codex_request) = request_fixture(BackendFamily::Codex);
+    adapter
+        .check_availability(&codex_request.resolved_target)
+        .await
+        .expect("codex on PATH should be available even without `which`");
+
+    let (_dir, claude_request) = request_fixture(BackendFamily::Claude);
+    let error = adapter
+        .check_availability(&claude_request.resolved_target)
+        .await
+        .expect_err("missing claude binary should still fail");
 
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
 }
@@ -483,7 +502,10 @@ async fn codex_command_construction_and_temp_files() {
 
     // Verify metadata
     assert_eq!(envelope.metadata.invocation_id, request.invocation_id);
-    assert!(envelope.metadata.session_id.is_none());
+    assert_eq!(
+        envelope.metadata.session_id.as_deref(),
+        Some(request.invocation_id.as_str())
+    );
     assert!(!envelope.metadata.session_reused);
 
     let args_file = request.working_dir.join("codex-args.txt");
@@ -512,6 +534,34 @@ async fn codex_command_construction_and_temp_files() {
         !message_path.exists(),
         "last-message temp file should be cleaned up after success"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_new_session_returns_session_id() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&planning_payload()).unwrap(),
+    )
+    .expect("write payload");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    let envelope = adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    assert_eq!(
+        envelope.metadata.session_id.as_deref(),
+        Some(request.invocation_id.as_str())
+    );
+    assert!(!envelope.metadata.session_reused);
 }
 
 // ── Codex resume ────────────────────────────────────────────────────────────
@@ -564,10 +614,6 @@ async fn codex_resume_command_construction() {
 
     let args_file = request.working_dir.join("codex-args.txt");
     let args = read_logged_args(&args_file);
-    assert!(
-        !args.iter().any(|arg| arg == "--output-schema"),
-        "resume argv must not include --output-schema: {args:?}"
-    );
     assert_eq!(
         args,
         vec![
@@ -577,6 +623,8 @@ async fn codex_resume_command_construction() {
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
             BackendFamily::Codex.default_model_id().to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             "codex-ses-456".to_owned(),
@@ -586,6 +634,10 @@ async fn codex_resume_command_construction() {
     assert!(
         !schema_path.exists(),
         "resume flow should not leave a schema temp file behind"
+    );
+    assert!(
+        !message_path.exists(),
+        "resume flow should not leave a last-message temp file behind"
     );
 }
 

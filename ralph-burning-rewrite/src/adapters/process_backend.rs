@@ -421,7 +421,12 @@ impl ProcessBackendAdapter {
         ]
     }
 
-    fn codex_resume_args(model_id: &str, message_path: &Path, session_id: &str) -> Vec<String> {
+    fn codex_resume_args(
+        model_id: &str,
+        schema_path: &Path,
+        message_path: &Path,
+        session_id: &str,
+    ) -> Vec<String> {
         vec![
             "exec".to_owned(),
             "resume".to_owned(),
@@ -429,6 +434,8 @@ impl ProcessBackendAdapter {
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
             model_id.to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             session_id.to_owned(),
@@ -447,34 +454,32 @@ impl ProcessBackendAdapter {
         let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
         let message_path = temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
+        let schema_json = request
+            .contract
+            .stage_contract()
+            .map(|sc| {
+                serde_json::to_string_pretty(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned())
+            })
+            .unwrap_or_else(|| "{}".to_owned());
+
+        if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+            best_effort_cleanup(Some(&schema_path), &message_path).await;
+            return Err(Self::invocation_failed(
+                &request,
+                FailureClass::TransportFailure,
+                format!("failed to write schema file: {error}"),
+            ));
+        }
+
         let args = if session_resuming {
             let session = request
                 .prior_session
                 .as_ref()
                 .expect("session_resuming requires a prior session");
-            Self::codex_resume_args(model_id, &message_path, &session.session_id)
+            Self::codex_resume_args(model_id, &schema_path, &message_path, &session.session_id)
         } else {
-            let schema_json = request
-                .contract
-                .stage_contract()
-                .map(|sc| {
-                    serde_json::to_string_pretty(&sc.json_schema())
-                        .unwrap_or_else(|_| "{}".to_owned())
-                })
-                .unwrap_or_else(|| "{}".to_owned());
-
-            if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!("failed to write schema file: {error}"),
-                ));
-            }
-
             Self::codex_new_session_args(model_id, &schema_path, &message_path)
         };
-        let schema_cleanup_path = (!session_resuming).then_some(schema_path.as_path());
 
         let stdin_payload = Self::assemble_stdin(&request);
         let output = match self
@@ -483,7 +488,7 @@ impl ProcessBackendAdapter {
         {
             Ok(o) => o,
             Err(error) => {
-                best_effort_cleanup(schema_cleanup_path, &message_path).await;
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
                 return Err(error);
             }
         };
@@ -492,7 +497,7 @@ impl ProcessBackendAdapter {
             s if !s.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                best_effort_cleanup(schema_cleanup_path, &message_path).await;
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
@@ -512,7 +517,7 @@ impl ProcessBackendAdapter {
         let last_message_text = match tokio::fs::read_to_string(&message_path).await {
             Ok(text) => text,
             Err(error) => {
-                best_effort_cleanup(schema_cleanup_path, &message_path).await;
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::SchemaValidationFailure,
@@ -524,7 +529,7 @@ impl ProcessBackendAdapter {
         let parsed_payload: serde_json::Value = match serde_json::from_str(&last_message_text) {
             Ok(v) => v,
             Err(error) => {
-                best_effort_cleanup(schema_cleanup_path, &message_path).await;
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::SchemaValidationFailure,
@@ -533,12 +538,12 @@ impl ProcessBackendAdapter {
             }
         };
 
-        best_effort_cleanup(schema_cleanup_path, &message_path).await;
+        best_effort_cleanup(Some(&schema_path), &message_path).await;
 
         let session_id = if session_resuming {
             request.prior_session.as_ref().map(|s| s.session_id.clone())
         } else {
-            None
+            Some(request.invocation_id.clone())
         };
 
         Ok(InvocationEnvelope {
@@ -588,16 +593,19 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             });
         };
 
-        let output = Command::new("which")
-            .arg(binary_name)
-            .output()
-            .await
-            .map_err(|error| AppError::BackendUnavailable {
-                backend: backend.backend.family.to_string(),
-                details: format!("failed to probe PATH for '{binary_name}': {error}"),
-            })?;
+        let path_entries = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+        let binary_on_path = path_entries
+            .into_iter()
+            .map(|entry| entry.join(binary_name))
+            .any(|candidate| {
+                std::fs::metadata(candidate)
+                    .map(|metadata| metadata.is_file())
+                    .unwrap_or(false)
+            });
 
-        if output.status.success() {
+        if binary_on_path {
             Ok(())
         } else {
             Err(AppError::BackendUnavailable {
