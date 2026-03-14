@@ -1,3 +1,28 @@
+---
+artifact: prompt-review
+project: concurrency-safety
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-14T02:47:30Z
+---
+
+I’m reviewing the prompt against the codebase so I can call out concrete ambiguities instead of generic wording issues. I’ll inspect the referenced files, existing locking/lease code, and current test surfaces before rewriting the prompt.
+I found the relevant code and there are already some tests around both areas, which is useful because it exposes where the original prompt is underspecified versus what the code already supports. Next I’m reading the lock acquisition/reconcile flow and the daemon dispatch implementation to pin down the exact ambiguities.
+I’ve confirmed two important context points the original prompt misses: `daemon_loop.rs` already has a structural test forbidding `set_current_dir`, and the daemon lock system is task-oriented while the CLI lock path is currently just a raw file with no corresponding lease/task model. I’m tightening the rewrite around those constraints so the implementation target is actually achievable without guesswork.
+# Prompt Review
+
+## Issues Found
+- The prompt is partially stale relative to the current tree: [`src/contexts/automation_runtime/daemon_loop.rs`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/daemon_loop.rs) already contains no `set_current_dir`, and that invariant is already enforced by both [`tests/unit/automation_runtime_test.rs#L2901`](/root/new-ralph-burning/ralph-burning-rewrite/tests/unit/automation_runtime_test.rs#L2901) and [`src/contexts/conformance_spec/scenarios.rs#L6447`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/conformance_spec/scenarios.rs#L6447). Treating issue `#6` as an open implementation task will send downstream loops looking for code that no longer exists.
+- The prompt suggests reusing `LeaseService::acquire()`, but that is not feasible as written because [`src/contexts/automation_runtime/lease_service.rs`](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs) couples lease acquisition to daemon task IDs and worktree creation. CLI `run start` and `run resume` should not create either.
+- The prompt does not define a data model for a CLI-held lease. Current reconcile logic assumes every lease maps to a daemon task and worktree, so “make stale CLI locks discoverable by reconcile” is underspecified unless the prompt names a lease kind, separate record type, or other explicit representation.
+- The staleness policy is ambiguous. “Optional heartbeat or TTL” does not say how a healthy long-running CLI run avoids being reclaimed as stale, what default TTL to use, or whether heartbeat is required.
+- The reconcile acceptance rules are incomplete. The prompt does not say whether stale CLI locks should increment `stale_leases`, `released_leases`, or `failed_tasks`, so equally reasonable implementations could produce different reports and tests.
+- “Do not change any public CLI behavior” is too broad for this task. `daemon reconcile` will necessarily gain new observable behavior when stale CLI leases exist, so the prompt should narrow the compatibility requirement to `run start`/`run resume` lock-contention behavior and existing error contracts.
+- The backward-compatibility story is missing. If the serialized lease schema changes, existing worktree leases must still deserialize; and if legacy standalone `.lock` files are in scope, the prompt must say so explicitly because they contain no timestamp/lease metadata for safe cleanup.
+- The verification instructions are inconsistent. The prompt says conformance must keep passing but only names `cargo build` and `cargo test`; it should specify the exact conformance command to run.
+- The test request is uneven: it asks for a new `set_current_dir` assertion even though that coverage already exists, but it does not explicitly require the most important new regression test, which is stale CLI lease cleanup followed by successful reacquisition.
+
+## Refined Prompt
 # Concurrency Safety: CLI writer-lock lease recovery + preserve daemon CWD safety
 
 ## Objective
