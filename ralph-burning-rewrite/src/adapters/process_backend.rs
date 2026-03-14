@@ -132,33 +132,35 @@ impl ProcessBackendAdapter {
             children.insert(request.invocation_id.clone(), pid);
         }
 
-        // Write stdin and take stdout/stderr handles
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(stdin_payload.as_bytes()).await;
-            let _ = stdin.shutdown().await;
-        }
-
+        let stdin_handle = child.stdin.take();
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
+        let stdin_bytes = stdin_payload.as_bytes().to_vec();
 
-        // Read stdout/stderr concurrently with waiting for the child
-        let stdout_task = tokio::spawn(async move {
+        let stdin_future = async move {
+            if let Some(mut stdin) = stdin_handle {
+                stdin.write_all(&stdin_bytes).await?;
+                stdin.shutdown().await?;
+            }
+            Ok::<(), std::io::Error>(())
+        };
+        let stdout_future = async move {
             let mut buf = Vec::new();
             if let Some(ref mut handle) = stdout_handle {
-                let _ = handle.read_to_end(&mut buf).await;
+                handle.read_to_end(&mut buf).await?;
             }
-            buf
-        });
-        let stderr_task = tokio::spawn(async move {
+            Ok::<Vec<u8>, std::io::Error>(buf)
+        };
+        let stderr_future = async move {
             let mut buf = Vec::new();
             if let Some(ref mut handle) = stderr_handle {
-                let _ = handle.read_to_end(&mut buf).await;
+                handle.read_to_end(&mut buf).await?;
             }
-            buf
-        });
+            Ok::<Vec<u8>, std::io::Error>(buf)
+        };
 
-        // Wait for exit — no lock held, so cancel() can send SIGTERM
-        let status = child.wait().await;
+        let (stdin_result, stdout_result, stderr_result, status_result) =
+            tokio::join!(stdin_future, stdout_future, stderr_future, child.wait());
 
         // Remove from active_children on every exit path
         {
@@ -166,12 +168,45 @@ impl ProcessBackendAdapter {
             children.remove(&request.invocation_id);
         }
 
-        let stdout = stdout_task.await.unwrap_or_default();
-        let stderr = stderr_task.await.unwrap_or_default();
+        let stderr_text = stderr_result
+            .as_ref()
+            .map(|stderr| String::from_utf8_lossy(stderr).into_owned())
+            .unwrap_or_default();
 
-        match status {
-            Ok(s) => Ok(ChildOutput {
-                status: Some(s),
+        if let Err(error) = stdin_result {
+            return Err(Self::invocation_failed(
+                request,
+                FailureClass::TransportFailure,
+                format!(
+                    "failed to write stdin to {binary}: {error}{}",
+                    if stderr_text.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {stderr_text}")
+                    }
+                ),
+            ));
+        }
+
+        let stdout = stdout_result.map_err(|error| {
+            Self::invocation_failed(
+                request,
+                FailureClass::TransportFailure,
+                format!("failed to read stdout from {binary}: {error}"),
+            )
+        })?;
+
+        let stderr = stderr_result.map_err(|error| {
+            Self::invocation_failed(
+                request,
+                FailureClass::TransportFailure,
+                format!("failed to read stderr from {binary}: {error}"),
+            )
+        })?;
+
+        match status_result {
+            Ok(status) => Ok(ChildOutput {
+                status,
                 stdout,
                 stderr,
             }),
@@ -224,7 +259,7 @@ impl ProcessBackendAdapter {
 
         // Check exit status
         match output.status {
-            Some(s) if !s.success() => {
+            s if !s.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
                 return Err(Self::invocation_failed(
@@ -238,14 +273,6 @@ impl ProcessBackendAdapter {
                             format!(": {stderr}")
                         }
                     ),
-                ));
-            }
-            None => {
-                // Process was cancelled
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    "claude process was cancelled".to_owned(),
                 ));
             }
             _ => {}
@@ -373,7 +400,7 @@ impl ProcessBackendAdapter {
 
         // Check exit status
         match output.status {
-            Some(s) if !s.success() => {
+            s if !s.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
                 best_effort_cleanup(&schema_path, &message_path).await;
@@ -388,14 +415,6 @@ impl ProcessBackendAdapter {
                             format!(": {stderr}")
                         }
                     ),
-                ));
-            }
-            None => {
-                best_effort_cleanup(&schema_path, &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    "codex process was cancelled".to_owned(),
                 ));
             }
             _ => {}
@@ -565,7 +584,7 @@ struct ClaudeEnvelope {
 }
 
 struct ChildOutput {
-    status: Option<std::process::ExitStatus>,
+    status: std::process::ExitStatus,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }

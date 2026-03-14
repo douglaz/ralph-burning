@@ -259,6 +259,121 @@ fn build_stage_prompt_omits_prior_outputs_section_when_current_cycle_has_no_comp
 }
 
 #[test]
+fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-rollback").unwrap();
+    let run_id = RunId::new("run-20260314193207").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Implementation, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Implementation);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::PromptReview),
+        journal::stage_completed_event(
+            3,
+            Utc::now(),
+            &run_id,
+            StageId::PromptReview,
+            1,
+            1,
+            "payload-visible-review",
+            "artifact-visible-review",
+        ),
+        journal::stage_completed_event(
+            4,
+            Utc::now(),
+            &run_id,
+            StageId::Planning,
+            1,
+            1,
+            "payload-rolled-back-planning",
+            "artifact-rolled-back-planning",
+        ),
+        journal::rollback_performed_event(
+            5,
+            Utc::now(),
+            "rb-1",
+            StageId::Planning,
+            1,
+            3,
+            false,
+            None,
+            1,
+        ),
+        journal::stage_completed_event(
+            6,
+            Utc::now(),
+            &run_id,
+            StageId::Planning,
+            1,
+            1,
+            "payload-visible-planning",
+            "artifact-visible-planning",
+        ),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        "# Prompt\n\nUse only visible branch outputs after rollback.",
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore {
+        payloads: vec![
+            PayloadRecord {
+                payload_id: "payload-visible-review".to_owned(),
+                stage_id: StageId::PromptReview,
+                cycle: 1,
+                attempt: 1,
+                created_at: Utc::now(),
+                payload: json!({"problem_framing": "visible-review"}),
+            },
+            PayloadRecord {
+                payload_id: "payload-rolled-back-planning".to_owned(),
+                stage_id: StageId::Planning,
+                cycle: 1,
+                attempt: 1,
+                created_at: Utc::now(),
+                payload: json!({"problem_framing": "rolled-back-branch"}),
+            },
+            PayloadRecord {
+                payload_id: "payload-visible-planning".to_owned(),
+                stage_id: StageId::Planning,
+                cycle: 1,
+                attempt: 1,
+                created_at: Utc::now(),
+                payload: json!({"problem_framing": "visible-replacement"}),
+            },
+        ],
+    };
+
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt");
+
+    assert!(prompt.contains("visible-review"));
+    assert!(prompt.contains("visible-replacement"));
+    assert!(
+        !prompt.contains("rolled-back-branch"),
+        "rolled-back branch output should be excluded from the prompt"
+    );
+}
+
+#[test]
 fn build_stage_prompt_omits_remediation_and_amendments_section_when_inputs_are_empty() {
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();

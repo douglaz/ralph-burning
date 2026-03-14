@@ -952,7 +952,7 @@ where
         flow: FlowPreset,
         run_status: RunStatus,
         effective_config: &EffectiveConfig,
-        _worktree_path: &Path,
+        worktree_path: &Path,
         cancellation_token: CancellationToken,
     ) -> AppResult<()> {
         match run_status {
@@ -966,6 +966,7 @@ where
                     self.log_write,
                     self.amendment_queue,
                     base_dir,
+                    Some(worktree_path),
                     project_id,
                     flow,
                     effective_config,
@@ -985,6 +986,7 @@ where
                     self.log_write,
                     self.amendment_queue,
                     base_dir,
+                    Some(worktree_path),
                     project_id,
                     flow,
                     effective_config,

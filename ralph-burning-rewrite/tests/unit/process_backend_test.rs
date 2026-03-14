@@ -158,6 +158,39 @@ fi
     );
 }
 
+fn write_fake_codex_with_large_stdout_before_stdin(
+    bin_dir: &std::path::Path,
+    payload: &serde_json::Value,
+) {
+    let payload_json = serde_json::to_string(payload).expect("serialize payload");
+    write_executable(
+        &bin_dir.join("codex"),
+        &format!(
+            r#"#!/bin/sh
+msg_path=""
+next_is_msg=0
+for arg in "$@"; do
+    if [ "$next_is_msg" = "1" ]; then
+        msg_path="$arg"
+        next_is_msg=0
+    elif [ "$arg" = "--output-last-message" ]; then
+        next_is_msg=1
+    fi
+done
+i=0
+while [ "$i" -lt 8192 ]; do
+    printf '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef'
+    i=$((i + 1))
+done
+cat > /dev/null
+if [ -n "$msg_path" ]; then
+    printf '%s' '{payload_json}' > "$msg_path"
+fi
+"#
+        ),
+    );
+}
+
 // ── Capability checks ───────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -498,6 +531,25 @@ async fn codex_resume_command_construction() {
         args_text.contains("codex-ses-456"),
         "should contain session id: {args_text}"
     );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_large_stdout_before_reading_stdin_does_not_deadlock() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Codex);
+    request.payload.prompt = "x".repeat(1024 * 1024);
+    write_fake_codex_with_large_stdout_before_stdin(bin_dir.path(), &planning_payload());
+
+    let adapter = ProcessBackendAdapter::new();
+    let result = tokio::time::timeout(Duration::from_secs(15), adapter.invoke(request)).await;
+    let envelope = result
+        .expect("invoke should complete without deadlocking")
+        .expect("invoke should succeed");
+
+    assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
 }
 
 // ── OpenRouter capability mismatch detail text ──────────────────────────────

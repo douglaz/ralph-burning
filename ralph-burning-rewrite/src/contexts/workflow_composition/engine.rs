@@ -275,6 +275,7 @@ where
         amendment_queue_port,
         &rollback_store,
         base_dir,
+        None,
         project_id,
         preset,
         effective_config,
@@ -294,6 +295,7 @@ pub async fn execute_run_with_retry<A, R, S>(
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
@@ -316,6 +318,7 @@ where
         amendment_queue_port,
         &rollback_store,
         base_dir,
+        execution_cwd,
         project_id,
         preset,
         effective_config,
@@ -336,6 +339,7 @@ async fn execute_run_with_retry_internal<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
@@ -439,6 +443,7 @@ where
         amendment_queue_port,
         rollback_store,
         base_dir,
+        execution_cwd,
         project_id,
         &run_id,
         &mut seq,
@@ -522,6 +527,7 @@ where
         log_write,
         amendment_queue_port,
         base_dir,
+        None,
         project_id,
         FlowPreset::Standard,
         effective_config,
@@ -563,6 +569,7 @@ where
         amendment_queue_port,
         &rollback_store,
         base_dir,
+        None,
         project_id,
         preset,
         effective_config,
@@ -583,6 +590,7 @@ pub async fn resume_run_with_retry<A, R, S>(
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
@@ -606,6 +614,7 @@ where
         amendment_queue_port,
         &rollback_store,
         base_dir,
+        execution_cwd,
         project_id,
         preset,
         effective_config,
@@ -627,6 +636,7 @@ async fn resume_run_with_retry_internal<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     preset: FlowPreset,
     effective_config: &EffectiveConfig,
@@ -758,6 +768,7 @@ where
         amendment_queue_port,
         rollback_store,
         base_dir,
+        execution_cwd,
         project_id,
         &resume_state.run_id,
         &mut seq,
@@ -845,6 +856,7 @@ where
         log_write,
         amendment_queue_port,
         base_dir,
+        None,
         project_id,
         FlowPreset::Standard,
         effective_config,
@@ -865,6 +877,7 @@ async fn execute_run_internal<A, R, S>(
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
@@ -916,6 +929,7 @@ where
             artifact_store,
             log_write,
             base_dir,
+            execution_cwd,
             project_id,
             run_id,
             seq,
@@ -1636,6 +1650,7 @@ async fn execute_stage_with_retry<A, R, S>(
     artifact_store: &dyn ArtifactStorePort,
     log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
+    execution_cwd: Option<&Path>,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
@@ -1790,41 +1805,20 @@ where
             }
         };
 
-        let request = InvocationRequest {
-            invocation_id: format!(
-                "{}-{}-c{}-a{}",
-                run_id.as_str(),
-                stage_id.as_str(),
-                cursor.cycle,
-                cursor.attempt
-            ),
-            project_root: project_root.to_path_buf(),
-            working_dir: base_dir.to_path_buf(),
-            contract: InvocationContract::Stage(stage_entry.contract),
-            role: stage_entry.role,
-            resolved_target: stage_entry.target.clone(),
-            payload: InvocationPayload {
-                prompt,
-                context: invocation_context(&cursor, execution_context, pending_amendments),
-            },
-            timeout: Duration::from_secs(3600),
-            cancellation_token: cancellation_token.clone(),
-            session_policy: SessionPolicy::ReuseIfAllowed,
-            prior_session: None,
-            attempt_number: cursor.attempt,
-        };
-
-        let result = agent_service.invoke(request).await.and_then(|envelope| {
-            stage_entry
-                .contract
-                .evaluate_permissive(&envelope.parsed_payload)
-                .map_err(|contract_error| AppError::InvocationFailed {
-                    backend: stage_entry.target.backend.family.to_string(),
-                    contract_id: stage_id.to_string(),
-                    failure_class: contract_error.failure_class(),
-                    details: contract_error.to_string(),
-                })
-        });
+        let result = invoke_stage_on_backend(
+            agent_service,
+            base_dir,
+            execution_cwd,
+            project_root,
+            run_id,
+            stage_entry,
+            &cursor,
+            prompt,
+            execution_context,
+            pending_amendments,
+            cancellation_token.clone(),
+        )
+        .await;
 
         match result {
             Ok(bundle) => return Ok((cursor.clone(), bundle)),
@@ -1928,6 +1922,62 @@ where
             }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn invoke_stage_on_backend<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    base_dir: &Path,
+    execution_cwd: Option<&Path>,
+    project_root: &Path,
+    run_id: &RunId,
+    stage_entry: &StagePlan,
+    cursor: &StageCursor,
+    prompt: String,
+    execution_context: Option<&Value>,
+    pending_amendments: Option<&[QueuedAmendment]>,
+    cancellation_token: CancellationToken,
+) -> AppResult<ValidatedBundle>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let request = InvocationRequest {
+        invocation_id: format!(
+            "{}-{}-c{}-a{}",
+            run_id.as_str(),
+            stage_entry.stage_id.as_str(),
+            cursor.cycle,
+            cursor.attempt
+        ),
+        project_root: project_root.to_path_buf(),
+        working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
+        contract: InvocationContract::Stage(stage_entry.contract),
+        role: stage_entry.role,
+        resolved_target: stage_entry.target.clone(),
+        payload: InvocationPayload {
+            prompt,
+            context: invocation_context(cursor, execution_context, pending_amendments),
+        },
+        timeout: Duration::from_secs(3600),
+        cancellation_token,
+        session_policy: SessionPolicy::ReuseIfAllowed,
+        prior_session: None,
+        attempt_number: cursor.attempt,
+    };
+
+    agent_service.invoke(request).await.and_then(|envelope| {
+        stage_entry
+            .contract
+            .evaluate_permissive(&envelope.parsed_payload)
+            .map_err(|contract_error| AppError::InvocationFailed {
+                backend: stage_entry.target.backend.family.to_string(),
+                contract_id: stage_entry.stage_id.to_string(),
+                failure_class: contract_error.failure_class(),
+                details: contract_error.to_string(),
+            })
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2486,7 +2536,7 @@ fn load_prior_stage_outputs_this_cycle(
             file: journal_path.display().to_string(),
             details: format!("failed to read journal.ndjson while building stage prompt: {}", error),
         })?;
-    let events = journal::parse_journal(&journal_contents)?;
+    let events = queries::visible_journal_events(&journal::parse_journal(&journal_contents)?)?;
 
     let payloads = artifact_store.list_payloads(base_dir, project_id)?;
     let payloads_by_id: HashMap<String, PayloadRecord> = payloads
