@@ -3,7 +3,7 @@ use std::path::Path;
 use chrono::{DateTime, Utc};
 use serde_json::json;
 
-use crate::contexts::automation_runtime::model::{TaskStatus, WorktreeLease};
+use crate::contexts::automation_runtime::model::{LeaseRecord, TaskStatus, WorktreeLease};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
     DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WorktreePort,
@@ -414,6 +414,103 @@ impl LeaseService {
                         details: format!("worktree_remove: {e}"),
                     });
                 }
+            }
+        }
+
+        // --- Pass 2: stale CLI writer leases ---
+        // CLI leases have no associated task or worktree. Cleanup is: remove
+        // lease record + release writer lock. Strict mode: AlreadyAbsent on
+        // either sub-step counts as a cleanup failure.
+        let all_records = store.list_lease_records(base_dir)?;
+        for record in all_records {
+            let cli_lease = match record {
+                LeaseRecord::CliWriter(ref cli) => cli,
+                LeaseRecord::Worktree(_) => continue,
+            };
+
+            let is_stale = ttl_override_seconds
+                .map(|ttl| {
+                    now > cli_lease.last_heartbeat + chrono::Duration::seconds(ttl as i64)
+                })
+                .unwrap_or_else(|| cli_lease.is_stale_at(now));
+            if !is_stale {
+                continue;
+            }
+
+            report.stale_lease_ids.push(cli_lease.lease_id.clone());
+
+            // No task to mark failed — CLI leases are task-independent.
+
+            // Sub-step 1: remove CLI lease record.
+            let (lease_file_already_absent, lease_file_error) =
+                match store.remove_lease(base_dir, &cli_lease.lease_id) {
+                    Ok(ResourceCleanupOutcome::Removed) => (false, None),
+                    Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
+                    Err(e) => (false, Some(e.to_string())),
+                };
+
+            // Sub-step 2: release writer lock (always attempted even if
+            // lease-record deletion failed).
+            let project_id = match ProjectId::new(cli_lease.project_id.clone()) {
+                Ok(pid) => pid,
+                Err(e) => {
+                    report.cleanup_failures.push(LeaseCleanupFailure {
+                        lease_id: cli_lease.lease_id.clone(),
+                        task_id: None,
+                        details: format!("invalid_project_id: {e}"),
+                    });
+                    continue;
+                }
+            };
+            let (writer_lock_already_absent, writer_lock_error) =
+                match store.release_writer_lock(base_dir, &project_id) {
+                    Ok(ResourceCleanupOutcome::Removed) => (false, None),
+                    Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
+                    Err(e) => (false, Some(e.to_string())),
+                };
+
+            // Strict accounting: AlreadyAbsent or I/O errors are cleanup
+            // failures; only positive removal of both counts as released.
+            let mut has_sub_step_failure = false;
+
+            if lease_file_already_absent {
+                report.cleanup_failures.push(LeaseCleanupFailure {
+                    lease_id: cli_lease.lease_id.clone(),
+                    task_id: None,
+                    details: "lease_file_absent: lease file was already missing during cleanup"
+                        .to_owned(),
+                });
+                has_sub_step_failure = true;
+            }
+            if let Some(ref err) = lease_file_error {
+                report.cleanup_failures.push(LeaseCleanupFailure {
+                    lease_id: cli_lease.lease_id.clone(),
+                    task_id: None,
+                    details: format!("lease_file_delete: {err}"),
+                });
+                has_sub_step_failure = true;
+            }
+            if writer_lock_already_absent {
+                report.cleanup_failures.push(LeaseCleanupFailure {
+                    lease_id: cli_lease.lease_id.clone(),
+                    task_id: None,
+                    details:
+                        "writer_lock_absent: writer lock was already missing during cleanup"
+                            .to_owned(),
+                });
+                has_sub_step_failure = true;
+            }
+            if let Some(ref err) = writer_lock_error {
+                report.cleanup_failures.push(LeaseCleanupFailure {
+                    lease_id: cli_lease.lease_id.clone(),
+                    task_id: None,
+                    details: format!("writer_lock_release: {err}"),
+                });
+                has_sub_step_failure = true;
+            }
+
+            if !has_sub_step_failure {
+                report.released_lease_ids.push(cli_lease.lease_id.clone());
             }
         }
 

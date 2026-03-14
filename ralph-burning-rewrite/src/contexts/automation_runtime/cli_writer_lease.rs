@@ -3,6 +3,7 @@
 //! can discover and clean stale CLI-held locks after a crash.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -21,14 +22,20 @@ pub const CLI_LEASE_TTL_SECONDS: u64 = 300;
 pub const CLI_LEASE_HEARTBEAT_CADENCE_SECONDS: u64 = 30;
 
 /// RAII guard that owns a project writer lock, a matching CLI lease record,
-/// and a background heartbeat task. On drop, the heartbeat is cancelled and
-/// both the lease record and writer lock are cleaned up.
+/// and a background heartbeat task. On drop, the heartbeat is stopped
+/// deterministically before cleanup begins.
 pub struct CliWriterLeaseGuard {
     store: Arc<dyn DaemonStorePort + Send + Sync>,
     base_dir: PathBuf,
     project_id: ProjectId,
     lease_id: String,
     shutdown: Arc<Notify>,
+    /// Set to `true` by drop before cleanup; the heartbeat task checks this
+    /// before each tick so no file I/O can race with lease deletion.
+    closed: Arc<AtomicBool>,
+    /// Held by the heartbeat task during each tick; drop acquires this to wait
+    /// for any in-flight tick to finish before cleaning up resources.
+    tick_lock: Arc<std::sync::Mutex<()>>,
     heartbeat_handle: Option<JoinHandle<()>>,
 }
 
@@ -71,17 +78,32 @@ impl CliWriterLeaseGuard {
 
         // Step 3: spawn heartbeat task.
         let shutdown = Arc::new(Notify::new());
+        let closed = Arc::new(AtomicBool::new(false));
+        let tick_lock = Arc::new(std::sync::Mutex::new(()));
         let heartbeat_handle = {
             let store = Arc::clone(&store);
             let base_dir = base_dir.to_path_buf();
             let lease_id = lease_id.clone();
             let shutdown = Arc::clone(&shutdown);
+            let closed = Arc::clone(&closed);
+            let tick_lock = Arc::clone(&tick_lock);
             tokio::spawn(async move {
                 let interval = tokio::time::Duration::from_secs(heartbeat_cadence_seconds);
                 loop {
                     tokio::select! {
                         _ = shutdown.notified() => break,
                         _ = tokio::time::sleep(interval) => {}
+                    }
+                    // Check the closed flag before acquiring the tick lock so
+                    // no file I/O can race with drop cleanup.
+                    if closed.load(Ordering::Acquire) {
+                        break;
+                    }
+                    let _tick_guard = tick_lock.lock().unwrap_or_else(|e| e.into_inner());
+                    // Re-check after acquiring the lock — drop may have set
+                    // the flag while we were waiting.
+                    if closed.load(Ordering::Acquire) {
+                        break;
                     }
                     // Best-effort heartbeat: failure leaves lease intact for
                     // later recovery rather than partially cleaning resources.
@@ -96,6 +118,8 @@ impl CliWriterLeaseGuard {
             project_id,
             lease_id,
             shutdown,
+            closed,
+            tick_lock,
             heartbeat_handle: Some(heartbeat_handle),
         })
     }
@@ -119,19 +143,22 @@ fn heartbeat_tick(
 
 impl Drop for CliWriterLeaseGuard {
     fn drop(&mut self) {
-        // Signal heartbeat shutdown and wait for it to stop.
+        // 1. Signal heartbeat shutdown.
         self.shutdown.notify_one();
+        // 2. Mark closed so the heartbeat task will not start a new tick.
+        self.closed.store(true, Ordering::Release);
+        // 3. Wait for any in-flight heartbeat tick to finish by acquiring the
+        //    tick lock. Once held, no tick can be running or start.
+        let _tick_guard = self.tick_lock.lock().unwrap_or_else(|e| e.into_inner());
+        // 4. Abort the heartbeat task (it may still be sleeping at an await
+        //    point — the abort ensures it does not wake and attempt a tick
+        //    after we release tick_lock).
         if let Some(handle) = self.heartbeat_handle.take() {
-            // Best-effort blocking wait — we are in a Drop impl so we cannot
-            // `.await`. Use `tokio::task::block_in_place` if available, or
-            // fall back to aborting the task.
             handle.abort();
-            // The abort ensures the heartbeat task stops; we don't need to
-            // block-wait on it since abort is synchronous cancellation.
         }
 
-        // Cleanup: delete lease record and release writer lock independently.
-        // Failure in one must not skip the other.
+        // 5. Cleanup: delete lease record and release writer lock
+        //    independently.  Failure in one must not skip the other.
         let _ = self
             .store
             .remove_lease(&self.base_dir, &self.lease_id);

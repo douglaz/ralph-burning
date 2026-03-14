@@ -4,7 +4,7 @@ use std::process::Command;
 
 use chrono::{Duration, Utc};
 use ralph_burning::contexts::automation_runtime::model::{
-    DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+    CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, RoutingSource, TaskStatus, WorktreeLease,
 };
 use ralph_burning::shared::domain::FlowPreset;
 use tempfile::tempdir;
@@ -4507,6 +4507,149 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
     assert!(
         !stdout.contains("Cleanup Failures"),
         "should not contain cleanup failures, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Stale CLI lease reconcile + recovery (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_daemon_reconcile_cleans_stale_cli_lease() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "cli-reconcile");
+    select_active_project_fixture(temp_dir.path(), "cli-reconcile");
+
+    // Inject a stale CLI lease record and writer lock.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-stale-inject".to_owned(),
+        project_id: "cli-reconcile".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-stale-inject.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+    fs::write(
+        leases_dir.join("writer-cli-reconcile.lock"),
+        "cli-stale-inject",
+    )
+    .expect("write writer lock");
+
+    // Verify run start fails because the writer lock is held.
+    let blocked_output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start blocked");
+    assert!(
+        !blocked_output.status.success(),
+        "run start should fail when stale CLI lock is held"
+    );
+
+    // Run daemon reconcile to clean the stale CLI lease.
+    let reconcile_output = Command::new(binary())
+        .args(["daemon", "reconcile"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+    let reconcile_stdout = String::from_utf8_lossy(&reconcile_output.stdout);
+    assert!(
+        reconcile_output.status.success(),
+        "reconcile should succeed, stderr: {}",
+        String::from_utf8_lossy(&reconcile_output.stderr)
+    );
+    assert!(
+        reconcile_stdout.contains("stale_leases=1"),
+        "should report 1 stale lease, got: {reconcile_stdout}"
+    );
+    assert!(
+        reconcile_stdout.contains("released_leases=1"),
+        "should report 1 released lease, got: {reconcile_stdout}"
+    );
+    assert!(
+        reconcile_stdout.contains("failed_tasks=0"),
+        "should report 0 failed tasks, got: {reconcile_stdout}"
+    );
+    assert!(
+        !reconcile_stdout.contains("Cleanup Failures"),
+        "should not contain cleanup failures, got: {reconcile_stdout}"
+    );
+
+    // Verify CLI lease file and writer lock are cleaned.
+    assert!(
+        !leases_dir.join("cli-stale-inject.json").exists(),
+        "CLI lease file should be removed after reconcile"
+    );
+    assert!(
+        !leases_dir.join("writer-cli-reconcile.lock").exists(),
+        "writer lock should be removed after reconcile"
+    );
+
+    // Verify run start now succeeds (lock is no longer held).
+    let start_output = Command::new(binary())
+        .args(["run", "start"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start after reconcile");
+    assert!(
+        start_output.status.success(),
+        "run start should succeed after stale CLI lease is reconciled, stderr: {}",
+        String::from_utf8_lossy(&start_output.stderr)
+    );
+}
+
+#[test]
+fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Inject a stale CLI lease record WITHOUT a matching writer lock.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+
+    let cli_lease = CliWriterLease {
+        lease_id: "cli-no-lock-cli".to_owned(),
+        project_id: "orphan-proj".to_owned(),
+        owner: "cli".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 300,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    let record = LeaseRecord::CliWriter(cli_lease);
+    let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(
+        leases_dir.join("cli-no-lock-cli.json"),
+        lease_json,
+    )
+    .expect("write cli lease file");
+
+    // Reconcile should fail because the writer lock is already absent.
+    let output = Command::new(binary())
+        .args(["daemon", "reconcile"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("daemon reconcile");
+    assert!(
+        !output.status.success(),
+        "reconcile should fail when writer lock is missing for stale CLI lease"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Cleanup Failures"),
+        "should report cleanup failures, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("writer_lock_absent"),
+        "should mention writer_lock_absent, got: {stdout}"
     );
 }
 
