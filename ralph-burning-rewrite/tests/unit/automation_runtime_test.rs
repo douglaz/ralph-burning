@@ -2934,10 +2934,9 @@ default_model = "{default_model}"
         .expect("load effective config")
 }
 
-/// Helper: build a `RequirementsService` with workspace defaults from an
-/// `EffectiveConfig`, using a shared `StubBackendAdapter` so the test can
-/// inspect recorded invocations afterward. This replicates the daemon's
-/// `build_requirements_service` construction pattern.
+/// Helper: build a `RequirementsService` with workspace defaults by calling the
+/// exact same `build_requirements_service` function the daemon uses. This ensures
+/// that a regression in daemon wiring is caught by the test suite.
 fn build_test_requirements_service_with_defaults(
     adapter: ralph_burning::adapters::stub_backend::StubBackendAdapter,
     effective_config: &ralph_burning::contexts::workspace_governance::config::EffectiveConfig,
@@ -2947,19 +2946,11 @@ fn build_test_requirements_service_with_defaults(
     ralph_burning::adapters::fs::FsSessionStore,
     ralph_burning::adapters::fs::FsRequirementsStore,
 > {
-    use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
-    use ralph_burning::contexts::agent_execution::service::BackendSelectionConfig;
-    use ralph_burning::contexts::agent_execution::AgentExecutionService;
-    use ralph_burning::contexts::requirements_drafting::service::RequirementsService;
-
-    let workspace_defaults =
-        BackendSelectionConfig::from_effective_config(effective_config).expect("build defaults");
-    let raw_output_store = FsRawOutputStore;
-    let session_store = FsSessionStore;
-    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
-    let requirements_store = FsRequirementsStore;
-    RequirementsService::new(agent_service, requirements_store)
-        .with_workspace_defaults(workspace_defaults)
+    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+        adapter,
+        effective_config,
+    )
+    .expect("build requirements service with defaults")
 }
 
 #[tokio::test]
@@ -3145,6 +3136,16 @@ async fn daemon_requirements_partial_defaults_backend_only() {
             inv.resolved_target.backend.family,
             "backend-only default should select codex family"
         );
+        // default_backend alone should pick that backend's default model
+        let expected_model =
+            ralph_burning::shared::domain::ModelSpec::default_for_backend(BackendFamily::Codex);
+        assert_eq!(
+            expected_model.model_id,
+            inv.resolved_target.model.model_id,
+            "backend-only default should select codex's default model ({}), got {}",
+            expected_model.model_id,
+            inv.resolved_target.model.model_id
+        );
     }
 }
 
@@ -3189,4 +3190,109 @@ async fn daemon_requirements_partial_defaults_model_only() {
             "model-only default should override to sonnet-4.0"
         );
     }
+}
+
+#[test]
+fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
+    // Pre-run failure invariant: if workspace-default resolution fails before a
+    // requirements run is created, no requirements run directory/history is
+    // created and the error propagates so the daemon can mark the task as
+    // requirements_quick_failed.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with an invalid default_backend value
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"invalid_backend_xyz\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+
+    // build_requirements_service must fail — this is the exact function the daemon
+    // calls before creating any requirements run.
+    let result =
+        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+            adapter.clone(),
+            &effective_config,
+        );
+    match result {
+        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+            assert_eq!(key, "default_backend");
+            assert_eq!(value, "invalid_backend_xyz");
+        }
+        Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
+    }
+
+    // No requirements run directory should have been created
+    let requirements_dir = base_dir.join(".ralph-burning").join("requirements");
+    assert!(
+        !requirements_dir.exists(),
+        "no requirements directory should exist when service construction fails before run creation"
+    );
+
+    // No invocations should have been recorded
+    assert!(
+        adapter.recorded_invocations().is_empty(),
+        "no invocations should occur when service construction fails"
+    );
+}
+
+#[test]
+fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
+    // Pre-run failure invariant: same as the quick path — if workspace-default
+    // resolution fails, no requirements run is created and the error propagates
+    // so the daemon can mark the task as requirements_draft_failed.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with an invalid default_backend value
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"nonexistent_provider\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+
+    // build_requirements_service must fail — this is the exact function the daemon
+    // calls before creating any requirements run.
+    let result =
+        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+            adapter.clone(),
+            &effective_config,
+        );
+    match result {
+        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+            assert_eq!(key, "default_backend");
+            assert_eq!(value, "nonexistent_provider");
+        }
+        Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
+    }
+
+    // No requirements run directory should have been created
+    let requirements_dir = base_dir.join(".ralph-burning").join("requirements");
+    assert!(
+        !requirements_dir.exists(),
+        "no requirements directory should exist when service construction fails before run creation"
+    );
+
+    // No invocations should have been recorded
+    assert!(
+        adapter.recorded_invocations().is_empty(),
+        "no invocations should occur when service construction fails"
+    );
 }

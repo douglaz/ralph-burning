@@ -525,7 +525,7 @@ where
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
         // Build a fresh requirements service with workspace defaults (same as CLI path)
-        let req_svc = build_requirements_service(effective_config).map_err(|e| {
+        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
             let _ = DaemonTaskService::mark_failed(
                 self.store,
                 base_dir,
@@ -691,7 +691,7 @@ where
             .clone()
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
-        let req_svc = build_requirements_service(effective_config).map_err(|e| {
+        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
             let _ = DaemonTaskService::mark_failed(
                 self.store,
                 base_dir,
@@ -1161,11 +1161,14 @@ where
     }
 }
 
-/// Build a requirements service for daemon-initiated requirements runs.
-/// Uses the same stub backend and filesystem stores as the CLI.
+/// Build a requirements service for daemon-initiated requirements runs, using the
+/// provided `StubBackendAdapter`. This is `pub(crate)` so that tests can call the
+/// exact same construction path the daemon uses, guaranteeing that a regression in
+/// workspace-default wiring is caught by the test suite.
+///
 /// Honors workspace backend/model defaults from `EffectiveConfig` (same as CLI path).
-/// Honors `RALPH_BURNING_TEST_LABEL_OVERRIDES` for test-seam parity with the CLI.
-fn build_requirements_service(
+pub fn build_requirements_service(
+    adapter: crate::adapters::stub_backend::StubBackendAdapter,
     effective_config: &EffectiveConfig,
 ) -> AppResult<
     crate::contexts::requirements_drafting::service::RequirementsService<
@@ -1176,12 +1179,34 @@ fn build_requirements_service(
     >,
 > {
     use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
-    use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::contexts::agent_execution::service::BackendSelectionConfig;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::requirements_drafting::service::RequirementsService;
 
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
+
+    let raw_output_store = FsRawOutputStore;
+    let session_store = FsSessionStore;
+    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
+    let requirements_store = FsRequirementsStore;
+    Ok(RequirementsService::new(agent_service, requirements_store)
+        .with_workspace_defaults(workspace_defaults))
+}
+
+/// Build a requirements service for production daemon use. Creates a default
+/// `StubBackendAdapter` with `RALPH_BURNING_TEST_LABEL_OVERRIDES` applied, then
+/// delegates to `build_requirements_service`.
+fn build_requirements_service_default(
+    effective_config: &EffectiveConfig,
+) -> AppResult<
+    crate::contexts::requirements_drafting::service::RequirementsService<
+        crate::adapters::stub_backend::StubBackendAdapter,
+        crate::adapters::fs::FsRawOutputStore,
+        crate::adapters::fs::FsSessionStore,
+        crate::adapters::fs::FsRequirementsStore,
+    >,
+> {
+    use crate::adapters::stub_backend::StubBackendAdapter;
 
     let mut adapter = StubBackendAdapter::default();
 
@@ -1202,12 +1227,7 @@ fn build_requirements_service(
         }
     }
 
-    let raw_output_store = FsRawOutputStore;
-    let session_store = FsSessionStore;
-    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
-    let requirements_store = FsRequirementsStore;
-    Ok(RequirementsService::new(agent_service, requirements_store)
-        .with_workspace_defaults(workspace_defaults))
+    build_requirements_service(adapter, effective_config)
 }
 
 async fn wait_for_shutdown_signal() -> AppResult<()> {
