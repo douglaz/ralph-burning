@@ -39,6 +39,10 @@ pub struct LeaseCleanupFailure {
 /// surfaced as cleanup failures; all other callers use `Idempotent` so
 /// that idempotent cleanup (e.g., abort where worktree is already gone)
 /// succeeds without creating dangling task-to-lease references.
+///
+/// Release order: worktree removal → writer-lock release → lease-file
+/// deletion.  The lease file is preserved when writer-lock release fails
+/// so the durable record remains visible for recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseMode {
     /// `AlreadyAbsent` sub-step outcomes are treated as successful cleanup.
@@ -128,27 +132,47 @@ impl LeaseService {
         if let Err(error) =
             worktree.create_worktree(repo_root, &worktree_path, &branch_name, task_id)
         {
-            // Rollback: release writer lock. Propagate rollback failure.
-            match store.release_writer_lock(base_dir, project_id, &lease_id) {
-                Ok(WriterLockReleaseOutcome::Released)
-                | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => return Err(error),
-                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
-                    return Err(AppError::AcquisitionRollbackFailed {
-                        trigger: error.to_string(),
-                        rollback_details: format!(
-                            "project writer lock may still be held: owner mismatch (actual: {actual_owner})"
-                        ),
-                    });
-                }
-                Err(rollback_err) => {
-                    return Err(AppError::AcquisitionRollbackFailed {
-                        trigger: error.to_string(),
-                        rollback_details: format!(
-                            "project writer lock may still be held: {rollback_err}"
-                        ),
-                    });
+            // Rollback: attempt every applicable cleanup step and aggregate
+            // failures so the caller knows which resources may be orphaned.
+            let mut rollback_failures = Vec::new();
+
+            // Step 1: remove any partially created worktree path.
+            if worktree_path.exists() {
+                if let Err(e) =
+                    worktree.remove_worktree(repo_root, &worktree_path, task_id)
+                {
+                    rollback_failures.push(format!("worktree removal: {e}"));
                 }
             }
+
+            // Step 2: release writer lock.
+            let lock_may_be_held =
+                match store.release_writer_lock(base_dir, project_id, &lease_id) {
+                    Ok(WriterLockReleaseOutcome::Released)
+                    | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
+                    Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                        rollback_failures.push(format!(
+                            "writer lock owner mismatch (actual: {actual_owner})"
+                        ));
+                        true
+                    }
+                    Err(e) => {
+                        rollback_failures.push(format!("writer lock release: {e}"));
+                        true
+                    }
+                };
+
+            if rollback_failures.is_empty() {
+                return Err(error);
+            }
+            let mut details = rollback_failures.join("; ");
+            if lock_may_be_held {
+                details.push_str("; project writer lock may still be held");
+            }
+            return Err(AppError::AcquisitionRollbackFailed {
+                trigger: error.to_string(),
+                rollback_details: details,
+            });
         }
 
         let now = Utc::now();
@@ -402,7 +426,9 @@ impl LeaseService {
                 continue;
             }
 
-            // Release order: worktree removal → lease file → writer lock → journal.
+            // Release order: worktree removal → writer-lock release → lease-file
+            // deletion → journal. The lease file is preserved when writer-lock
+            // release fails so the durable record remains visible for recovery.
             // If physical release fails (e.g. worktree removal), the lease remains
             // durable for a later reconcile pass. The task is already terminal.
             let release_result = Self::release(

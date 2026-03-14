@@ -4898,3 +4898,303 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         "error should be AcquisitionRollbackFailed, got: {err:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Worktree acquisition rollback: create_worktree creates dir then fails +
+// lock release fails → both worktree removal and lock failure reported
+// ---------------------------------------------------------------------------
+
+/// A worktree adapter that creates the directory and then returns an error,
+/// simulating a partial worktree creation (e.g. `git worktree add` fails
+/// after creating the directory but before finishing setup).
+struct PartialCreateWorktreeAdapter;
+
+impl WorktreePort for PartialCreateWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/task/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _branch_name: &str,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Create the directory (partial side-effect) then fail
+        std::fs::create_dir_all(worktree_path)?;
+        Err(ralph_burning::shared::error::AppError::WorktreeCreationFailed {
+            task_id: task_id.to_owned(),
+            details: "simulated partial worktree creation failure".to_owned(),
+        })
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
+        use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(worktree_path)?;
+            Ok(WorktreeCleanupOutcome::Removed)
+        } else {
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent)
+        }
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+/// A DaemonStorePort wrapper that fails `release_writer_lock` (for rollback
+/// testing) but delegates everything else to FsDaemonStore.
+struct LockReleaseFailStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for LockReleaseFailStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
+        self.inner.remove_lease(base_dir, lease_id)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        _base_dir: &std::path::Path,
+        _project_id: &ralph_burning::shared::domain::ProjectId,
+        _expected_owner: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
+    > {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated rollback lock release failure",
+        )
+        .into())
+    }
+}
+
+#[test]
+fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports_lock_failure() {
+    // When create_worktree() leaves a partially created directory and then
+    // fails, rollback must:
+    //   1. Remove the partially created worktree directory
+    //   2. Attempt writer-lock release (which also fails here)
+    //   3. Return AcquisitionRollbackFailed with both the create failure and
+    //      rollback failure details, including the "writer lock may still be
+    //      held" warning.
+    let temp = tempdir().expect("tempdir");
+    let store = LockReleaseFailStore { inner: FsDaemonStore };
+    let worktree_adapter = PartialCreateWorktreeAdapter;
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("wt-partial".to_owned()).expect("valid id");
+
+    let err = LeaseService::acquire(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        "wt-partial-task",
+        &project_id,
+        300,
+    )
+    .expect_err("acquire should fail");
+
+    let err_msg = format!("{err}");
+    // Must include the original create-worktree failure
+    assert!(
+        err_msg.contains("simulated partial worktree creation failure"),
+        "error should include create-worktree failure, got: {err_msg}"
+    );
+    // Must include the "writer lock may still be held" warning
+    assert!(
+        err_msg.contains("writer lock may still be held"),
+        "error should include lock-held warning, got: {err_msg}"
+    );
+    // Must include the rollback lock release failure detail
+    assert!(
+        err_msg.contains("simulated rollback lock release failure"),
+        "error should include rollback failure detail, got: {err_msg}"
+    );
+    // Must be an AcquisitionRollbackFailed variant
+    assert!(
+        matches!(err, AppError::AcquisitionRollbackFailed { .. }),
+        "error should be AcquisitionRollbackFailed, got: {err:?}"
+    );
+
+    // The partially created worktree directory must have been cleaned up
+    let wt_path = temp
+        .path()
+        .join(".ralph-burning")
+        .join("worktrees")
+        .join("wt-partial-task");
+    assert!(
+        !wt_path.exists(),
+        "partially created worktree directory should have been removed during rollback"
+    );
+}
+
+#[test]
+fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_succeeds() {
+    // When create_worktree() fails after creating a directory but lock
+    // release succeeds, rollback should clean the directory and return
+    // only the original create-worktree error (not AcquisitionRollbackFailed).
+    let temp = tempdir().expect("tempdir");
+    let store = FsDaemonStore;
+    let worktree_adapter = PartialCreateWorktreeAdapter;
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("wt-partial-ok".to_owned()).expect("valid id");
+
+    let err = LeaseService::acquire(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        "wt-partial-ok-task",
+        &project_id,
+        300,
+    )
+    .expect_err("acquire should fail");
+
+    let err_msg = format!("{err}");
+    // Should be the original error, not AcquisitionRollbackFailed
+    assert!(
+        err_msg.contains("simulated partial worktree creation failure"),
+        "error should include create-worktree failure, got: {err_msg}"
+    );
+    assert!(
+        !matches!(err, AppError::AcquisitionRollbackFailed { .. }),
+        "should NOT be AcquisitionRollbackFailed when rollback succeeds, got: {err:?}"
+    );
+
+    // The partially created worktree directory must have been cleaned up
+    let wt_path = temp
+        .path()
+        .join(".ralph-burning")
+        .join("worktrees")
+        .join("wt-partial-ok-task");
+    assert!(
+        !wt_path.exists(),
+        "partially created worktree directory should have been removed during rollback"
+    );
+
+    // Writer lock should be available
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "after-rollback")
+        .expect("lock should be available after clean rollback");
+    store
+        .release_writer_lock(temp.path(), &project_id, "after-rollback")
+        .expect("cleanup");
+}
