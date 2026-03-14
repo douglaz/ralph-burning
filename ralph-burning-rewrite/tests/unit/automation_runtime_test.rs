@@ -1923,9 +1923,11 @@ fn reconcile_writer_lock_absent_reports_cleanup_failure() {
 }
 
 #[test]
-fn reconcile_both_substeps_absent_reports_both_failures() {
-    // Both lease file and writer lock are already missing → reconcile must
-    // record both as distinct cleanup failures.
+fn reconcile_both_substeps_absent_reports_writer_lock_failure() {
+    // Writer lock is already missing → reconcile records a cleanup failure.
+    // With the new cleanup order (worktree → writer-lock → lease-file),
+    // lease-file deletion is skipped when writer-lock release does not
+    // return Released, so only the writer_lock_absent failure is reported.
     let temp = tempdir().expect("tempdir");
     let store = SubStepAbsentStore::new(true, true);
 
@@ -1969,12 +1971,6 @@ fn reconcile_both_substeps_absent_reports_both_failures() {
         .iter()
         .map(|f| f.details.as_str())
         .collect();
-    assert!(
-        failure_details
-            .iter()
-            .any(|d| d.contains("lease_file_absent")),
-        "should report lease_file_absent, got: {failure_details:?}"
-    );
     assert!(
         failure_details
             .iter()
@@ -2281,9 +2277,12 @@ fn reconcile_writer_lock_release_error_reports_specific_failure() {
 }
 
 #[test]
-fn reconcile_both_substep_errors_reports_both_failures() {
-    // Both lease file deletion and writer lock release return real I/O errors
-    // → reconcile must record both as distinct cleanup failures.
+fn reconcile_both_substep_errors_reports_writer_lock_failure() {
+    // Writer lock release returns a real I/O error → reconcile records the
+    // specific sub-step failure. With the new cleanup order (worktree →
+    // writer-lock → lease-file), lease-file deletion is skipped when
+    // writer-lock release fails, so only the writer_lock_release error is
+    // reported.
     let temp = tempdir().expect("tempdir");
     let store = SubStepErrorStore::new(true, true);
 
@@ -2327,12 +2326,6 @@ fn reconcile_both_substep_errors_reports_both_failures() {
         .iter()
         .map(|f| f.details.as_str())
         .collect();
-    assert!(
-        failure_details
-            .iter()
-            .any(|d| d.contains("lease_file_delete:")),
-        "should report lease_file_delete, got: {failure_details:?}"
-    );
     assert!(
         failure_details
             .iter()
@@ -4451,4 +4444,457 @@ fn reconcile_stale_cli_cleanup_allows_subsequent_run_start() {
     store
         .release_writer_lock(temp.path(), &project_id, "new-cli-session")
         .expect("cleanup");
+}
+
+// ---------------------------------------------------------------------------
+// Durable worktree lease cleanup: writer-lock release failure after worktree
+// removal preserves lease file and returns resources_released=false
+// ---------------------------------------------------------------------------
+
+#[test]
+fn release_writer_lock_failure_after_worktree_removal_preserves_lease_file() {
+    // When worktree removal succeeds but writer-lock release fails,
+    // release() must NOT delete the worktree lease file, must return
+    // resources_released=false, and must preserve the writer-lock error
+    // detail so callers can report the specific failure.
+    let temp = tempdir().expect("tempdir");
+    let store = SubStepErrorStore::new(false, true); // writer_lock_error=true
+
+    let mut task = sample_task();
+    task.task_id = "wt-lock-fail-test".to_owned();
+    task.status = TaskStatus::Active;
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let wt_path = temp.path().join("wt-lock-fail");
+    std::fs::create_dir_all(&wt_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-wt-lock-fail".to_owned(),
+        task_id: "wt-lock-fail-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path: wt_path,
+        branch_name: "rb/wt-lock-fail-test".to_owned(),
+        acquired_at: Utc::now() - Duration::hours(1),
+        ttl_seconds: 60,
+        last_heartbeat: Utc::now() - Duration::hours(1),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-wt-lock-fail")
+        .expect("acquire lock");
+
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let result = LeaseService::release(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ReleaseMode::Idempotent,
+    )
+    .expect("release returns Ok with sub-step failures");
+
+    // resources_released must be false
+    assert!(
+        !result.resources_released,
+        "resources_released must be false when writer-lock release fails"
+    );
+    assert!(
+        result.writer_lock_error.is_some(),
+        "should report writer_lock_error"
+    );
+
+    // Worktree should be gone (removal succeeded)
+    assert!(!temp.path().join("wt-lock-fail").exists(), "worktree should be removed");
+
+    // Lease file must still exist on disk — preserved for recovery
+    let leases = store.list_leases(temp.path()).expect("list leases");
+    assert_eq!(
+        1,
+        leases.len(),
+        "lease file must remain durable when writer-lock release fails after worktree removal"
+    );
+    assert_eq!("lease-wt-lock-fail", leases[0].lease_id);
+
+    // No LeaseReleased journal event
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
+    assert!(
+        !journal.iter().any(|e| e.event_type
+            == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
+        "LeaseReleased must not be emitted on partial cleanup failure"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// CLI acquisition rollback: lease persistence + lock release both fail
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that fails `write_lease_record` and
+/// `release_writer_lock` to test combined rollback failure reporting.
+struct CliAcquireRollbackFailStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for CliAcquireRollbackFailStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease(base_dir, lease)
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        _base_dir: &std::path::Path,
+        _lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Simulate lease-record persistence failure
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated CLI lease write failure",
+        )
+        .into())
+    }
+    fn remove_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
+        self.inner.remove_lease(base_dir, lease_id)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        _base_dir: &std::path::Path,
+        _project_id: &ralph_burning::shared::domain::ProjectId,
+        _expected_owner: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
+    > {
+        // Simulate writer-lock release failure during rollback
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated rollback lock release failure",
+        )
+        .into())
+    }
+}
+
+#[tokio::test]
+async fn cli_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
+    // When CLI lease-record persistence fails and rollback lock release also
+    // fails, the returned error must include both the lease-write failure and
+    // the "writer lock may still be held" warning.
+    let temp = tempdir().expect("tempdir");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("cli-rb-fail".to_owned()).expect("valid id");
+
+    let store: Arc<dyn DaemonStorePort + Send + Sync> =
+        Arc::new(CliAcquireRollbackFailStore { inner: FsDaemonStore });
+
+    let result = CliWriterLeaseGuard::acquire(
+        store,
+        temp.path(),
+        project_id,
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    );
+    let err = match result {
+        Err(e) => e,
+        Ok(guard) => {
+            drop(guard);
+            panic!("acquire should fail");
+        }
+    };
+
+    let err_msg = format!("{err}");
+    // Must include the original lease-write failure
+    assert!(
+        err_msg.contains("simulated CLI lease write failure"),
+        "error should include lease-write failure, got: {err_msg}"
+    );
+    // Must include the "writer lock may still be held" warning
+    assert!(
+        err_msg.contains("writer lock may still be held"),
+        "error should include lock-held warning, got: {err_msg}"
+    );
+    // Must include the rollback failure detail
+    assert!(
+        err_msg.contains("simulated rollback lock release failure"),
+        "error should include rollback failure detail, got: {err_msg}"
+    );
+    // Must be an AcquisitionRollbackFailed variant
+    assert!(
+        matches!(err, AppError::AcquisitionRollbackFailed { .. }),
+        "error should be AcquisitionRollbackFailed, got: {err:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Worktree acquisition rollback: lease persistence fails + lock release fails
+// ---------------------------------------------------------------------------
+
+/// A DaemonStorePort wrapper that fails `write_lease` (worktree lease
+/// persistence) and `release_writer_lock` (rollback) to test combined
+/// rollback failure reporting for worktree acquisition.
+struct WorktreeAcquireRollbackFailStore {
+    inner: FsDaemonStore,
+}
+
+impl DaemonStorePort for WorktreeAcquireRollbackFailStore {
+    fn list_tasks(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<DaemonTask>> {
+        self.inner.list_tasks(base_dir)
+    }
+    fn read_task(
+        &self,
+        base_dir: &std::path::Path,
+        task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<DaemonTask> {
+        self.inner.read_task(base_dir, task_id)
+    }
+    fn create_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.create_task(base_dir, task)
+    }
+    fn write_task(
+        &self,
+        base_dir: &std::path::Path,
+        task: &DaemonTask,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_task(base_dir, task)
+    }
+    fn list_leases(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<WorktreeLease>> {
+        self.inner.list_leases(base_dir)
+    }
+    fn read_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<WorktreeLease> {
+        self.inner.read_lease(base_dir, lease_id)
+    }
+    fn write_lease(
+        &self,
+        _base_dir: &std::path::Path,
+        _lease: &WorktreeLease,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        // Simulate worktree lease persistence failure
+        Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated worktree lease write failure",
+        )
+        .into())
+    }
+    fn list_lease_records(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<Vec<ralph_burning::contexts::automation_runtime::model::LeaseRecord>> {
+        self.inner.list_lease_records(base_dir)
+    }
+    fn read_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::model::LeaseRecord> {
+        self.inner.read_lease_record(base_dir, lease_id)
+    }
+    fn write_lease_record(
+        &self,
+        base_dir: &std::path::Path,
+        lease: &ralph_burning::contexts::automation_runtime::model::LeaseRecord,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.write_lease_record(base_dir, lease)
+    }
+    fn remove_lease(
+        &self,
+        base_dir: &std::path::Path,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
+        self.inner.remove_lease(base_dir, lease_id)
+    }
+    fn read_daemon_journal(
+        &self,
+        base_dir: &std::path::Path,
+    ) -> ralph_burning::shared::error::AppResult<
+        Vec<ralph_burning::contexts::automation_runtime::DaemonJournalEvent>,
+    > {
+        self.inner.read_daemon_journal(base_dir)
+    }
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &std::path::Path,
+        event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner.append_daemon_journal_event(base_dir, event)
+    }
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &std::path::Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        lease_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
+    }
+    fn release_writer_lock(
+        &self,
+        _base_dir: &std::path::Path,
+        _project_id: &ralph_burning::shared::domain::ProjectId,
+        _expected_owner: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WriterLockReleaseOutcome,
+    > {
+        // Simulate writer-lock release failure during rollback
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated rollback lock release failure",
+        )
+        .into())
+    }
+}
+
+#[test]
+fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
+    // When worktree lease persistence fails and rollback lock release also
+    // fails, the returned error must include both the acquisition failure
+    // and rollback failure details, including the "writer lock may still be
+    // held" warning.
+    let temp = tempdir().expect("tempdir");
+    let store = WorktreeAcquireRollbackFailStore { inner: FsDaemonStore };
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("wt-rb-fail".to_owned()).expect("valid id");
+
+    // Create a task so acquire() can proceed past the duplicate-lease check
+    let mut task = sample_task();
+    task.task_id = "wt-rb-fail-task".to_owned();
+    task.project_id = "wt-rb-fail".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let err = LeaseService::acquire(
+        &store,
+        &worktree_adapter,
+        temp.path(),
+        temp.path(),
+        "wt-rb-fail-task",
+        &project_id,
+        300,
+    )
+    .expect_err("acquire should fail");
+
+    let err_msg = format!("{err}");
+    // Must include the original lease-write failure
+    assert!(
+        err_msg.contains("simulated worktree lease write failure"),
+        "error should include lease-write failure, got: {err_msg}"
+    );
+    // Must include the "writer lock may still be held" warning
+    assert!(
+        err_msg.contains("writer lock may still be held"),
+        "error should include lock-held warning, got: {err_msg}"
+    );
+    // Must include the rollback failure detail
+    assert!(
+        err_msg.contains("simulated rollback lock release failure"),
+        "error should include rollback failure detail, got: {err_msg}"
+    );
+    // Must be an AcquisitionRollbackFailed variant
+    assert!(
+        matches!(err, AppError::AcquisitionRollbackFailed { .. }),
+        "error should be AcquisitionRollbackFailed, got: {err:?}"
+    );
 }

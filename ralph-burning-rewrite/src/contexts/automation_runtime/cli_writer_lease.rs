@@ -146,9 +146,31 @@ impl CliWriterLeaseGuard {
             last_heartbeat: now,
         };
         if let Err(e) = store.write_lease_record(base_dir, &LeaseRecord::CliWriter(lease)) {
-            // Invariant: failed acquisition leaves neither lease record nor lock.
-            let _ = store.release_writer_lock(base_dir, &project_id, &lease_id);
-            return Err(e);
+            // Rollback: release writer lock. Propagate rollback failure so
+            // callers know whether the lock may still be held.
+            match store.release_writer_lock(base_dir, &project_id, &lease_id) {
+                Ok(WriterLockReleaseOutcome::Released)
+                | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
+                    // Lock cleaned up — return only the original error.
+                    return Err(e);
+                }
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: e.to_string(),
+                        rollback_details: format!(
+                            "project writer lock may still be held: owner mismatch (actual: {actual_owner})"
+                        ),
+                    });
+                }
+                Err(rollback_err) => {
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: e.to_string(),
+                        rollback_details: format!(
+                            "project writer lock may still be held: {rollback_err}"
+                        ),
+                    });
+                }
+            }
         }
 
         // Step 3: spawn heartbeat task.

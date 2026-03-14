@@ -113,6 +113,14 @@ fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
     .expect("write daemon lease");
 }
 
+fn write_writer_lock(base_dir: &std::path::Path, project_id: &str, owner: &str) {
+    let path = base_dir
+        .join(".ralph-burning/daemon/leases")
+        .join(format!("writer-{project_id}.lock"));
+    fs::create_dir_all(path.parent().expect("lock parent")).expect("create lease dir");
+    fs::write(path, owner).expect("write writer lock");
+}
+
 fn init_git_repo(base_dir: &std::path::Path) {
     let init = Command::new("git")
         .args(["init", "-b", "main"])
@@ -441,6 +449,7 @@ fn daemon_abort_claimed_task_releases_lease() {
             last_heartbeat: now,
         },
     );
+    write_writer_lock(temp_dir.path(), "demo-claimed", "lease-claimed");
 
     let output = Command::new(binary())
         .args(["daemon", "abort", "task-claimed"])
@@ -507,6 +516,7 @@ fn daemon_abort_active_task_releases_lease() {
             last_heartbeat: now,
         },
     );
+    write_writer_lock(temp_dir.path(), "demo-active-abort", "lease-active-abort");
 
     let output = Command::new(binary())
         .args(["daemon", "abort", "task-active-abort"])

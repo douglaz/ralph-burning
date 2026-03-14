@@ -6,8 +6,8 @@ use serde_json::json;
 use crate::contexts::automation_runtime::model::{LeaseRecord, TaskStatus, WorktreeLease};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::{
-    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WriterLockReleaseOutcome,
-    WorktreePort,
+    DaemonStorePort, ResourceCleanupOutcome, WorktreeCleanupOutcome, WorktreePort,
+    WriterLockReleaseOutcome,
 };
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
@@ -50,16 +50,15 @@ pub enum ReleaseMode {
 }
 
 /// Result of a lease release operation. Distinguishes physical cleanup
-/// (worktree, lease file, writer lock) from post-cleanup journal append,
+/// (worktree, writer lock, lease file) from post-cleanup journal append,
 /// and tracks per-sub-step outcomes so callers can enforce strict cleanup
 /// accounting.
 #[derive(Debug, Clone)]
 pub struct ReleaseResult {
     /// Whether physical cleanup succeeded according to the chosen
-    /// `ReleaseMode`. In `Idempotent` mode, true unless a real I/O error
-    /// occurred. In `Strict` mode, true only when every sub-step positively
-    /// succeeded (not already absent, no error). Callers must only clear
-    /// durable lease references when this is true.
+    /// `ReleaseMode`. True only when worktree removal, writer-lock release,
+    /// and lease-file deletion all positively succeeded. Callers must only
+    /// clear durable lease references when this is true.
     pub resources_released: bool,
     /// If the LeaseReleased journal append failed after physical cleanup,
     /// this contains the error description. Only set when `resources_released`
@@ -67,7 +66,12 @@ pub struct ReleaseResult {
     pub journal_error: Option<String>,
     /// Whether the worktree was already absent when removal was attempted.
     pub worktree_already_absent: bool,
+    /// If worktree removal returned a real I/O error, this contains the error
+    /// description. When set, writer-lock release and lease-file deletion are
+    /// not attempted.
+    pub worktree_error: Option<String>,
     /// Whether the lease file was already absent when deletion was attempted.
+    /// Only meaningful when writer-lock release returned `Released`.
     pub lease_file_already_absent: bool,
     /// Whether the writer lock was already absent when release was attempted.
     pub writer_lock_already_absent: bool,
@@ -124,8 +128,27 @@ impl LeaseService {
         if let Err(error) =
             worktree.create_worktree(repo_root, &worktree_path, &branch_name, task_id)
         {
-            let _ = store.release_writer_lock(base_dir, project_id, &lease_id);
-            return Err(error);
+            // Rollback: release writer lock. Propagate rollback failure.
+            match store.release_writer_lock(base_dir, project_id, &lease_id) {
+                Ok(WriterLockReleaseOutcome::Released)
+                | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => return Err(error),
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: error.to_string(),
+                        rollback_details: format!(
+                            "project writer lock may still be held: owner mismatch (actual: {actual_owner})"
+                        ),
+                    });
+                }
+                Err(rollback_err) => {
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: error.to_string(),
+                        rollback_details: format!(
+                            "project writer lock may still be held: {rollback_err}"
+                        ),
+                    });
+                }
+            }
         }
 
         let now = Utc::now();
@@ -140,9 +163,38 @@ impl LeaseService {
             last_heartbeat: now,
         };
         if let Err(error) = store.write_lease(base_dir, &lease) {
-            let _ = worktree.remove_worktree(repo_root, &lease.worktree_path, task_id);
-            let _ = store.release_writer_lock(base_dir, project_id, &lease.lease_id);
-            return Err(error);
+            // Rollback: attempt every applicable cleanup step and aggregate
+            // failures so the caller knows which resources may be orphaned.
+            let mut rollback_failures = Vec::new();
+            if let Err(e) = worktree.remove_worktree(repo_root, &lease.worktree_path, task_id) {
+                rollback_failures.push(format!("worktree removal: {e}"));
+            }
+            let lock_may_be_held =
+                match store.release_writer_lock(base_dir, project_id, &lease.lease_id) {
+                    Ok(WriterLockReleaseOutcome::Released)
+                    | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
+                    Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                        rollback_failures.push(format!(
+                            "writer lock owner mismatch (actual: {actual_owner})"
+                        ));
+                        true
+                    }
+                    Err(e) => {
+                        rollback_failures.push(format!("writer lock release: {e}"));
+                        true
+                    }
+                };
+            if rollback_failures.is_empty() {
+                return Err(error);
+            }
+            let mut details = rollback_failures.join("; ");
+            if lock_may_be_held {
+                details.push_str("; project writer lock may still be held");
+            }
+            return Err(AppError::AcquisitionRollbackFailed {
+                trigger: error.to_string(),
+                rollback_details: details,
+            });
         }
 
         Ok(lease)
@@ -175,49 +227,86 @@ impl LeaseService {
     ) -> AppResult<ReleaseResult> {
         let project_id = ProjectId::new(lease.project_id.clone())?;
 
-        // Attempt worktree removal first. If it fails, keep all durable lease
-        // state (lease file, writer lock) intact so a later reconcile can retry.
-        let worktree_outcome =
-            worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id)?;
-        let worktree_already_absent = worktree_outcome == WorktreeCleanupOutcome::AlreadyAbsent;
+        // PHASE 1: Worktree removal. If it fails, keep all durable lease
+        // state (writer lock, lease file) intact so a later reconcile can retry.
+        let worktree_already_absent;
+        match worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id) {
+            Ok(WorktreeCleanupOutcome::Removed) => {
+                worktree_already_absent = false;
+            }
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent) => {
+                worktree_already_absent = true;
+            }
+            Err(e) => {
+                // Worktree removal failed — do not attempt writer-lock
+                // release or lease-file deletion.
+                return Ok(ReleaseResult {
+                    resources_released: false,
+                    journal_error: None,
+                    worktree_already_absent: false,
+                    worktree_error: Some(e.to_string()),
+                    lease_file_already_absent: false,
+                    writer_lock_already_absent: false,
+                    writer_lock_owner_mismatch: false,
+                    lease_file_error: None,
+                    writer_lock_error: None,
+                });
+            }
+        }
 
-        // Worktree removal returned Ok — proceed with lease file + lock cleanup.
-        // Capture each sub-step outcome individually instead of propagating
-        // errors immediately, so callers can report the specific failing step.
-        let (lease_file_already_absent, lease_file_error) =
+        // PHASE 2: Owner-aware writer-lock release. Must succeed before
+        // the lease file is deleted so the durable lease record remains
+        // visible for recovery when the lock cannot be released.
+        let writer_lock_released;
+        let (writer_lock_already_absent, writer_lock_owner_mismatch, writer_lock_error) =
+            match store.release_writer_lock(base_dir, &project_id, &lease.lease_id) {
+                Ok(WriterLockReleaseOutcome::Released) => {
+                    writer_lock_released = true;
+                    (false, false, None)
+                }
+                Ok(WriterLockReleaseOutcome::AlreadyAbsent) => {
+                    writer_lock_released = false;
+                    (true, false, None)
+                }
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { .. }) => {
+                    writer_lock_released = false;
+                    (false, true, None)
+                }
+                Err(e) => {
+                    writer_lock_released = false;
+                    (false, false, Some(e.to_string()))
+                }
+            };
+
+        // PHASE 3: Lease-file deletion — only attempted when the writer
+        // lock was positively released. If the lock was not released
+        // (AlreadyAbsent, OwnerMismatch, or I/O error), the lease file
+        // stays durable so callers can report the specific lock-release
+        // failure.
+        let (lease_file_already_absent, lease_file_error) = if writer_lock_released {
             match store.remove_lease(base_dir, &lease.lease_id) {
                 Ok(ResourceCleanupOutcome::Removed) => (false, None),
                 Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
                 Err(e) => (false, Some(e.to_string())),
-            };
+            }
+        } else {
+            // Lease file preserved — writer-lock release did not succeed.
+            (false, None)
+        };
 
-        // Always attempt writer-lock release even if lease-file deletion failed,
-        // so the operator sees the full picture of what succeeded and what didn't.
-        let (writer_lock_already_absent, writer_lock_owner_mismatch, writer_lock_error) =
-            match store.release_writer_lock(base_dir, &project_id, &lease.lease_id) {
-                Ok(WriterLockReleaseOutcome::Released) => (false, false, None),
-                Ok(WriterLockReleaseOutcome::AlreadyAbsent) => (true, false, None),
-                Ok(WriterLockReleaseOutcome::OwnerMismatch { .. }) => (false, true, None),
-                Err(e) => (false, false, Some(e.to_string())),
-            };
-
-        // Determine whether cleanup succeeded under the chosen policy.
-        // In Strict mode (reconcile), already-absent sub-steps count as
-        // failure. In Idempotent mode (abort, daemon-loop), only real I/O
-        // errors prevent release. Owner mismatch is always a failure.
+        // Determine whether cleanup succeeded. Writer-lock must have
+        // returned Released (not AlreadyAbsent) in all modes. In Strict
+        // mode (reconcile), already-absent worktree and lease-file also
+        // count as failure.
         let resources_released = match mode {
             ReleaseMode::Idempotent => {
-                lease_file_error.is_none()
-                    && writer_lock_error.is_none()
-                    && !writer_lock_owner_mismatch
+                writer_lock_released && lease_file_error.is_none()
             }
             ReleaseMode::Strict => {
                 !worktree_already_absent
+                    && writer_lock_released
                     && !lease_file_already_absent
-                    && !writer_lock_already_absent
-                    && !writer_lock_owner_mismatch
                     && lease_file_error.is_none()
-                    && writer_lock_error.is_none()
             }
         };
 
@@ -245,6 +334,7 @@ impl LeaseService {
             resources_released,
             journal_error,
             worktree_already_absent,
+            worktree_error: None,
             lease_file_already_absent,
             writer_lock_already_absent,
             writer_lock_owner_mismatch,
@@ -328,10 +418,16 @@ impl LeaseService {
                     // Check for sub-step anomalies: resources that were already
                     // absent cannot be positively cleaned up, and real I/O errors
                     // on sub-steps are recorded with the specific step name.
-                    // Also check worktree_already_absent to handle the race where
-                    // the worktree disappears between the pre-check and release().
                     let mut has_sub_step_failure = false;
 
+                    if let Some(ref err) = outcome.worktree_error {
+                        report.cleanup_failures.push(LeaseCleanupFailure {
+                            lease_id: lease.lease_id.clone(),
+                            task_id: Some(task.task_id.clone()),
+                            details: format!("worktree_remove: {err}"),
+                        });
+                        has_sub_step_failure = true;
+                    }
                     if outcome.worktree_already_absent {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
