@@ -22,9 +22,7 @@ use crate::contexts::project_run_record::service::{
     RuntimeLogWritePort,
 };
 use crate::contexts::project_run_record::CreateProjectInput;
-use crate::contexts::requirements_drafting::service::{
-    self as req_service, RequirementsStorePort,
-};
+use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
@@ -200,10 +198,7 @@ where
             let dispatch_mode = match watcher::resolve_dispatch_mode(issue) {
                 Ok(mode) => mode,
                 Err(e) => {
-                    println!(
-                        "watcher: skipping issue '{}': {}",
-                        issue.issue_ref, e
-                    );
+                    println!("watcher: skipping issue '{}': {}", issue.issue_ref, e);
                     continue;
                 }
             };
@@ -381,13 +376,14 @@ where
         // requirements_draft enters WaitingForRequirements and returns immediately.
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
-                self.handle_requirements_quick(base_dir, task).await?;
+                self.handle_requirements_quick(base_dir, task, &effective_config)
+                    .await?;
                 // Task is now Workflow mode with project metadata populated.
                 // Fall through to standard claim/dispatch below.
             }
             DispatchMode::RequirementsDraft => {
                 return self
-                    .handle_requirements_draft(base_dir, task)
+                    .handle_requirements_draft(base_dir, task, &effective_config)
                     .await;
             }
             DispatchMode::Workflow => {
@@ -514,20 +510,31 @@ where
         &self,
         base_dir: &Path,
         task: &DaemonTask,
+        effective_config: &EffectiveConfig,
     ) -> AppResult<()> {
-        let req_store = self.requirements_store.ok_or_else(|| {
-            AppError::RequirementsHandoffFailed {
-                task_id: task.task_id.clone(),
-                details: "no requirements store configured for daemon".to_owned(),
-            }
+        let req_store =
+            self.requirements_store
+                .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                    task_id: task.task_id.clone(),
+                    details: "no requirements store configured for daemon".to_owned(),
+                })?;
+
+        let idea = task
+            .prompt
+            .clone()
+            .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
+
+        // Build a fresh requirements service with workspace defaults (same as CLI path)
+        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
+            let _ = DaemonTaskService::mark_failed(
+                self.store,
+                base_dir,
+                &task.task_id,
+                "requirements_quick_failed",
+                &format!("failed to build requirements service: {e}"),
+            );
+            e
         })?;
-
-        let idea = task.prompt.clone().unwrap_or_else(|| {
-            format!("Automated task for issue {}", task.issue_ref)
-        });
-
-        // Build a fresh requirements service (same pattern as CLI)
-        let req_svc = build_requirements_service();
         let run_id = match req_svc.quick(base_dir, &idea, Utc::now()).await {
             Ok(run_id) => run_id,
             Err(e) => {
@@ -659,13 +666,14 @@ where
         &self,
         base_dir: &Path,
         task: &DaemonTask,
+        effective_config: &EffectiveConfig,
     ) -> AppResult<()> {
-        let req_store = self.requirements_store.ok_or_else(|| {
-            AppError::RequirementsHandoffFailed {
-                task_id: task.task_id.clone(),
-                details: "no requirements store configured for daemon".to_owned(),
-            }
-        })?;
+        let req_store =
+            self.requirements_store
+                .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                    task_id: task.task_id.clone(),
+                    details: "no requirements store configured for daemon".to_owned(),
+                })?;
 
         // Transition through Pending → Claimed → Active without a worktree lease.
         // The draft path only needs the agent to generate questions — no project,
@@ -678,11 +686,21 @@ where
             self.store.write_task(base_dir, &t)?;
         }
 
-        let idea = task.prompt.clone().unwrap_or_else(|| {
-            format!("Automated task for issue {}", task.issue_ref)
-        });
+        let idea = task
+            .prompt
+            .clone()
+            .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
-        let req_svc = build_requirements_service();
+        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
+            let _ = DaemonTaskService::mark_failed(
+                self.store,
+                base_dir,
+                &task.task_id,
+                "requirements_draft_failed",
+                &format!("failed to build requirements service: {e}"),
+            );
+            e
+        })?;
         let run_id = match req_svc.draft(base_dir, &idea, Utc::now()).await {
             Ok(run_id) => run_id,
             Err(e) => {
@@ -701,8 +719,7 @@ where
         // If the question set was empty, the run completes directly (no user
         // answers needed). Only enter WaitingForRequirements when answers are
         // actually pending.
-        let run_complete =
-            req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
+        let run_complete = req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
 
         if run_complete {
             // Empty-question draft: run already completed. Extract seed and
@@ -1118,13 +1135,18 @@ where
         task_id: &str,
         lease: &crate::contexts::automation_runtime::model::WorktreeLease,
     ) -> AppResult<()> {
-        let release_result =
-            LeaseService::release(self.store, self.worktree, base_dir, repo_root, lease, crate::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent);
+        let release_result = LeaseService::release(
+            self.store,
+            self.worktree,
+            base_dir,
+            repo_root,
+            lease,
+            crate::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+        );
         match release_result {
             Ok(ref r) if r.resources_released => {
                 // All sub-steps succeeded — safe to clear durable lease reference.
-                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id)
-                    .map(|_| ())
+                DaemonTaskService::clear_lease_reference(self.store, base_dir, task_id).map(|_| ())
             }
             Ok(_) => {
                 // Partial cleanup: some resources remain. Do NOT clear lease
@@ -1139,29 +1161,60 @@ where
     }
 }
 
-/// Build a requirements service for daemon-initiated requirements runs.
-/// Uses the same stub backend and filesystem stores as the CLI.
-/// Honors `RALPH_BURNING_TEST_LABEL_OVERRIDES` for test-seam parity with the CLI.
-fn build_requirements_service(
-) -> crate::contexts::requirements_drafting::service::RequirementsService<
-    crate::adapters::stub_backend::StubBackendAdapter,
-    crate::adapters::fs::FsRawOutputStore,
-    crate::adapters::fs::FsSessionStore,
-    crate::adapters::fs::FsRequirementsStore,
+/// Build a requirements service for daemon-initiated requirements runs, using the
+/// provided `StubBackendAdapter`. This is `pub(crate)` so that tests can call the
+/// exact same construction path the daemon uses, guaranteeing that a regression in
+/// workspace-default wiring is caught by the test suite.
+///
+/// Honors workspace backend/model defaults from `EffectiveConfig` (same as CLI path).
+pub fn build_requirements_service(
+    adapter: crate::adapters::stub_backend::StubBackendAdapter,
+    effective_config: &EffectiveConfig,
+) -> AppResult<
+    crate::contexts::requirements_drafting::service::RequirementsService<
+        crate::adapters::stub_backend::StubBackendAdapter,
+        crate::adapters::fs::FsRawOutputStore,
+        crate::adapters::fs::FsSessionStore,
+        crate::adapters::fs::FsRequirementsStore,
+    >,
 > {
     use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
-    use crate::adapters::stub_backend::StubBackendAdapter;
+    use crate::contexts::agent_execution::service::BackendSelectionConfig;
     use crate::contexts::agent_execution::AgentExecutionService;
     use crate::contexts::requirements_drafting::service::RequirementsService;
+
+    let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
+
+    let raw_output_store = FsRawOutputStore;
+    let session_store = FsSessionStore;
+    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
+    let requirements_store = FsRequirementsStore;
+    Ok(RequirementsService::new(agent_service, requirements_store)
+        .with_workspace_defaults(workspace_defaults))
+}
+
+/// Build a requirements service for production daemon use. Creates a default
+/// `StubBackendAdapter` with `RALPH_BURNING_TEST_LABEL_OVERRIDES` applied, then
+/// delegates to `build_requirements_service`.
+fn build_requirements_service_default(
+    effective_config: &EffectiveConfig,
+) -> AppResult<
+    crate::contexts::requirements_drafting::service::RequirementsService<
+        crate::adapters::stub_backend::StubBackendAdapter,
+        crate::adapters::fs::FsRawOutputStore,
+        crate::adapters::fs::FsSessionStore,
+        crate::adapters::fs::FsRequirementsStore,
+    >,
+> {
+    use crate::adapters::stub_backend::StubBackendAdapter;
 
     let mut adapter = StubBackendAdapter::default();
 
     // Test-only seam: same label override mechanism as the CLI handler.
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
-        if let Ok(overrides) =
-            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
-                &overrides_json,
-            )
+        if let Ok(overrides) = serde_json::from_str::<
+            std::collections::HashMap<String, serde_json::Value>,
+        >(&overrides_json)
         {
             for (label, payload) in overrides {
                 let full_label = if label.starts_with("requirements:") {
@@ -1174,11 +1227,7 @@ fn build_requirements_service(
         }
     }
 
-    let raw_output_store = FsRawOutputStore;
-    let session_store = FsSessionStore;
-    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
-    let requirements_store = FsRequirementsStore;
-    RequirementsService::new(agent_service, requirements_store)
+    build_requirements_service(adapter, effective_config)
 }
 
 async fn wait_for_shutdown_signal() -> AppResult<()> {

@@ -106,7 +106,9 @@ pub fn run_scenarios(
 
         // Execute with panic catching for isolation
         let exec_result = if forced_fail {
-            Ok(Err("forced failure via RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR".to_owned()))
+            Ok(Err(
+                "forced failure via RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR".to_owned(),
+            ))
         } else {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| executor()))
         };

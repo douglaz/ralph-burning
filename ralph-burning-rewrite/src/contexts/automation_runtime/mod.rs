@@ -13,7 +13,9 @@ pub mod watcher;
 pub const CONTEXT_NAME: &str = "automation_runtime";
 
 pub use daemon_loop::{DaemonLoop, DaemonLoopConfig};
-pub use lease_service::{LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult};
+pub use lease_service::{
+    LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult,
+};
 pub use model::{
     DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode, RoutingResolution,
     RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
@@ -68,7 +70,11 @@ pub trait DaemonStorePort {
         project_id: &ProjectId,
         lease_id: &str,
     ) -> AppResult<()>;
-    fn release_writer_lock(&self, base_dir: &Path, project_id: &ProjectId) -> AppResult<ResourceCleanupOutcome>;
+    fn release_writer_lock(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ResourceCleanupOutcome>;
 }
 
 pub trait WorktreePort {

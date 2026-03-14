@@ -13,7 +13,7 @@ use ralph_burning::contexts::automation_runtime::task_service::{
 };
 use ralph_burning::contexts::automation_runtime::watcher::parse_requirements_command;
 use ralph_burning::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
-use ralph_burning::shared::domain::FlowPreset;
+use ralph_burning::shared::domain::{BackendFamily, FlowPreset};
 use ralph_burning::shared::error::AppError;
 
 fn sample_task() -> DaemonTask {
@@ -637,8 +637,14 @@ fn watched_issue_with_requirements_command_routes_flow_from_labels() {
 #[test]
 fn dispatch_mode_display() {
     assert_eq!("workflow", DispatchMode::Workflow.as_str());
-    assert_eq!("requirements_draft", DispatchMode::RequirementsDraft.as_str());
-    assert_eq!("requirements_quick", DispatchMode::RequirementsQuick.as_str());
+    assert_eq!(
+        "requirements_draft",
+        DispatchMode::RequirementsDraft.as_str()
+    );
+    assert_eq!(
+        "requirements_quick",
+        DispatchMode::RequirementsQuick.as_str()
+    );
 }
 
 #[test]
@@ -787,10 +793,7 @@ fn post_link_metadata_failure_transitions_waiting_task_to_failed() {
         failed.failure_class
     );
     // The requirements_run_id should still be set — the run itself succeeded
-    assert_eq!(
-        Some("req-linked-ok".to_owned()),
-        failed.requirements_run_id
-    );
+    assert_eq!(Some("req-linked-ok".to_owned()), failed.requirements_run_id);
 }
 
 #[test]
@@ -830,8 +833,8 @@ fn active_task_can_transition_to_pending_for_requeue() {
 fn writer_lock_acquire_release_roundtrip() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new("lock-test".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("lock-test".to_owned()).expect("valid id");
 
     store
         .acquire_writer_lock(temp.path(), &project_id, "cli")
@@ -862,8 +865,8 @@ fn writer_lock_acquire_release_roundtrip() {
 fn writer_lock_release_is_idempotent() {
     let store = FsDaemonStore;
     let temp = tempdir().expect("tempdir");
-    let project_id = ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("idem-test".to_owned()).expect("valid id");
 
     // Release without acquire should not fail
     store
@@ -900,8 +903,8 @@ fn reconcile_reports_only_successful_releases() {
     store.write_lease(temp.path(), &lease).expect("write lease");
 
     // Create the writer lock
-    let project_id = ralph_burning::shared::domain::ProjectId::new("demo".to_owned())
-        .expect("valid id");
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
     store
         .acquire_writer_lock(temp.path(), &project_id, "lease-reconcile-test")
         .expect("acquire lock");
@@ -930,7 +933,9 @@ fn reconcile_reports_only_successful_releases() {
     assert_eq!(1, report.cleanup_failures.len());
     assert_eq!("lease-reconcile-test", report.cleanup_failures[0].lease_id);
     assert!(
-        report.cleanup_failures[0].details.contains("worktree_absent"),
+        report.cleanup_failures[0]
+            .details
+            .contains("worktree_absent"),
         "details should indicate worktree was absent, got: {}",
         report.cleanup_failures[0].details
     );
@@ -984,7 +989,9 @@ impl WorktreePort for FailingWorktreeAdapter {
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         Err(std::io::Error::new(
             std::io::ErrorKind::Other,
             "simulated worktree removal failure",
@@ -1034,7 +1041,9 @@ impl WorktreePort for SuccessWorktreeAdapter {
         _repo_root: &std::path::Path,
         worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
         if worktree_path.exists() {
             std::fs::remove_dir_all(worktree_path)?;
@@ -1112,7 +1121,9 @@ fn reconcile_partial_cleanup_failure_keeps_lease_durable() {
         report.cleanup_failures[0].lease_id
     );
     assert!(
-        report.cleanup_failures[0].details.contains("worktree_remove:"),
+        report.cleanup_failures[0]
+            .details
+            .contains("worktree_remove:"),
         "details should indicate worktree removal failure, got: {}",
         report.cleanup_failures[0].details
     );
@@ -1211,7 +1222,9 @@ impl DaemonStorePort for FailingJournalStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.remove_lease(base_dir, lease_id)
     }
     fn read_daemon_journal(
@@ -1230,9 +1243,7 @@ impl DaemonStorePort for FailingJournalStore {
         let count = self
             .call_count
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let limit = self
-            .fail_after
-            .load(std::sync::atomic::Ordering::SeqCst);
+        let limit = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
         if count >= limit {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::Other,
@@ -1248,13 +1259,16 @@ impl DaemonStorePort for FailingJournalStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.release_writer_lock(base_dir, project_id)
     }
 }
@@ -1276,9 +1290,7 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
     let mut task = sample_task();
     task.task_id = "claim-rollback-test".to_owned();
     task.project_id = "rollback-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1332,9 +1344,7 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
     let mut task = sample_task();
     task.task_id = "claim-fail-test".to_owned();
     task.project_id = "fail-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1388,9 +1398,7 @@ fn claim_journal_failure_with_release_failure_marks_failed_retains_lease() {
     let mut task = sample_task();
     task.task_id = "double-fail-test".to_owned();
     task.project_id = "double-fail-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -1537,7 +1545,9 @@ impl DaemonStorePort for SubStepAbsentStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.lease_file_absent {
             Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
         } else {
@@ -1565,13 +1575,16 @@ impl DaemonStorePort for SubStepAbsentStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.writer_lock_absent {
             Ok(ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome::AlreadyAbsent)
         } else {
@@ -1636,13 +1649,21 @@ fn reconcile_lease_file_absent_reports_cleanup_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("lease_file_absent")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("lease_file_absent")),
         "should report lease_file_absent sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert_eq!(
         "lease-lfa-test",
-        report.cleanup_failures.iter().find(|f| f.details.contains("lease_file_absent")).unwrap().lease_id
+        report
+            .cleanup_failures
+            .iter()
+            .find(|f| f.details.contains("lease_file_absent"))
+            .unwrap()
+            .lease_id
     );
 }
 
@@ -1697,7 +1718,10 @@ fn reconcile_writer_lock_absent_reports_cleanup_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("writer_lock_absent")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("writer_lock_absent")),
         "should report writer_lock_absent sub-step failure, got: {:?}",
         report.cleanup_failures
     );
@@ -1751,11 +1775,15 @@ fn reconcile_both_substeps_absent_reports_both_failures() {
         .map(|f| f.details.as_str())
         .collect();
     assert!(
-        failure_details.iter().any(|d| d.contains("lease_file_absent")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("lease_file_absent")),
         "should report lease_file_absent, got: {failure_details:?}"
     );
     assert!(
-        failure_details.iter().any(|d| d.contains("writer_lock_absent")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("writer_lock_absent")),
         "should report writer_lock_absent, got: {failure_details:?}"
     );
 }
@@ -1835,7 +1863,9 @@ impl DaemonStorePort for SubStepErrorStore {
         &self,
         base_dir: &std::path::Path,
         lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.lease_file_error {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -1867,13 +1897,16 @@ impl DaemonStorePort for SubStepErrorStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         if self.writer_lock_error {
             Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -1941,12 +1974,18 @@ fn reconcile_lease_file_delete_error_reports_specific_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("lease_file_delete:")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("lease_file_delete:")),
         "should report lease_file_delete sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("simulated lease file deletion failure")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("simulated lease file deletion failure")),
         "should include the original error message, got: {:?}",
         report.cleanup_failures
     );
@@ -2007,12 +2046,18 @@ fn reconcile_writer_lock_release_error_reports_specific_failure() {
         "should have cleanup failures"
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("writer_lock_release:")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("writer_lock_release:")),
         "should report writer_lock_release sub-step failure, got: {:?}",
         report.cleanup_failures
     );
     assert!(
-        report.cleanup_failures.iter().any(|f| f.details.contains("simulated writer lock release failure")),
+        report
+            .cleanup_failures
+            .iter()
+            .any(|f| f.details.contains("simulated writer lock release failure")),
         "should include the original error message, got: {:?}",
         report.cleanup_failures
     );
@@ -2066,11 +2111,15 @@ fn reconcile_both_substep_errors_reports_both_failures() {
         .map(|f| f.details.as_str())
         .collect();
     assert!(
-        failure_details.iter().any(|d| d.contains("lease_file_delete:")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("lease_file_delete:")),
         "should report lease_file_delete, got: {failure_details:?}"
     );
     assert!(
-        failure_details.iter().any(|d| d.contains("writer_lock_release:")),
+        failure_details
+            .iter()
+            .any(|d| d.contains("writer_lock_release:")),
         "should report writer_lock_release, got: {failure_details:?}"
     );
 }
@@ -2138,7 +2187,9 @@ fn release_with_lease_file_error_sets_resources_released_false() {
     );
 
     // LeaseReleased journal event must NOT have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         !journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2199,7 +2250,9 @@ fn release_with_writer_lock_error_sets_resources_released_false() {
     );
 
     // LeaseReleased journal event must NOT have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         !journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2261,7 +2314,9 @@ fn release_full_success_sets_resources_released_true_and_emits_journal() {
     );
 
     // LeaseReleased journal event MUST have been emitted
-    let journal = store.read_daemon_journal(temp.path()).expect("read journal");
+    let journal = store
+        .read_daemon_journal(temp.path())
+        .expect("read journal");
     assert!(
         journal.iter().any(|e| e.event_type
             == ralph_burning::contexts::automation_runtime::DaemonJournalEventType::LeaseReleased),
@@ -2531,7 +2586,9 @@ fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
             )
             .expect("clear lease ref");
         }
-        Ok(_) => panic!("Idempotent release with missing worktree should have resources_released=true"),
+        Ok(_) => {
+            panic!("Idempotent release with missing worktree should have resources_released=true")
+        }
         Err(e) => panic!("unexpected release error: {e}"),
     }
 
@@ -2544,7 +2601,10 @@ fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
         "lease_id must be cleared after successful idempotent release"
     );
     assert!(
-        !temp.path().join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json").exists(),
+        !temp
+            .path()
+            .join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json")
+            .exists(),
         "lease file must be removed"
     );
 }
@@ -2612,7 +2672,9 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         &self,
         _base_dir: &std::path::Path,
         _lease_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         // Return a real I/O error so release() gets resources_released=false
         // regardless of ReleaseMode.
         Err(std::io::Error::new(
@@ -2635,11 +2697,7 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         _event: &ralph_burning::contexts::automation_runtime::DaemonJournalEvent,
     ) -> ralph_burning::shared::error::AppResult<()> {
         // Always fail journal appends
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "simulated journal failure",
-        )
-        .into())
+        Err(std::io::Error::new(std::io::ErrorKind::Other, "simulated journal failure").into())
     }
     fn acquire_writer_lock(
         &self,
@@ -2647,13 +2705,16 @@ impl DaemonStorePort for JournalFailPartialReleaseStore {
         project_id: &ralph_burning::shared::domain::ProjectId,
         lease_id: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.inner.acquire_writer_lock(base_dir, project_id, lease_id)
+        self.inner
+            .acquire_writer_lock(base_dir, project_id, lease_id)
     }
     fn release_writer_lock(
         &self,
         base_dir: &std::path::Path,
         project_id: &ralph_burning::shared::domain::ProjectId,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::ResourceCleanupOutcome,
+    > {
         self.inner.release_writer_lock(base_dir, project_id)
     }
 }
@@ -2674,9 +2735,7 @@ fn claim_journal_failure_with_partial_release_marks_failed_retains_lease() {
     let mut task = sample_task();
     task.task_id = "partial-release-test".to_owned();
     task.project_id = "partial-proj".to_owned();
-    store
-        .create_task(temp.path(), &task)
-        .expect("create task");
+    store.create_task(temp.path(), &task).expect("create task");
 
     let result = DaemonTaskService::claim_task(
         &store,
@@ -2749,7 +2808,9 @@ impl WorktreePort for DisappearingWorktreeAdapter {
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         _task_id: &str,
-    ) -> ralph_burning::shared::error::AppResult<ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome> {
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
         // Always report AlreadyAbsent — simulates the race condition
         Ok(ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
     }
@@ -2845,5 +2906,393 @@ fn daemon_loop_process_cycle_does_not_call_set_current_dir() {
     assert!(
         !source.contains("set_current_dir"),
         "daemon_loop.rs must not call set_current_dir"
+    );
+}
+
+// ── Daemon requirements dispatch honors workspace backend/model defaults ────
+
+/// Helper: create a workspace.toml with explicit backend/model defaults in a
+/// temp directory and return the loaded `EffectiveConfig`.
+fn setup_workspace_with_defaults(
+    base_dir: &std::path::Path,
+    default_backend: &str,
+    default_model: &str,
+) -> ralph_burning::contexts::workspace_governance::config::EffectiveConfig {
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    let toml_content = format!(
+        r#"version = 1
+created_at = "2026-03-14T00:00:00Z"
+
+[settings]
+default_backend = "{default_backend}"
+default_model = "{default_model}"
+"#
+    );
+    std::fs::write(ws_dir.join("workspace.toml"), &toml_content).expect("write workspace.toml");
+    ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+        .expect("load effective config")
+}
+
+/// Helper: build a `RequirementsService` with workspace defaults by calling the
+/// exact same `build_requirements_service` function the daemon uses. This ensures
+/// that a regression in daemon wiring is caught by the test suite.
+fn build_test_requirements_service_with_defaults(
+    adapter: ralph_burning::adapters::stub_backend::StubBackendAdapter,
+    effective_config: &ralph_burning::contexts::workspace_governance::config::EffectiveConfig,
+) -> ralph_burning::contexts::requirements_drafting::service::RequirementsService<
+    ralph_burning::adapters::stub_backend::StubBackendAdapter,
+    ralph_burning::adapters::fs::FsRawOutputStore,
+    ralph_burning::adapters::fs::FsSessionStore,
+    ralph_burning::adapters::fs::FsRequirementsStore,
+> {
+    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+        adapter,
+        effective_config,
+    )
+    .expect("build requirements service with defaults")
+}
+
+#[tokio::test]
+async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
+    // Regression: daemon-driven requirements_quick must resolve the same
+    // backend family and model ID as the direct CLI requirements path for a
+    // workspace with explicit defaults. Uses the StubBackendAdapter's
+    // recording seam to verify the actual resolved target at invocation time.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with explicit defaults (codex / gpt-5-codex)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+
+    // Build the service the same way the daemon does after the fix
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    // Run requirements quick
+    let _run_id = req_svc
+        .quick(base_dir, "Test idea for quick", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    // Verify the recorded invocations used the workspace defaults
+    let invocations = adapter.recorded_invocations();
+    assert!(
+        !invocations.is_empty(),
+        "at least one invocation should have been recorded"
+    );
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "invocation '{}' should use workspace default backend (codex), got {:?}",
+            inv.contract_label,
+            inv.resolved_target.backend.family
+        );
+        assert_eq!(
+            "gpt-5-codex",
+            inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            inv.contract_label,
+            inv.resolved_target.model.model_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
+    // Regression: daemon-driven requirements_draft must resolve the same
+    // backend family and model ID as the direct CLI requirements path for a
+    // workspace with explicit defaults.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with explicit defaults (codex / gpt-5-codex)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+
+    // Build the service the same way the daemon does after the fix
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    // Run requirements draft
+    let _run_id = req_svc
+        .draft(base_dir, "Test idea for draft", Utc::now())
+        .await
+        .expect("requirements draft should succeed");
+
+    // Verify the recorded invocations used the workspace defaults
+    let invocations = adapter.recorded_invocations();
+    assert!(
+        !invocations.is_empty(),
+        "at least one invocation should have been recorded"
+    );
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "invocation '{}' should use workspace default backend (codex), got {:?}",
+            inv.contract_label,
+            inv.resolved_target.backend.family
+        );
+        assert_eq!(
+            "gpt-5-codex",
+            inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            inv.contract_label,
+            inv.resolved_target.model.model_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
+    // When workspace defaults are unset, daemon requirements behavior remains
+    // unchanged and falls back to existing role defaults. Requirements stages
+    // use different roles (Planner, Reviewer), so each invocation gets its
+    // own role's default backend/model rather than a single shared default.
+    use ralph_burning::shared::domain::BackendRole;
+
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace without backend/model defaults
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Test with no defaults", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    // Each invocation should use its role's built-in default (no workspace override).
+    // Verify that no invocation was overridden to a non-default backend.
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    // Requirements stages only use Planner and Reviewer roles.
+    // Planner default: Claude / opus-4.1
+    // Reviewer default: Claude / sonnet-4.0
+    for inv in &invocations {
+        let expected = if inv.contract_label.contains("review") {
+            BackendRole::Reviewer.default_target()
+        } else {
+            BackendRole::Planner.default_target()
+        };
+        assert_eq!(
+            expected.backend.family,
+            inv.resolved_target.backend.family,
+            "without workspace defaults, invocation '{}' should use role default backend",
+            inv.contract_label
+        );
+        assert_eq!(
+            expected.model.model_id,
+            inv.resolved_target.model.model_id,
+            "without workspace defaults, invocation '{}' should use role default model",
+            inv.contract_label
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_partial_defaults_backend_only() {
+    // Partial defaults: default_backend alone selects that backend's default model.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"codex\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Backend-only default", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    for inv in &invocations {
+        assert_eq!(
+            BackendFamily::Codex,
+            inv.resolved_target.backend.family,
+            "backend-only default should select codex family"
+        );
+        // default_backend alone should pick that backend's default model
+        let expected_model =
+            ralph_burning::shared::domain::ModelSpec::default_for_backend(BackendFamily::Codex);
+        assert_eq!(
+            expected_model.model_id,
+            inv.resolved_target.model.model_id,
+            "backend-only default should select codex's default model ({}), got {}",
+            expected_model.model_id,
+            inv.resolved_target.model.model_id
+        );
+    }
+}
+
+#[tokio::test]
+async fn daemon_requirements_partial_defaults_model_only() {
+    // Partial defaults: default_model alone overrides only the model on the
+    // role's default backend (Planner → Claude).
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_model = \"sonnet-4.0\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+    let req_svc = build_test_requirements_service_with_defaults(adapter.clone(), &effective_config);
+
+    let _run_id = req_svc
+        .quick(base_dir, "Model-only default", Utc::now())
+        .await
+        .expect("requirements quick should succeed");
+
+    let invocations = adapter.recorded_invocations();
+    assert!(!invocations.is_empty());
+    for inv in &invocations {
+        // Backend should remain the Planner role default (Claude)
+        assert_eq!(
+            BackendFamily::Claude,
+            inv.resolved_target.backend.family,
+            "model-only default should keep role default backend (claude)"
+        );
+        assert_eq!(
+            "sonnet-4.0",
+            inv.resolved_target.model.model_id,
+            "model-only default should override to sonnet-4.0"
+        );
+    }
+}
+
+#[test]
+fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
+    // Pre-run failure invariant: if workspace-default resolution fails before a
+    // requirements run is created, no requirements run directory/history is
+    // created and the error propagates so the daemon can mark the task as
+    // requirements_quick_failed.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with an invalid default_backend value
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"invalid_backend_xyz\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+
+    // build_requirements_service must fail — this is the exact function the daemon
+    // calls before creating any requirements run.
+    let result =
+        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+            adapter.clone(),
+            &effective_config,
+        );
+    match result {
+        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+            assert_eq!(key, "default_backend");
+            assert_eq!(value, "invalid_backend_xyz");
+        }
+        Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
+    }
+
+    // No requirements run directory should have been created
+    let requirements_dir = base_dir.join(".ralph-burning").join("requirements");
+    assert!(
+        !requirements_dir.exists(),
+        "no requirements directory should exist when service construction fails before run creation"
+    );
+
+    // No invocations should have been recorded
+    assert!(
+        adapter.recorded_invocations().is_empty(),
+        "no invocations should occur when service construction fails"
+    );
+}
+
+#[test]
+fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
+    // Pre-run failure invariant: same as the quick path — if workspace-default
+    // resolution fails, no requirements run is created and the error propagates
+    // so the daemon can mark the task as requirements_draft_failed.
+    let temp = tempdir().expect("tempdir");
+    let base_dir = temp.path();
+
+    // Set up workspace with an invalid default_backend value
+    let ws_dir = base_dir.join(".ralph-burning");
+    std::fs::create_dir_all(&ws_dir).expect("create workspace dir");
+    std::fs::write(
+        ws_dir.join("workspace.toml"),
+        "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"nonexistent_provider\"\n",
+    )
+    .expect("write workspace.toml");
+    let effective_config =
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
+            .expect("load effective config");
+
+    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
+
+    // build_requirements_service must fail — this is the exact function the daemon
+    // calls before creating any requirements run.
+    let result =
+        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+            adapter.clone(),
+            &effective_config,
+        );
+    match result {
+        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Err(AppError::InvalidConfigValue { ref key, ref value, .. }) => {
+            assert_eq!(key, "default_backend");
+            assert_eq!(value, "nonexistent_provider");
+        }
+        Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
+    }
+
+    // No requirements run directory should have been created
+    let requirements_dir = base_dir.join(".ralph-burning").join("requirements");
+    assert!(
+        !requirements_dir.exists(),
+        "no requirements directory should exist when service construction fails before run creation"
+    );
+
+    // No invocations should have been recorded
+    assert!(
+        adapter.recorded_invocations().is_empty(),
+        "no invocations should occur when service construction fails"
     );
 }

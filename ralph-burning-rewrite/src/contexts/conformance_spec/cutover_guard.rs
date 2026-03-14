@@ -53,11 +53,10 @@ fn scan_directory(dir: &Path) -> AppResult<()> {
 }
 
 fn scan_file(path: &Path) -> AppResult<()> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
-        AppError::ConformanceDiscoveryFailed {
+    let content =
+        std::fs::read_to_string(path).map_err(|e| AppError::ConformanceDiscoveryFailed {
             details: format!("cannot read {}: {e}", path.display()),
-        }
-    })?;
+        })?;
 
     let file_display = path.display().to_string();
 

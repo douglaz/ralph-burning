@@ -46,7 +46,10 @@ fn discover_scenarios_extracts_comment_ids() {
 fn discover_scenarios_extracts_tag_ids() {
     let scenarios = catalog::discover_scenarios().expect("discover");
     let ws_init = scenarios.iter().find(|s| s.id == "workspace-init-fresh");
-    assert!(ws_init.is_some(), "workspace-init-fresh should be discovered");
+    assert!(
+        ws_init.is_some(),
+        "workspace-init-fresh should be discovered"
+    );
     let meta = ws_init.unwrap();
     assert_eq!(meta.id_source, IdSource::Tag);
     assert_eq!(meta.kind, ScenarioKind::Scenario);
@@ -154,11 +157,7 @@ fn registry_matches_discovered_scenarios() {
     let scenarios = catalog::discover_scenarios().expect("discover");
     let registry = scenarios::build_registry();
     let result = runner::validate_registry(&scenarios, &registry);
-    assert!(
-        result.is_ok(),
-        "registry drift: {}",
-        result.unwrap_err()
-    );
+    assert!(result.is_ok(), "registry drift: {}", result.unwrap_err());
 }
 
 #[test]
@@ -182,10 +181,7 @@ fn registry_drift_detected_for_missing_executor() {
 fn registry_drift_detected_for_orphan_executor() {
     let scenarios: Vec<ScenarioMeta> = vec![];
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert(
-        "ORPHAN-001".to_owned(),
-        Box::new(|| Ok(())),
-    );
+    registry.insert("ORPHAN-001".to_owned(), Box::new(|| Ok(())));
     let result = runner::validate_registry(&scenarios, &registry);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("drift"));
@@ -296,10 +292,7 @@ fn runner_catches_panics_without_leaking() {
     ];
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert(
-        "PANIC-1".to_owned(),
-        Box::new(|| panic!("test panic")),
-    );
+    registry.insert("PANIC-1".to_owned(), Box::new(|| panic!("test panic")));
     registry.insert("AFTER-PANIC".to_owned(), Box::new(|| Ok(())));
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
@@ -337,7 +330,10 @@ fn cutover_guard_fails_on_legacy_pattern() {
     let result = cutover_guard::check_cutover_guard(&tmp);
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
-    assert!(err.contains(".ralph/"), "error should mention legacy pattern: {err}");
+    assert!(
+        err.contains(".ralph/"),
+        "error should mention legacy pattern: {err}"
+    );
 
     let _ = std::fs::remove_dir_all(&tmp);
 }
@@ -479,10 +475,8 @@ fn runner_cleans_up_temp_workspace_after_panic() {
     registry.insert(
         "PANIC-CLEANUP".to_owned(),
         Box::new(move || {
-            let dir = std::env::temp_dir().join(format!(
-                "ralph-conformance-panic-{}",
-                uuid::Uuid::new_v4()
-            ));
+            let dir = std::env::temp_dir()
+                .join(format!("ralph-conformance-panic-{}", uuid::Uuid::new_v4()));
             std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
             *captured_clone.lock().unwrap() = Some(dir.clone());
             // RAII cleanup guard: will run during panic unwind

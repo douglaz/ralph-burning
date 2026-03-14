@@ -46,10 +46,9 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
     // Test-only seam: JSON map from label string to payload JSON for requirements contracts.
     // Example: {"question_set": {"questions": [{"id":"q1","prompt":"...","required":true}]}}
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
-        if let Ok(overrides) =
-            serde_json::from_str::<std::collections::HashMap<String, serde_json::Value>>(
-                &overrides_json,
-            )
+        if let Ok(overrides) = serde_json::from_str::<
+            std::collections::HashMap<String, serde_json::Value>,
+        >(&overrides_json)
         {
             for (label, payload) in overrides {
                 // Support both short labels ("question_set") and full labels

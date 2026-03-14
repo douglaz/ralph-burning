@@ -178,8 +178,11 @@ where
                     unreachable!("QuestionSet contract always returns QuestionSet payload");
                 };
 
-                let payload_id = format!("{run_id}-qs-1");
-                let artifact_id = format!("{run_id}-qs-art-1");
+                let previous_question_round = run.question_round;
+                let previous_question_set_id = run.latest_question_set_id.clone();
+                let question_round = next_question_round(&run);
+                let payload_id = format!("{run_id}-qs-{question_round}");
+                let artifact_id = format!("{run_id}-qs-art-{question_round}");
 
                 // Persist payload and artifact atomically
                 let payload_json = serde_json::to_value(qs)?;
@@ -209,7 +212,7 @@ where
                 // Record the committed question-set boundary in canonical state and
                 // journal immediately after the payload/artifact pair succeeds,
                 // before branching into any downstream path.
-                run.question_round = 1;
+                run.question_round = question_round;
                 run.latest_question_set_id = Some(payload_id.clone());
                 run.updated_at = Utc::now();
                 self.store.write_run(base_dir, &run_id, &run)?;
@@ -232,8 +235,8 @@ where
                         &payload_id,
                         &artifact_id,
                     );
-                    run.latest_question_set_id = None;
-                    run.question_round = 0;
+                    run.latest_question_set_id = previous_question_set_id;
+                    run.question_round = previous_question_round;
                     self.fail_run(
                         base_dir,
                         &mut run,
@@ -279,8 +282,10 @@ where
                     }
 
                     run.status = RequirementsStatus::AwaitingAnswers;
-                    run.status_summary =
-                        format!("awaiting answers: {} question(s), round 1", question_count);
+                    run.status_summary = format!(
+                        "awaiting answers: {} question(s), round {}",
+                        question_count, question_round
+                    );
                     run.updated_at = Utc::now();
                     self.store.write_run(base_dir, &run_id, &run)?;
 
@@ -555,8 +560,9 @@ where
             unreachable!();
         };
 
-        let draft_payload_id = format!("{run_id}-draft-1");
-        let draft_artifact_id = format!("{run_id}-draft-art-1");
+        let question_round = effective_question_round(run);
+        let draft_payload_id = format!("{run_id}-draft-{question_round}");
+        let draft_artifact_id = format!("{run_id}-draft-art-{question_round}");
         let draft_json = serde_json::to_value(draft_payload)?;
 
         if let Err(e) = self.store.write_payload_artifact_pair_atomic(
@@ -632,8 +638,8 @@ where
             unreachable!();
         };
 
-        let review_payload_id = format!("{run_id}-review-1");
-        let review_artifact_id = format!("{run_id}-review-art-1");
+        let review_payload_id = format!("{run_id}-review-{question_round}");
+        let review_artifact_id = format!("{run_id}-review-art-{question_round}");
         let review_json = serde_json::to_value(review_payload)?;
 
         if let Err(e) = self.store.write_payload_artifact_pair_atomic(
@@ -1030,12 +1036,13 @@ pub fn extract_seed_handoff(
         });
     }
 
-    let seed_id = run.latest_seed_id.as_deref().ok_or_else(|| {
-        AppError::RequirementsHandoffFailed {
-            task_id: run_id.to_owned(),
-            details: "completed requirements run has no seed_id".to_owned(),
-        }
-    })?;
+    let seed_id =
+        run.latest_seed_id
+            .as_deref()
+            .ok_or_else(|| AppError::RequirementsHandoffFailed {
+                task_id: run_id.to_owned(),
+                details: "completed requirements run has no seed_id".to_owned(),
+            })?;
 
     let seed_json = store.read_payload(base_dir, run_id, seed_id)?;
     let seed: super::model::ProjectSeedPayload =
@@ -1109,6 +1116,14 @@ fn journal_event(
             "status_summary": run.status_summary,
         }),
     }
+}
+
+fn next_question_round(run: &RequirementsRun) -> u32 {
+    run.question_round + 1
+}
+
+fn effective_question_round(run: &RequirementsRun) -> u32 {
+    run.question_round.max(1)
 }
 
 fn generate_answers_template(qs: &QuestionSetPayload) -> String {

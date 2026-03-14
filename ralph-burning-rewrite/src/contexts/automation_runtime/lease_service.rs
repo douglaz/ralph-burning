@@ -202,9 +202,7 @@ impl LeaseService {
         // failure. In Idempotent mode (abort, daemon-loop), only real I/O
         // errors prevent release.
         let resources_released = match mode {
-            ReleaseMode::Idempotent => {
-                lease_file_error.is_none() && writer_lock_error.is_none()
-            }
+            ReleaseMode::Idempotent => lease_file_error.is_none() && writer_lock_error.is_none(),
             ReleaseMode::Strict => {
                 !worktree_already_absent
                     && !lease_file_already_absent
@@ -307,7 +305,14 @@ impl LeaseService {
             // Release order: worktree removal → lease file → writer lock → journal.
             // If physical release fails (e.g. worktree removal), the lease remains
             // durable for a later reconcile pass. The task is already terminal.
-            let release_result = Self::release(store, worktree, base_dir, repo_root, &lease, ReleaseMode::Strict);
+            let release_result = Self::release(
+                store,
+                worktree,
+                base_dir,
+                repo_root,
+                &lease,
+                ReleaseMode::Strict,
+            );
             match release_result {
                 Ok(outcome) => {
                     // Check for sub-step anomalies: resources that were already
@@ -329,7 +334,9 @@ impl LeaseService {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
                             task_id: task.task_id.clone(),
-                            details: "lease_file_absent: lease file was already missing during cleanup".to_owned(),
+                            details:
+                                "lease_file_absent: lease file was already missing during cleanup"
+                                    .to_owned(),
                         });
                         has_sub_step_failure = true;
                     }
@@ -345,7 +352,9 @@ impl LeaseService {
                         report.cleanup_failures.push(LeaseCleanupFailure {
                             lease_id: lease.lease_id.clone(),
                             task_id: task.task_id.clone(),
-                            details: "writer_lock_absent: writer lock was already missing during cleanup".to_owned(),
+                            details:
+                                "writer_lock_absent: writer lock was already missing during cleanup"
+                                    .to_owned(),
                         });
                         has_sub_step_failure = true;
                     }

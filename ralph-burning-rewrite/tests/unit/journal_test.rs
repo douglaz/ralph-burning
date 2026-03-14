@@ -212,12 +212,13 @@ fn stage_failed_event_builder_serializes_failure_metadata() {
 #[test]
 fn run_resumed_event_builder_serializes_resume_cursor() {
     let run_id = RunId::new("run-1").expect("run id");
-    let event = journal::run_resumed_event(3, test_timestamp(), &run_id, StageId::Planning, 2);
+    let event = journal::run_resumed_event(3, test_timestamp(), &run_id, StageId::Planning, 2, 4);
 
     assert_eq!(event.event_type, JournalEventType::RunResumed);
     assert_eq!(event.details["run_id"], "run-1");
     assert_eq!(event.details["resume_stage"], "planning");
     assert_eq!(event.details["cycle"], 2);
+    assert_eq!(event.details["completion_round"], 4);
 }
 
 #[test]

@@ -513,13 +513,16 @@ impl StageCursor {
         }
     }
 
-    pub fn retry(&self) -> Self {
-        Self {
-            stage: self.stage,
-            cycle: self.cycle,
-            attempt: self.attempt + 1,
-            completion_round: self.completion_round,
-        }
+    pub fn retry(&self) -> AppResult<Self> {
+        let attempt = self
+            .attempt
+            .checked_add(1)
+            .ok_or_else(|| AppError::StageCursorOverflow {
+                field: "attempt",
+                value: self.attempt,
+            })?;
+
+        Self::new(self.stage, self.cycle, attempt, self.completion_round)
     }
 
     pub fn advance_stage(&self, stage: StageId) -> Self {
@@ -531,22 +534,28 @@ impl StageCursor {
         }
     }
 
-    pub fn advance_cycle(&self, stage: StageId) -> Self {
-        Self {
-            stage,
-            cycle: self.cycle + 1,
-            attempt: 1,
-            completion_round: self.completion_round,
-        }
+    pub fn advance_cycle(&self, stage: StageId) -> AppResult<Self> {
+        let cycle = self
+            .cycle
+            .checked_add(1)
+            .ok_or_else(|| AppError::StageCursorOverflow {
+                field: "cycle",
+                value: self.cycle,
+            })?;
+
+        Self::new(stage, cycle, 1, self.completion_round)
     }
 
-    pub fn advance_completion_round(&self, stage: StageId) -> Self {
-        Self {
-            stage,
-            cycle: self.cycle,
-            attempt: 1,
-            completion_round: self.completion_round + 1,
-        }
+    pub fn advance_completion_round(&self, stage: StageId) -> AppResult<Self> {
+        let completion_round =
+            self.completion_round
+                .checked_add(1)
+                .ok_or_else(|| AppError::StageCursorOverflow {
+                    field: "completion_round",
+                    value: self.completion_round,
+                })?;
+
+        Self::new(stage, self.cycle, 1, completion_round)
     }
 }
 

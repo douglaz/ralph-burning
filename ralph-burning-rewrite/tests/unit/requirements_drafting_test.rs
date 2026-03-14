@@ -1461,6 +1461,101 @@ mod service_integration {
         );
     }
 
+    /// Regression: when answers advance the run to question round 2, draft and
+    /// review history IDs must use the incremented round instead of `-1`.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn answer_uses_round_two_ids_for_draft_and_review_history() {
+        use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
+
+        std::env::set_var("EDITOR", "true");
+
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace_fixture(temp_dir.path());
+
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:question_set",
+            json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }),
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = deterministic_now();
+        let run_id = service
+            .draft(temp_dir.path(), "Round-aware history IDs", now)
+            .await
+            .expect("draft should succeed");
+
+        let answers_path = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("answers.toml");
+        std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+        service
+            .answer(temp_dir.path(), &run_id)
+            .await
+            .expect("answer should succeed");
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        let run_dir = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id);
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        assert_eq!(run.question_round, 2);
+        assert_eq!(run.latest_question_set_id, Some(format!("{run_id}-qs-1")));
+        assert_eq!(run.latest_draft_id, Some(format!("{run_id}-draft-2")));
+        assert_eq!(run.latest_review_id, Some(format!("{run_id}-review-2")));
+        assert!(
+            run_dir
+                .join(format!("history/payloads/{run_id}-draft-2.json"))
+                .exists(),
+            "round-2 draft payload should exist"
+        );
+        assert!(
+            run_dir
+                .join(format!("history/artifacts/{run_id}-draft-art-2.md"))
+                .exists(),
+            "round-2 draft artifact should exist"
+        );
+        assert!(
+            run_dir
+                .join(format!("history/payloads/{run_id}-review-2.json"))
+                .exists(),
+            "round-2 review payload should exist"
+        );
+        assert!(
+            run_dir
+                .join(format!("history/artifacts/{run_id}-review-art-2.md"))
+                .exists(),
+            "round-2 review artifact should exist"
+        );
+        assert!(
+            !run_dir
+                .join(format!("history/payloads/{run_id}-draft-1.json"))
+                .exists(),
+            "round-2 answer path should not reuse round-1 draft payload IDs"
+        );
+        assert!(
+            !run_dir
+                .join(format!("history/payloads/{run_id}-review-1.json"))
+                .exists(),
+            "round-2 answer path should not reuse round-1 review payload IDs"
+        );
+    }
+
     /// Regression: a failed run that has already crossed the answer boundary
     /// (AnswersSubmitted in journal or latest_draft_id set) must NOT report
     /// pending questions via `show()`.
@@ -1607,7 +1702,7 @@ mod service_integration {
         // Simulate: run progressed past answers, draft was committed, then
         // the run failed during review.
         run.status = RequirementsStatus::Failed;
-        run.latest_draft_id = Some(format!("{run_id}-draft-1"));
+        run.latest_draft_id = Some(format!("{run_id}-draft-2"));
         run.question_round = 2;
         run.status_summary = "failed: review error after draft".to_owned();
         run.updated_at = chrono::Utc::now();
@@ -2329,30 +2424,30 @@ mod service_integration {
 // ── Daemon handoff helper tests ─────────────────────────────────────────────
 
 mod daemon_handoff {
+    use chrono::Utc;
+    use ralph_burning::adapters::fs::FsRequirementsStore;
+    use ralph_burning::contexts::requirements_drafting::model::RequirementsRun;
     use ralph_burning::contexts::requirements_drafting::model::RequirementsStatus;
+    use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
     use ralph_burning::contexts::requirements_drafting::service::{
         is_requirements_run_complete, read_requirements_run_status,
     };
-    use ralph_burning::contexts::requirements_drafting::model::RequirementsRun;
-    use ralph_burning::adapters::fs::FsRequirementsStore;
-    use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
-    use chrono::Utc;
 
     #[test]
     fn is_requirements_run_complete_returns_false_for_drafting() {
         let store = FsRequirementsStore;
         let temp = tempfile::tempdir().expect("tempdir");
         let run_id = "req-test-drafting";
-        let run = RequirementsRun::new_draft(
-            run_id.to_owned(),
-            "test idea".to_owned(),
-            Utc::now(),
-        );
-        store.create_run_dir(temp.path(), run_id).expect("create dir");
-        store.write_run(temp.path(), run_id, &run).expect("write run");
+        let run = RequirementsRun::new_draft(run_id.to_owned(), "test idea".to_owned(), Utc::now());
+        store
+            .create_run_dir(temp.path(), run_id)
+            .expect("create dir");
+        store
+            .write_run(temp.path(), run_id, &run)
+            .expect("write run");
 
-        let complete = is_requirements_run_complete(&store, temp.path(), run_id)
-            .expect("check completeness");
+        let complete =
+            is_requirements_run_complete(&store, temp.path(), run_id).expect("check completeness");
         assert!(!complete);
     }
 
@@ -2361,18 +2456,19 @@ mod daemon_handoff {
         let store = FsRequirementsStore;
         let temp = tempfile::tempdir().expect("tempdir");
         let run_id = "req-test-completed";
-        let mut run = RequirementsRun::new_quick(
-            run_id.to_owned(),
-            "test idea".to_owned(),
-            Utc::now(),
-        );
+        let mut run =
+            RequirementsRun::new_quick(run_id.to_owned(), "test idea".to_owned(), Utc::now());
         run.status = RequirementsStatus::Completed;
         run.status_summary = "completed".to_owned();
-        store.create_run_dir(temp.path(), run_id).expect("create dir");
-        store.write_run(temp.path(), run_id, &run).expect("write run");
+        store
+            .create_run_dir(temp.path(), run_id)
+            .expect("create dir");
+        store
+            .write_run(temp.path(), run_id, &run)
+            .expect("write run");
 
-        let complete = is_requirements_run_complete(&store, temp.path(), run_id)
-            .expect("check completeness");
+        let complete =
+            is_requirements_run_complete(&store, temp.path(), run_id).expect("check completeness");
         assert!(complete);
     }
 
@@ -2381,16 +2477,16 @@ mod daemon_handoff {
         let store = FsRequirementsStore;
         let temp = tempfile::tempdir().expect("tempdir");
         let run_id = "req-test-status";
-        let run = RequirementsRun::new_draft(
-            run_id.to_owned(),
-            "test idea".to_owned(),
-            Utc::now(),
-        );
-        store.create_run_dir(temp.path(), run_id).expect("create dir");
-        store.write_run(temp.path(), run_id, &run).expect("write run");
+        let run = RequirementsRun::new_draft(run_id.to_owned(), "test idea".to_owned(), Utc::now());
+        store
+            .create_run_dir(temp.path(), run_id)
+            .expect("create dir");
+        store
+            .write_run(temp.path(), run_id, &run)
+            .expect("write run");
 
-        let loaded = read_requirements_run_status(&store, temp.path(), run_id)
-            .expect("read run status");
+        let loaded =
+            read_requirements_run_status(&store, temp.path(), run_id).expect("read run status");
         assert_eq!(RequirementsStatus::Drafting, loaded.status);
         assert_eq!("test idea", loaded.idea);
     }

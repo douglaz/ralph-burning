@@ -30,10 +30,7 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
     for line in text.lines() {
         let trimmed = line.trim();
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
-        if tokens.len() >= 2
-            && matches!(tokens[0], "/rb" | "rb")
-            && tokens[1] == "requirements"
-        {
+        if tokens.len() >= 2 && matches!(tokens[0], "/rb" | "rb") && tokens[1] == "requirements" {
             if tokens.len() == 3 {
                 return match tokens[2] {
                     "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
@@ -61,9 +58,7 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
 /// Used to prevent requirements commands from being passed to flow routing.
 pub fn is_requirements_command(text: &str) -> bool {
     let tokens: Vec<&str> = text.trim().split_whitespace().collect();
-    tokens.len() >= 2
-        && matches!(tokens[0], "/rb" | "rb")
-        && tokens[1] == "requirements"
+    tokens.len() >= 2 && matches!(tokens[0], "/rb" | "rb") && tokens[1] == "requirements"
 }
 
 /// Resolve the dispatch mode for a watched issue.

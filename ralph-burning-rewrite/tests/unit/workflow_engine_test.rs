@@ -18,6 +18,7 @@ use ralph_burning::contexts::agent_execution::model::{
 };
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
@@ -28,7 +29,7 @@ use ralph_burning::contexts::project_run_record::service::{
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
-use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, StageId};
+use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, RunId, StageId};
 use ralph_burning::shared::error::{AppError, AppResult};
 
 fn setup_workspace(base_dir: &Path) {
@@ -389,7 +390,7 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
 
     let implementation_payloads: Vec<_> = payload_files
         .iter()
-        .filter(|name| name.contains("-implementation-c1-a1"))
+        .filter(|name| name.contains("-implementation-c1-a1-cr1"))
         .cloned()
         .collect();
     assert_eq!(
@@ -412,7 +413,7 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
 
     let implementation_artifacts: Vec<_> = artifact_files
         .iter()
-        .filter(|name| name.contains("-implementation-c1-a1"))
+        .filter(|name| name.contains("-implementation-c1-a1-cr1"))
         .cloned()
         .collect();
     assert_eq!(implementation_artifacts.len(), 2);
@@ -2999,6 +3000,105 @@ async fn late_stage_conditionally_approved_triggers_completion_round_advancement
 }
 
 #[tokio::test]
+async fn resume_late_stage_conditionally_approved_reports_completion_round_overflow() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-overflow");
+    let run_id = RunId::new("run-overflow").unwrap();
+    let started_at = Utc::now();
+
+    let snapshot = RunSnapshot {
+        active_run: None,
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: u32::MAX,
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed".to_owned(),
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    let prior_stage_ids = [
+        StageId::PromptReview,
+        StageId::Planning,
+        StageId::Implementation,
+        StageId::Qa,
+        StageId::Review,
+    ];
+    let mut sequence = 2;
+    let run_started =
+        journal::run_started_event(sequence, started_at, &run_id, StageId::PromptReview);
+    let run_started_line = journal::serialize_event(&run_started).unwrap();
+    FsJournalStore
+        .append_event(base_dir, &pid, &run_started_line)
+        .unwrap();
+
+    for stage_id in prior_stage_ids {
+        sequence += 1;
+        let stage_completed = journal::stage_completed_event(
+            sequence,
+            started_at,
+            &run_id,
+            stage_id,
+            1,
+            1,
+            &format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX),
+            &format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX),
+        );
+        let line = journal::serialize_event(&stage_completed).unwrap();
+        FsJournalStore.append_event(base_dir, &pid, &line).unwrap();
+    }
+
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::CompletionPanel,
+            conditionally_approved_payload(&["overflow"]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::resume_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        &config,
+    )
+    .await;
+
+    assert!(
+        matches!(
+            result,
+            Err(AppError::StageCursorOverflow {
+                field: "completion_round",
+                value: u32::MAX,
+            })
+        ),
+        "unexpected result: {result:?}"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let round_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert!(
+        round_events.is_empty(),
+        "completion_round_advanced should not be emitted on overflow"
+    );
+}
+
+#[tokio::test]
 async fn late_stage_rejected_causes_terminal_failure() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3479,4 +3579,260 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
         .collect();
     assert_eq!(round_events.len(), 1);
     assert_eq!(round_events[0].details["source_stage"], "final_review");
+}
+
+#[tokio::test]
+async fn completion_round_restart_creates_distinct_round_aware_payload_artifact_files() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-ids");
+
+    // CompletionPanel returns conditionally_approved on first call, approved on second.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["tighten note"]),
+                approved_validation_payload(),
+            ],
+        ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.completion_rounds, 2);
+
+    let payloads_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/payloads");
+    let artifacts_dir = base_dir.join(".ralph-burning/projects/cr-ids/history/artifacts");
+
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    let artifact_files: Vec<String> = fs::read_dir(&artifacts_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+
+    // Round-1 planning should have -cr1, round-2 planning should have -cr2.
+    let cr1_planning_payloads: Vec<_> = payload_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr1"))
+        .collect();
+    let cr2_planning_payloads: Vec<_> = payload_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr2"))
+        .collect();
+    assert_eq!(
+        cr1_planning_payloads.len(),
+        1,
+        "round-1 planning payload should exist: {payload_files:?}"
+    );
+    assert_eq!(
+        cr2_planning_payloads.len(),
+        1,
+        "round-2 planning payload should exist: {payload_files:?}"
+    );
+
+    let cr1_planning_artifacts: Vec<_> = artifact_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr1"))
+        .collect();
+    let cr2_planning_artifacts: Vec<_> = artifact_files
+        .iter()
+        .filter(|name| name.contains("-planning-c1-a1-cr2"))
+        .collect();
+    assert_eq!(
+        cr1_planning_artifacts.len(),
+        1,
+        "round-1 planning artifact should exist: {artifact_files:?}"
+    );
+    assert_eq!(
+        cr2_planning_artifacts.len(),
+        1,
+        "round-2 planning artifact should exist: {artifact_files:?}"
+    );
+
+    // Verify round-1 and round-2 are distinct files (not overwritten).
+    assert_ne!(
+        cr1_planning_payloads[0], cr2_planning_payloads[0],
+        "round-1 and round-2 planning payload filenames must differ"
+    );
+    assert_ne!(
+        cr1_planning_artifacts[0], cr2_planning_artifacts[0],
+        "round-1 and round-2 planning artifact filenames must differ"
+    );
+
+    // Verify all payload/artifact files contain -cr suffix (no legacy format).
+    for name in &payload_files {
+        assert!(
+            name.contains("-cr"),
+            "payload file should contain -cr: {name}"
+        );
+    }
+    for name in &artifact_files {
+        assert!(
+            name.contains("-cr"),
+            "artifact file should contain -cr: {name}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn resume_after_completion_round_advanced_append_failure_preserves_round() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-resume-after-append-fail");
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["tighten the acceptance note"]),
+                approved_validation_payload(),
+            ],
+        ),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // Standard flow with prompt review enabled emits:
+    //   1  run_started
+    //   2  stage_entered(prompt_review)
+    //   3  stage_completed(prompt_review)
+    //   4  rollback_created(prompt_review)
+    //   5  stage_entered(planning)
+    //   6  stage_completed(planning)
+    //   7  rollback_created(planning)
+    //   8  stage_entered(implementation)
+    //   9  stage_completed(implementation)
+    //   10 rollback_created(implementation)
+    //   11 stage_entered(qa)
+    //   12 stage_completed(qa)
+    //   13 rollback_created(qa)
+    //   14 stage_entered(review)
+    //   15 stage_completed(review)
+    //   16 rollback_created(review)
+    //   17 stage_entered(completion_panel)
+    //   18 stage_completed(completion_panel)
+    //   19 amendment_queued
+    //   20 completion_round_advanced -> fail here
+    let failing_journal = FailingJournalStore::new(20);
+
+    let first_result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(first_result.is_err(), "run should fail on append error");
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert!(failed_snapshot.active_run.is_none());
+    assert_eq!(
+        failed_snapshot.completion_rounds, 2,
+        "failed snapshot must preserve the advanced round"
+    );
+    assert!(
+        !failed_snapshot.amendment_queue.pending.is_empty(),
+        "failed snapshot must retain queued amendments"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        failed_events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
+        "the targeted completion_round_advanced append should not persist"
+    );
+
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_ok(), "{resume_result:?}");
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert_eq!(snapshot.completion_rounds, 2);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_resumed = events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "planning");
+    assert_eq!(run_resumed.details["completion_round"], 2);
+
+    let payloads_dir =
+        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/payloads");
+    let artifacts_dir =
+        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/artifacts");
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    let artifact_files: Vec<String> = fs::read_dir(&artifacts_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+
+    for needle in [
+        "-planning-c1-a1-cr1",
+        "-planning-c1-a1-cr2",
+        "-completion_panel-c1-a1-cr1",
+        "-completion_panel-c1-a1-cr2",
+    ] {
+        assert!(
+            payload_files.iter().any(|name| name.contains(needle)),
+            "payload history should retain {needle}: {payload_files:?}"
+        );
+        assert!(
+            artifact_files.iter().any(|name| name.contains(needle)),
+            "artifact history should retain {needle}: {artifact_files:?}"
+        );
+    }
 }
