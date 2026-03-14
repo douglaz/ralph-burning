@@ -590,7 +590,13 @@ where
         Some(&workspace_defaults),
     )?;
     // Reconcile amendments from disk into snapshot before deriving resume state.
-    reconcile_amendments_from_disk(&mut snapshot, amendment_queue_port, base_dir, project_id)?;
+    reconcile_amendments_from_disk(
+        &mut snapshot,
+        &visible_events,
+        amendment_queue_port,
+        base_dir,
+        project_id,
+    )?;
 
     let resume_state = derive_resume_state(&visible_events, &snapshot, &stage_plan, semantics)?;
     let execution_context = derive_resume_execution_context(
@@ -974,7 +980,8 @@ where
                     }
 
                     // Emit amendment_queued journal events.
-                    for amendment in &amendments {
+                    let mut last_journaled_amendment_index = None;
+                    for (index, amendment) in amendments.iter().enumerate() {
                         *seq += 1;
                         let amendment_event = journal::amendment_queued_event(
                             *seq,
@@ -989,13 +996,42 @@ where
                             journal_store.append_event(base_dir, project_id, &event_line)
                         {
                             *seq -= 1;
+                            let cleanup_errors: Vec<String> = amendments[index..]
+                                .iter()
+                                .filter_map(|pending| {
+                                    amendment_queue_port
+                                        .remove_amendment(
+                                            base_dir,
+                                            project_id,
+                                            &pending.amendment_id,
+                                        )
+                                        .err()
+                                        .map(|cleanup_error| {
+                                            format!("{}: {}", pending.amendment_id, cleanup_error)
+                                        })
+                                })
+                                .collect();
+
+                            if let Some(last_index) = last_journaled_amendment_index {
+                                snapshot.completion_rounds =
+                                    snapshot.completion_rounds.max(to_round);
+                                snapshot
+                                    .amendment_queue
+                                    .pending
+                                    .extend(amendments[..=last_index].iter().cloned());
+                            }
+
+                            let details = if cleanup_errors.is_empty() {
+                                format!("failed to persist amendment_queued event: {}", error)
+                            } else {
+                                format!(
+                                    "failed to persist amendment_queued event: {}; cleanup failed for {}",
+                                    error,
+                                    cleanup_errors.join(", ")
+                                )
+                            };
                             return fail_run_result(
-                                &AppError::AmendmentQueueError {
-                                    details: format!(
-                                        "failed to persist amendment_queued event: {}",
-                                        error
-                                    ),
-                                },
+                                &AppError::AmendmentQueueError { details },
                                 stage_id,
                                 run_id,
                                 seq,
@@ -1008,6 +1044,7 @@ where
                             )
                             .await;
                         }
+                        last_journaled_amendment_index = Some(index);
                     }
 
                     // Add amendments to snapshot queue.
@@ -2204,6 +2241,7 @@ fn completion_guard(
 /// Reconcile amendments from disk into the snapshot during resume.
 fn reconcile_amendments_from_disk(
     snapshot: &mut RunSnapshot,
+    journal_events: &[JournalEvent],
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
     project_id: &ProjectId,
@@ -2213,8 +2251,18 @@ fn reconcile_amendments_from_disk(
         return Ok(());
     }
 
-    // Merge disk amendments into snapshot, avoiding duplicates by ID.
-    let existing_ids: std::collections::HashSet<String> = snapshot
+    let journaled_ids: std::collections::HashSet<String> = journal_events
+        .iter()
+        .filter(|event| {
+            event.event_type
+                == crate::contexts::project_run_record::model::JournalEventType::AmendmentQueued
+        })
+        .map(|event| detail_string(event, "amendment_id").map(str::to_owned))
+        .collect::<AppResult<_>>()?;
+
+    // Merge disk amendments into snapshot, avoiding duplicates by ID and
+    // skipping entries already durably represented in the journal.
+    let mut existing_ids: std::collections::HashSet<String> = snapshot
         .amendment_queue
         .pending
         .iter()
@@ -2222,7 +2270,10 @@ fn reconcile_amendments_from_disk(
         .collect();
 
     for amendment in disk_amendments {
-        if !existing_ids.contains(&amendment.amendment_id) {
+        if journaled_ids.contains(&amendment.amendment_id) {
+            continue;
+        }
+        if existing_ids.insert(amendment.amendment_id.clone()) {
             snapshot.amendment_queue.pending.push(amendment);
         }
     }

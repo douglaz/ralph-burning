@@ -4597,11 +4597,7 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
-    fs::write(
-        leases_dir.join("cli-stale-inject.json"),
-        lease_json,
-    )
-    .expect("write cli lease file");
+    fs::write(leases_dir.join("cli-stale-inject.json"), lease_json).expect("write cli lease file");
     fs::write(
         leases_dir.join("writer-cli-reconcile.lock"),
         "cli-stale-inject",
@@ -4689,11 +4685,7 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
     };
     let record = LeaseRecord::CliWriter(cli_lease);
     let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
-    fs::write(
-        leases_dir.join("cli-no-lock-cli.json"),
-        lease_json,
-    )
-    .expect("write cli lease file");
+    fs::write(leases_dir.join("cli-no-lock-cli.json"), lease_json).expect("write cli lease file");
 
     // Reconcile should fail because the writer lock is already absent.
     let output = Command::new(binary())
@@ -4727,9 +4719,7 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
     select_active_project_fixture(temp_dir.path(), "oversized-ttl-proj");
 
     // Inject a fresh CLI lease record and matching writer lock.
-    let leases_dir = temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases");
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4741,13 +4731,9 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         last_heartbeat: Utc::now(),
     };
     let record = LeaseRecord::CliWriter(cli_lease);
-    let lease_json =
-        serde_json::to_string_pretty(&record).expect("serialize cli lease");
-    fs::write(
-        leases_dir.join("cli-fresh-oversized.json"),
-        lease_json,
-    )
-    .expect("write cli lease file");
+    let lease_json = serde_json::to_string_pretty(&record).expect("serialize cli lease");
+    fs::write(leases_dir.join("cli-fresh-oversized.json"), lease_json)
+        .expect("write cli lease file");
     fs::write(
         leases_dir.join("writer-oversized-ttl-proj.lock"),
         "cli-fresh-oversized",
@@ -4793,9 +4779,7 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         "CLI lease file must not be removed by oversized TTL reconcile"
     );
     assert!(
-        leases_dir
-            .join("writer-oversized-ttl-proj.lock")
-            .exists(),
+        leases_dir.join("writer-oversized-ttl-proj.lock").exists(),
         "writer lock must not be released by oversized TTL reconcile"
     );
 }

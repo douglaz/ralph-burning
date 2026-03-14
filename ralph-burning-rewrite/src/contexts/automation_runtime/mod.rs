@@ -13,6 +13,7 @@ pub mod watcher;
 
 pub const CONTEXT_NAME: &str = "automation_runtime";
 
+pub use cli_writer_lease::CliWriterLeaseGuard;
 pub use daemon_loop::{DaemonLoop, DaemonLoopConfig};
 pub use lease_service::{
     LeaseCleanupFailure, LeaseService, ReconcileReport, ReleaseMode, ReleaseResult,
@@ -21,7 +22,6 @@ pub use model::{
     CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
     LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
-pub use cli_writer_lease::CliWriterLeaseGuard;
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;

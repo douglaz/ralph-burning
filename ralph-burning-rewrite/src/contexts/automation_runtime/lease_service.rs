@@ -143,29 +143,27 @@ impl LeaseService {
 
             // Step 1: remove any partially created worktree path.
             if worktree_path.exists() {
-                if let Err(e) =
-                    worktree.remove_worktree(repo_root, &worktree_path, task_id)
-                {
+                if let Err(e) = worktree.remove_worktree(repo_root, &worktree_path, task_id) {
                     rollback_failures.push(format!("worktree removal: {e}"));
                 }
             }
 
             // Step 2: release writer lock.
-            let lock_may_be_held =
-                match store.release_writer_lock(base_dir, project_id, &lease_id) {
-                    Ok(WriterLockReleaseOutcome::Released)
-                    | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
-                    Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
-                        rollback_failures.push(format!(
-                            "writer lock owner mismatch (actual: {actual_owner})"
-                        ));
-                        true
-                    }
-                    Err(e) => {
-                        rollback_failures.push(format!("writer lock release: {e}"));
-                        true
-                    }
-                };
+            let lock_may_be_held = match store.release_writer_lock(base_dir, project_id, &lease_id)
+            {
+                Ok(WriterLockReleaseOutcome::Released)
+                | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
+                Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                    rollback_failures.push(format!(
+                        "writer lock owner mismatch (actual: {actual_owner})"
+                    ));
+                    true
+                }
+                Err(e) => {
+                    rollback_failures.push(format!("writer lock release: {e}"));
+                    true
+                }
+            };
 
             if rollback_failures.is_empty() {
                 return Err(error);
@@ -315,16 +313,16 @@ impl LeaseService {
         // lookups via find_lease_for_task() still discover the lease.
         let (lease_file_already_absent, lease_file_error) =
             if writer_lock_released && !worktree_already_absent {
-            match store.remove_lease(base_dir, &lease.lease_id) {
-                Ok(ResourceCleanupOutcome::Removed) => (false, None),
-                Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
-                Err(e) => (false, Some(e.to_string())),
-            }
-        } else {
-            // Lease file preserved — prior sub-steps did not all
-            // positively succeed (worktree absent or lock not released).
-            (false, None)
-        };
+                match store.remove_lease(base_dir, &lease.lease_id) {
+                    Ok(ResourceCleanupOutcome::Removed) => (false, None),
+                    Ok(ResourceCleanupOutcome::AlreadyAbsent) => (true, None),
+                    Err(e) => (false, Some(e.to_string())),
+                }
+            } else {
+                // Lease file preserved — prior sub-steps did not all
+                // positively succeed (worktree absent or lock not released).
+                (false, None)
+            };
 
         // Determine whether cleanup succeeded. True only when all three
         // sub-steps positively succeeded, regardless of ReleaseMode.
@@ -393,9 +391,7 @@ impl LeaseService {
 
         for lease in leases {
             let is_stale = ttl_override_seconds
-                .map(|ttl| {
-                    now > saturating_heartbeat_deadline(lease.last_heartbeat, ttl)
-                })
+                .map(|ttl| now > saturating_heartbeat_deadline(lease.last_heartbeat, ttl))
                 .unwrap_or_else(|| lease.is_stale_at(now));
             if !is_stale {
                 continue;
@@ -577,9 +573,7 @@ impl LeaseService {
             };
 
             let is_stale = ttl_override_seconds
-                .map(|ttl| {
-                    now > saturating_heartbeat_deadline(cli_lease.last_heartbeat, ttl)
-                })
+                .map(|ttl| now > saturating_heartbeat_deadline(cli_lease.last_heartbeat, ttl))
                 .unwrap_or_else(|| cli_lease.is_stale_at(now));
             if !is_stale {
                 continue;
@@ -661,9 +655,8 @@ impl LeaseService {
                     report.cleanup_failures.push(LeaseCleanupFailure {
                         lease_id: cli_lease.lease_id.clone(),
                         task_id: None,
-                        details:
-                            "lease_file_absent: lease file was already missing during cleanup"
-                                .to_owned(),
+                        details: "lease_file_absent: lease file was already missing during cleanup"
+                            .to_owned(),
                     });
                     has_sub_step_failure = true;
                 }

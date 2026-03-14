@@ -79,11 +79,9 @@ impl CliWriterLeaseGuard {
         }
 
         // 5. Owner-aware writer-lock release.
-        let lock_outcome = self.store.release_writer_lock(
-            &self.base_dir,
-            &self.project_id,
-            &self.lease_id,
-        );
+        let lock_outcome =
+            self.store
+                .release_writer_lock(&self.base_dir, &self.project_id, &self.lease_id);
 
         match lock_outcome {
             Ok(WriterLockReleaseOutcome::Released) => {
@@ -173,8 +171,7 @@ impl CliWriterLeaseGuard {
                     return Err(AppError::AcquisitionRollbackFailed {
                         trigger: e.to_string(),
                         rollback_details:
-                            "prewritten CLI lease was already absent at rollback time"
-                                .to_owned(),
+                            "prewritten CLI lease was already absent at rollback time".to_owned(),
                     });
                 }
                 Err(cleanup_err) => {
@@ -238,11 +235,7 @@ impl CliWriterLeaseGuard {
 }
 
 /// Update `last_heartbeat` on an existing CLI lease record.
-fn heartbeat_tick(
-    store: &dyn DaemonStorePort,
-    base_dir: &Path,
-    lease_id: &str,
-) -> AppResult<()> {
+fn heartbeat_tick(store: &dyn DaemonStorePort, base_dir: &Path, lease_id: &str) -> AppResult<()> {
     let record = store.read_lease_record(base_dir, lease_id)?;
     match record {
         LeaseRecord::CliWriter(mut cli) => {
@@ -291,7 +284,9 @@ mod tests {
         // Lease record should be visible
         let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
         assert_eq!(1, records.len());
-        assert!(matches!(&records[0], LeaseRecord::CliWriter(cli) if cli.lease_id == guard.lease_id));
+        assert!(
+            matches!(&records[0], LeaseRecord::CliWriter(cli) if cli.lease_id == guard.lease_id)
+        );
 
         // Writer lock should be held
         let err = FsDaemonStore
@@ -377,9 +372,7 @@ mod tests {
         drop(guard);
 
         // Lease record should be gone
-        let records = FsDaemonStore
-            .list_lease_records(temp.path())
-            .expect("list");
+        let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
         assert!(records.is_empty(), "lease record should be removed on drop");
 
         // Writer lock should be released
@@ -419,9 +412,7 @@ mod tests {
         assert!(result.is_err(), "should fail when lock is held");
 
         // No lease record should exist
-        let records = FsDaemonStore
-            .list_lease_records(temp.path())
-            .expect("list");
+        let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
         assert!(
             records.is_empty(),
             "no lease record should be written on failed acquisition"
@@ -446,9 +437,7 @@ mod tests {
         )
         .expect("acquire");
 
-        let records = FsDaemonStore
-            .list_lease_records(temp.path())
-            .expect("list");
+        let records = FsDaemonStore.list_lease_records(temp.path()).expect("list");
         assert_eq!(1, records.len());
 
         // The record should be stale-detectable after TTL
