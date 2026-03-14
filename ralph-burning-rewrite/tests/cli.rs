@@ -664,6 +664,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
 
     let output = Command::new(binary())
         .args(["daemon", "start", "--single-iteration"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon start");
@@ -736,6 +737,7 @@ fn daemon_start_single_iteration_processes_pending_task() {
 
     let output = Command::new(binary())
         .args(["daemon", "start", "--single-iteration"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon start");
@@ -2905,6 +2907,7 @@ fn run_start_completes_standard_flow_end_to_end() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -2927,6 +2930,7 @@ fn run_start_completes_docs_change_flow_end_to_end() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -2966,6 +2970,7 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3005,6 +3010,7 @@ fn run_start_produces_completed_snapshot() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3038,6 +3044,7 @@ fn run_start_persists_journal_events() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3076,6 +3083,7 @@ fn run_start_persists_payload_and_artifact_records() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3121,6 +3129,7 @@ fn run_start_status_shows_completed_after_run() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3147,6 +3156,7 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3187,6 +3197,7 @@ fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3214,6 +3225,7 @@ fn run_resume_quick_dev_from_failed_state() {
     // First run fails at review stage
     let first = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")
         .current_dir(temp_dir.path())
         .output()
@@ -3226,6 +3238,7 @@ fn run_resume_quick_dev_from_failed_state() {
     // Resume should succeed
     let resume = Command::new(binary())
         .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run resume");
@@ -3255,6 +3268,7 @@ fn run_start_rejects_already_completed_project() {
     // First run should succeed
     let first = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("first run start");
@@ -3263,6 +3277,7 @@ fn run_start_rejects_already_completed_project() {
     // Second run should fail because status is completed
     let second = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("second run start");
@@ -3292,6 +3307,7 @@ fn run_start_rejects_already_running_project() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3310,6 +3326,7 @@ fn run_start_without_active_project_fails() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3342,6 +3359,7 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
 
     let start = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3423,6 +3441,7 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -3490,6 +3509,7 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     // Use env var to make the backend unavailable at preflight
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .env("RALPH_BURNING_TEST_BACKEND_UNAVAILABLE", "1")
         .current_dir(temp_dir.path())
         .output()
@@ -3562,6 +3582,7 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
     // enabled by default, so it's the first stage executed).
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "prompt_review")
         .current_dir(temp_dir.path())
         .output()
@@ -4329,6 +4350,7 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -4374,6 +4396,7 @@ fn cli_run_start_fails_when_writer_lock_held() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start");
@@ -4409,6 +4432,7 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
     // First, fail the run to get a failed snapshot
     let fail_output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "implementation")
         .output()
@@ -4418,6 +4442,7 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
     // Now resume — the lock should be acquired and released
     let output = Command::new(binary())
         .args(["run", "resume"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run resume");
@@ -4459,6 +4484,7 @@ fn cli_run_start_releases_lock_on_error() {
     // Force a run failure — lock should still be released
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .env("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "planning")
         .output()
@@ -4507,6 +4533,7 @@ fn cli_run_start_close_failure_exits_nonzero() {
 
     let output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
         .output()
@@ -4607,6 +4634,7 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
     // Verify run start fails because the writer lock is held.
     let blocked_output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start blocked");
@@ -4657,6 +4685,7 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
     // Verify run start now succeeds (lock is no longer held).
     let start_output = Command::new(binary())
         .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run start after reconcile");

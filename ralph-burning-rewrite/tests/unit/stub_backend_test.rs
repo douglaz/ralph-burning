@@ -19,6 +19,7 @@ fn request_fixture(stage_id: StageId) -> InvocationRequest {
     InvocationRequest {
         invocation_id: format!("stub-{}", stage_id.as_str()),
         project_root: temp_dir.path().to_path_buf(),
+        working_dir: temp_dir.path().to_path_buf(),
         contract: InvocationContract::Stage(contract_for_stage(stage_id)),
         role: BackendRole::for_stage(stage_id),
         resolved_target: BackendRole::for_stage(stage_id).default_target(),

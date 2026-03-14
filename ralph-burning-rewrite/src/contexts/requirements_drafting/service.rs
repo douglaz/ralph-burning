@@ -899,6 +899,7 @@ where
                 Utc::now().format("%Y%m%d%H%M%S")
             ),
             project_root: run_root.to_path_buf(),
+            working_dir: run_root.to_path_buf(),
             contract: InvocationContract::Requirements {
                 label: contract_label,
             },

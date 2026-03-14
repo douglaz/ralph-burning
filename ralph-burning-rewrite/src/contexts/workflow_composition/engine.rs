@@ -1671,6 +1671,7 @@ where
                 cursor.attempt
             ),
             project_root: project_root.to_path_buf(),
+            working_dir: base_dir.to_path_buf(),
             contract: InvocationContract::Stage(stage_entry.contract),
             role: stage_entry.role,
             resolved_target: stage_entry.target.clone(),
@@ -1678,7 +1679,7 @@ where
                 prompt: format!("Execute stage: {}", stage_id.display_name()),
                 context: invocation_context(&cursor, execution_context, pending_amendments),
             },
-            timeout: Duration::from_secs(300),
+            timeout: Duration::from_secs(3600),
             cancellation_token: cancellation_token.clone(),
             session_policy: SessionPolicy::ReuseIfAllowed,
             prior_session: None,
