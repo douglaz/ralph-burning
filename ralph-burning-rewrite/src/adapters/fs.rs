@@ -1282,6 +1282,9 @@ impl DaemonStorePort for FsDaemonStore {
             Err(e) => return Err(e.into()),
         }
 
+        #[cfg(test)]
+        release_lock_testing::invoke_post_rename_hook();
+
         // ── Phase 3: inode verification ─────────────────────────────────
         // Verify the renamed file is the same inode we read from. Between
         // phase 1 (open) and phase 2 (rename), another writer could have
@@ -1290,11 +1293,22 @@ impl DaemonStorePort for FsDaemonStore {
         // inode.
         {
             use std::os::unix::fs::MetadataExt;
-            let fd_meta = file.metadata()?;
+            let fd_meta = match file.metadata() {
+                Ok(m) => m,
+                Err(e) => {
+                    // fstat on the open fd failed. Restore canonical lock
+                    // visibility before returning the error.
+                    let _ = fs::rename(&staging, &path);
+                    return Err(e.into());
+                }
+            };
             let staged_meta = match fs::metadata(&staging) {
                 Ok(m) => m,
                 Err(e) => {
-                    // Cannot verify — fail closed without deleting.
+                    // Cannot verify — restore canonical lock visibility
+                    // before returning the error so the lock is not
+                    // stranded at the staging path.
+                    let _ = fs::rename(&staging, &path);
                     return Err(e.into());
                 }
             };
@@ -1307,10 +1321,16 @@ impl DaemonStorePort for FsDaemonStore {
                     Ok(()) => {
                         let _ = fs::remove_file(&staging);
                     }
-                    Err(_) => {
-                        // Canonical path already has a new lock — delete
-                        // the staging copy (it has been superseded).
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // Canonical path already has a new lock — the
+                        // staging copy has been superseded; safe to
+                        // delete it.
                         let _ = fs::remove_file(&staging);
+                    }
+                    Err(_) => {
+                        // Cannot restore to canonical path due to an
+                        // unexpected I/O error. Leave the staging file
+                        // intact for later recovery — do NOT delete it.
                     }
                 }
                 return Ok(WriterLockReleaseOutcome::OwnerMismatch {
@@ -1346,6 +1366,7 @@ pub mod release_lock_testing {
 
     thread_local! {
         static PRE_RENAME_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+        static POST_RENAME_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
         static POST_VERIFY_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
     }
 
@@ -1354,6 +1375,15 @@ pub mod release_lock_testing {
     /// to exercise the inode-mismatch detection after rename.
     pub fn set_pre_rename_hook(f: impl FnOnce() + 'static) {
         PRE_RENAME_HOOK.with(|h| {
+            *h.borrow_mut() = Some(Box::new(f));
+        });
+    }
+
+    /// Hook that fires after the atomic rename-to-staging succeeds but
+    /// before the inode verification reads staging metadata. Tests can
+    /// manipulate the staging file here to exercise verification failures.
+    pub fn set_post_rename_hook(f: impl FnOnce() + 'static) {
+        POST_RENAME_HOOK.with(|h| {
             *h.borrow_mut() = Some(Box::new(f));
         });
     }
@@ -1369,6 +1399,14 @@ pub mod release_lock_testing {
 
     pub(crate) fn invoke_pre_rename_hook() {
         PRE_RENAME_HOOK.with(|h| {
+            if let Some(f) = h.borrow_mut().take() {
+                f();
+            }
+        });
+    }
+
+    pub(crate) fn invoke_post_rename_hook() {
+        POST_RENAME_HOOK.with(|h| {
             if let Some(f) = h.borrow_mut().take() {
                 f();
             }
@@ -1813,6 +1851,58 @@ mod tests {
             std::fs::read_to_string(&lock_path).expect("read new lock"),
             "owner-B",
             "post-check replacement lock must survive"
+        );
+
+        // Cleanup
+        std::fs::remove_file(&lock_path).expect("cleanup");
+    }
+
+    #[test]
+    fn release_writer_lock_post_rename_verification_failure_preserves_lock() {
+        // Regression: after rename-to-staging succeeds, if the staging
+        // file becomes unavailable (e.g. deleted by another process),
+        // the release must return an error without stranding or deleting
+        // any lock artifact at the canonical path.
+        let store = FsDaemonStore;
+        let temp = tempdir().expect("tempdir");
+        let project_id =
+            ProjectId::new("post-rename-fail".to_owned()).expect("valid id");
+
+        store
+            .acquire_writer_lock(temp.path(), &project_id, "owner-A")
+            .expect("acquire");
+
+        let lock_path =
+            FsDaemonStore::writer_lock_path(temp.path(), &project_id);
+        let staging_path = lock_path.with_extension("lock.releasing");
+        let lock_path_clone = lock_path.clone();
+        let staging_clone = staging_path.clone();
+
+        // After rename-to-staging: delete the staging file and place a
+        // replacement lock at the canonical path. This simulates the
+        // staging file becoming unavailable while a new writer acquires.
+        release_lock_testing::set_post_rename_hook(move || {
+            std::fs::remove_file(&staging_clone).expect("remove staging");
+            std::fs::write(&lock_path_clone, "owner-B")
+                .expect("write replacement lock");
+        });
+
+        let result = store
+            .release_writer_lock(temp.path(), &project_id, "owner-A");
+
+        // Must return an error (verification failed — staging metadata
+        // could not be read).
+        assert!(
+            result.is_err(),
+            "expected error on verification failure, got: {result:?}"
+        );
+
+        // The replacement lock at the canonical path must survive
+        // untouched — the release must not have deleted it.
+        assert_eq!(
+            std::fs::read_to_string(&lock_path).expect("read canonical"),
+            "owner-B",
+            "replacement lock at canonical path must be untouched"
         );
 
         // Cleanup
