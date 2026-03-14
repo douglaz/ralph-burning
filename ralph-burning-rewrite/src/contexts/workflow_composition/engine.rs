@@ -66,16 +66,23 @@ pub fn build_stage_prompt(
     pending_amendments: Option<&[QueuedAmendment]>,
 ) -> AppResult<String> {
     let prompt_path = project_root.join(prompt_reference);
-    let project_prompt = fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
-        file: prompt_path.display().to_string(),
-        details: format!(
-            "failed to read project prompt '{}' while building stage prompt: {}",
-            prompt_reference, error
-        ),
-    })?;
+    let project_prompt =
+        fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
+            file: prompt_path.display().to_string(),
+            details: format!(
+                "failed to read project prompt '{}' while building stage prompt: {}",
+                prompt_reference, error
+            ),
+        })?;
 
-    let prior_outputs =
-        load_prior_stage_outputs_this_cycle(artifact_store, base_dir, project_id, project_root, run_id, cursor)?;
+    let prior_outputs = load_prior_stage_outputs_this_cycle(
+        artifact_store,
+        base_dir,
+        project_id,
+        project_root,
+        run_id,
+        cursor,
+    )?;
     let schema = serde_json::to_string_pretty(&contract.json_schema())?;
 
     let mut sections = vec![
@@ -116,7 +123,10 @@ pub fn build_stage_prompt(
             ));
         }
         if let Some(amendments) = pending_amendments.filter(|amendments| !amendments.is_empty()) {
-            let amendment_bodies: Vec<&str> = amendments.iter().map(|amendment| amendment.body.as_str()).collect();
+            let amendment_bodies: Vec<&str> = amendments
+                .iter()
+                .map(|amendment| amendment.body.as_str())
+                .collect();
             section.push_str(&format!(
                 "\n\n### Pending Amendments\n\n```json\n{}\n```",
                 serde_json::to_string_pretty(&amendment_bodies)?
@@ -2534,7 +2544,10 @@ fn load_prior_stage_outputs_this_cycle(
     let journal_contents =
         fs::read_to_string(&journal_path).map_err(|error| AppError::CorruptRecord {
             file: journal_path.display().to_string(),
-            details: format!("failed to read journal.ndjson while building stage prompt: {}", error),
+            details: format!(
+                "failed to read journal.ndjson while building stage prompt: {}",
+                error
+            ),
         })?;
     let events = queries::visible_journal_events(&journal::parse_journal(&journal_contents)?)?;
 
@@ -2557,16 +2570,17 @@ fn load_prior_stage_outputs_this_cycle(
         }
 
         let payload_id = detail_string(&event, "payload_id")?;
-        let payload = payloads_by_id
-            .get(payload_id)
-            .cloned()
-            .ok_or_else(|| AppError::CorruptRecord {
-                file: "journal.ndjson".to_owned(),
-                details: format!(
-                    "journal references missing payload '{}' while building stage prompt",
-                    payload_id
-                ),
-            })?;
+        let payload =
+            payloads_by_id
+                .get(payload_id)
+                .cloned()
+                .ok_or_else(|| AppError::CorruptRecord {
+                    file: "journal.ndjson".to_owned(),
+                    details: format!(
+                        "journal references missing payload '{}' while building stage prompt",
+                        payload_id
+                    ),
+                })?;
         prior_outputs.push(payload);
     }
 

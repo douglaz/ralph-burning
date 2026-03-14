@@ -1,13 +1,13 @@
 use std::collections::HashMap;
 use std::path::Path;
-use std::process::Stdio;
+use std::process::{ExitStatus, Stdio};
 use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
 
 use crate::contexts::agent_execution::model::{
@@ -20,13 +20,92 @@ use crate::shared::error::{AppError, AppResult};
 
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
-    pub active_children: Arc<Mutex<HashMap<String, u32>>>,
+    pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
+}
+
+pub struct ManagedChild {
+    state: Mutex<ManagedChildState>,
+}
+
+enum ManagedChildState {
+    Running(Child),
+    Exited(ExitStatus),
+}
+
+impl ManagedChild {
+    fn new(child: Child) -> Self {
+        Self {
+            state: Mutex::new(ManagedChildState::Running(child)),
+        }
+    }
+
+    async fn pid(&self) -> Option<u32> {
+        let state = self.state.lock().await;
+        match &*state {
+            ManagedChildState::Running(child) => child.id(),
+            ManagedChildState::Exited(_) => None,
+        }
+    }
+
+    async fn send_sigterm(&self) -> std::io::Result<()> {
+        let Some(pid) = self.pid().await else {
+            return Ok(());
+        };
+
+        send_sigterm(pid)
+    }
+
+    async fn wait(&self) -> std::io::Result<ExitStatus> {
+        loop {
+            let maybe_status = {
+                let mut state = self.state.lock().await;
+                match &mut *state {
+                    // Poll without holding the child mutex across a long wait
+                    // so cancel() can still acquire the handle and signal it.
+                    ManagedChildState::Running(child) => match child.try_wait()? {
+                        Some(status) => {
+                            *state = ManagedChildState::Exited(status.clone());
+                            Some(status)
+                        }
+                        None => None,
+                    },
+                    ManagedChildState::Exited(status) => return Ok(status.clone()),
+                }
+            };
+
+            if let Some(status) = maybe_status {
+                return Ok(status);
+            }
+
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 }
 
 impl ProcessBackendAdapter {
     pub fn new() -> Self {
         Self {
             active_children: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    async fn register_child(&self, invocation_id: &str, child: Arc<ManagedChild>) {
+        let mut children = self.active_children.lock().await;
+        children.insert(invocation_id.to_owned(), child);
+    }
+
+    async fn active_child(&self, invocation_id: &str) -> Option<Arc<ManagedChild>> {
+        let children = self.active_children.lock().await;
+        children.get(invocation_id).cloned()
+    }
+
+    async fn remove_child_if_same(&self, invocation_id: &str, child: &Arc<ManagedChild>) {
+        let mut children = self.active_children.lock().await;
+        if children
+            .get(invocation_id)
+            .is_some_and(|current| Arc::ptr_eq(current, child))
+        {
+            children.remove(invocation_id);
         }
     }
 
@@ -75,8 +154,7 @@ impl ProcessBackendAdapter {
             .contract
             .stage_contract()
             .map(|sc| {
-                serde_json::to_string_pretty(&sc.json_schema())
-                    .unwrap_or_else(|_| "{}".to_owned())
+                serde_json::to_string_pretty(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned())
             })
             .unwrap_or_else(|| "{}".to_owned());
 
@@ -100,9 +178,8 @@ impl ProcessBackendAdapter {
         }
     }
 
-    /// Spawn a command, write stdin, register the child PID, wait for exit,
-    /// read captured stdout/stderr, and remove from active_children on every
-    /// path. The child is owned locally so `wait()` never holds the mutex.
+    /// Spawn a command, write stdin, register the child handle before I/O,
+    /// read captured stdout/stderr, reap the child, and then deregister it.
     async fn spawn_and_wait(
         &self,
         request: &InvocationRequest,
@@ -110,31 +187,29 @@ impl ProcessBackendAdapter {
         args: &[String],
         stdin_payload: &str,
     ) -> AppResult<ChildOutput> {
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .args(args)
             .current_dir(&request.working_dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| {
-                Self::invocation_failed(
-                    request,
-                    FailureClass::TransportFailure,
-                    format!("failed to spawn {binary}: {error}"),
-                )
-            })?;
+            .kill_on_drop(true);
 
-        // Register child PID immediately after spawn and before any async
-        // stdin/stdout work, so cancel() can always find a live child.
-        if let Some(pid) = child.id() {
-            let mut children = self.active_children.lock().await;
-            children.insert(request.invocation_id.clone(), pid);
-        }
+        let mut child = command.spawn().map_err(|error| {
+            Self::invocation_failed(
+                request,
+                FailureClass::TransportFailure,
+                format!("failed to spawn {binary}: {error}"),
+            )
+        })?;
 
         let stdin_handle = child.stdin.take();
         let mut stdout_handle = child.stdout.take();
         let mut stderr_handle = child.stderr.take();
+        let active_child = Arc::new(ManagedChild::new(child));
+        self.register_child(&request.invocation_id, active_child.clone())
+            .await;
         let stdin_bytes = stdin_payload.as_bytes().to_vec();
 
         let stdin_future = async move {
@@ -159,14 +234,11 @@ impl ProcessBackendAdapter {
             Ok::<Vec<u8>, std::io::Error>(buf)
         };
 
-        let (stdin_result, stdout_result, stderr_result, status_result) =
-            tokio::join!(stdin_future, stdout_future, stderr_future, child.wait());
-
-        // Remove from active_children on every exit path
-        {
-            let mut children = self.active_children.lock().await;
-            children.remove(&request.invocation_id);
-        }
+        let (stdin_result, stdout_result, stderr_result) =
+            tokio::join!(stdin_future, stdout_future, stderr_future);
+        let status_result = active_child.wait().await;
+        self.remove_child_if_same(&request.invocation_id, &active_child)
+            .await;
 
         let stderr_text = stderr_result
             .as_ref()
@@ -223,9 +295,7 @@ impl ProcessBackendAdapter {
         let schema_json = request
             .contract
             .stage_contract()
-            .map(|sc| {
-                serde_json::to_string(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned())
-            })
+            .map(|sc| serde_json::to_string(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned()))
             .unwrap_or_else(|| "{}".to_owned());
 
         let mut args = vec![
@@ -257,7 +327,6 @@ impl ProcessBackendAdapter {
             .spawn_and_wait(&request, "claude", &args, &stdin_payload)
             .await?;
 
-        // Check exit status
         match output.status {
             s if !s.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -280,7 +349,6 @@ impl ProcessBackendAdapter {
 
         let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
 
-        // Double-parse: outer envelope, then result string as JSON
         let envelope: ClaudeEnvelope = serde_json::from_str(&stdout_text).map_err(|error| {
             Self::invocation_failed(
                 &request,
@@ -300,10 +368,7 @@ impl ProcessBackendAdapter {
 
         let session_id = envelope.session_id.or_else(|| {
             if session_resuming {
-                request
-                    .prior_session
-                    .as_ref()
-                    .map(|s| s.session_id.clone())
+                request.prior_session.as_ref().map(|s| s.session_id.clone())
             } else {
                 None
             }
@@ -326,65 +391,79 @@ impl ProcessBackendAdapter {
         })
     }
 
+    fn codex_new_session_args(
+        model_id: &str,
+        schema_path: &Path,
+        message_path: &Path,
+    ) -> Vec<String> {
+        vec![
+            "exec".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            model_id.to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            "-".to_owned(),
+        ]
+    }
+
+    fn codex_resume_args(model_id: &str, message_path: &Path, session_id: &str) -> Vec<String> {
+        vec![
+            "exec".to_owned(),
+            "resume".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            model_id.to_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            session_id.to_owned(),
+            "-".to_owned(),
+        ]
+    }
+
     async fn invoke_codex(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         let model_id = &request.resolved_target.model.model_id;
+        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+            && request.prior_session.is_some();
 
-        // Create temp directory
         let temp_dir = request.project_root.join("runtime/temp");
         let _ = tokio::fs::create_dir_all(&temp_dir).await;
 
         let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
         let message_path = temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-        // Write schema file
-        let schema_json = request
-            .contract
-            .stage_contract()
-            .map(|sc| {
-                serde_json::to_string_pretty(&sc.json_schema())
-                    .unwrap_or_else(|_| "{}".to_owned())
-            })
-            .unwrap_or_else(|| "{}".to_owned());
+        let args = if session_resuming {
+            let session = request
+                .prior_session
+                .as_ref()
+                .expect("session_resuming requires a prior session");
+            Self::codex_resume_args(model_id, &message_path, &session.session_id)
+        } else {
+            let schema_json = request
+                .contract
+                .stage_contract()
+                .map(|sc| {
+                    serde_json::to_string_pretty(&sc.json_schema())
+                        .unwrap_or_else(|_| "{}".to_owned())
+                })
+                .unwrap_or_else(|| "{}".to_owned());
 
-        if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-            // Best-effort cleanup of any partial file left behind
-            best_effort_cleanup(&schema_path, &message_path).await;
-            return Err(Self::invocation_failed(
-                &request,
-                FailureClass::TransportFailure,
-                format!("failed to write schema file: {error}"),
-            ));
-        }
-
-        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-            && request.prior_session.is_some();
-
-        let mut args: Vec<String> = Vec::new();
-        args.push("exec".to_owned());
-
-        if session_resuming {
-            args.push("resume".to_owned());
-        }
-
-        args.extend([
-            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
-            "--skip-git-repo-check".to_owned(),
-            "--model".to_owned(),
-            model_id.clone(),
-            "--output-schema".to_owned(),
-            schema_path.to_string_lossy().into_owned(),
-            "--output-last-message".to_owned(),
-            message_path.to_string_lossy().into_owned(),
-        ]);
-
-        if session_resuming {
-            if let Some(ref session) = request.prior_session {
-                args.push(session.session_id.clone());
+            if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
+                return Err(Self::invocation_failed(
+                    &request,
+                    FailureClass::TransportFailure,
+                    format!("failed to write schema file: {error}"),
+                ));
             }
-        }
 
-        // Trailing `-` for stdin input
-        args.push("-".to_owned());
+            Self::codex_new_session_args(model_id, &schema_path, &message_path)
+        };
+        let schema_cleanup_path = (!session_resuming).then_some(schema_path.as_path());
 
         let stdin_payload = Self::assemble_stdin(&request);
         let output = match self
@@ -393,17 +472,16 @@ impl ProcessBackendAdapter {
         {
             Ok(o) => o,
             Err(error) => {
-                best_effort_cleanup(&schema_path, &message_path).await;
+                best_effort_cleanup(schema_cleanup_path, &message_path).await;
                 return Err(error);
             }
         };
 
-        // Check exit status
         match output.status {
             s if !s.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
                 let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                best_effort_cleanup(&schema_path, &message_path).await;
+                best_effort_cleanup(schema_cleanup_path, &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
@@ -420,11 +498,10 @@ impl ProcessBackendAdapter {
             _ => {}
         }
 
-        // Read last-message file
         let last_message_text = match tokio::fs::read_to_string(&message_path).await {
             Ok(text) => text,
             Err(error) => {
-                best_effort_cleanup(&schema_path, &message_path).await;
+                best_effort_cleanup(schema_cleanup_path, &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::SchemaValidationFailure,
@@ -436,7 +513,7 @@ impl ProcessBackendAdapter {
         let parsed_payload: serde_json::Value = match serde_json::from_str(&last_message_text) {
             Ok(v) => v,
             Err(error) => {
-                best_effort_cleanup(&schema_path, &message_path).await;
+                best_effort_cleanup(schema_cleanup_path, &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
                     FailureClass::SchemaValidationFailure,
@@ -445,14 +522,10 @@ impl ProcessBackendAdapter {
             }
         };
 
-        // Best-effort cleanup of temp files on success
-        best_effort_cleanup(&schema_path, &message_path).await;
+        best_effort_cleanup(schema_cleanup_path, &message_path).await;
 
         let session_id = if session_resuming {
-            request
-                .prior_session
-                .as_ref()
-                .map(|s| s.session_id.clone())
+            request.prior_session.as_ref().map(|s| s.session_id.clone())
         } else {
             None
         };
@@ -524,15 +597,12 @@ impl AgentExecutionPort for ProcessBackendAdapter {
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        // Enforce the same stage-only / supported-family rules as preflight
-        // so that callers bypassing check_capability still get CapabilityMismatch.
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
 
         match request.resolved_target.backend.family {
             BackendFamily::Claude => self.invoke_claude(request).await,
             BackendFamily::Codex => self.invoke_codex(request).await,
-            // Unreachable after check_capability, but defensive:
             _ => Err(Self::capability_mismatch(
                 &request.resolved_target,
                 &request.contract,
@@ -542,40 +612,35 @@ impl AgentExecutionPort for ProcessBackendAdapter {
     }
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
-        // Remove the PID from the map first, then drop the lock before
-        // sending SIGTERM so we never hold the mutex across blocking work.
-        let pid = {
-            let mut children = self.active_children.lock().await;
-            match children.remove(invocation_id) {
-                Some(pid) => pid,
-                None => return Ok(()),
-            }
+        let Some(active_child) = self.active_child(invocation_id).await else {
+            return Ok(());
         };
 
-        // Send SIGTERM synchronously (kill is a near-instant syscall wrapper).
-        let kill_result = std::process::Command::new("kill")
-            .arg("-TERM")
-            .arg(pid.to_string())
-            .output();
-
-        match kill_result {
-            Ok(_) => {
-                // Both success and "already exited" non-zero are fine.
-                Ok(())
-            }
-            Err(error) => Err(AppError::InvocationFailed {
+        active_child
+            .send_sigterm()
+            .await
+            .map_err(|error| AppError::InvocationFailed {
                 backend: "process".to_owned(),
                 contract_id: invocation_id.to_owned(),
                 failure_class: FailureClass::TransportFailure,
-                details: format!(
-                    "failed to send SIGTERM to invocation '{invocation_id}': {error}"
-                ),
-            }),
-        }
+                details: format!("failed to send SIGTERM to invocation '{invocation_id}': {error}"),
+            })?;
+
+        let wait_result = active_child.wait().await;
+        self.remove_child_if_same(invocation_id, &active_child)
+            .await;
+
+        wait_result
+            .map(|_| ())
+            .map_err(|error| AppError::InvocationFailed {
+                backend: "process".to_owned(),
+                contract_id: invocation_id.to_owned(),
+                failure_class: FailureClass::TransportFailure,
+                details: format!("failed to reap invocation '{invocation_id}': {error}"),
+            })
     }
 }
 
-/// Claude outer envelope shape — only the fields we need.
 #[derive(Deserialize)]
 struct ClaudeEnvelope {
     result: String,
@@ -584,12 +649,39 @@ struct ClaudeEnvelope {
 }
 
 struct ChildOutput {
-    status: std::process::ExitStatus,
+    status: ExitStatus,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
 }
 
-async fn best_effort_cleanup(schema_path: &Path, message_path: &Path) {
-    let _ = tokio::fs::remove_file(schema_path).await;
+fn send_sigterm(pid: u32) -> std::io::Result<()> {
+    let output = std::process::Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .output()?;
+
+    if output.status.success() {
+        return Ok(());
+    }
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    if stderr.contains("No such process") {
+        Ok(())
+    } else {
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            if stderr.trim().is_empty() {
+                format!("kill -TERM {pid} exited with status {}", output.status)
+            } else {
+                stderr.trim().to_owned()
+            },
+        ))
+    }
+}
+
+async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
+    if let Some(schema_path) = schema_path {
+        let _ = tokio::fs::remove_file(schema_path).await;
+    }
     let _ = tokio::fs::remove_file(message_path).await;
 }

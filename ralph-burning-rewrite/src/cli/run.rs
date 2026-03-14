@@ -10,8 +10,8 @@ use crate::adapters::fs::{
 };
 use crate::adapters::process_backend::ProcessBackendAdapter;
 use crate::adapters::stub_backend::StubBackendAdapter;
-use crate::adapters::BackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
+use crate::adapters::BackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,

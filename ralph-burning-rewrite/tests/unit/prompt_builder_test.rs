@@ -12,7 +12,9 @@ use ralph_burning::contexts::project_run_record::model::{
 use ralph_burning::contexts::project_run_record::service::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::contracts::contract_for_stage;
 use ralph_burning::contexts::workflow_composition::engine::build_stage_prompt;
-use ralph_burning::shared::domain::{BackendRole, FlowPreset, ProjectId, RunId, StageCursor, StageId};
+use ralph_burning::shared::domain::{
+    BackendRole, FlowPreset, ProjectId, RunId, StageCursor, StageId,
+};
 use ralph_burning::shared::error::{AppError, AppResult};
 
 struct InMemoryArtifactStore {
@@ -20,7 +22,11 @@ struct InMemoryArtifactStore {
 }
 
 impl ArtifactStorePort for InMemoryArtifactStore {
-    fn list_payloads(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<Vec<PayloadRecord>> {
+    fn list_payloads(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<PayloadRecord>> {
         Ok(self.payloads.clone())
     }
 
@@ -85,7 +91,8 @@ fn amendment(body: &str) -> QueuedAmendment {
 }
 
 #[test]
-fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_amendments_and_schema() {
+fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_amendments_and_schema()
+{
     let temp_dir = tempdir().expect("create temp dir");
     let base_dir = temp_dir.path();
     let project_id = ProjectId::new("prompt-builder-rich").unwrap();
@@ -157,7 +164,10 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
         "cycle": 2,
         "follow_up_or_amendments": ["fix the failing edge case"],
     });
-    let amendments = vec![amendment("Tighten the validation copy"), amendment("Add a retry note")];
+    let amendments = vec![
+        amendment("Tighten the validation copy"),
+        amendment("Add a retry note"),
+    ];
 
     let prompt = build_stage_prompt(
         &artifact_store,
@@ -193,7 +203,10 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
 
     let first_index = prompt.find("first-output").expect("first prior output");
     let second_index = prompt.find("second-output").expect("second prior output");
-    assert!(first_index < second_index, "prior outputs should preserve journal order");
+    assert!(
+        first_index < second_index,
+        "prior outputs should preserve journal order"
+    );
 }
 
 #[test]
@@ -468,7 +481,9 @@ fn build_stage_prompt_returns_diagnostic_error_when_journal_references_missing_p
         &events,
     );
 
-    let artifact_store = InMemoryArtifactStore { payloads: Vec::new() };
+    let artifact_store = InMemoryArtifactStore {
+        payloads: Vec::new(),
+    };
     let error = build_stage_prompt(
         &artifact_store,
         base_dir,
@@ -486,7 +501,10 @@ fn build_stage_prompt_returns_diagnostic_error_when_journal_references_missing_p
 
     match error {
         AppError::CorruptRecord { details, .. } => {
-            assert!(details.contains("payload-missing"), "details should identify the missing payload: {details}");
+            assert!(
+                details.contains("payload-missing"),
+                "details should identify the missing payload: {details}"
+            );
         }
         other => panic!("expected CorruptRecord, got {other:?}"),
     }

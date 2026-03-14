@@ -1,5 +1,7 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
+use std::path::Path;
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -7,8 +9,7 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::process_backend::ProcessBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
-    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
-    RawOutputReference,
+    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest, RawOutputReference,
 };
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::session::SessionMetadata;
@@ -57,6 +58,24 @@ fn write_executable(path: &std::path::Path, contents: &str) {
     let mut permissions = fs::metadata(path).expect("stat executable").permissions();
     permissions.set_mode(0o755);
     fs::set_permissions(path, permissions).expect("chmod executable");
+}
+
+fn read_logged_args(path: &Path) -> Vec<String> {
+    fs::read_to_string(path)
+        .expect("read args")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect()
+}
+
+fn process_exists(pid: u32) -> bool {
+    Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(Stdio::null())
+        .status()
+        .map(|status| status.success())
+        .unwrap_or(false)
 }
 
 struct PathGuard {
@@ -212,7 +231,10 @@ async fn process_backend_rejects_unsupported_backend_families_and_requirements()
     let (_dir, openrouter_request) = request_fixture(BackendFamily::OpenRouter);
 
     let openrouter_error = adapter
-        .check_capability(&openrouter_request.resolved_target, &openrouter_request.contract)
+        .check_capability(
+            &openrouter_request.resolved_target,
+            &openrouter_request.contract,
+        )
         .await
         .expect_err("openrouter should be rejected");
     match &openrouter_error {
@@ -292,7 +314,10 @@ async fn claude_command_construction_and_double_parse() {
     write_fake_claude(bin_dir.path(), &envelope_file);
 
     let adapter = ProcessBackendAdapter::new();
-    let envelope = adapter.invoke(request.clone()).await.expect("invoke should succeed");
+    let envelope = adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
 
     // Verify double-parse: parsed_payload should be the inner JSON object
     assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
@@ -414,8 +439,11 @@ async fn codex_command_construction_and_temp_files() {
 
     // Write payload file for fake codex to copy
     let payload_file = request.working_dir.join("codex-payload.json");
-    fs::write(&payload_file, serde_json::to_string(&planning_payload()).unwrap())
-        .expect("write payload");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&planning_payload()).unwrap(),
+    )
+    .expect("write payload");
     write_fake_codex(bin_dir.path(), &payload_file);
 
     let adapter = ProcessBackendAdapter::new();
@@ -423,6 +451,14 @@ async fn codex_command_construction_and_temp_files() {
         .invoke(request.clone())
         .await
         .expect("invoke should succeed");
+    let schema_path = request.project_root.join(format!(
+        "runtime/temp/{}.schema.json",
+        request.invocation_id
+    ));
+    let message_path = request.project_root.join(format!(
+        "runtime/temp/{}.last-message.json",
+        request.invocation_id
+    ));
 
     // Verify parsed payload
     assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
@@ -438,46 +474,31 @@ async fn codex_command_construction_and_temp_files() {
     assert!(envelope.metadata.session_id.is_none());
     assert!(!envelope.metadata.session_reused);
 
-    // Verify command args
     let args_file = request.working_dir.join("codex-args.txt");
-    let args_text = fs::read_to_string(&args_file).expect("read args");
-    assert!(args_text.contains("exec"), "should have exec subcommand");
-    assert!(
-        args_text.contains("--dangerously-bypass-approvals-and-sandbox"),
-        "should have bypass flag"
-    );
-    assert!(
-        args_text.contains("--skip-git-repo-check"),
-        "should have skip-git flag"
-    );
-    assert!(
-        args_text.contains(&format!(
-            "--model {}",
-            BackendFamily::Codex.default_model_id()
-        )),
-        "should have --model flag"
-    );
-    assert!(
-        args_text.contains("--output-schema"),
-        "should have --output-schema"
-    );
-    assert!(
-        args_text.contains("--output-last-message"),
-        "should have --output-last-message"
-    );
-    // Should NOT have resume for new session
-    assert!(
-        !args_text.starts_with("exec resume"),
-        "should not have resume for new session: {args_text}"
+    let args = read_logged_args(&args_file);
+    assert_eq!(
+        args,
+        vec![
+            "exec".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            BackendFamily::Codex.default_model_id().to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            "-".to_owned(),
+        ]
     );
 
-    // Schema temp file should be cleaned up
-    let schema_path = request
-        .project_root
-        .join(format!("runtime/temp/{}.schema.json", request.invocation_id));
     assert!(
         !schema_path.exists(),
         "schema temp file should be cleaned up after success"
+    );
+    assert!(
+        !message_path.exists(),
+        "last-message temp file should be cleaned up after success"
     );
 }
 
@@ -514,6 +535,14 @@ async fn codex_resume_command_construction() {
         .invoke(request.clone())
         .await
         .expect("invoke should succeed");
+    let schema_path = request.project_root.join(format!(
+        "runtime/temp/{}.schema.json",
+        request.invocation_id
+    ));
+    let message_path = request.project_root.join(format!(
+        "runtime/temp/{}.last-message.json",
+        request.invocation_id
+    ));
 
     assert!(envelope.metadata.session_reused);
     assert_eq!(
@@ -522,14 +551,29 @@ async fn codex_resume_command_construction() {
     );
 
     let args_file = request.working_dir.join("codex-args.txt");
-    let args_text = fs::read_to_string(&args_file).expect("read args");
+    let args = read_logged_args(&args_file);
     assert!(
-        args_text.starts_with("exec resume"),
-        "should have 'exec resume' for session resuming: {args_text}"
+        !args.iter().any(|arg| arg == "--output-schema"),
+        "resume argv must not include --output-schema: {args:?}"
+    );
+    assert_eq!(
+        args,
+        vec![
+            "exec".to_owned(),
+            "resume".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            BackendFamily::Codex.default_model_id().to_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            "codex-ses-456".to_owned(),
+            "-".to_owned(),
+        ]
     );
     assert!(
-        args_text.contains("codex-ses-456"),
-        "should contain session id: {args_text}"
+        !schema_path.exists(),
+        "resume flow should not leave a schema temp file behind"
     );
 }
 
@@ -587,16 +631,19 @@ async fn openrouter_capability_mismatch_detail_text() {
 // ── Cancellation sends SIGTERM ──────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn cancellation_sends_sigterm_to_long_running_child() {
+async fn cancellation_reaps_long_running_child_before_returning() {
     let bin_dir = tempdir().expect("create bin dir");
+    let pid_dir = tempdir().expect("create pid dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
+    let pid_file = pid_dir.path().join("claude-child.pid");
 
-    // Fake claude that sleeps for a long time.
-    // Use `exec` so SIGTERM reaches sleep directly (shell won't mask it).
     write_executable(
         &bin_dir.path().join("claude"),
-        "#!/bin/sh\ncat > /dev/null\nexec sleep 300\n",
+        &format!(
+            "#!/bin/sh\necho \"$$\" > \"{}\"\ncat > /dev/null\nexec sleep 300\n",
+            pid_file.to_string_lossy()
+        ),
     );
 
     let adapter = ProcessBackendAdapter::new();
@@ -607,10 +654,24 @@ async fn cancellation_sends_sigterm_to_long_running_child() {
     let adapter_clone = adapter.clone();
     let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
 
-    // Wait a moment for the child to register
-    tokio::time::sleep(Duration::from_millis(500)).await;
+    for _ in 0..40 {
+        if pid_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(200)).await;
 
-    // Verify child is registered
+    let pid: u32 = fs::read_to_string(&pid_file)
+        .expect("read child pid")
+        .trim()
+        .parse()
+        .expect("parse child pid");
+    assert!(
+        process_exists(pid),
+        "child should still exist before cancel"
+    );
+
     {
         let children = adapter.active_children.lock().await;
         assert!(
@@ -619,13 +680,15 @@ async fn cancellation_sends_sigterm_to_long_running_child() {
         );
     }
 
-    // Cancel
     adapter
         .cancel(&invocation_id)
         .await
         .expect("cancel should succeed");
+    assert!(
+        !process_exists(pid),
+        "child should be reaped before cancel returns"
+    );
 
-    // Verify child is removed from active_children
     {
         let children = adapter.active_children.lock().await;
         assert!(
@@ -634,7 +697,6 @@ async fn cancellation_sends_sigterm_to_long_running_child() {
         );
     }
 
-    // The invoke task should complete (with an error since the process was killed)
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
     assert!(result.is_ok(), "invoke should complete after cancel");
 }
@@ -656,7 +718,10 @@ async fn active_children_cleanup_after_success() {
     let adapter = ProcessBackendAdapter::new();
     let invocation_id = request.invocation_id.clone();
 
-    adapter.invoke(request).await.expect("invoke should succeed");
+    adapter
+        .invoke(request)
+        .await
+        .expect("invoke should succeed");
 
     let children = adapter.active_children.lock().await;
     assert!(
