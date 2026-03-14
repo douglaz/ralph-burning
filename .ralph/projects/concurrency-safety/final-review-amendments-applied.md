@@ -182,3 +182,40 @@ Create the stable binary in an exec-capable location instead of the OS temp dir,
 ### Reviewer
 codex
 
+
+## Round 5
+
+### Amendment: CS-REV-001
+
+### Problem
+`CliWriterLeaseGuard::acquire()` takes the project writer lock first at [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L140) and only persists the CLI lease record afterward at [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L152). `daemon reconcile` only discovers stale CLI holders by enumerating lease records at [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L568).
+
+If the CLI crashes in that gap, the stale `writer-<project>.lock` has no matching lease record. Reconcile can never see or release it, so later `run start`/`run resume` calls stay blocked with `ProjectWriterLockHeld`. That breaks the core stale-lock recovery objective.
+
+### Proposed Change
+Make CLI lock acquisition crash-safe by ensuring a reconcile-visible lease exists before a writer lock can be stranded. The simplest fix is to persist the CLI lease record first, then acquire the writer lock and delete the prewritten lease on lock-acquire failure. A dedicated helper that atomically manages the pair would also satisfy the requirement.
+
+### Affected Files
+- [src/contexts/automation_runtime/cli_writer_lease.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/cli_writer_lease.rs#L130) - reorder or combine lease persistence and writer-lock acquisition so every stranded CLI lock is recoverable.
+- [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L568) - this is the reconcile path that currently exposes the gap because it only scans lease records.
+
+### Reviewer
+codex
+
+### Amendment: CS-REV-002
+
+### Problem
+`daemon reconcile --ttl-seconds` accepts an unrestricted `u64` at [src/cli/daemon.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/daemon.rs#L42), but both override-based stale checks cast that value directly to `i64` at [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L394) and [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L577).
+
+For any value above `i64::MAX`, that cast wraps negative. The result is that fresh worktree leases and fresh CLI leases become immediately stale under reconcile, which can incorrectly fail active daemon tasks or release a healthy CLI writer lock.
+
+### Proposed Change
+Clamp `ttl_override_seconds` to `i64::MAX` before constructing `chrono::Duration`, or reject oversized values during CLI argument validation. Reusing the same saturation rule already used by `lease_heartbeat_deadline()` keeps override behavior aligned with the default TTL path.
+
+### Affected Files
+- [src/contexts/automation_runtime/lease_service.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/contexts/automation_runtime/lease_service.rs#L393) - saturate the override TTL in both stale checks.
+- [src/cli/daemon.rs](/root/new-ralph-burning/ralph-burning-rewrite/src/cli/daemon.rs#L42) - optionally validate and reject unsupported TTL override values early.
+
+### Reviewer
+codex
+
