@@ -34,22 +34,25 @@ pub struct LeaseCleanupFailure {
     pub details: String,
 }
 
-/// Controls how `release()` treats `AlreadyAbsent` outcomes from cleanup
-/// sub-steps. `Reconcile` uses `Strict` so that missing resources are
-/// surfaced as cleanup failures; all other callers use `Idempotent` so
-/// that idempotent cleanup (e.g., abort where worktree is already gone)
-/// succeeds without creating dangling task-to-lease references.
+/// Controls how `release()` reports `AlreadyAbsent` outcomes from cleanup
+/// sub-steps. Both modes enforce the same fail-closed `resources_released`
+/// rule: true only when worktree removal, writer-lock release, and
+/// lease-file deletion all positively succeed. The difference is error
+/// reporting: `Strict` treats already-absent as a reportable cleanup
+/// failure, while `Idempotent` returns `Ok` without surfacing it.
 ///
 /// Release order: worktree removal → writer-lock release → lease-file
 /// deletion.  The lease file is preserved when writer-lock release fails
 /// so the durable record remains visible for recovery.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReleaseMode {
-    /// `AlreadyAbsent` sub-step outcomes are treated as successful cleanup.
-    /// Only real I/O errors make `resources_released` false.
+    /// `AlreadyAbsent` sub-step outcomes do not produce an error, but
+    /// `resources_released` is still `false` — callers must not clear
+    /// durable lease references or emit `LeaseReleased` journal entries.
     Idempotent,
-    /// `AlreadyAbsent` sub-step outcomes are treated as partial failure.
-    /// Used by `reconcile()` where the strict pre-check already exists.
+    /// `AlreadyAbsent` sub-step outcomes are treated as reportable cleanup
+    /// failures. Used by `reconcile()` where the strict pre-check already
+    /// ensures resources should still exist.
     Strict,
 }
 
@@ -318,21 +321,15 @@ impl LeaseService {
             (false, None)
         };
 
-        // Determine whether cleanup succeeded. Writer-lock must have
-        // returned Released (not AlreadyAbsent) in all modes. In Strict
-        // mode (reconcile), already-absent worktree and lease-file also
-        // count as failure.
-        let resources_released = match mode {
-            ReleaseMode::Idempotent => {
-                writer_lock_released && lease_file_error.is_none()
-            }
-            ReleaseMode::Strict => {
-                !worktree_already_absent
-                    && writer_lock_released
-                    && !lease_file_already_absent
-                    && lease_file_error.is_none()
-            }
-        };
+        // Determine whether cleanup succeeded. True only when all three
+        // sub-steps positively succeeded, regardless of ReleaseMode.
+        // Idempotent vs Strict only affects error reporting, not the
+        // resources_released flag.
+        let resources_released = !worktree_already_absent
+            && writer_lock_released
+            && !lease_file_already_absent
+            && lease_file_error.is_none();
+        let _ = mode; // mode governs caller error reporting, not this flag
 
         // Only emit LeaseReleased when all sub-steps succeeded. Partial
         // cleanup must not record a release event — the lease state remains

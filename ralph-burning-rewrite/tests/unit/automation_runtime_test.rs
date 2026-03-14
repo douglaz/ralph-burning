@@ -2678,15 +2678,15 @@ fn daemon_loop_cleanup_preserves_lease_reference_on_partial_failure() {
 }
 
 // ---------------------------------------------------------------------------
-// Idempotent release: missing worktree is treated as success for abort/daemon-loop
+// Idempotent release: missing worktree keeps resources_released=false
 // ---------------------------------------------------------------------------
 
 #[test]
-fn release_idempotent_mode_treats_missing_worktree_as_success() {
-    // When a worktree is already absent, Idempotent mode must report
-    // resources_released=true (no real I/O errors). This is the contract
-    // that daemon abort and daemon-loop cleanup rely on: missing worktrees
-    // are common during abort and must not cause partial-failure errors.
+fn release_idempotent_mode_missing_worktree_returns_partial() {
+    // When a worktree is already absent, resources_released must be false
+    // regardless of ReleaseMode — all three sub-steps must positively
+    // succeed. Idempotent mode still returns Ok (no error), but callers
+    // must not clear durable lease references.
     let temp = tempdir().expect("tempdir");
     let store = FsDaemonStore;
 
@@ -2725,27 +2725,24 @@ fn release_idempotent_mode_treats_missing_worktree_as_success() {
         &lease,
         ReleaseMode::Idempotent,
     )
-    .expect("release succeeds in idempotent mode");
+    .expect("release returns Ok in idempotent mode (no error)");
 
     assert!(
-        result.resources_released,
-        "resources_released must be true in Idempotent mode when worktree is already absent"
+        !result.resources_released,
+        "resources_released must be false when worktree is already absent"
     );
     assert!(
         result.worktree_already_absent,
-        "worktree_already_absent flag should still be set"
+        "worktree_already_absent flag should be set"
     );
-
-    // In contrast, Strict mode should report resources_released=false
-    // for the same scenario. This is tested implicitly by reconcile tests.
 }
 
 #[test]
-fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
+fn abort_cleanup_with_missing_worktree_returns_partial_in_idempotent_mode() {
     // Simulates daemon abort when the worktree is already gone: release()
-    // with Idempotent mode must succeed, and the caller clears lease_id.
-    // This is the regression the review caught: the strict AlreadyAbsent
-    // policy leaked into abort and caused it to fail with partial cleanup.
+    // with Idempotent mode returns Ok but resources_released=false.
+    // Callers must NOT clear durable lease references — the incomplete
+    // cleanup state must remain visible for operator recovery.
     let temp = tempdir().expect("tempdir");
     let store = FsDaemonStore;
 
@@ -2789,33 +2786,26 @@ fn abort_cleanup_succeeds_with_missing_worktree_in_idempotent_mode() {
     );
     match release_result {
         Ok(ref r) if r.resources_released => {
-            ralph_burning::contexts::automation_runtime::DaemonTaskService::clear_lease_reference(
-                &store,
-                temp.path(),
-                "abort-missing-wt",
-            )
-            .expect("clear lease ref");
+            panic!("resources_released must be false when worktree is already absent")
         }
-        Ok(_) => {
-            panic!("Idempotent release with missing worktree should have resources_released=true")
+        Ok(ref r) => {
+            assert!(
+                r.worktree_already_absent,
+                "worktree_already_absent flag should be set"
+            );
+            // Partial cleanup — do NOT clear lease reference
         }
         Err(e) => panic!("unexpected release error: {e}"),
     }
 
-    // Verify: lease_id cleared, lease file removed
+    // Verify: lease_id must still be set (not cleared)
     let task_after = store
         .read_task(temp.path(), "abort-missing-wt")
         .expect("read task");
-    assert!(
-        task_after.lease_id.is_none(),
-        "lease_id must be cleared after successful idempotent release"
-    );
-    assert!(
-        !temp
-            .path()
-            .join(".ralph-burning/daemon/leases/lease-abort-missing-wt.json")
-            .exists(),
-        "lease file must be removed"
+    assert_eq!(
+        task_after.lease_id.as_deref(),
+        Some("lease-abort-missing-wt"),
+        "lease_id must NOT be cleared when release partially fails"
     );
 }
 

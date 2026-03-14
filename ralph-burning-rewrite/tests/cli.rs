@@ -456,7 +456,10 @@ fn daemon_abort_claimed_task_releases_lease() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    // Abort with a missing worktree triggers partial cleanup failure —
+    // the command exits non-zero because resources_released is false
+    // when all three sub-steps don't positively succeed.
+    assert!(!output.status.success());
 
     let task_path = temp_dir
         .path()
@@ -464,11 +467,11 @@ fn daemon_abort_claimed_task_releases_lease() {
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
-    assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-claimed.json")
-        .exists());
+    // Lease reference preserved — callers do not clear lease_id when
+    // resources_released is false. The physical lease file was deleted
+    // (writer-lock release succeeded, so phase 3 ran), but the task's
+    // lease_id stays set for operator visibility.
+    assert!(task.lease_id.is_some());
 }
 
 #[test]
@@ -523,7 +526,8 @@ fn daemon_abort_active_task_releases_lease() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    // Abort with a missing worktree triggers partial cleanup failure.
+    assert!(!output.status.success());
 
     let task_path = temp_dir
         .path()
@@ -531,11 +535,8 @@ fn daemon_abort_active_task_releases_lease() {
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
-    assert!(task.lease_id.is_none());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/daemon/leases/lease-active-abort.json")
-        .exists());
+    // Lease reference preserved for operator recovery.
+    assert!(task.lease_id.is_some());
 }
 
 #[test]
