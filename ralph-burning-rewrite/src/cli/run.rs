@@ -8,8 +8,10 @@ use crate::adapters::fs::{
     FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
     FsSessionStore,
 };
+use crate::adapters::process_backend::ProcessBackendAdapter;
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
+use crate::adapters::BackendAdapter;
 use crate::contexts::agent_execution::service::AgentExecutionService;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
@@ -58,7 +60,39 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
 }
 
 pub fn build_agent_execution_service(
-) -> AgentExecutionService<StubBackendAdapter, FsRawOutputStore, FsSessionStore> {
+) -> AppResult<AgentExecutionService<BackendAdapter, FsRawOutputStore, FsSessionStore>> {
+    let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
+        Ok(value) => value,
+        Err(std::env::VarError::NotPresent) => "process".to_owned(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(AppError::InvalidConfigValue {
+                key: "RALPH_BURNING_BACKEND".to_owned(),
+                value: "<non-unicode>".to_owned(),
+                reason: "expected one of stub, process".to_owned(),
+            });
+        }
+    };
+
+    let adapter = match backend_selector.as_str() {
+        "stub" => BackendAdapter::Stub(build_stub_backend_adapter()),
+        "process" => BackendAdapter::Process(ProcessBackendAdapter::new()),
+        other => {
+            return Err(AppError::InvalidConfigValue {
+                key: "RALPH_BURNING_BACKEND".to_owned(),
+                value: other.to_owned(),
+                reason: "expected one of stub, process".to_owned(),
+            });
+        }
+    };
+
+    Ok(AgentExecutionService::new(
+        adapter,
+        FsRawOutputStore,
+        FsSessionStore,
+    ))
+}
+
+fn build_stub_backend_adapter() -> StubBackendAdapter {
     let mut adapter = StubBackendAdapter::default();
 
     // Test-only injection seam: environment variables configure the stub backend
@@ -103,7 +137,7 @@ pub fn build_agent_execution_service(
         }
     }
 
-    AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore)
+    adapter
 }
 
 async fn handle_start() -> AppResult<()> {
@@ -163,7 +197,7 @@ async fn handle_start() -> AppResult<()> {
 
     let effective_config = EffectiveConfig::load(&current_dir)?;
 
-    let agent_service = build_agent_execution_service();
+    let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;
@@ -260,7 +294,7 @@ async fn handle_resume() -> AppResult<()> {
     )?;
 
     let effective_config = EffectiveConfig::load(&current_dir)?;
-    let agent_service = build_agent_execution_service();
+    let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;

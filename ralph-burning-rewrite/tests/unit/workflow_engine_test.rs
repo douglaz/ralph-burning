@@ -2102,7 +2102,14 @@ async fn payload_artifact_write_failure_persists_failed_state() {
 #[derive(Clone)]
 struct RecordingAdapter {
     inner: StubBackendAdapter,
-    requests: Arc<Mutex<Vec<(StageId, Value)>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
+}
+
+#[derive(Clone)]
+struct RecordedRequest {
+    stage_id: StageId,
+    context: Value,
+    invocation_id: String,
 }
 
 impl RecordingAdapter {
@@ -2118,8 +2125,18 @@ impl RecordingAdapter {
             .lock()
             .expect("recording adapter lock poisoned")
             .iter()
-            .filter(|(request_stage_id, _)| *request_stage_id == stage_id)
-            .map(|(_, context)| context.clone())
+            .filter(|request| request.stage_id == stage_id)
+            .map(|request| request.context.clone())
+            .collect()
+    }
+
+    fn invocation_ids_for(&self, stage_id: StageId) -> Vec<String> {
+        self.requests
+            .lock()
+            .expect("recording adapter lock poisoned")
+            .iter()
+            .filter(|request| request.stage_id == stage_id)
+            .map(|request| request.invocation_id.clone())
             .collect()
     }
 }
@@ -2144,10 +2161,11 @@ impl AgentExecutionPort for RecordingAdapter {
         self.requests
             .lock()
             .expect("recording adapter lock poisoned")
-            .push((
-                request.contract.stage_id().expect("stage id"),
-                request.payload.context.clone(),
-            ));
+            .push(RecordedRequest {
+                stage_id: request.contract.stage_id().expect("stage id"),
+                context: request.payload.context.clone(),
+                invocation_id: request.invocation_id.clone(),
+            });
         self.inner.invoke(request).await
     }
 
@@ -3065,6 +3083,32 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
 
     for stage_id in prior_stage_ids {
         sequence += 1;
+        let payload_id = format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX);
+        let artifact_id = format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX);
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(
+                base_dir,
+                &pid,
+                &PayloadRecord {
+                    payload_id: payload_id.clone(),
+                    stage_id,
+                    cycle: 1,
+                    attempt: 1,
+                    created_at: started_at,
+                    payload: json!({
+                        "stage": stage_id.as_str(),
+                        "completion_round": u32::MAX,
+                    }),
+                },
+                &ArtifactRecord {
+                    artifact_id: artifact_id.clone(),
+                    payload_id: payload_id.clone(),
+                    stage_id,
+                    created_at: started_at,
+                    content: format!("artifact for {}", stage_id.as_str()),
+                },
+            )
+            .unwrap();
         let stage_completed = journal::stage_completed_event(
             sequence,
             started_at,
@@ -3072,8 +3116,8 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
             stage_id,
             1,
             1,
-            &format!("{run_id}-{stage_id}-c1-a1-cr{}", u32::MAX),
-            &format!("{run_id}-{stage_id}-c1-a1-cr{}-artifact", u32::MAX),
+            &payload_id,
+            &artifact_id,
         );
         let line = journal::serialize_event(&stage_completed).unwrap();
         FsJournalStore.append_event(base_dir, &pid, &line).unwrap();
@@ -3722,6 +3766,61 @@ async fn completion_round_restart_creates_distinct_round_aware_payload_artifact_
             "artifact file should contain -cr: {name}"
         );
     }
+}
+
+#[tokio::test]
+async fn invocation_ids_differ_across_completion_rounds() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-invocation-ids");
+
+    let adapter = RecordingAdapter::new(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::CompletionPanel,
+            vec![
+                conditionally_approved_payload(&["tighten note"]),
+                approved_validation_payload(),
+            ],
+        ),
+    );
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "run should complete: {result:?}");
+
+    let planning_ids = adapter_handle.invocation_ids_for(StageId::Planning);
+    assert_eq!(planning_ids.len(), 2, "planning should run once per round");
+    assert_ne!(
+        planning_ids[0], planning_ids[1],
+        "invocation ids must differ when only completion_round changes"
+    );
+    assert!(
+        planning_ids[0].ends_with("-planning-c1-a1-cr1"),
+        "round-1 planning id should include completion_round=1: {:?}",
+        planning_ids
+    );
+    assert!(
+        planning_ids[1].ends_with("-planning-c1-a1-cr2"),
+        "round-2 planning id should include completion_round=2: {:?}",
+        planning_ids
+    );
 }
 
 #[tokio::test]

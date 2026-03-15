@@ -64,7 +64,7 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let _ = EffectiveConfig::load(&current_dir)?;
 
-    let agent_service = build_agent_execution_service();
+    let agent_service = build_agent_execution_service()?;
     let daemon_store = FsDaemonStore;
     let worktree = WorktreeAdapter;
     let project_store = FsProjectStore;

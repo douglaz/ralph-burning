@@ -109,6 +109,7 @@ impl InvocationContract {
 pub struct InvocationRequest {
     pub invocation_id: String,
     pub project_root: PathBuf,
+    pub working_dir: PathBuf,
     pub contract: InvocationContract,
     pub role: BackendRole,
     pub resolved_target: ResolvedBackendTarget,

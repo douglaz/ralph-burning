@@ -66,6 +66,9 @@ fn run_cli(args: &[&str], cwd: &Path) -> Result<CmdOutput, String> {
 fn run_cli_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Result<CmdOutput, String> {
     let mut cmd = Command::new(binary_path());
     cmd.args(args).current_dir(cwd);
+    if !env.iter().any(|(key, _)| *key == "RALPH_BURNING_BACKEND") {
+        cmd.env("RALPH_BURNING_BACKEND", "stub");
+    }
     for (k, v) in env {
         cmd.env(k, v);
     }

@@ -45,6 +45,7 @@ fn request_fixture(
     InvocationRequest {
         invocation_id: invocation_id.to_owned(),
         project_root: project_root.to_path_buf(),
+        working_dir: project_root.to_path_buf(),
         contract: InvocationContract::Stage(contract_for_stage(stage_id)),
         role,
         resolved_target,
