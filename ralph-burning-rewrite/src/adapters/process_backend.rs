@@ -368,14 +368,18 @@ impl ProcessBackendAdapter {
             )
         })?;
 
-        let parsed_payload: serde_json::Value =
+        let parsed_payload: serde_json::Value = if let Some(structured) = envelope.structured_output
+        {
+            structured
+        } else {
             serde_json::from_str(&envelope.result).map_err(|error| {
                 Self::invocation_failed(
                     &request,
                     FailureClass::SchemaValidationFailure,
                     format!("invalid Claude result JSON: {error}"),
                 )
-            })?;
+            })?
+        };
 
         let session_id = envelope.session_id.or_else(|| {
             if session_resuming {
@@ -458,7 +462,11 @@ impl ProcessBackendAdapter {
             .contract
             .stage_contract()
             .map(|sc| {
-                serde_json::to_string_pretty(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned())
+                let mut schema_value = serde_json::to_value(sc.json_schema())
+                    .unwrap_or_else(|_| serde_json::json!({}));
+                inject_additional_properties_false(&mut schema_value);
+                serde_json::to_string_pretty(&schema_value)
+                    .unwrap_or_else(|_| "{}".to_owned())
             })
             .unwrap_or_else(|| "{}".to_owned());
 
@@ -520,7 +528,7 @@ impl ProcessBackendAdapter {
                 best_effort_cleanup(Some(&schema_path), &message_path).await;
                 return Err(Self::invocation_failed(
                     &request,
-                    FailureClass::SchemaValidationFailure,
+                    FailureClass::TransportFailure,
                     format!("failed to read codex last-message file: {error}"),
                 ));
             }
@@ -663,9 +671,12 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
 #[derive(Deserialize)]
 struct ClaudeEnvelope {
+    #[serde(default)]
     result: String,
     #[serde(default)]
     session_id: Option<String>,
+    #[serde(default)]
+    structured_output: Option<serde_json::Value>,
 }
 
 struct ChildOutput {
@@ -712,4 +723,41 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
         let _ = tokio::fs::remove_file(schema_path).await;
     }
     let _ = tokio::fs::remove_file(message_path).await;
+}
+
+/// Recursively inject `"additionalProperties": false` into all object-type
+/// schemas. OpenAI's structured output API requires this on every object.
+fn inject_additional_properties_false(value: &mut serde_json::Value) {
+    if let serde_json::Value::Object(map) = value {
+        let is_object = map
+            .get("type")
+            .and_then(|t| t.as_str())
+            .map_or(false, |t| t == "object");
+        if is_object && !map.contains_key("additionalProperties") {
+            map.insert(
+                "additionalProperties".to_owned(),
+                serde_json::Value::Bool(false),
+            );
+        }
+        // Recurse into properties
+        if let Some(props) = map.get_mut("properties") {
+            if let serde_json::Value::Object(props_map) = props {
+                for prop_value in props_map.values_mut() {
+                    inject_additional_properties_false(prop_value);
+                }
+            }
+        }
+        // Recurse into definitions
+        if let Some(defs) = map.get_mut("definitions") {
+            if let serde_json::Value::Object(defs_map) = defs {
+                for def_value in defs_map.values_mut() {
+                    inject_additional_properties_false(def_value);
+                }
+            }
+        }
+        // Recurse into items (for array types)
+        if let Some(items) = map.get_mut("items") {
+            inject_additional_properties_false(items);
+        }
+    }
 }

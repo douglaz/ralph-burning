@@ -185,13 +185,13 @@ fn domain_failure_short_circuits_rendering() {
 }
 
 #[test]
-fn planning_rejects_zero_order_work_item() {
+fn planning_rejects_empty_summary_work_item() {
     let contract = contract_for_stage(StageId::Planning);
     let json = json!({
         "problem_framing": "Valid framing.",
         "assumptions_or_open_questions": [],
         "proposed_work": [
-            { "order": 0, "summary": "Bad order", "details": "" }
+            { "order": 0, "summary": "", "details": "" }
         ],
         "readiness": { "ready": true, "risks": [] }
     });

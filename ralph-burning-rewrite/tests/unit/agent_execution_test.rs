@@ -221,7 +221,7 @@ async fn service_constructs_envelope_and_persists_raw_output() {
     assert_eq!(envelope.parsed_payload["readiness"]["ready"], json!(true));
     assert_eq!(envelope.metadata.attempt_number, 1);
     assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
-    assert_eq!(envelope.metadata.model_used.model_id, "opus-4.1");
+    assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
     assert!(envelope.metadata.token_counts.total_tokens.is_some());
 }
 
@@ -435,7 +435,7 @@ async fn service_reuses_supported_sessions_and_persists_updated_metadata() {
         sessions: vec![SessionMetadata {
             role: BackendRole::Implementer,
             backend_family: BackendFamily::Codex,
-            model_id: "gpt-5-codex".to_owned(),
+            model_id: "gpt-5.4".to_owned(),
             session_id: "existing-session".to_owned(),
             created_at: timestamp,
             last_used_at: timestamp,
@@ -496,7 +496,7 @@ async fn service_does_not_reuse_sessions_for_roles_that_disallow_it() {
         sessions: vec![SessionMetadata {
             role: BackendRole::Planner,
             backend_family: BackendFamily::Claude,
-            model_id: "opus-4.1".to_owned(),
+            model_id: "claude-opus-4-6".to_owned(),
             session_id: "planner-session".to_owned(),
             created_at: timestamp,
             last_used_at: timestamp,

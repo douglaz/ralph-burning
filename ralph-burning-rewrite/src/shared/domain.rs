@@ -70,8 +70,8 @@ impl BackendFamily {
 
     pub fn default_model_id(self) -> &'static str {
         match self {
-            Self::Claude => "opus-4.1",
-            Self::Codex => "gpt-5-codex",
+            Self::Claude => "claude-opus-4-6",
+            Self::Codex => "gpt-5.4",
             Self::OpenRouter => "openai/gpt-5",
             Self::Stub => "stub-default",
         }
@@ -239,13 +239,13 @@ impl BackendRole {
 
     pub fn default_target(self) -> ResolvedBackendTarget {
         match self {
-            Self::Planner => ResolvedBackendTarget::new(BackendFamily::Claude, "opus-4.1"),
-            Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5-codex"),
-            Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Claude, "sonnet-4.0"),
+            Self::Planner => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
+            Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
+            Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::QaValidator => {
                 ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
             }
-            Self::CompletionJudge => ResolvedBackendTarget::new(BackendFamily::Claude, "opus-4.1"),
+            Self::CompletionJudge => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
         }
     }
 

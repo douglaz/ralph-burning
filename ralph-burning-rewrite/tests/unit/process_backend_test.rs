@@ -195,6 +195,18 @@ fi
     );
 }
 
+/// Write a fake codex script that exits successfully without producing
+/// --output-last-message so the adapter exercises file-read error handling.
+fn write_fake_codex_without_last_message(bin_dir: &std::path::Path) {
+    write_executable(
+        &bin_dir.join("codex"),
+        r#"#!/bin/sh
+echo "$@" > "$PWD/codex-args.txt"
+cat > "$PWD/codex-stdin.txt"
+"#,
+    );
+}
+
 fn write_fake_codex_with_large_stdout_before_stdin(
     bin_dir: &std::path::Path,
     payload: &serde_json::Value,
@@ -1030,6 +1042,39 @@ async fn claude_invalid_result_json_returns_schema_validation_failure() {
     ));
 }
 
+// ── Transport failure on missing Codex last-message output ──────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_missing_last_message_returns_transport_failure() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+    write_fake_codex_without_last_message(bin_dir.path());
+
+    let adapter = ProcessBackendAdapter::new();
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("missing last-message should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("failed to read codex last-message file"),
+                "should report the read failure: {details}"
+            );
+        }
+        other => panic!("expected TransportFailure for missing last-message, got: {other:?}"),
+    }
+}
+
 // ── Schema validation failure on bad Codex last-message JSON ────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -1052,13 +1097,21 @@ async fn codex_invalid_last_message_returns_schema_validation_failure() {
         .await
         .expect_err("invalid last-message should fail");
 
-    assert!(matches!(
-        error,
+    match error {
         AppError::InvocationFailed {
             failure_class: FailureClass::SchemaValidationFailure,
+            details,
             ..
+        } => {
+            assert!(
+                details.contains("invalid Codex last-message JSON"),
+                "should report the parse failure: {details}"
+            );
         }
-    ));
+        other => panic!(
+            "expected SchemaValidationFailure for invalid last-message JSON, got: {other:?}"
+        ),
+    }
 }
 
 // ── invoke() rejects Requirements contract with CapabilityMismatch ──────────
