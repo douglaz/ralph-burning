@@ -188,8 +188,8 @@ impl StageContract {
                     errors.push("proposed_work must contain at least one item".to_string());
                 }
                 for (i, item) in p.proposed_work.iter().enumerate() {
-                    if item.order == 0 {
-                        errors.push(format!("proposed_work[{i}].order must be positive"));
+                    if item.summary.is_empty() {
+                        errors.push(format!("proposed_work[{i}].summary must not be empty"));
                     }
                 }
                 if !errors.is_empty() {
@@ -208,8 +208,8 @@ impl StageContract {
                     errors.push("steps must contain at least one item".to_string());
                 }
                 for (i, step) in p.steps.iter().enumerate() {
-                    if step.order == 0 {
-                        errors.push(format!("steps[{i}].order must be positive"));
+                    if step.description.is_empty() {
+                        errors.push(format!("steps[{i}].description must not be empty"));
                     }
                 }
                 if !errors.is_empty() {

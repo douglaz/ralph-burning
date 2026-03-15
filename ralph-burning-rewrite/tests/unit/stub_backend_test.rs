@@ -91,7 +91,7 @@ async fn stub_backend_reuses_prior_session_when_role_and_backend_allow_it() {
     request.prior_session = Some(SessionMetadata {
         role: BackendRole::Implementer,
         backend_family: BackendFamily::Codex,
-        model_id: "gpt-5-codex".to_owned(),
+        model_id: "gpt-5.4".to_owned(),
         session_id: "existing-session".to_owned(),
         created_at: timestamp,
         last_used_at: timestamp,

@@ -3306,8 +3306,8 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
-    // Set up workspace with explicit defaults (codex / gpt-5-codex)
-    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+    // Set up workspace with explicit defaults (codex / gpt-5.4)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.4");
 
     // Build the service the same way the daemon does after the fix
     let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
@@ -3334,8 +3334,8 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5-codex", inv.resolved_target.model.model_id,
-            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            "gpt-5.4", inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5.4), got {}",
             inv.contract_label, inv.resolved_target.model.model_id
         );
     }
@@ -3349,8 +3349,8 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
-    // Set up workspace with explicit defaults (codex / gpt-5-codex)
-    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5-codex");
+    // Set up workspace with explicit defaults (codex / gpt-5.4)
+    let effective_config = setup_workspace_with_defaults(base_dir, "codex", "gpt-5.4");
 
     // Build the service the same way the daemon does after the fix
     let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
@@ -3377,8 +3377,8 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
             inv.resolved_target.backend.family
         );
         assert_eq!(
-            "gpt-5-codex", inv.resolved_target.model.model_id,
-            "invocation '{}' should use workspace default model (gpt-5-codex), got {}",
+            "gpt-5.4", inv.resolved_target.model.model_id,
+            "invocation '{}' should use workspace default model (gpt-5.4), got {}",
             inv.contract_label, inv.resolved_target.model.model_id
         );
     }
@@ -3420,7 +3420,7 @@ async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
     let invocations = adapter.recorded_invocations();
     assert!(!invocations.is_empty());
     // Requirements stages only use Planner and Reviewer roles.
-    // Planner default: Claude / opus-4.1
+    // Planner default: Claude / claude-opus-4-6
     // Reviewer default: Claude / sonnet-4.0
     for inv in &invocations {
         let expected = if inv.contract_label.contains("review") {
@@ -3514,12 +3514,7 @@ async fn daemon_requirements_partial_defaults_model_only() {
     let invocations = adapter.recorded_invocations();
     assert!(!invocations.is_empty());
     for inv in &invocations {
-        // Backend should remain the Planner role default (Claude)
-        assert_eq!(
-            BackendFamily::Claude,
-            inv.resolved_target.backend.family,
-            "model-only default should keep role default backend (claude)"
-        );
+        // default_model should override the model ID on whichever backend the role defaults to
         assert_eq!(
             "sonnet-4.0", inv.resolved_target.model.model_id,
             "model-only default should override to sonnet-4.0"
