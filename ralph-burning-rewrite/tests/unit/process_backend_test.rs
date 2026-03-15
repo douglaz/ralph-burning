@@ -502,10 +502,7 @@ async fn codex_command_construction_and_temp_files() {
 
     // Verify metadata
     assert_eq!(envelope.metadata.invocation_id, request.invocation_id);
-    assert_eq!(
-        envelope.metadata.session_id.as_deref(),
-        Some(request.invocation_id.as_str())
-    );
+    assert!(envelope.metadata.session_id.is_none());
     assert!(!envelope.metadata.session_reused);
 
     let args_file = request.working_dir.join("codex-args.txt");
@@ -557,10 +554,7 @@ async fn codex_new_session_returns_session_id() {
         .await
         .expect("invoke should succeed");
 
-    assert_eq!(
-        envelope.metadata.session_id.as_deref(),
-        Some(request.invocation_id.as_str())
-    );
+    assert!(envelope.metadata.session_id.is_none());
     assert!(!envelope.metadata.session_reused);
 }
 

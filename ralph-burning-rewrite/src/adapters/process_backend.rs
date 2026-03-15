@@ -543,7 +543,7 @@ impl ProcessBackendAdapter {
         let session_id = if session_resuming {
             request.prior_session.as_ref().map(|s| s.session_id.clone())
         } else {
-            Some(request.invocation_id.clone())
+            None
         };
 
         Ok(InvocationEnvelope {
