@@ -10,10 +10,10 @@ use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, QueuedAmendment,
 };
-use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::project_run_record::service::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::contracts::contract_for_stage;
 use ralph_burning::contexts::workflow_composition::engine::build_stage_prompt;
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::shared::domain::{
     BackendRole, FlowPreset, ProjectId, RunId, StageCursor, StageId,
 };

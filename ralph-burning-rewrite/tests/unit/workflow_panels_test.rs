@@ -2,12 +2,11 @@
 
 use ralph_burning::contexts::workflow_composition::completion::compute_completion_verdict;
 use ralph_burning::contexts::workflow_composition::panel_contracts::{
-    CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload,
+    panel_json_schema, CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload,
     FinalReviewAggregatePayload, FinalReviewArbiterPayload, FinalReviewCanonicalAmendment,
-    FinalReviewProposal, FinalReviewProposalPayload, FinalReviewVote,
-    FinalReviewVoteDecision, FinalReviewVotePayload, PromptReviewDecision,
-    PromptReviewPrimaryPayload, PromptRefinementPayload, PromptValidationPayload, RecordKind,
-    RecordProducer, panel_json_schema,
+    FinalReviewProposal, FinalReviewProposalPayload, FinalReviewVote, FinalReviewVoteDecision,
+    FinalReviewVotePayload, PromptRefinementPayload, PromptReviewDecision,
+    PromptReviewPrimaryPayload, PromptValidationPayload, RecordKind, RecordProducer,
 };
 use ralph_burning::shared::domain::StageId;
 
@@ -62,7 +61,10 @@ fn prompt_refinement_payload_round_trips() {
     let payload = PromptRefinementPayload {
         refined_prompt: "Rewritten prompt text.".to_string(),
         refinement_summary: "Clarified requirements.".to_string(),
-        improvements: vec!["Added acceptance criteria.".to_string(), "Removed ambiguity.".to_string()],
+        improvements: vec![
+            "Added acceptance criteria.".to_string(),
+            "Removed ambiguity.".to_string(),
+        ],
     };
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: PromptRefinementPayload = serde_json::from_str(&json).expect("deserializes");

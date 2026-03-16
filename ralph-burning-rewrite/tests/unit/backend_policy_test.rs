@@ -188,7 +188,10 @@ fn completion_panel_includes_enabled_openrouter_and_rejects_required_disabled_ba
         .resolve_completion_panel(1)
         .expect("resolve completion panel");
     assert_eq!(2, panel.completers.len());
-    assert_eq!(BackendFamily::Claude, panel.completers[0].target.backend.family);
+    assert_eq!(
+        BackendFamily::Claude,
+        panel.completers[0].target.backend.family
+    );
     assert_eq!(
         BackendFamily::OpenRouter,
         panel.completers[1].target.backend.family

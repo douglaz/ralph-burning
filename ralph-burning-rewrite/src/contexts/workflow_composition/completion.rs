@@ -29,13 +29,13 @@ use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::workflow_composition::panel_contracts::{
-    CompletionAggregatePayload, CompletionVotePayload, CompletionVerdict, RecordKind,
+    CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload, RecordKind,
     RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
-    StageId,
+    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
+    StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 

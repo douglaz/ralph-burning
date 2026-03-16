@@ -336,10 +336,9 @@ impl FileSystem {
         // Restore original hash in project.toml
         let original_hash = Self::prompt_hash(original_prompt);
         if let Ok(content) = fs::read_to_string(&project_toml_path) {
-            if let Ok(mut record) =
-                toml::from_str::<crate::contexts::project_run_record::model::ProjectRecord>(
-                    &content,
-                )
+            if let Ok(mut record) = toml::from_str::<
+                crate::contexts::project_run_record::model::ProjectRecord,
+            >(&content)
             {
                 record.prompt_hash = original_hash;
                 if let Ok(updated) = toml::to_string_pretty(&record) {

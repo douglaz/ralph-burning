@@ -9893,12 +9893,12 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(
         m,
-        "workflow.final_review.restart_cap_force_complete",
+        "workflow.final_review.no_amendments_complete_at_restart_cap",
         || {
             use crate::contexts::project_run_record::service::ArtifactStorePort;
 
             let ws = TempWorkspace::new()?;
-            setup_workspace_with_project(&ws, "fr-cap", "standard")?;
+            setup_workspace_with_project(&ws, "fr-cap-no-amend", "standard")?;
             let out = run_cli(
                 &["config", "set", "final_review.max_restarts", "1"],
                 ws.path(),
@@ -9923,6 +9923,14 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                             "summary": "Reviewer 2 has no amendments.",
                             "amendments": [],
                         }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 has no further amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 has no further amendments.",
+                            "amendments": [],
+                        }),
                     ],
                 )
                 .with_label_payload_sequence(
@@ -9939,6 +9947,170 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                         serde_json::json!({
                             "summary": "Reviewer 2 vote.",
                             "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                    ],
+                );
+            let pid = crate::shared::domain::ProjectId::new("fr-cap-no-amend")
+                .map_err(|e| format!("project id: {e}"))?;
+            let config =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                    .map_err(|e| format!("load effective config: {e}"))?;
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter.clone(),
+                crate::adapters::fs::FsRawOutputStore,
+                crate::adapters::fs::FsSessionStore,
+            );
+
+            block_on_app_result(
+                crate::contexts::workflow_composition::engine::execute_standard_run(
+                    &agent_service,
+                    &crate::adapters::fs::FsRunSnapshotStore,
+                    &crate::adapters::fs::FsRunSnapshotWriteStore,
+                    &crate::adapters::fs::FsJournalStore,
+                    &crate::adapters::fs::FsPayloadArtifactWriteStore,
+                    &crate::adapters::fs::FsRuntimeLogWriteStore,
+                    &crate::adapters::fs::FsAmendmentQueueStore,
+                    ws.path(),
+                    &pid,
+                    &config,
+                ),
+            )?;
+
+            let snapshot = read_run_snapshot(&ws, "fr-cap-no-amend")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err(
+                    "expected completed status after no-amendment final-review cap boundary"
+                        .to_owned(),
+                );
+            }
+            if snapshot.get("completion_rounds").and_then(|v| v.as_u64()) != Some(2) {
+                return Err(
+                    "no-amendment final review at the restart cap should stay on round 2"
+                        .to_owned(),
+                );
+            }
+
+            let reviewer_invocations = adapter
+                .recorded_invocations()
+                .into_iter()
+                .filter(|invocation| invocation.contract_label == "final_review:reviewer")
+                .count();
+            if reviewer_invocations != 4 {
+                return Err(format!(
+                    "expected both final-review rounds to collect reviewer proposals, got {reviewer_invocations} reviewer invocations"
+                ));
+            }
+
+            let aggregate_payload = crate::adapters::fs::FsArtifactStore
+                .list_payloads(ws.path(), &pid)
+                .map_err(|e| format!("list payloads: {e}"))?
+                .into_iter()
+                .find(|payload| {
+                    payload.stage_id == crate::shared::domain::StageId::FinalReview
+                        && payload.record_kind
+                            == crate::contexts::workflow_composition::panel_contracts::RecordKind::StageAggregate
+                        && payload.completion_round == 2
+                })
+                .ok_or_else(|| "missing round-2 final-review aggregate payload".to_owned())?;
+            if aggregate_payload
+                .payload
+                .get("force_completed")
+                .and_then(|v| v.as_bool())
+                != Some(false)
+            {
+                return Err(
+                    "round-2 final review with no amendments should complete normally without force_completed=true"
+                        .to_owned(),
+                );
+            }
+            if aggregate_payload
+                .payload
+                .get("unique_amendment_count")
+                .and_then(|v| v.as_u64())
+                != Some(0)
+            {
+                return Err(
+                    "round-2 final review at the cap should report zero merged amendments"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.final_review.restart_cap_force_complete",
+        || {
+            use crate::contexts::project_run_record::service::ArtifactStorePort;
+
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-cap", "standard")?;
+            let out = run_cli(
+                &["config", "set", "final_review.max_restarts", "1"],
+                ws.path(),
+            )?;
+            assert_success(&out)?;
+
+            let amendment_body = "Tighten the final wording.";
+            let amendment_id =
+                crate::contexts::workflow_composition::final_review::canonical_amendment_id(
+                    1,
+                    amendment_body,
+                );
+            let second_round_amendment_id =
+                crate::contexts::workflow_composition::final_review::canonical_amendment_id(
+                    2,
+                    amendment_body,
+                );
+            let adapter = crate::adapters::stub_backend::StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "final_review:reviewer",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Reviewer 1 proposes one amendment.",
+                            "amendments": [{"body": amendment_body}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 has no amendments.",
+                            "amendments": [],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 proposes the amendment again.",
+                            "amendments": [{"body": amendment_body}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 still has no amendments.",
+                            "amendments": [],
+                        }),
+                    ],
+                )
+                .with_label_payload_sequence(
+                    "final_review:voter",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Planner position.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Planner position.",
+                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Required again."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 vote.",
+                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": second_round_amendment_id, "decision": "accept", "rationale": "Still agree."}],
                         }),
                     ],
                 );
@@ -9973,9 +10145,9 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .into_iter()
                 .filter(|invocation| invocation.contract_label == "final_review:reviewer")
                 .count();
-            if reviewer_invocations != 2 {
+            if reviewer_invocations != 4 {
                 return Err(format!(
-                    "restart-cap force-complete should skip a second proposal round; expected 2 reviewer invocations, got {reviewer_invocations}"
+                    "restart-cap force-complete should still collect the capped round's proposals; expected 4 reviewer invocations, got {reviewer_invocations}"
                 ));
             }
 

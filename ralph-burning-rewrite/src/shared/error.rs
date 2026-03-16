@@ -188,9 +188,7 @@ pub enum AppError {
     },
     #[error("prompt review rejected: {details}")]
     PromptReviewRejected { details: String },
-    #[error(
-        "resume drift failure for stage '{stage_id}': {details}"
-    )]
+    #[error("resume drift failure for stage '{stage_id}': {details}")]
     ResumeDriftFailure { stage_id: StageId, details: String },
     #[error("stage resolution snapshot failed for stage '{stage_id}': {details}")]
     SnapshotPersistFailed { stage_id: StageId, details: String },

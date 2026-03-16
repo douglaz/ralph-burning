@@ -11,9 +11,9 @@ use std::fmt::Write;
 use crate::shared::domain::StageId;
 
 use super::panel_contracts::{
-    CompletionAggregatePayload, CompletionVotePayload, PromptRefinementPayload,
-    PromptReviewPrimaryPayload, PromptValidationPayload, FinalReviewAggregatePayload,
+    CompletionAggregatePayload, CompletionVotePayload, FinalReviewAggregatePayload,
     FinalReviewArbiterPayload, FinalReviewProposalPayload, FinalReviewVotePayload,
+    PromptRefinementPayload, PromptReviewPrimaryPayload, PromptValidationPayload,
 };
 use super::payloads::{ExecutionPayload, PlanningPayload, ValidationPayload};
 
@@ -403,10 +403,7 @@ pub fn render_final_review_vote(
 }
 
 /// Render a final-review arbiter supporting artifact to deterministic Markdown.
-pub fn render_final_review_arbiter(
-    payload: &FinalReviewArbiterPayload,
-    producer: &str,
-) -> String {
+pub fn render_final_review_arbiter(payload: &FinalReviewArbiterPayload, producer: &str) -> String {
     let mut out = String::new();
 
     writeln!(out, "# Final Review Arbiter").unwrap();
@@ -450,8 +447,7 @@ pub fn render_final_review_aggregate(payload: &FinalReviewAggregatePayload) -> S
     writeln!(
         out,
         "**Final Review Restarts:** {}/{}",
-        payload.final_review_restart_count,
-        payload.max_restarts
+        payload.final_review_restart_count, payload.max_restarts
     )
     .unwrap();
     writeln!(out).unwrap();

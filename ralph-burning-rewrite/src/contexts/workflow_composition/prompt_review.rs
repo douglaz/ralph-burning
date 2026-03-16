@@ -29,13 +29,13 @@ use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::workflow_composition::panel_contracts::{
-    PromptRefinementPayload, PromptReviewDecision,
-    PromptReviewPrimaryPayload, PromptValidationPayload, RecordKind, RecordProducer,
+    PromptRefinementPayload, PromptReviewDecision, PromptReviewPrimaryPayload,
+    PromptValidationPayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
-    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
-    StageId,
+    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
+    StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -103,14 +103,12 @@ where
     )
     .await?;
 
-    let refinement: PromptRefinementPayload =
-        serde_json::from_value(refinement_payload.clone()).map_err(|e| {
-            AppError::InvocationFailed {
-                backend: refiner_target.backend.family.to_string(),
-                contract_id: "prompt_review:refiner".to_owned(),
-                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                details: format!("refiner output schema validation failed: {e}"),
-            }
+    let refinement: PromptRefinementPayload = serde_json::from_value(refinement_payload.clone())
+        .map_err(|e| AppError::InvocationFailed {
+            backend: refiner_target.backend.family.to_string(),
+            contract_id: "prompt_review:refiner".to_owned(),
+            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+            details: format!("refiner output schema validation failed: {e}"),
         })?;
 
     // ── Step 2: Persist refinement as StageSupporting ───────────────────────
@@ -365,5 +363,10 @@ fn persist_supporting_record(
         completion_round: cursor.completion_round,
     };
 
-    artifact_write.write_payload_artifact_pair(base_dir, project_id, &payload_record, &artifact_record)
+    artifact_write.write_payload_artifact_pair(
+        base_dir,
+        project_id,
+        &payload_record,
+        &artifact_record,
+    )
 }

@@ -200,35 +200,6 @@ where
             details: format!("failed to read prompt for final review: {e}"),
         })?;
 
-    if final_review_restart_count >= max_restarts {
-        let aggregate = FinalReviewAggregatePayload {
-            restart_required: false,
-            force_completed: true,
-            total_reviewers: panel.reviewers.len(),
-            total_proposed_amendments: 0,
-            unique_amendment_count: 0,
-            accepted_amendment_ids: Vec::new(),
-            rejected_amendment_ids: Vec::new(),
-            disputed_amendment_ids: Vec::new(),
-            amendments: Vec::new(),
-            final_accepted_amendments: Vec::new(),
-            final_review_restart_count,
-            max_restarts,
-            summary: format!(
-                "Final-review restart cap reached ({final_review_restart_count}/{max_restarts}); force-completing."
-            ),
-        };
-        let aggregate_payload = serde_json::to_value(&aggregate)?;
-        let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
-        return Ok(FinalReviewResult {
-            aggregate_payload,
-            aggregate_artifact,
-            final_accepted_amendments: Vec::new(),
-            restart_required: false,
-            force_completed: true,
-        });
-    }
-
     let mut reviewer_records = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
@@ -599,6 +570,43 @@ where
         .filter(|amendment| final_accepted_ids.contains(&amendment.amendment_id))
         .cloned()
         .collect();
+
+    if !final_accepted_amendments.is_empty() && final_review_restart_count >= max_restarts {
+        let aggregate = FinalReviewAggregatePayload {
+            restart_required: false,
+            force_completed: true,
+            total_reviewers: reviewer_votes.len(),
+            total_proposed_amendments: reviewer_records
+                .iter()
+                .map(|record| record.payload.amendments.len())
+                .sum(),
+            unique_amendment_count: amendments.len(),
+            accepted_amendment_ids: accepted_ids.clone(),
+            rejected_amendment_ids: rejected_ids.clone(),
+            disputed_amendment_ids: disputed_ids.clone(),
+            amendments: amendments.iter().map(canonical_to_payload).collect(),
+            final_accepted_amendments: final_accepted_amendments
+                .iter()
+                .map(canonical_to_payload)
+                .collect(),
+            final_review_restart_count,
+            max_restarts,
+            summary: format!(
+                "Final-review restart cap reached ({final_review_restart_count}/{max_restarts}); force-completing instead of restarting with {} accepted amendment(s).",
+                final_accepted_amendments.len()
+            ),
+        };
+        let aggregate_payload = serde_json::to_value(&aggregate)?;
+        let aggregate_artifact = renderers::render_final_review_aggregate(&aggregate);
+
+        return Ok(FinalReviewResult {
+            aggregate_payload,
+            aggregate_artifact,
+            final_accepted_amendments,
+            restart_required: false,
+            force_completed: true,
+        });
+    }
 
     let aggregate = FinalReviewAggregatePayload {
         restart_required: !final_accepted_amendments.is_empty(),
