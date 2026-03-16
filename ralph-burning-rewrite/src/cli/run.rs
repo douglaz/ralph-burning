@@ -69,8 +69,8 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
     }
 }
 
-pub fn build_agent_execution_service(
-) -> AppResult<agent_execution_builder::ProductionAgentService> {
+pub fn build_agent_execution_service() -> AppResult<agent_execution_builder::ProductionAgentService>
+{
     agent_execution_builder::build_agent_execution_service()
 }
 

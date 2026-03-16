@@ -865,7 +865,10 @@ async fn cancellation_returns_promptly_when_child_ignores_sigterm() {
     );
 
     let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
-    assert!(result.is_ok(), "invoke should complete after background reap");
+    assert!(
+        result.is_ok(),
+        "invoke should complete after background reap"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -909,7 +912,10 @@ async fn dropping_child_handle_uses_kill_on_drop_safety_net() {
 
     handle.abort();
     let join_error = handle.await.expect_err("invoke task should be cancelled");
-    assert!(join_error.is_cancelled(), "invoke task should abort cleanly");
+    assert!(
+        join_error.is_cancelled(),
+        "invoke task should abort cleanly"
+    );
     assert!(
         process_is_running(pid),
         "dropping the invoke task alone should not kill the child while the adapter still holds it"
@@ -1131,9 +1137,9 @@ async fn codex_invalid_last_message_returns_schema_validation_failure() {
                 "should report the parse failure: {details}"
             );
         }
-        other => panic!(
-            "expected SchemaValidationFailure for invalid last-message JSON, got: {other:?}"
-        ),
+        other => {
+            panic!("expected SchemaValidationFailure for invalid last-message JSON, got: {other:?}")
+        }
     }
 }
 
@@ -1177,10 +1183,7 @@ async fn invoke_requirements_contract_via_claude() {
         .await
         .expect("requirements invoke should succeed");
     assert_eq!(result.parsed_payload, payload_json);
-    assert_eq!(
-        result.metadata.session_id.as_deref(),
-        Some("req-session-1")
-    );
+    assert_eq!(result.metadata.session_id.as_deref(), Some("req-session-1"));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1200,11 +1203,8 @@ async fn invoke_requirements_contract_via_codex() {
     // pattern that existing tests use.
     let (_dir, mut request) = request_fixture(BackendFamily::Codex);
     let payload_file = request.working_dir.join("req-codex-payload.json");
-    fs::write(
-        &payload_file,
-        serde_json::to_string(&payload_json).unwrap(),
-    )
-    .expect("write payload file");
+    fs::write(&payload_file, serde_json::to_string(&payload_json).unwrap())
+        .expect("write payload file");
     write_fake_codex(bin_dir.path(), &payload_file);
 
     request.contract = InvocationContract::Requirements {

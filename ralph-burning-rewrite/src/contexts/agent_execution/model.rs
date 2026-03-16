@@ -8,9 +8,9 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio::sync::Notify;
 
+use crate::contexts::agent_execution::session::SessionMetadata;
 use crate::contexts::requirements_drafting::contracts::RequirementsContract;
 use crate::contexts::requirements_drafting::model::RequirementsStageId;
-use crate::contexts::agent_execution::session::SessionMetadata;
 use crate::contexts::workflow_composition::contracts::StageContract;
 use crate::shared::domain::{
     BackendRole, BackendSpec, ModelSpec, ResolvedBackendTarget, SessionPolicy, StageId,
@@ -115,9 +115,8 @@ impl InvocationContract {
 
     pub fn json_schema_value(&self) -> Value {
         match self {
-            Self::Stage(contract) => {
-                serde_json::to_value(contract.json_schema()).unwrap_or_else(|_| Value::Object(Default::default()))
-            }
+            Self::Stage(contract) => serde_json::to_value(contract.json_schema())
+                .unwrap_or_else(|_| Value::Object(Default::default())),
             Self::Requirements { label } => requirements_contract_for_label(label)
                 .and_then(|contract| serde_json::to_value(contract.json_schema()).ok())
                 .unwrap_or_else(|| Value::Object(Default::default())),

@@ -247,7 +247,9 @@ impl BackendRole {
             Self::QaValidator => {
                 ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
             }
-            Self::CompletionJudge => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
+            Self::CompletionJudge => {
+                ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6")
+            }
         }
     }
 
@@ -394,11 +396,13 @@ impl BackendSelection {
         }
 
         if let Some((backend, model)) = normalized.split_once('(') {
-            let model = model.strip_suffix(')').ok_or_else(|| AppError::InvalidConfigValue {
-                key: "backend".to_owned(),
-                value: value.to_owned(),
-                reason: "backend model spec must end with ')'".to_owned(),
-            })?;
+            let model = model
+                .strip_suffix(')')
+                .ok_or_else(|| AppError::InvalidConfigValue {
+                    key: "backend".to_owned(),
+                    value: value.to_owned(),
+                    reason: "backend model spec must end with ')'".to_owned(),
+                })?;
             let family = backend.trim().parse::<BackendFamily>()?;
             let model = model.trim();
             if model.is_empty() {
@@ -499,7 +503,9 @@ impl<'de> Deserialize<'de> for PanelBackendSpec {
         D: serde::Deserializer<'de>,
     {
         let value = String::deserialize(deserializer)?;
-        value.parse::<PanelBackendSpec>().map_err(serde::de::Error::custom)
+        value
+            .parse::<PanelBackendSpec>()
+            .map_err(serde::de::Error::custom)
     }
 }
 

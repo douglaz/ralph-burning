@@ -250,14 +250,19 @@ impl FileSystem {
             .join(project_id.as_str())
     }
 
-    pub fn read_project_config(base_dir: &Path, project_id: &ProjectId) -> AppResult<ProjectConfig> {
+    pub fn read_project_config(
+        base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ProjectConfig> {
         let path = Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE);
         match fs::read_to_string(&path) {
             Ok(raw) => toml::from_str(&raw).map_err(|error| AppError::CorruptRecord {
                 file: format!("projects/{}/config.toml", project_id),
                 details: error.to_string(),
             }),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ProjectConfig::default()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ProjectConfig::default())
+            }
             Err(error) => Err(error.into()),
         }
     }
@@ -515,7 +520,10 @@ impl ProjectStorePort for FsProjectStore {
             // config.toml
             let project_config_toml = toml::to_string_pretty(&ProjectConfig::default())
                 .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
-            fs::write(staging_root.join(PROJECT_POLICY_CONFIG_FILE), project_config_toml)?;
+            fs::write(
+                staging_root.join(PROJECT_POLICY_CONFIG_FILE),
+                project_config_toml,
+            )?;
 
             // prompt.md
             fs::write(staging_root.join(PROMPT_FILE), prompt_contents)?;

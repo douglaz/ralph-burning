@@ -29,7 +29,11 @@ fn effective_config_loads_compiled_defaults() {
     assert_eq!(None, config.default_model());
     assert_eq!(
         Some("claude".to_owned()),
-        match config.get("default_backend").expect("default backend").value {
+        match config
+            .get("default_backend")
+            .expect("default backend")
+            .value
+        {
             ralph_burning::contexts::workspace_governance::ConfigValue::String(value) => value,
             other => panic!("expected string config value, got {other:?}"),
         }

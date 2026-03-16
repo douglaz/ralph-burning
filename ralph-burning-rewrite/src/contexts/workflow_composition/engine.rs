@@ -717,7 +717,8 @@ where
         .last()
         .map(|entry| entry.cycle)
         .unwrap_or(1);
-    let stage_plan = resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, resume_cycle)?;
+    let stage_plan =
+        resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, resume_cycle)?;
     // Reconcile amendments from disk into snapshot before deriving resume state.
     reconcile_amendments_from_disk(
         &mut snapshot,

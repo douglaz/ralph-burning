@@ -75,7 +75,11 @@ pub async fn handle(command: ConfigCommand) -> AppResult<()> {
                 "Updated {} = {} in {}",
                 entry.key,
                 entry.value.display_value(),
-                if project { "project config.toml" } else { "workspace.toml" }
+                if project {
+                    "project config.toml"
+                } else {
+                    "workspace.toml"
+                }
             );
             Ok(())
         }
@@ -83,14 +87,19 @@ pub async fn handle(command: ConfigCommand) -> AppResult<()> {
             let _ = load_effective_config(&current_dir, project)?;
             let config_path = if project {
                 let project_id = workspace_governance::resolve_active_project(&current_dir)?;
-                let existing =
-                    crate::adapters::fs::FileSystem::read_project_config(&current_dir, &project_id)?;
+                let existing = crate::adapters::fs::FileSystem::read_project_config(
+                    &current_dir,
+                    &project_id,
+                )?;
                 crate::adapters::fs::FileSystem::write_project_config(
                     &current_dir,
                     &project_id,
                     &existing,
                 )?;
-                crate::adapters::fs::FileSystem::project_policy_config_path(&current_dir, &project_id)
+                crate::adapters::fs::FileSystem::project_policy_config_path(
+                    &current_dir,
+                    &project_id,
+                )
             } else {
                 current_dir
                     .join(workspace_governance::WORKSPACE_DIR)
@@ -101,14 +110,22 @@ pub async fn handle(command: ConfigCommand) -> AppResult<()> {
                 Ok(_) => {
                     println!(
                         "Validated {}",
-                        if project { "project config.toml" } else { "workspace.toml" }
+                        if project {
+                            "project config.toml"
+                        } else {
+                            "workspace.toml"
+                        }
                     );
                     Ok(())
                 }
                 Err(error) => {
                     eprintln!(
                         "{} is invalid after editing: {error}. Fix the file manually.",
-                        if project { "project config.toml" } else { "workspace.toml" }
+                        if project {
+                            "project config.toml"
+                        } else {
+                            "workspace.toml"
+                        }
                     );
                     Err(error)
                 }

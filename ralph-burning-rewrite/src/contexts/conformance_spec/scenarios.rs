@@ -308,6 +308,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_run_rollback(&mut m);
     register_requirements_drafting(&mut m);
     register_backend_requirements(&mut m);
+    register_backend_openrouter(&mut m);
     register_daemon_lifecycle(&mut m);
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
@@ -488,48 +489,54 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
 // ===========================================================================
 
 fn register_backend_policy(m: &mut HashMap<String, ScenarioExecutor>) {
-    reg!(m, "backend.role_overrides.per_role_override_beats_default", || {
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
+    reg!(
+        m,
+        "backend.role_overrides.per_role_override_beats_default",
+        || {
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
 
-        let created_at = chrono::DateTime::parse_from_rfc3339("2026-03-16T02:10:31Z")
-            .expect("valid timestamp")
-            .with_timezone(&chrono::Utc);
+            let created_at = chrono::DateTime::parse_from_rfc3339("2026-03-16T02:10:31Z")
+                .expect("valid timestamp")
+                .with_timezone(&chrono::Utc);
 
-        let mut workspace = crate::shared::domain::WorkspaceConfig::new(created_at);
-        workspace.settings.default_backend = Some("claude".to_owned());
-        std::fs::write(
-            ws.path().join(".ralph-burning/workspace.toml"),
-            toml::to_string_pretty(&workspace).unwrap(),
-        )
-        .map_err(|e| format!("write workspace config: {e}"))?;
+            let mut workspace = crate::shared::domain::WorkspaceConfig::new(created_at);
+            workspace.settings.default_backend = Some("claude".to_owned());
+            std::fs::write(
+                ws.path().join(".ralph-burning/workspace.toml"),
+                toml::to_string_pretty(&workspace).unwrap(),
+            )
+            .map_err(|e| format!("write workspace config: {e}"))?;
 
-        let project_id = crate::shared::domain::ProjectId::new("demo").unwrap();
-        let mut project = crate::shared::domain::ProjectConfig::default();
-        project.workflow.reviewer_backend = Some("codex".to_owned());
-        crate::adapters::fs::FileSystem::write_project_config(ws.path(), &project_id, &project)
-            .map_err(|e| format!("write project config: {e}"))?;
+            let project_id = crate::shared::domain::ProjectId::new("demo").unwrap();
+            let mut project = crate::shared::domain::ProjectConfig::default();
+            project.workflow.reviewer_backend = Some("codex".to_owned());
+            crate::adapters::fs::FileSystem::write_project_config(ws.path(), &project_id, &project)
+                .map_err(|e| format!("write project config: {e}"))?;
 
-        let effective = crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
-            ws.path(),
-            Some(&project_id),
-            crate::contexts::workspace_governance::config::CliBackendOverrides::default(),
-        )
-        .map_err(|e| format!("load effective config: {e}"))?;
-        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&effective);
-        let target = policy
-            .resolve_role_target(crate::shared::domain::BackendPolicyRole::Reviewer, 1)
-            .map_err(|e| format!("resolve reviewer target: {e}"))?;
+            let effective =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+                    ws.path(),
+                    Some(&project_id),
+                    crate::contexts::workspace_governance::config::CliBackendOverrides::default(),
+                )
+                .map_err(|e| format!("load effective config: {e}"))?;
+            let policy =
+                crate::contexts::agent_execution::policy::BackendPolicyService::new(&effective);
+            let target = policy
+                .resolve_role_target(crate::shared::domain::BackendPolicyRole::Reviewer, 1)
+                .map_err(|e| format!("resolve reviewer target: {e}"))?;
 
-        if target.backend.family != crate::shared::domain::BackendFamily::Codex {
-            return Err(format!(
-                "expected reviewer target codex, got {}",
-                target.backend.family
-            ));
+            if target.backend.family != crate::shared::domain::BackendFamily::Codex {
+                return Err(format!(
+                    "expected reviewer target codex, got {}",
+                    target.backend.family
+                ));
+            }
+
+            Ok(())
         }
-
-        Ok(())
-    });
+    );
 
     reg!(m, "backend.role_timeouts.config_roundtrip", || {
         let mut project = crate::shared::domain::ProjectConfig::default();
@@ -558,8 +565,8 @@ fn register_backend_policy(m: &mut HashMap<String, ScenarioExecutor>) {
             },
         );
 
-        let rendered =
-            toml::to_string_pretty(&project).map_err(|e| format!("serialize project config: {e}"))?;
+        let rendered = toml::to_string_pretty(&project)
+            .map_err(|e| format!("serialize project config: {e}"))?;
         let parsed: crate::shared::domain::ProjectConfig =
             toml::from_str(&rendered).map_err(|e| format!("deserialize project config: {e}"))?;
 
@@ -6329,8 +6336,7 @@ fn register_backend_requirements(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Create a temporary bin directory with fake claude/codex binaries
         let bin_dir = ws.path().join("fake-bin");
-        std::fs::create_dir_all(&bin_dir)
-            .map_err(|e| format!("create fake-bin dir: {e}"))?;
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create fake-bin dir: {e}"))?;
 
         // The requirements pipeline invokes four stages:
         // question_set, requirements_draft, requirements_review, project_seed.
@@ -6423,10 +6429,7 @@ fi
         let out = run_cli_with_env(
             &["requirements", "quick", "--idea", "Test real backend"],
             ws.path(),
-            &[
-                ("RALPH_BURNING_BACKEND", "process"),
-                ("PATH", &new_path),
-            ],
+            &[("RALPH_BURNING_BACKEND", "process"), ("PATH", &new_path)],
         )?;
         assert_success(&out)?;
 
@@ -6466,16 +6469,22 @@ fi
         // process execution from a silent stub fallback.
         let seed_content = std::fs::read_to_string(seed_dir.join("project.json"))
             .map_err(|e| format!("read seed project.json: {e}"))?;
-        let seed: serde_json::Value =
-            serde_json::from_str(&seed_content).map_err(|e| format!("parse seed project.json: {e}"))?;
-        let project_id = seed.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+        let seed: serde_json::Value = serde_json::from_str(&seed_content)
+            .map_err(|e| format!("parse seed project.json: {e}"))?;
+        let project_id = seed
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if project_id != "test-proj" {
             return Err(format!(
                 "expected project_id 'test-proj' from fake process binary, got '{project_id}' \
                  (stub would produce 'stub-project')"
             ));
         }
-        let prompt_body = seed.get("prompt_body").and_then(|v| v.as_str()).unwrap_or("");
+        let prompt_body = seed
+            .get("prompt_body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if prompt_body != "Build the thing." {
             return Err(format!(
                 "expected prompt_body 'Build the thing.' from fake process binary, got '{prompt_body}'"
@@ -6498,8 +6507,7 @@ fi
 
         // Create a temporary bin directory with fake claude/codex binaries
         let bin_dir = ws.path().join("fake-bin");
-        std::fs::create_dir_all(&bin_dir)
-            .map_err(|e| format!("create fake-bin dir: {e}"))?;
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create fake-bin dir: {e}"))?;
 
         // Fake claude that returns appropriate JSON based on contract label.
         let fake_claude = r##"#!/bin/sh
@@ -6579,8 +6587,7 @@ fi
 
         // Write a watched issue file for the daemon's FileIssueWatcher
         let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
-        std::fs::create_dir_all(&watched_dir)
-            .map_err(|e| format!("mkdir watched: {e}"))?;
+        std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
         let issue_json = serde_json::json!({
             "issue_ref": "test/repo#99",
             "source_revision": "rev99999",
@@ -6599,10 +6606,7 @@ fi
         let out = run_cli_with_env(
             &["daemon", "start", "--single-iteration"],
             ws.path(),
-            &[
-                ("RALPH_BURNING_BACKEND", "process"),
-                ("PATH", &new_path),
-            ],
+            &[("RALPH_BURNING_BACKEND", "process"), ("PATH", &new_path)],
         )?;
         assert_success(&out)?;
 
@@ -6656,16 +6660,22 @@ fi
         // the fake daemon claude binary returns "daemon-proc-proj".
         let seed_content = std::fs::read_to_string(seed_dir.join("project.json"))
             .map_err(|e| format!("read daemon seed project.json: {e}"))?;
-        let seed: serde_json::Value =
-            serde_json::from_str(&seed_content).map_err(|e| format!("parse daemon seed project.json: {e}"))?;
-        let project_id = seed.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+        let seed: serde_json::Value = serde_json::from_str(&seed_content)
+            .map_err(|e| format!("parse daemon seed project.json: {e}"))?;
+        let project_id = seed
+            .get("project_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if project_id != "daemon-proc-proj" {
             return Err(format!(
                 "expected project_id 'daemon-proc-proj' from fake daemon process binary, got '{project_id}' \
                  (stub would produce 'stub-project')"
             ));
         }
-        let prompt_body = seed.get("prompt_body").and_then(|v| v.as_str()).unwrap_or("");
+        let prompt_body = seed
+            .get("prompt_body")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if prompt_body != "Build daemon feature." {
             return Err(format!(
                 "expected prompt_body 'Build daemon feature.' from fake daemon process binary, got '{prompt_body}'"
@@ -6674,8 +6684,7 @@ fi
 
         // Task dispatch_mode should have transitioned to Workflow, confirming
         // the requirements→workflow handoff path was reached.
-        if task.dispatch_mode
-            != crate::contexts::automation_runtime::model::DispatchMode::Workflow
+        if task.dispatch_mode != crate::contexts::automation_runtime::model::DispatchMode::Workflow
         {
             return Err(format!(
                 "expected dispatch_mode Workflow after requirements handoff, got {}",
@@ -6685,6 +6694,435 @@ fi
 
         Ok(())
     });
+}
+
+// ===========================================================================
+// Backend OpenRouter Parity (3 scenarios)
+// ===========================================================================
+
+fn register_backend_openrouter(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "backend.openrouter.model_injection", || {
+        let ws = TempWorkspace::new()?;
+        let (_payload, requests) = invoke_openrouter_contract(
+            ws.path(),
+            "requirements:question_set",
+            "anthropic/claude-3.5-sonnet",
+            serde_json::json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What should the feature do?",
+                        "rationale": "Scope the request",
+                        "required": true
+                    }
+                ]
+            }),
+        )?;
+
+        let post_request = requests
+            .iter()
+            .find(|request| request.method == "POST" && request.path == "/api/v1/chat/completions")
+            .ok_or_else(|| "missing OpenRouter chat completions request".to_owned())?;
+        let body: serde_json::Value = serde_json::from_str(&post_request.body)
+            .map_err(|e| format!("parse OpenRouter request body: {e}"))?;
+
+        if body.get("model").and_then(|v| v.as_str()) != Some("anthropic/claude-3.5-sonnet") {
+            return Err(format!(
+                "expected exact model injection, got {:?}",
+                body.get("model")
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "backend.openrouter.disabled_default_backend", || {
+        use crate::contexts::agent_execution::policy::BackendPolicyService;
+        use crate::contexts::workspace_governance::config::EffectiveConfig;
+        use crate::shared::domain::BackendPolicyRole;
+        use crate::shared::error::AppError;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        assert_success(&run_cli(
+            &["config", "set", "default_backend", "openrouter"],
+            ws.path(),
+        )?)?;
+        assert_success(&run_cli(
+            &["config", "set", "backends.openrouter.enabled", "false"],
+            ws.path(),
+        )?)?;
+
+        let effective =
+            EffectiveConfig::load(ws.path()).map_err(|e| format!("load effective config: {e}"))?;
+        let error = BackendPolicyService::new(&effective)
+            .resolve_role_target(BackendPolicyRole::Planner, 1)
+            .expect_err("disabled OpenRouter default backend should fail");
+
+        if !matches!(error, AppError::BackendUnavailable { .. }) {
+            return Err(format!("expected BackendUnavailable, got: {error}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "backend.openrouter.requirements_draft", || {
+        use crate::contexts::requirements_drafting::contracts::RequirementsContract;
+
+        let ws = TempWorkspace::new()?;
+        let (payload, requests) = invoke_openrouter_contract(
+            ws.path(),
+            "requirements:requirements_draft",
+            "openai/gpt-5",
+            serde_json::json!({
+                "problem_summary": "Need an implementation plan",
+                "goals": ["Ship the feature"],
+                "non_goals": ["Rewrite the architecture"],
+                "constraints": ["Preserve existing APIs"],
+                "acceptance_criteria": ["Tests pass", "Docs updated"],
+                "risks_or_open_questions": ["Provider response variance"],
+                "recommended_flow": "standard"
+            }),
+        )?;
+
+        RequirementsContract::draft()
+            .evaluate(&payload)
+            .map_err(|e| format!("requirements draft payload should validate: {e}"))?;
+
+        let post_request = requests
+            .iter()
+            .find(|request| request.method == "POST" && request.path == "/api/v1/chat/completions")
+            .ok_or_else(|| "missing OpenRouter chat completions request".to_owned())?;
+        if !post_request
+            .body
+            .contains("requirements:requirements_draft")
+        {
+            return Err(
+                "requirements draft contract label should be serialized into the request".into(),
+            );
+        }
+
+        Ok(())
+    });
+}
+
+#[derive(Debug, Clone)]
+struct ScenarioHttpResponse {
+    status: u16,
+    body: String,
+    content_type: &'static str,
+}
+
+impl ScenarioHttpResponse {
+    fn json(status: u16, body: serde_json::Value) -> Self {
+        Self {
+            status,
+            body: serde_json::to_string(&body).expect("serialize scenario HTTP body"),
+            content_type: "application/json",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct ScenarioRecordedRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+struct ScenarioHttpServer {
+    address: std::net::SocketAddr,
+    base_url: String,
+    requests: std::sync::Arc<std::sync::Mutex<Vec<ScenarioRecordedRequest>>>,
+    shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ScenarioHttpServer {
+    fn start(responses: Vec<ScenarioHttpResponse>) -> Result<Self, String> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .map_err(|e| format!("bind OpenRouter mock server: {e}"))?;
+        let address = listener
+            .local_addr()
+            .map_err(|e| format!("read OpenRouter mock address: {e}"))?;
+        listener
+            .set_nonblocking(true)
+            .map_err(|e| format!("set OpenRouter mock listener nonblocking: {e}"))?;
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let requests_clone = std::sync::Arc::clone(&requests);
+        let shutdown = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown_clone = std::sync::Arc::clone(&shutdown);
+
+        let handle = std::thread::spawn(move || {
+            let mut remaining = responses.into_iter();
+            loop {
+                if shutdown_clone.load(std::sync::atomic::Ordering::SeqCst) {
+                    break;
+                }
+
+                let Some(response) = remaining.next() else {
+                    break;
+                };
+
+                let mut accepted_stream = None;
+                while accepted_stream.is_none()
+                    && !shutdown_clone.load(std::sync::atomic::Ordering::SeqCst)
+                {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            accepted_stream = Some(stream);
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(std::time::Duration::from_millis(10));
+                        }
+                        Err(error) => panic!("accept OpenRouter mock request: {error}"),
+                    }
+                }
+
+                let Some(mut stream) = accepted_stream else {
+                    break;
+                };
+
+                let request = read_scenario_http_request(&mut stream)
+                    .expect("read OpenRouter mock HTTP request");
+                requests_clone
+                    .lock()
+                    .expect("scenario request lock poisoned")
+                    .push(request);
+
+                let raw_response = format!(
+                    "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    response.status,
+                    scenario_reason_phrase(response.status),
+                    response.content_type,
+                    response.body.len(),
+                    response.body
+                );
+                let _ = std::io::Write::write_all(&mut stream, raw_response.as_bytes());
+                let _ = std::io::Write::flush(&mut stream);
+            }
+        });
+
+        Ok(Self {
+            address,
+            base_url: format!("http://{}", address),
+            requests,
+            shutdown,
+            handle: Some(handle),
+        })
+    }
+
+    fn requests(&self) -> Result<Vec<ScenarioRecordedRequest>, String> {
+        self.requests
+            .lock()
+            .map(|requests| requests.clone())
+            .map_err(|_| "scenario request lock poisoned".to_owned())
+    }
+}
+
+impl Drop for ScenarioHttpServer {
+    fn drop(&mut self) {
+        self.shutdown
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = std::net::TcpStream::connect(self.address);
+        if let Some(handle) = self.handle.take() {
+            handle.join().expect("join OpenRouter mock server thread");
+        }
+    }
+}
+
+struct ScenarioEnvGuard {
+    saved: Vec<(String, Option<String>)>,
+}
+
+impl ScenarioEnvGuard {
+    fn set(pairs: &[(&str, &str)]) -> Self {
+        let mut saved = Vec::with_capacity(pairs.len());
+        for (key, value) in pairs {
+            saved.push(((*key).to_owned(), std::env::var(key).ok()));
+            std::env::set_var(key, value);
+        }
+        Self { saved }
+    }
+}
+
+impl Drop for ScenarioEnvGuard {
+    fn drop(&mut self) {
+        for (key, value) in self.saved.drain(..).rev() {
+            if let Some(value) = value {
+                std::env::set_var(&key, value);
+            } else {
+                std::env::remove_var(&key);
+            }
+        }
+    }
+}
+
+fn invoke_openrouter_contract(
+    workspace_root: &Path,
+    contract_label: &str,
+    model_id: &str,
+    response_payload: serde_json::Value,
+) -> Result<(serde_json::Value, Vec<ScenarioRecordedRequest>), String> {
+    use crate::composition::agent_execution_builder::build_agent_execution_service;
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{BackendRole, ResolvedBackendTarget, SessionPolicy};
+
+    let server = ScenarioHttpServer::start(vec![
+        ScenarioHttpResponse::json(200, serde_json::json!({"data": [{"id": "model-1"}]})),
+        ScenarioHttpResponse::json(
+            200,
+            serde_json::json!({
+                "choices": [{
+                    "message": {
+                        "content": serde_json::to_string(&response_payload)
+                            .expect("serialize OpenRouter mock content")
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 7,
+                    "total_tokens": 12
+                }
+            }),
+        ),
+    ])?;
+
+    let _env_guard = ScenarioEnvGuard::set(&[
+        ("RALPH_BURNING_BACKEND", "process"),
+        ("OPENROUTER_API_KEY", "scenario-openrouter-key"),
+        ("OPENROUTER_BASE_URL", &server.base_url),
+    ]);
+
+    let project_root = prepare_scenario_project_root(workspace_root)?;
+    let service = build_agent_execution_service()
+        .map_err(|e| format!("build agent execution service: {e}"))?;
+    let request = InvocationRequest {
+        invocation_id: format!("openrouter-{}", contract_label.replace(':', "-")),
+        project_root: project_root.clone(),
+        working_dir: project_root,
+        contract: InvocationContract::Requirements {
+            label: contract_label.to_owned(),
+        },
+        role: BackendRole::Planner,
+        resolved_target: ResolvedBackendTarget::new(
+            crate::shared::domain::BackendFamily::OpenRouter,
+            model_id,
+        ),
+        payload: InvocationPayload {
+            prompt: format!("Produce structured output for {contract_label}"),
+            context: serde_json::json!({"scenario_contract": contract_label}),
+        },
+        timeout: std::time::Duration::from_secs(1),
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
+
+    let invoke_future = async { service.invoke(request).await };
+    let envelope = if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(invoke_future))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("build tokio runtime: {e}"))?;
+        runtime.block_on(invoke_future)
+    }
+    .map_err(|e| format!("invoke OpenRouter contract: {e}"))?;
+
+    Ok((envelope.parsed_payload, server.requests()?))
+}
+
+fn prepare_scenario_project_root(workspace_root: &Path) -> Result<PathBuf, String> {
+    let project_root = workspace_root.join("scenario-openrouter-project");
+    std::fs::create_dir_all(project_root.join("runtime/backend"))
+        .map_err(|e| format!("create scenario runtime/backend: {e}"))?;
+    std::fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#)
+        .map_err(|e| format!("write scenario sessions.json: {e}"))?;
+    Ok(project_root)
+}
+
+fn read_scenario_http_request(
+    stream: &mut std::net::TcpStream,
+) -> Result<ScenarioRecordedRequest, String> {
+    let mut buffer = Vec::new();
+    let mut temp = [0u8; 1024];
+    let mut headers_end = None;
+    let mut content_length = 0usize;
+
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+        .map_err(|e| format!("set mock read timeout: {e}"))?;
+
+    loop {
+        let bytes_read = std::io::Read::read(stream, &mut temp)
+            .map_err(|e| format!("read mock HTTP request: {e}"))?;
+        if bytes_read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp[..bytes_read]);
+
+        if headers_end.is_none() {
+            if let Some(position) = buffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|position| position + 4)
+            {
+                headers_end = Some(position);
+                content_length = parse_scenario_content_length(&buffer[..position])?;
+            }
+        }
+
+        if let Some(position) = headers_end {
+            if buffer.len() >= position + content_length {
+                break;
+            }
+        }
+    }
+
+    let headers_end = headers_end.ok_or_else(|| "mock HTTP request missing headers".to_owned())?;
+    let headers_text = String::from_utf8_lossy(&buffer[..headers_end]);
+    let mut lines = headers_text.lines();
+    let request_line = lines.next().unwrap_or_default();
+    let mut parts = request_line.split_whitespace();
+    let method = parts.next().unwrap_or_default().to_owned();
+    let path = parts.next().unwrap_or_default().to_owned();
+    let body =
+        String::from_utf8_lossy(&buffer[headers_end..headers_end + content_length]).into_owned();
+
+    Ok(ScenarioRecordedRequest { method, path, body })
+}
+
+fn parse_scenario_content_length(headers: &[u8]) -> Result<usize, String> {
+    let headers_text = String::from_utf8_lossy(headers);
+    for line in headers_text.lines() {
+        if let Some((key, value)) = line.split_once(':') {
+            if key.eq_ignore_ascii_case("content-length") {
+                return value
+                    .trim()
+                    .parse::<usize>()
+                    .map_err(|e| format!("parse content-length: {e}"));
+            }
+        }
+    }
+
+    Ok(0)
+}
+
+fn scenario_reason_phrase(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        _ => "OK",
+    }
 }
 
 // ===========================================================================

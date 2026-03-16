@@ -256,6 +256,13 @@ impl<'a> BackendPolicyService<'a> {
         family: BackendFamily,
         explicit_model: Option<String>,
     ) -> AppResult<ResolvedBackendTarget> {
+        if !self.backend_enabled(family) {
+            return Err(AppError::BackendUnavailable {
+                backend: family.to_string(),
+                details: "configured backend is disabled or unavailable".to_owned(),
+            });
+        }
+
         let model_id = explicit_model
             .or_else(|| {
                 self.runtime_settings(family)
@@ -317,9 +324,6 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     fn panel_backend_resolvable(&self, family: BackendFamily) -> bool {
-        // Panel policy only admits backends that the current workflow runtime can execute.
-        // OpenRouter is wired in as a config family in Slice 1 but remains non-executable
-        // for workflow panels until the dedicated adapter lands.
-        self.backend_enabled(family) && !matches!(family, BackendFamily::OpenRouter)
+        self.backend_enabled(family)
     }
 }

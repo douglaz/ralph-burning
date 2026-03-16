@@ -161,9 +161,7 @@ impl ProcessBackendAdapter {
             input.push('\n');
         }
 
-        let schema_json = request
-            .contract
-            .json_schema_value();
+        let schema_json = request.contract.json_schema_value();
         let schema_json =
             serde_json::to_string_pretty(&schema_json).unwrap_or_else(|_| "{}".to_owned());
 

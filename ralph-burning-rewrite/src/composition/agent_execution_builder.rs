@@ -3,12 +3,14 @@
 //! Centralises runtime adapter selection so that CLI `run`, CLI `requirements`,
 //! and daemon requirements dispatch all resolve the same backend family/model
 //! defaults from `EffectiveConfig`.  The `process` adapter is the production
-//! default; the `stub` branch is preserved only as a test seam activated by
+//! default and dispatches OpenRouter-resolved requests to the HTTP adapter; the
+//! `stub` branch is preserved only as a test seam activated by
 //! `RALPH_BURNING_BACKEND=stub`.
 
 use std::collections::HashMap;
 
 use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
 use crate::adapters::process_backend::ProcessBackendAdapter;
 use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::BackendAdapter;
@@ -38,7 +40,7 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
             return Err(AppError::InvalidConfigValue {
                 key: "RALPH_BURNING_BACKEND".to_owned(),
                 value: "<non-unicode>".to_owned(),
-                reason: "expected one of stub, process".to_owned(),
+                reason: "expected one of stub, process, openrouter".to_owned(),
             });
         }
     };
@@ -46,10 +48,11 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
     match backend_selector.as_str() {
         "stub" => Ok(BackendAdapter::Stub(build_stub_backend_adapter())),
         "process" => Ok(BackendAdapter::Process(ProcessBackendAdapter::new())),
+        "openrouter" => Ok(BackendAdapter::OpenRouter(OpenRouterBackendAdapter::new())),
         other => Err(AppError::InvalidConfigValue {
             key: "RALPH_BURNING_BACKEND".to_owned(),
             value: other.to_owned(),
-            reason: "expected one of stub, process".to_owned(),
+            reason: "expected one of stub, process, openrouter".to_owned(),
         }),
     }
 }
@@ -90,9 +93,7 @@ pub fn build_requirements_service(
 /// `Process` adapters this is a no-op.
 fn apply_label_overrides_if_stub(adapter: BackendAdapter) -> BackendAdapter {
     match adapter {
-        BackendAdapter::Stub(stub) => {
-            BackendAdapter::Stub(apply_label_overrides_to_stub(stub))
-        }
+        BackendAdapter::Stub(stub) => BackendAdapter::Stub(apply_label_overrides_to_stub(stub)),
         other => other,
     }
 }
@@ -193,6 +194,15 @@ mod tests {
         std::env::set_var("RALPH_BURNING_BACKEND", "process");
         let adapter = build_backend_adapter().expect("explicit process should succeed");
         assert!(matches!(adapter, BackendAdapter::Process(_)));
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+    }
+
+    #[test]
+    fn build_backend_adapter_selects_openrouter_when_env_is_openrouter() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RALPH_BURNING_BACKEND", "openrouter");
+        let adapter = build_backend_adapter().expect("explicit openrouter should succeed");
+        assert!(matches!(adapter, BackendAdapter::OpenRouter(_)));
         std::env::remove_var("RALPH_BURNING_BACKEND");
     }
 

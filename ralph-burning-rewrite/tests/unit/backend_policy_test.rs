@@ -164,7 +164,7 @@ fn per_role_override_beats_default_backend_policy() {
 }
 
 #[test]
-fn completion_panel_optional_backend_skips_and_required_backend_fails() {
+fn completion_panel_includes_enabled_openrouter_and_rejects_required_disabled_backend() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());
 
@@ -187,13 +187,17 @@ fn completion_panel_optional_backend_skips_and_required_backend_fails() {
     let panel = BackendPolicyService::new(&effective)
         .resolve_completion_panel(1)
         .expect("resolve completion panel");
-    assert_eq!(1, panel.completers.len());
+    assert_eq!(2, panel.completers.len());
     assert_eq!(BackendFamily::Claude, panel.completers[0].backend.family);
+    assert_eq!(
+        BackendFamily::OpenRouter,
+        panel.completers[1].backend.family
+    );
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
     workspace
         .backends
-        .insert("openrouter".to_owned(), empty_backend_settings(true));
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
     workspace.completion = CompletionSettings {
         backends: Some(vec![
             PanelBackendSpec::required(BackendFamily::Claude),
@@ -209,6 +213,26 @@ fn completion_panel_optional_backend_skips_and_required_backend_fails() {
     let error = BackendPolicyService::new(&effective)
         .resolve_completion_panel(1)
         .expect_err("required disabled backend should fail");
+
+    assert!(matches!(error, AppError::BackendUnavailable { .. }));
+}
+
+#[test]
+fn disabled_default_backend_fails_role_resolution() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("openrouter".to_owned());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let error = BackendPolicyService::new(&effective)
+        .resolve_role_target(BackendPolicyRole::Planner, 1)
+        .expect_err("disabled default backend should fail");
 
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
 }

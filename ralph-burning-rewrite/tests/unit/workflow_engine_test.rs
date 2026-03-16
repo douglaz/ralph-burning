@@ -3776,15 +3776,13 @@ async fn invocation_ids_differ_across_completion_rounds() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "cr-invocation-ids");
 
-    let adapter = RecordingAdapter::new(
-        StubBackendAdapter::default().with_stage_payload_sequence(
-            StageId::CompletionPanel,
-            vec![
-                conditionally_approved_payload(&["tighten note"]),
-                approved_validation_payload(),
-            ],
-        ),
-    );
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
+        StageId::CompletionPanel,
+        vec![
+            conditionally_approved_payload(&["tighten note"]),
+            approved_validation_payload(),
+        ],
+    ));
     let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
