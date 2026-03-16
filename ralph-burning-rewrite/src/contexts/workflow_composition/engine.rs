@@ -1157,47 +1157,21 @@ where
                 Ok(CompletionPanelOutcome::Complete(completed_cursor, commit_data)) => {
                     cursor = completed_cursor;
 
-                    // Commit aggregate + stage_completed FIRST, before any
-                    // cursor transition. If aggregate commit fails, no
-                    // aggregate or stage_completed leaks, and resume restarts
-                    // from completion_panel.
-                    if stage_index + 1 == stage_plan.len() {
-                        commit_completion_aggregate(
-                            artifact_write,
-                            journal_store,
-                            log_write,
-                            base_dir,
-                            project_id,
-                            run_id,
-                            &cursor,
-                            stage_id,
-                            seq,
-                            &commit_data,
-                        )?;
-                        complete_run(
-                            snapshot,
-                            run_snapshot_write,
-                            journal_store,
-                            amendment_queue_port,
-                            base_dir,
-                            project_id,
-                            run_id,
-                            seq,
-                        )?;
-                        return Ok(RunOutcome::Completed);
-                    }
+                    // ── Completion failure invariant ──────────────────────
+                    // Persist aggregate records (payload/artifact) first
+                    // (reversible), then write stage_completed LAST as the
+                    // journal commit point.  If any step before
+                    // stage_completed fails, we clean up aggregate records
+                    // so no aggregate or stage_completed leaks and resume
+                    // restarts from completion_panel.
 
-                    // Commit aggregate + stage_completed before cursor advance.
-                    if let Err(error) = commit_completion_aggregate(
+                    // Step 1: persist aggregate payload/artifact (reversible).
+                    if let Err(error) = persist_completion_aggregate_records(
                         artifact_write,
-                        journal_store,
-                        log_write,
                         base_dir,
                         project_id,
-                        run_id,
                         &cursor,
                         stage_id,
-                        seq,
                         &commit_data,
                     ) {
                         return fail_run_result(
@@ -1215,13 +1189,47 @@ where
                         .await;
                     }
 
-                    // Now advance cursor to next stage.
+                    if stage_index + 1 == stage_plan.len() {
+                        // Last stage: stage_completed is the commit point.
+                        *seq += 1;
+                        let sc = journal::stage_completed_event(
+                            *seq, Utc::now(), run_id, stage_id,
+                            cursor.cycle, cursor.attempt,
+                            &commit_data.payload_id, &commit_data.artifact_id,
+                        );
+                        let sc_line = journal::serialize_event(&sc)?;
+                        if let Err(error) = journal_store.append_event(base_dir, project_id, &sc_line) {
+                            *seq -= 1;
+                            cleanup_completion_aggregate_records(artifact_write, base_dir, project_id, &commit_data);
+                            return Err(AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!("journal append failed during completion aggregate commit: {error}"),
+                            });
+                        }
+                        let _ = log_write.append_runtime_log(base_dir, project_id, &RuntimeLogEntry {
+                            timestamp: Utc::now(), level: LogLevel::Info, source: "engine".to_owned(),
+                            message: format!("stage_completed: {}", stage_id.as_str()),
+                        });
+                        complete_run(
+                            snapshot,
+                            run_snapshot_write,
+                            journal_store,
+                            amendment_queue_port,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                        )?;
+                        return Ok(RunOutcome::Completed);
+                    }
+
+                    // Step 2: advance cursor snapshot (best-effort, overwritten on resume).
                     let next_stage = stage_plan[stage_index + 1].stage_id;
-                    cursor = cursor.advance_stage(next_stage);
+                    let advanced_cursor = cursor.advance_stage(next_stage);
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
                         run_id: run_id.as_str().to_owned(),
-                        stage_cursor: cursor.clone(),
+                        stage_cursor: advanced_cursor.clone(),
                         started_at: snapshot_started_at(snapshot)?,
                         stage_resolution_snapshot: None,
                     });
@@ -1233,6 +1241,7 @@ where
                     if let Err(error) =
                         run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
                     {
+                        cleanup_completion_aggregate_records(artifact_write, base_dir, project_id, &commit_data);
                         return fail_run_result(
                             &AppError::StageCommitFailed {
                                 stage_id,
@@ -1254,6 +1263,44 @@ where
                         )
                         .await;
                     }
+
+                    // Step 3: stage_completed is the journal commit point (LAST write).
+                    // After this succeeds, the completion is durable and resume
+                    // advances past completion_panel.
+                    *seq += 1;
+                    let sc = journal::stage_completed_event(
+                        *seq, Utc::now(), run_id, stage_id,
+                        cursor.cycle, cursor.attempt,
+                        &commit_data.payload_id, &commit_data.artifact_id,
+                    );
+                    let sc_line = journal::serialize_event(&sc)?;
+                    if let Err(error) = journal_store.append_event(base_dir, project_id, &sc_line) {
+                        *seq -= 1;
+                        cleanup_completion_aggregate_records(artifact_write, base_dir, project_id, &commit_data);
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "journal append failed during completion aggregate commit: {error}",
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    let _ = log_write.append_runtime_log(base_dir, project_id, &RuntimeLogEntry {
+                        timestamp: Utc::now(), level: LogLevel::Info, source: "engine".to_owned(),
+                        message: format!("stage_completed: {}", stage_id.as_str()),
+                    });
+                    cursor = advanced_cursor;
 
                     // Persist rollback point after completion aggregate.
                     if let Err(error) = persist_rollback_point(
@@ -1317,20 +1364,24 @@ where
                     let from_round = cursor.completion_round;
                     let to_round = next_cursor.completion_round;
 
-                    // Commit aggregate + stage_completed FIRST, before any
-                    // transition writes. If this fails, no aggregate or
-                    // stage_completed leaks, and resume restarts from
-                    // completion_panel.
-                    if let Err(error) = commit_completion_aggregate(
+                    // ── Completion failure invariant (ContinueWork) ───────
+                    // Persist aggregate records first (reversible), then
+                    // write completion_round_advanced as the journal commit
+                    // point. NO stage_completed is written for ContinueWork:
+                    // the round has not "completed" the stage, it has
+                    // transitioned to a new round. Resume uses
+                    // CompletionRoundAdvanced to restart from planning.
+                    // If any step fails before the journal commit point,
+                    // aggregate records are cleaned up and resume restarts
+                    // from completion_panel.
+
+                    // Step 1: persist aggregate payload/artifact (reversible).
+                    if let Err(error) = persist_completion_aggregate_records(
                         artifact_write,
-                        journal_store,
-                        log_write,
                         base_dir,
                         project_id,
-                        run_id,
                         &cursor,
                         stage_id,
-                        seq,
                         &commit_data,
                     ) {
                         return fail_run_result(
@@ -1348,7 +1399,9 @@ where
                         .await;
                     }
 
-                    // Emit completion_round_advanced event AFTER aggregate.
+                    // Step 2: completion_round_advanced is the journal commit
+                    // point. After this succeeds, the round transition is
+                    // durable and resume goes to planning.
                     snapshot.completion_rounds = snapshot
                         .completion_rounds
                         .max(next_cursor.completion_round);
@@ -1367,6 +1420,7 @@ where
                         journal_store.append_event(base_dir, project_id, &round_event_line)
                     {
                         *seq -= 1;
+                        cleanup_completion_aggregate_records(artifact_write, base_dir, project_id, &commit_data);
                         return fail_run_result(
                             &AppError::StageCommitFailed {
                                 stage_id,
@@ -1387,8 +1441,12 @@ where
                         )
                         .await;
                     }
+                    let _ = log_write.append_runtime_log(base_dir, project_id, &RuntimeLogEntry {
+                        timestamp: Utc::now(), level: LogLevel::Info, source: "engine".to_owned(),
+                        message: format!("completion round advanced: {} -> {}", from_round, to_round),
+                    });
 
-                    // Advance cursor to planning for the new round.
+                    // Step 3: advance cursor snapshot.
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
                         run_id: run_id.as_str().to_owned(),
@@ -3579,7 +3637,7 @@ struct CompletionCommitData {
     artifact_id: String,
     rollback_count: u32,
     /// The completion_round at which the aggregate was computed. In the
-    /// ContinueWork path the cursor passed to `commit_completion_aggregate`
+    /// ContinueWork path the cursor passed to `persist_completion_aggregate_records`
     /// already has an advanced round, so we store the original here.
     completion_round: u32,
 }
@@ -3738,7 +3796,37 @@ where
         &artifact_record,
     )?;
 
-    // Emit stage_completed journal event.
+    // ── Prompt-review failure invariant ──────────────────────────────────
+    // The spec requires that prompt.md, prompt.original.md, project.toml
+    // prompt metadata, stage_completed, and the stage cursor remain
+    // unchanged if any commit step fails.
+    //
+    // Ordering:
+    // 1. Primary payload/artifact (already written above, reversible)
+    // 2. Replace prompt files (reversible via revert_prompt_replacement)
+    // 3. stage_completed journal event (commit point — LAST write)
+    //
+    // If step 3 fails, we roll back steps 1 and 2 so that prompt files
+    // and the journal are never in an inconsistent state.
+
+    // Step 2: write prompt.original.md, replace prompt.md, update hash.
+    if let Err(error) = crate::adapters::fs::FileSystem::replace_prompt_atomically(
+        base_dir,
+        project_id,
+        &result.original_prompt,
+        &result.refined_prompt,
+    ) {
+        // Prompt replacement failed — clean up primary records.
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &payload_id,
+            &artifact_id,
+        );
+        return Err(error);
+    }
+
+    // Step 3: stage_completed is the journal commit point (LAST write).
     *seq += 1;
     let stage_completed = journal::stage_completed_event(
         *seq,
@@ -3753,6 +3841,13 @@ where
     let stage_completed_line = journal::serialize_event(&stage_completed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
         *seq -= 1;
+        // Roll back prompt replacement so prompt.md stays at original.
+        crate::adapters::fs::FileSystem::revert_prompt_replacement(
+            base_dir,
+            project_id,
+            &result.original_prompt,
+        );
+        // Clean up primary records.
         let _ = artifact_write.remove_payload_artifact_pair(
             base_dir,
             project_id,
@@ -3775,17 +3870,6 @@ where
             message: format!("stage_completed: {} (prompt_review accepted)", stage_id.as_str()),
         },
     );
-
-    // Write prompt.original.md, replace prompt.md, and update prompt_hash
-    // AFTER the primary record and stage_completed are durably committed.
-    // This ensures that prompt files are never mutated unless the stage
-    // has been fully committed to the journal.
-    crate::adapters::fs::FileSystem::replace_prompt_atomically(
-        base_dir,
-        project_id,
-        &result.original_prompt,
-        &result.refined_prompt,
-    )?;
 
     Ok(cursor.clone())
 }
@@ -3953,23 +4037,20 @@ where
 
 // ── Completion Aggregate Commit ─────────────────────────────────────────────
 
-/// Persist the completion aggregate record and emit stage_completed journal
-/// event. Called by the engine BEFORE the post-panel transition (cursor advance,
-/// completion_round_advanced), so that an aggregate commit failure leaves no
-/// aggregate or stage_completed event and resume restarts from completion_panel.
-/// If stage_completed append fails, the aggregate payload/artifact files are
-/// cleaned up to avoid orphaned records.
+/// Persist the completion aggregate payload/artifact records WITHOUT writing
+/// any journal events. Returns `Ok(())` on success; on failure the records are
+/// not written and resume restarts from `completion_panel`.
+///
+/// Journal events (`stage_completed`, `completion_round_advanced`) are written
+/// by the caller AFTER the transition is fully committed, so that a transition
+/// failure never leaves a leaked aggregate or `stage_completed` event.
 #[allow(clippy::too_many_arguments)]
-fn commit_completion_aggregate(
+fn persist_completion_aggregate_records(
     artifact_write: &dyn PayloadArtifactWritePort,
-    journal_store: &dyn JournalStorePort,
-    log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_id: &ProjectId,
-    run_id: &RunId,
     cursor: &StageCursor,
     stage_id: StageId,
-    seq: &mut u64,
     commit_data: &CompletionCommitData,
 ) -> AppResult<()> {
     // Write aggregate records using the pre-computed IDs from commit_data,
@@ -4007,47 +4088,23 @@ fn commit_completion_aggregate(
         &payload_record,
         &artifact_record,
     )?;
+    Ok(())
+}
 
-    *seq += 1;
-    let stage_completed = journal::stage_completed_event(
-        *seq,
-        Utc::now(),
-        run_id,
-        stage_id,
-        cursor.cycle,
-        cursor.attempt,
+/// Clean up aggregate payload/artifact files that were persisted by
+/// `persist_completion_aggregate_records` but whose journal commit failed.
+fn cleanup_completion_aggregate_records(
+    artifact_write: &dyn PayloadArtifactWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    commit_data: &CompletionCommitData,
+) {
+    let _ = artifact_write.remove_payload_artifact_pair(
+        base_dir,
+        project_id,
         &commit_data.payload_id,
         &commit_data.artifact_id,
     );
-    let stage_completed_line = journal::serialize_event(&stage_completed)?;
-    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
-        *seq -= 1;
-        // Clean up orphaned aggregate records so they don't leak without
-        // a matching stage_completed event.
-        let _ = artifact_write.remove_payload_artifact_pair(
-            base_dir,
-            project_id,
-            &commit_data.payload_id,
-            &commit_data.artifact_id,
-        );
-        return Err(AppError::StageCommitFailed {
-            stage_id,
-            details: format!("journal append failed during completion aggregate commit: {error}"),
-        });
-    }
-
-    let _ = log_write.append_runtime_log(
-        base_dir,
-        project_id,
-        &RuntimeLogEntry {
-            timestamp: Utc::now(),
-            level: LogLevel::Info,
-            source: "engine".to_owned(),
-            message: format!("stage_completed: {}", stage_id.as_str()),
-        },
-    );
-
-    Ok(())
 }
 
 // ── Stage Resolution Snapshot ──────────────────────────────────────────────

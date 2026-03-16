@@ -312,6 +312,43 @@ impl FileSystem {
         Ok(new_hash)
     }
 
+    /// Best-effort revert of a successful `replace_prompt_atomically` call.
+    /// Restores `prompt.md` to `original_prompt`, removes `prompt.original.md`,
+    /// and restores the prompt hash in `project.toml`. All steps are
+    /// best-effort; individual failures are silently ignored since this runs
+    /// on error-recovery paths where partial cleanup is acceptable.
+    pub fn revert_prompt_replacement(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        original_prompt: &str,
+    ) {
+        let project_root = Self::project_root(base_dir, project_id);
+        let prompt_path = project_root.join(PROMPT_FILE);
+        let original_path = project_root.join("prompt.original.md");
+        let project_toml_path = project_root.join(PROJECT_CONFIG_FILE);
+
+        // Restore original prompt.md
+        let _ = Self::write_atomic(&prompt_path, original_prompt);
+
+        // Remove prompt.original.md
+        let _ = fs::remove_file(&original_path);
+
+        // Restore original hash in project.toml
+        let original_hash = Self::prompt_hash(original_prompt);
+        if let Ok(content) = fs::read_to_string(&project_toml_path) {
+            if let Ok(mut record) =
+                toml::from_str::<crate::contexts::project_run_record::model::ProjectRecord>(
+                    &content,
+                )
+            {
+                record.prompt_hash = original_hash;
+                if let Ok(updated) = toml::to_string_pretty(&record) {
+                    let _ = Self::write_atomic(&project_toml_path, &updated);
+                }
+            }
+        }
+    }
+
     // ── Helpers for project filesystem layout ──
 
     pub(crate) fn workspace_root_path(base_dir: &Path) -> PathBuf {
