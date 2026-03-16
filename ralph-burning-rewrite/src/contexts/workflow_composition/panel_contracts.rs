@@ -1,11 +1,11 @@
 #![forbid(unsafe_code)]
 
 //! Typed panel contracts, schemas, and canonical aggregate payload shapes
-//! for prompt-review and completion work.
+//! for prompt-review, completion, and final-review work.
 //!
 //! These contracts must not reuse the generic planning/validation payloads
 //! where that would lose panel-specific fields such as refined prompt text,
-//! vote counts, or aggregate verdict metadata.
+//! vote counts, amendment metadata, or aggregate verdict metadata.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -119,6 +119,109 @@ pub struct CompletionAggregatePayload {
     pub executed_voters: Vec<String>,
 }
 
+// ── Final-Review Contracts ─────────────────────────────────────────────────
+
+/// A raw amendment proposal returned by a final-review reviewer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewProposal {
+    /// The free-form amendment body. This is canonicalized and deduplicated by
+    /// the orchestration layer before voting.
+    pub body: String,
+    /// Optional reviewer-provided rationale for why this amendment matters.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rationale: Option<String>,
+}
+
+/// Payload returned by each final-review reviewer during proposal collection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewProposalPayload {
+    /// Summary of the reviewer pass.
+    pub summary: String,
+    /// Proposed amendments. An empty list means "no amendments".
+    pub amendments: Vec<FinalReviewProposal>,
+}
+
+/// Per-amendment vote used by both the planner-position step and reviewer voting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum FinalReviewVoteDecision {
+    Accept,
+    Reject,
+}
+
+impl std::fmt::Display for FinalReviewVoteDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accept => f.write_str("Accept"),
+            Self::Reject => f.write_str("Reject"),
+        }
+    }
+}
+
+/// A vote on a single amendment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewVote {
+    pub amendment_id: String,
+    pub decision: FinalReviewVoteDecision,
+    pub rationale: String,
+}
+
+/// Payload returned by the planner-position step and each reviewer voting pass.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewVotePayload {
+    pub summary: String,
+    pub votes: Vec<FinalReviewVote>,
+}
+
+/// A disputed-amendment ruling returned by the arbiter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewArbiterRuling {
+    pub amendment_id: String,
+    pub decision: FinalReviewVoteDecision,
+    pub rationale: String,
+}
+
+/// Payload returned by the final-review arbiter.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewArbiterPayload {
+    pub summary: String,
+    pub rulings: Vec<FinalReviewArbiterRuling>,
+}
+
+/// Source metadata preserved when duplicate amendments are merged.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewAmendmentSource {
+    pub reviewer_id: String,
+    pub backend_family: String,
+    pub model_id: String,
+}
+
+/// Canonical amendment metadata used by the final-review aggregate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewCanonicalAmendment {
+    pub amendment_id: String,
+    pub normalized_body: String,
+    pub sources: Vec<FinalReviewAmendmentSource>,
+}
+
+/// Canonical aggregate record for the final-review panel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+pub struct FinalReviewAggregatePayload {
+    pub restart_required: bool,
+    pub force_completed: bool,
+    pub total_reviewers: usize,
+    pub total_proposed_amendments: usize,
+    pub unique_amendment_count: usize,
+    pub accepted_amendment_ids: Vec<String>,
+    pub rejected_amendment_ids: Vec<String>,
+    pub disputed_amendment_ids: Vec<String>,
+    pub amendments: Vec<FinalReviewCanonicalAmendment>,
+    pub final_accepted_amendments: Vec<FinalReviewCanonicalAmendment>,
+    pub final_review_restart_count: u32,
+    pub max_restarts: u32,
+    pub summary: String,
+}
+
 // ── Record Kind ────────────────────────────────────────────────────────────
 
 /// Discriminant for payload/artifact record types within a stage.
@@ -182,6 +285,10 @@ pub enum PanelPayload {
     PromptReviewPrimary(PromptReviewPrimaryPayload),
     CompletionVote(CompletionVotePayload),
     CompletionAggregate(CompletionAggregatePayload),
+    FinalReviewProposal(FinalReviewProposalPayload),
+    FinalReviewVote(FinalReviewVotePayload),
+    FinalReviewArbiter(FinalReviewArbiterPayload),
+    FinalReviewAggregate(FinalReviewAggregatePayload),
 }
 
 /// Schema routing helper: returns the JSON schema for a given panel contract.
@@ -195,6 +302,15 @@ pub fn panel_json_schema(stage_id: StageId, role: &str) -> serde_json::Value {
         }
         (StageId::CompletionPanel, "completer") => {
             serde_json::to_value(schemars::schema_for!(CompletionVotePayload))
+        }
+        (StageId::FinalReview, "reviewer") => {
+            serde_json::to_value(schemars::schema_for!(FinalReviewProposalPayload))
+        }
+        (StageId::FinalReview, "voter") => {
+            serde_json::to_value(schemars::schema_for!(FinalReviewVotePayload))
+        }
+        (StageId::FinalReview, "arbiter") => {
+            serde_json::to_value(schemars::schema_for!(FinalReviewArbiterPayload))
         }
         _ => Ok(serde_json::Value::Object(Default::default())),
     };

@@ -3,8 +3,11 @@
 use ralph_burning::contexts::workflow_composition::completion::compute_completion_verdict;
 use ralph_burning::contexts::workflow_composition::panel_contracts::{
     CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload,
-    PromptReviewDecision, PromptReviewPrimaryPayload, PromptRefinementPayload,
-    PromptValidationPayload, RecordKind, RecordProducer, panel_json_schema,
+    FinalReviewAggregatePayload, FinalReviewArbiterPayload, FinalReviewCanonicalAmendment,
+    FinalReviewProposal, FinalReviewProposalPayload, FinalReviewVote,
+    FinalReviewVoteDecision, FinalReviewVotePayload, PromptReviewDecision,
+    PromptReviewPrimaryPayload, PromptRefinementPayload, PromptValidationPayload, RecordKind,
+    RecordProducer, panel_json_schema,
 };
 use ralph_burning::shared::domain::StageId;
 
@@ -119,6 +122,77 @@ fn prompt_review_primary_payload_round_trips() {
     };
     let json = serde_json::to_string(&payload).expect("serializes");
     let restored: PromptReviewPrimaryPayload = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_proposal_payload_round_trips() {
+    let payload = FinalReviewProposalPayload {
+        summary: "Found one final amendment.".to_string(),
+        amendments: vec![FinalReviewProposal {
+            body: "Tighten the final wording.".to_string(),
+            rationale: Some("Clarifies the edge case.".to_string()),
+        }],
+    };
+    let json = serde_json::to_string(&payload).expect("serializes");
+    let restored: FinalReviewProposalPayload = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_vote_payload_round_trips() {
+    let payload = FinalReviewVotePayload {
+        summary: "Planner positions captured.".to_string(),
+        votes: vec![FinalReviewVote {
+            amendment_id: "fr-1-deadbeef".to_string(),
+            decision: FinalReviewVoteDecision::Accept,
+            rationale: "Necessary for correctness.".to_string(),
+        }],
+    };
+    let json = serde_json::to_string(&payload).expect("serializes");
+    let restored: FinalReviewVotePayload = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_arbiter_payload_round_trips() {
+    let payload = FinalReviewArbiterPayload {
+        summary: "Resolved the disputed amendment.".to_string(),
+        rulings: vec![ralph_burning::contexts::workflow_composition::panel_contracts::FinalReviewArbiterRuling {
+            amendment_id: "fr-1-deadbeef".to_string(),
+            decision: FinalReviewVoteDecision::Reject,
+            rationale: "Not worth the restart.".to_string(),
+        }],
+    };
+    let json = serde_json::to_string(&payload).expect("serializes");
+    let restored: FinalReviewArbiterPayload = serde_json::from_str(&json).expect("deserializes");
+    assert_eq!(payload, restored);
+}
+
+#[test]
+fn final_review_aggregate_payload_round_trips() {
+    let amendment = FinalReviewCanonicalAmendment {
+        amendment_id: "fr-1-deadbeef".to_string(),
+        normalized_body: "Tighten the final wording.".to_string(),
+        sources: vec![],
+    };
+    let payload = FinalReviewAggregatePayload {
+        restart_required: true,
+        force_completed: false,
+        total_reviewers: 2,
+        total_proposed_amendments: 2,
+        unique_amendment_count: 1,
+        accepted_amendment_ids: vec!["fr-1-deadbeef".to_string()],
+        rejected_amendment_ids: vec![],
+        disputed_amendment_ids: vec![],
+        amendments: vec![amendment.clone()],
+        final_accepted_amendments: vec![amendment],
+        final_review_restart_count: 1,
+        max_restarts: 2,
+        summary: "Restart required.".to_string(),
+    };
+    let json = serde_json::to_string(&payload).expect("serializes");
+    let restored: FinalReviewAggregatePayload = serde_json::from_str(&json).expect("deserializes");
     assert_eq!(payload, restored);
 }
 
@@ -244,6 +318,23 @@ fn panel_json_schema_completion_panel_completer_returns_non_empty_schema() {
         schema_str.contains("properties"),
         "schema for completer must contain 'properties'"
     );
+}
+
+#[test]
+fn panel_json_schema_final_review_roles_return_non_empty_schema() {
+    for role in ["reviewer", "voter", "arbiter"] {
+        let schema = panel_json_schema(StageId::FinalReview, role);
+        assert!(!schema.is_null(), "schema must not be null for role {role}");
+        assert!(
+            !schema.as_object().map_or(true, |o| o.is_empty()),
+            "schema must not be empty for role {role}"
+        );
+        let schema_str = serde_json::to_string(&schema).unwrap();
+        assert!(
+            schema_str.contains("properties"),
+            "schema for role {role} must contain 'properties'"
+        );
+    }
 }
 
 #[test]

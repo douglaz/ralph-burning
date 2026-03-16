@@ -97,6 +97,16 @@ pub struct ActiveRun {
     pub run_id: String,
     pub stage_cursor: StageCursor,
     pub started_at: DateTime<Utc>,
+    #[serde(default)]
+    pub prompt_hash_at_cycle_start: String,
+    #[serde(default)]
+    pub prompt_hash_at_stage_start: String,
+    #[serde(default)]
+    pub qa_iterations_current_cycle: u32,
+    #[serde(default)]
+    pub review_iterations_current_cycle: u32,
+    #[serde(default)]
+    pub final_review_restart_count: u32,
     /// Resolution snapshot persisted at stage start before any agent invocation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage_resolution_snapshot: Option<StageResolutionSnapshot>,
@@ -122,6 +132,12 @@ pub struct StageResolutionSnapshot {
     /// Ordered panel members for completion completers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub completion_completers: Vec<ResolvedTargetRecord>,
+    /// Ordered panel members for final-review reviewers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub final_review_reviewers: Vec<ResolvedTargetRecord>,
+    /// The final-review arbiter target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_review_arbiter: Option<ResolvedTargetRecord>,
 }
 
 /// A serializable resolved target record for snapshot persistence.

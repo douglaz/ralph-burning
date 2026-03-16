@@ -1,6 +1,8 @@
 pub mod completion;
 pub mod contracts;
+pub mod drift;
 pub mod engine;
+pub mod final_review;
 pub mod panel_contracts;
 pub mod payloads;
 pub mod prompt_review;

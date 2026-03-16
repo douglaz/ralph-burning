@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -81,6 +82,30 @@ fn run_cli_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Result<C
         stdout: String::from_utf8_lossy(&output.stdout).to_string(),
         stderr: String::from_utf8_lossy(&output.stderr).to_string(),
     })
+}
+
+fn block_on_app_result<F, T>(future: F) -> Result<T, String>
+where
+    F: Future<Output = crate::shared::error::AppResult<T>>,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+            .map_err(|error| error.to_string())
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("build tokio runtime: {e}"))?;
+        runtime.block_on(future).map_err(|error| error.to_string())
+    }
+}
+
+fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, String> {
+    std::fs::read_to_string(
+        ws.path()
+            .join(format!(".ralph-burning/projects/{project_id}/runtime/logs/run.ndjson")),
+    )
+    .map_err(|e| format!("read runtime logs: {e}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -187,18 +212,20 @@ fn init_workspace(ws: &TempWorkspace) -> Result<(), String> {
 fn create_project_fixture(base_dir: &Path, project_id: &str, flow: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     std::fs::create_dir_all(&project_root).expect("create project directory");
+    let prompt_contents = "# Fixture prompt\n";
     let project_toml = format!(
         r#"id = "{project_id}"
 name = "Fixture {project_id}"
 flow = "{flow}"
 prompt_reference = "prompt.md"
-prompt_hash = "0000000000000000"
+prompt_hash = "{}"
 created_at = "2026-03-11T19:00:00Z"
 status_summary = "created"
-"#
+"#,
+        crate::adapters::fs::FileSystem::prompt_hash(prompt_contents)
     );
     std::fs::write(project_root.join("project.toml"), project_toml).expect("write project");
-    std::fs::write(project_root.join("prompt.md"), "# Fixture prompt\n").expect("write prompt");
+    std::fs::write(project_root.join("prompt.md"), prompt_contents).expect("write prompt");
     std::fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
@@ -313,6 +340,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
     register_workflow_panels(&mut m);
+    register_workflow_slice5(&mut m);
 
     m
 }
@@ -1627,18 +1655,18 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&post)?;
         assert_contains(&post.stdout, "completed", "run status after start")?;
 
-        // Verify 9 payloads/artifacts (all except prompt_review).
-        // completion_panel produces 3 records (2 supporting + 1 aggregate).
+        // Verify 11 payloads/artifacts (all except prompt_review).
+        // completion_panel and final_review each produce 3 panel records.
         let payloads = count_payload_files(&ws, "november")?;
         let artifacts = count_artifact_files(&ws, "november")?;
-        if payloads != 9 {
+        if payloads != 11 {
             return Err(format!(
-                "expected 9 payloads (no prompt_review), got {payloads}"
+                "expected 11 payloads (no prompt_review), got {payloads}"
             ));
         }
-        if artifacts != 9 {
+        if artifacts != 11 {
             return Err(format!(
-                "expected 9 artifacts (no prompt_review), got {artifacts}"
+                "expected 11 artifacts (no prompt_review), got {artifacts}"
             ));
         }
 
@@ -8764,7 +8792,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             let aggregate_file = std::fs::read_dir(&payloads_dir)
                 .map_err(|e| format!("read payloads dir: {e}"))?
                 .filter_map(|e| e.ok())
-                .find(|e| e.file_name().to_string_lossy().contains("aggregate"))
+                .find(|e| {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    name.contains("completion_panel") && name.contains("aggregate")
+                })
                 .ok_or_else(|| "no aggregate payload file found".to_owned())?;
             let aggregate_content = std::fs::read_to_string(aggregate_file.path())
                 .map_err(|e| format!("read aggregate payload: {e}"))?;
@@ -8891,7 +8923,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 let has_aggregate = std::fs::read_dir(&payloads_dir)
                     .map(|entries| entries.filter_map(|e| e.ok()).any(|e| {
                         let name = e.file_name();
-                        name.to_string_lossy().contains("aggregate")
+                        let name = name.to_string_lossy();
+                        name.contains("completion_panel") && name.contains("aggregate")
                     }))
                     .unwrap_or(false);
                 if !has_aggregate {
@@ -8951,7 +8984,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             let aggregate_file = std::fs::read_dir(&payloads_dir)
                 .map_err(|e| format!("read payloads dir: {e}"))?
                 .filter_map(|e| e.ok())
-                .find(|e| e.file_name().to_string_lossy().contains("aggregate"))
+                .find(|e| {
+                    let name = e.file_name();
+                    let name = name.to_string_lossy();
+                    name.contains("completion_panel") && name.contains("aggregate")
+                })
                 .ok_or_else(|| "no aggregate payload file found for optional_backend_skip".to_owned())?;
             let aggregate_content = std::fs::read_to_string(aggregate_file.path())
                 .map_err(|e| format!("read aggregate payload: {e}"))?;
@@ -9519,6 +9556,696 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             // `emit_resume_drift_warning` persists it (and fails resume if
             // persistence fails) before the stage continues.
 
+            Ok(())
+        }
+    );
+}
+
+fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(
+        m,
+        "workflow.final_review.no_amendments_complete",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-none", "standard")?;
+
+            let pid = crate::shared::domain::ProjectId::new("fr-none")
+                .map_err(|e| format!("project id: {e}"))?;
+            let config =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                    .map_err(|e| format!("load effective config: {e}"))?;
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                crate::adapters::stub_backend::StubBackendAdapter::default(),
+                crate::adapters::fs::FsRawOutputStore,
+                crate::adapters::fs::FsSessionStore,
+            );
+
+            block_on_app_result(crate::contexts::workflow_composition::engine::execute_standard_run(
+                &agent_service,
+                &crate::adapters::fs::FsRunSnapshotStore,
+                &crate::adapters::fs::FsRunSnapshotWriteStore,
+                &crate::adapters::fs::FsJournalStore,
+                &crate::adapters::fs::FsPayloadArtifactWriteStore,
+                &crate::adapters::fs::FsRuntimeLogWriteStore,
+                &crate::adapters::fs::FsAmendmentQueueStore,
+                ws.path(),
+                &pid,
+                &config,
+            ))?;
+
+            let snapshot = read_run_snapshot(&ws, "fr-none")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err("expected completed status after no-amendment final review".to_owned());
+            }
+            if snapshot
+                .get("completion_rounds")
+                .and_then(|v| v.as_u64())
+                != Some(1)
+            {
+                return Err("final review without amendments must not restart the round".to_owned());
+            }
+
+            let events = read_journal(&ws, "fr-none")?;
+            let restarted = events.iter().any(|event| {
+                event.get("event_type").and_then(|v| v.as_str())
+                    == Some("completion_round_advanced")
+                    && event
+                        .get("details")
+                        .and_then(|d| d.get("source_stage"))
+                        .and_then(|v| v.as_str())
+                        == Some("final_review")
+            });
+            if restarted {
+                return Err("final review should not advance the completion round when no amendments remain".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.final_review.restart_then_complete",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-restart", "standard")?;
+
+            let amendment_body = "Tighten the final wording.";
+            let amendment_id = crate::contexts::workflow_composition::final_review::canonical_amendment_id(
+                1,
+                amendment_body,
+            );
+            let adapter = crate::adapters::stub_backend::StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "final_review:reviewer",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Reviewer 1 proposes one amendment.",
+                            "amendments": [{"body": amendment_body}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 has no amendments.",
+                            "amendments": [],
+                        }),
+                    ],
+                )
+                .with_label_payload_sequence(
+                    "final_review:voter",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Planner position.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                    ],
+                );
+            let pid = crate::shared::domain::ProjectId::new("fr-restart")
+                .map_err(|e| format!("project id: {e}"))?;
+            let config =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                    .map_err(|e| format!("load effective config: {e}"))?;
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter.clone(),
+                crate::adapters::fs::FsRawOutputStore,
+                crate::adapters::fs::FsSessionStore,
+            );
+
+            block_on_app_result(crate::contexts::workflow_composition::engine::execute_standard_run(
+                &agent_service,
+                &crate::adapters::fs::FsRunSnapshotStore,
+                &crate::adapters::fs::FsRunSnapshotWriteStore,
+                &crate::adapters::fs::FsJournalStore,
+                &crate::adapters::fs::FsPayloadArtifactWriteStore,
+                &crate::adapters::fs::FsRuntimeLogWriteStore,
+                &crate::adapters::fs::FsAmendmentQueueStore,
+                ws.path(),
+                &pid,
+                &config,
+            ))?;
+
+            let snapshot = read_run_snapshot(&ws, "fr-restart")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err("expected completed status after final-review restart".to_owned());
+            }
+            if snapshot
+                .get("completion_rounds")
+                .and_then(|v| v.as_u64())
+                != Some(2)
+            {
+                return Err("final-review restart should advance to completion round 2".to_owned());
+            }
+
+            let events = read_journal(&ws, "fr-restart")?;
+            let amendment_events = events
+                .iter()
+                .filter(|event| {
+                    event.get("event_type").and_then(|v| v.as_str())
+                        == Some("amendment_queued")
+                })
+                .count();
+            if amendment_events != 1 {
+                return Err(format!(
+                    "expected one queued amendment after final-review restart, got {amendment_events}"
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.final_review.planner_completion_with_pending_amendments_fails",
+        || {
+            use crate::contexts::project_run_record::service::AmendmentQueuePort;
+
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-pending", "standard")?;
+            let pid = crate::shared::domain::ProjectId::new("fr-pending")
+                .map_err(|e| format!("project id: {e}"))?;
+            let amendment = crate::contexts::project_run_record::model::QueuedAmendment {
+                amendment_id: "fr-1-deadbeef".to_owned(),
+                source_stage: crate::shared::domain::StageId::FinalReview,
+                source_cycle: 1,
+                source_completion_round: 1,
+                body: "Implement the final amendment.".to_owned(),
+                created_at: chrono::Utc::now(),
+                batch_sequence: 1,
+            };
+            crate::adapters::fs::FsAmendmentQueueStore
+                .write_amendment(ws.path(), &pid, &amendment)
+                .map_err(|e| format!("write amendment: {e}"))?;
+
+            let mut snapshot = crate::contexts::project_run_record::model::RunSnapshot::initial();
+            snapshot.completion_rounds = 1;
+            snapshot.amendment_queue.pending.push(amendment);
+
+            let err = crate::contexts::workflow_composition::engine::completion_guard(
+                &snapshot,
+                &crate::adapters::fs::FsAmendmentQueueStore,
+                ws.path(),
+                &pid,
+            )
+            .expect_err("completion guard should block pending amendments");
+            let message = err.to_string();
+            if !message.contains("pending amendments") {
+                return Err(format!(
+                    "expected pending-amendment completion failure, got: {message}"
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.final_review.disputed_amendment_uses_arbiter",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-dispute", "standard")?;
+
+            let amendment_body = "Tighten the final wording.";
+            let amendment_id = crate::contexts::workflow_composition::final_review::canonical_amendment_id(
+                1,
+                amendment_body,
+            );
+            let adapter = crate::adapters::stub_backend::StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "final_review:reviewer",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Reviewer 1 proposes one amendment.",
+                            "amendments": [{"body": amendment_body}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 has no amendments.",
+                            "amendments": [],
+                        }),
+                    ],
+                )
+                .with_label_payload_sequence(
+                    "final_review:voter",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Planner position.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "reject", "rationale": "Not worth it."}],
+                        }),
+                    ],
+                )
+                .with_label_payload(
+                    "final_review:arbiter",
+                    serde_json::json!({
+                        "summary": "Arbiter resolves the disputed amendment.",
+                        "rulings": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Apply it."}],
+                    }),
+                );
+            let pid = crate::shared::domain::ProjectId::new("fr-dispute")
+                .map_err(|e| format!("project id: {e}"))?;
+            let config =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                    .map_err(|e| format!("load effective config: {e}"))?;
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter.clone(),
+                crate::adapters::fs::FsRawOutputStore,
+                crate::adapters::fs::FsSessionStore,
+            );
+
+            block_on_app_result(crate::contexts::workflow_composition::engine::execute_standard_run(
+                &agent_service,
+                &crate::adapters::fs::FsRunSnapshotStore,
+                &crate::adapters::fs::FsRunSnapshotWriteStore,
+                &crate::adapters::fs::FsJournalStore,
+                &crate::adapters::fs::FsPayloadArtifactWriteStore,
+                &crate::adapters::fs::FsRuntimeLogWriteStore,
+                &crate::adapters::fs::FsAmendmentQueueStore,
+                ws.path(),
+                &pid,
+                &config,
+            ))?;
+
+            let arbiter_invocations = adapter
+                .recorded_invocations()
+                .into_iter()
+                .filter(|invocation| invocation.contract_label == "final_review:arbiter")
+                .count();
+            if arbiter_invocations != 1 {
+                return Err(format!(
+                    "expected exactly one arbiter invocation for the disputed amendment, got {arbiter_invocations}"
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.final_review.restart_cap_force_complete",
+        || {
+            use crate::contexts::project_run_record::service::ArtifactStorePort;
+
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-cap", "standard")?;
+            let out = run_cli(
+                &["config", "set", "final_review.max_restarts", "1"],
+                ws.path(),
+            )?;
+            assert_success(&out)?;
+
+            let amendment_body = "Tighten the final wording.";
+            let amendment_id = crate::contexts::workflow_composition::final_review::canonical_amendment_id(
+                1,
+                amendment_body,
+            );
+            let adapter = crate::adapters::stub_backend::StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "final_review:reviewer",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Reviewer 1 proposes one amendment.",
+                            "amendments": [{"body": amendment_body}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 has no amendments.",
+                            "amendments": [],
+                        }),
+                    ],
+                )
+                .with_label_payload_sequence(
+                    "final_review:voter",
+                    vec![
+                        serde_json::json!({
+                            "summary": "Planner position.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Required."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 1 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                        serde_json::json!({
+                            "summary": "Reviewer 2 vote.",
+                            "votes": [{"amendment_id": amendment_id, "decision": "accept", "rationale": "Agree."}],
+                        }),
+                    ],
+                );
+            let pid = crate::shared::domain::ProjectId::new("fr-cap")
+                .map_err(|e| format!("project id: {e}"))?;
+            let config =
+                crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                    .map_err(|e| format!("load effective config: {e}"))?;
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter.clone(),
+                crate::adapters::fs::FsRawOutputStore,
+                crate::adapters::fs::FsSessionStore,
+            );
+
+            block_on_app_result(crate::contexts::workflow_composition::engine::execute_standard_run(
+                &agent_service,
+                &crate::adapters::fs::FsRunSnapshotStore,
+                &crate::adapters::fs::FsRunSnapshotWriteStore,
+                &crate::adapters::fs::FsJournalStore,
+                &crate::adapters::fs::FsPayloadArtifactWriteStore,
+                &crate::adapters::fs::FsRuntimeLogWriteStore,
+                &crate::adapters::fs::FsAmendmentQueueStore,
+                ws.path(),
+                &pid,
+                &config,
+            ))?;
+
+            let reviewer_invocations = adapter
+                .recorded_invocations()
+                .into_iter()
+                .filter(|invocation| invocation.contract_label == "final_review:reviewer")
+                .count();
+            if reviewer_invocations != 2 {
+                return Err(format!(
+                    "restart-cap force-complete should skip a second proposal round; expected 2 reviewer invocations, got {reviewer_invocations}"
+                ));
+            }
+
+            let aggregate_payload = crate::adapters::fs::FsArtifactStore
+                .list_payloads(ws.path(), &pid)
+                .map_err(|e| format!("list payloads: {e}"))?
+                .into_iter()
+                .find(|payload| {
+                    payload.stage_id == crate::shared::domain::StageId::FinalReview
+                        && payload.record_kind
+                            == crate::contexts::workflow_composition::panel_contracts::RecordKind::StageAggregate
+                        && payload.completion_round == 2
+                })
+                .ok_or_else(|| "missing round-2 final-review aggregate payload".to_owned())?;
+            if aggregate_payload
+                .payload
+                .get("force_completed")
+                .and_then(|v| v.as_bool())
+                != Some(true)
+            {
+                return Err("expected final-review aggregate to record force_completed=true after the restart cap hit".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.resume.prompt_change_continue_warns",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "prompt-continue", "standard")?;
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")],
+            )?;
+            assert_failure(&out)?;
+
+            let config_out = run_cli(
+                &["config", "set", "workflow.prompt_change_action", "continue"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+            std::fs::write(
+                ws.path().join(".ralph-burning/projects/prompt-continue/prompt.md"),
+                "# Fixture prompt\n\nPrompt changed before resume.\n",
+            )
+            .map_err(|e| format!("write changed prompt: {e}"))?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_success(&resume_out)?;
+
+            let events = read_journal(&ws, "prompt-continue")?;
+            let warning = events.iter().find(|event| {
+                event.get("event_type").and_then(|v| v.as_str()) == Some("durable_warning")
+                    && event
+                        .get("details")
+                        .and_then(|d| d.get("warning_kind"))
+                        .and_then(|v| v.as_str())
+                        == Some("prompt_change")
+            });
+            let warning = warning.ok_or_else(|| "missing prompt_change durable_warning".to_owned())?;
+            if warning
+                .get("details")
+                .and_then(|d| d.get("details"))
+                .and_then(|d| d.get("action"))
+                .and_then(|v| v.as_str())
+                != Some("continue")
+            {
+                return Err("prompt-change warning should record continue action".to_owned());
+            }
+
+            let logs = read_runtime_logs(&ws, "prompt-continue")?;
+            if !logs.contains("prompt changed after the cycle started") {
+                return Err("runtime logs should contain the prompt-change warning".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.resume.prompt_change_abort_fails",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "prompt-abort", "standard")?;
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")],
+            )?;
+            assert_failure(&out)?;
+
+            let config_out = run_cli(
+                &["config", "set", "workflow.prompt_change_action", "abort"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+            std::fs::write(
+                ws.path().join(".ralph-burning/projects/prompt-abort/prompt.md"),
+                "# Fixture prompt\n\nPrompt changed before resume.\n",
+            )
+            .map_err(|e| format!("write changed prompt: {e}"))?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_failure(&resume_out)?;
+            if !resume_out.stderr.contains("prompt hash mismatch on resume") {
+                return Err(format!(
+                    "expected resume failure to mention the prompt hash mismatch, got: {}",
+                    resume_out.stderr
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.resume.prompt_change_restart_cycle",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "prompt-restart", "standard")?;
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "review")],
+            )?;
+            assert_failure(&out)?;
+
+            let config_out = run_cli(
+                &["config", "set", "workflow.prompt_change_action", "restart_cycle"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+            std::fs::write(
+                ws.path().join(".ralph-burning/projects/prompt-restart/prompt.md"),
+                "# Fixture prompt\n\nPrompt changed before resume.\n",
+            )
+            .map_err(|e| format!("write changed prompt: {e}"))?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_success(&resume_out)?;
+
+            let events = read_journal(&ws, "prompt-restart")?;
+            let planning_entries = events
+                .iter()
+                .filter(|event| {
+                    event.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                        && event
+                            .get("details")
+                            .and_then(|d| d.get("stage_id"))
+                            .and_then(|v| v.as_str())
+                            == Some("planning")
+                })
+                .count();
+            if planning_entries < 2 {
+                return Err(format!(
+                    "restart_cycle should send the run back to planning; expected at least two planning entries, got {planning_entries}"
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.resume.backend_drift_warns",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "drift-fr", "standard")?;
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
+            )?;
+            assert_failure(&out)?;
+
+            let config_out = run_cli(
+                &["config", "set", "final_review.arbiter_backend", "codex"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_success(&resume_out)?;
+
+            let events = read_journal(&ws, "drift-fr")?;
+            let warning = events.iter().find(|event| {
+                event.get("event_type").and_then(|v| v.as_str()) == Some("durable_warning")
+                    && event
+                        .get("details")
+                        .and_then(|d| d.get("warning_kind"))
+                        .and_then(|v| v.as_str())
+                        == Some("resume_drift")
+            });
+            if warning.is_none() {
+                return Err("expected resume_drift warning when final-review panel resolution changes".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.iteration_caps.qa_cap_enforced",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "qa-cap", "standard")?;
+            let config_out = run_cli(
+                &["config", "set", "workflow.max_qa_iterations", "1"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+
+            let overrides = serde_json::json!({
+                "qa": [
+                    {"outcome": "request_changes", "evidence": ["Needs fixes"], "findings_or_gaps": ["gap-1"], "follow_up_or_amendments": ["fix-1"]},
+                    {"outcome": "request_changes", "evidence": ["Still needs fixes"], "findings_or_gaps": ["gap-2"], "follow_up_or_amendments": ["fix-2"]},
+                ]
+            });
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
+            )?;
+            assert_failure(&out)?;
+            if !out.stderr.contains("qa iteration cap exceeded") {
+                return Err(format!(
+                    "expected QA cap failure, got stderr: {}",
+                    out.stderr
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.iteration_caps.review_cap_enforced",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "review-cap", "standard")?;
+            let config_out = run_cli(
+                &["config", "set", "workflow.max_review_iterations", "1"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+
+            let overrides = serde_json::json!({
+                "review": [
+                    {"outcome": "request_changes", "evidence": ["Needs fixes"], "findings_or_gaps": ["gap-1"], "follow_up_or_amendments": ["fix-1"]},
+                    {"outcome": "request_changes", "evidence": ["Still needs fixes"], "findings_or_gaps": ["gap-2"], "follow_up_or_amendments": ["fix-2"]},
+                ]
+            });
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
+            )?;
+            assert_failure(&out)?;
+            if !out.stderr.contains("review iteration cap exceeded") {
+                return Err(format!(
+                    "expected review cap failure, got stderr: {}",
+                    out.stderr
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "workflow.iteration_caps.final_review_cap_enforced",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "fr-cap-iter", "standard")?;
+            let config_out = run_cli(
+                &["config", "set", "final_review.max_restarts", "1"],
+                ws.path(),
+            )?;
+            assert_success(&config_out)?;
+
+            let overrides = serde_json::json!({
+                "final_review": [
+                    {
+                        "outcome": "conditionally_approved",
+                        "evidence": ["Needs one more change"],
+                        "findings_or_gaps": ["final review amendment"],
+                        "follow_up_or_amendments": ["tighten final wording"]
+                    }
+                ]
+            });
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[
+                    ("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string()),
+                    ("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS", "3"),
+                ],
+            )?;
+            assert_success(&out)?;
+
+            let snapshot = read_run_snapshot(&ws, "fr-cap-iter")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err("expected completed status after final-review restart cap".to_owned());
+            }
+            if snapshot
+                .get("completion_rounds")
+                .and_then(|v| v.as_u64())
+                != Some(2)
+            {
+                return Err("final-review restart cap should still leave the run on round 2".to_owned());
+            }
             Ok(())
         }
     );

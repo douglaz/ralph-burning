@@ -135,6 +135,11 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                         ralph_burning::shared::domain::StageId::Planning,
                     ),
                     started_at: test_timestamp(),
+                    prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                    prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                    qa_iterations_current_cycle: 0,
+                    review_iterations_current_cycle: 0,
+                    final_review_restart_count: 0,
                     stage_resolution_snapshot: None,
                 }),
                 status: RunStatus::Running,
@@ -479,6 +484,11 @@ fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
         status: RunStatus::Paused,
@@ -503,6 +513,11 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
         status: RunStatus::NotStarted,
@@ -557,6 +572,11 @@ fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
         status: RunStatus::Failed,
@@ -912,6 +932,8 @@ fn stage_resolution_snapshot_single_target_round_trip() {
         prompt_review_validators: Vec::new(),
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
+        final_review_reviewers: Vec::new(),
+        final_review_arbiter: None,
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -940,6 +962,8 @@ fn stage_resolution_snapshot_panel_target_round_trip() {
                 model_id: "gpt-4o".to_owned(),
             },
         ],
+        final_review_reviewers: Vec::new(),
+        final_review_arbiter: None,
     };
 
     let json = serde_json::to_string(&snapshot).unwrap();
@@ -956,6 +980,11 @@ fn active_run_with_snapshot_round_trip() {
             ralph_burning::shared::domain::StageId::Planning,
         ),
         started_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+        prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+        qa_iterations_current_cycle: 1,
+        review_iterations_current_cycle: 2,
+        final_review_restart_count: 3,
         stage_resolution_snapshot: Some(StageResolutionSnapshot {
             stage_id: ralph_burning::shared::domain::StageId::Planning,
             resolved_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
@@ -966,6 +995,8 @@ fn active_run_with_snapshot_round_trip() {
             prompt_review_validators: Vec::new(),
             prompt_review_refiner: None,
             completion_completers: Vec::new(),
+            final_review_reviewers: Vec::new(),
+            final_review_arbiter: None,
         }),
     };
 
@@ -982,6 +1013,11 @@ fn active_run_without_snapshot_omits_field() {
             ralph_burning::shared::domain::StageId::Planning,
         ),
         started_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+        prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+        qa_iterations_current_cycle: 0,
+        review_iterations_current_cycle: 0,
+        final_review_restart_count: 0,
         stage_resolution_snapshot: None,
     };
 

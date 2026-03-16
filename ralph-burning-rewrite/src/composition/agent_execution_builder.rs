@@ -105,7 +105,11 @@ fn apply_label_overrides_to_stub(mut adapter: StubBackendAdapter) -> StubBackend
             serde_json::from_str::<HashMap<String, serde_json::Value>>(&overrides_json)
         {
             for (label, payload) in overrides {
-                let full_label = if label.starts_with("requirements:") {
+                let full_label = if label.starts_with("requirements:")
+                    || label.starts_with("prompt_review:")
+                    || label.starts_with("completion_panel:")
+                    || label.starts_with("final_review:")
+                {
                     label
                 } else {
                     format!("requirements:{label}")
@@ -155,7 +159,8 @@ fn build_stub_backend_adapter() -> StubBackendAdapter {
         }
     }
 
-    // Also apply label overrides so that stub-backed requirements paths work.
+    // Also apply label overrides so that stub-backed requirements and panel
+    // paths can drive role-specific payloads in tests.
     apply_label_overrides_to_stub(adapter)
 }
 

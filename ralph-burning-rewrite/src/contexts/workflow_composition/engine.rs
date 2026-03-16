@@ -7,7 +7,7 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::adapters::fs::{FsArtifactStore, FsProjectStore, FsRollbackPointStore};
+use crate::adapters::fs::{FileSystem, FsArtifactStore, FsProjectStore, FsRollbackPointStore};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -44,6 +44,8 @@ use crate::shared::error::{AppError, AppResult};
 
 use super::completion;
 use super::contracts::{self, ValidatedBundle};
+use super::drift::{self, PromptChangeResumeDecision};
+use super::final_review;
 use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
 use super::prompt_review;
 use super::retry_policy::RetryPolicy;
@@ -255,6 +257,164 @@ fn history_record_base_id(
     }
 }
 
+fn project_prompt_hash(
+    project_root: &Path,
+    prompt_reference: &str,
+) -> AppResult<String> {
+    let prompt_path = project_root.join(prompt_reference);
+    let prompt = fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
+        file: prompt_path.display().to_string(),
+        details: format!("failed to read prompt while computing hash: {error}"),
+    })?;
+    Ok(FileSystem::prompt_hash(&prompt))
+}
+
+fn build_active_run(
+    run_id: &RunId,
+    stage_cursor: StageCursor,
+    started_at: DateTime<Utc>,
+    prompt_hash_at_cycle_start: String,
+    prompt_hash_at_stage_start: String,
+    qa_iterations_current_cycle: u32,
+    review_iterations_current_cycle: u32,
+    final_review_restart_count: u32,
+    stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+) -> ActiveRun {
+    ActiveRun {
+        run_id: run_id.as_str().to_owned(),
+        stage_cursor,
+        started_at,
+        prompt_hash_at_cycle_start,
+        prompt_hash_at_stage_start,
+        qa_iterations_current_cycle,
+        review_iterations_current_cycle,
+        final_review_restart_count,
+        stage_resolution_snapshot,
+    }
+}
+
+fn current_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
+    snapshot.active_run.as_ref().ok_or_else(|| AppError::CorruptRecord {
+        file: "run.json".to_owned(),
+        details: "running snapshot lost active_run metadata".to_owned(),
+    })
+}
+
+fn carry_forward_active_run(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    stage_cursor: StageCursor,
+    prompt_hash_at_stage_start: String,
+    stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+) -> AppResult<ActiveRun> {
+    let current = current_active_run(snapshot)?;
+    Ok(build_active_run(
+        run_id,
+        stage_cursor,
+        current.started_at,
+        current.prompt_hash_at_cycle_start.clone(),
+        prompt_hash_at_stage_start,
+        current.qa_iterations_current_cycle,
+        current.review_iterations_current_cycle,
+        current.final_review_restart_count,
+        stage_resolution_snapshot,
+    ))
+}
+
+fn reset_cycle_active_run(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    stage_cursor: StageCursor,
+    prompt_hash: String,
+    qa_iterations_current_cycle: u32,
+    review_iterations_current_cycle: u32,
+    final_review_restart_count: u32,
+    stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+) -> AppResult<ActiveRun> {
+    let current = current_active_run(snapshot)?;
+    Ok(build_active_run(
+        run_id,
+        stage_cursor,
+        current.started_at,
+        prompt_hash.clone(),
+        prompt_hash,
+        qa_iterations_current_cycle,
+        review_iterations_current_cycle,
+        final_review_restart_count,
+        stage_resolution_snapshot,
+    ))
+}
+
+fn advance_completion_round_active_run(
+    snapshot: &RunSnapshot,
+    run_id: &RunId,
+    stage_cursor: StageCursor,
+    prompt_hash: String,
+    final_review_restart_count: u32,
+    stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+) -> AppResult<ActiveRun> {
+    let current = current_active_run(snapshot)?;
+    Ok(build_active_run(
+        run_id,
+        stage_cursor,
+        current.started_at,
+        prompt_hash.clone(),
+        prompt_hash,
+        0,
+        0,
+        final_review_restart_count,
+        stage_resolution_snapshot,
+    ))
+}
+
+fn count_iteration_counters_for_round(events: &[JournalEvent], completion_round: u32) -> (u32, u32) {
+    let mut active_round = 1;
+    let mut qa_iterations: u32 = 0;
+    let mut review_iterations: u32 = 0;
+
+    for event in events {
+        match event.event_type {
+            JournalEventType::CompletionRoundAdvanced => {
+                active_round = event
+                    .details
+                    .get("to_round")
+                    .and_then(Value::as_u64)
+                    .unwrap_or(active_round as u64) as u32;
+                qa_iterations = 0;
+                review_iterations = 0;
+            }
+            JournalEventType::CycleAdvanced if active_round == completion_round => {
+                match event.details.get("from_stage").and_then(Value::as_str) {
+                    Some("review") => {
+                        review_iterations = review_iterations.saturating_add(1);
+                    }
+                    Some("qa") | Some("docs_validation") | Some("ci_validation") => {
+                        qa_iterations = qa_iterations.saturating_add(1);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+
+    (qa_iterations, review_iterations)
+}
+
+fn count_final_review_restarts(events: &[JournalEvent]) -> u32 {
+    events
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::CompletionRoundAdvanced
+                && event
+                    .details
+                    .get("source_stage")
+                    .and_then(Value::as_str)
+                    == Some(StageId::FinalReview.as_str())
+        })
+        .count() as u32
+}
+
 #[derive(Debug, Clone, Copy)]
 enum ExecutionOrigin {
     Start,
@@ -427,17 +587,24 @@ where
 
     let run_id = generate_run_id()?;
     let now = Utc::now();
+    let project_root = project_root_path(base_dir, project_id);
+    let current_prompt_hash = project_prompt_hash(&project_root, project_record.prompt_reference.as_str())?;
     let events = journal_store.read_journal(base_dir, project_id)?;
     let mut seq = journal::last_sequence(&events);
     let first_stage = stage_plan[0].stage_id;
     let initial_cursor = StageCursor::initial(first_stage);
     let mut current_snapshot = RunSnapshot {
-        active_run: Some(ActiveRun {
-            run_id: run_id.as_str().to_owned(),
-            stage_cursor: initial_cursor.clone(),
-            started_at: now,
-            stage_resolution_snapshot: None,
-        }),
+        active_run: Some(build_active_run(
+            &run_id,
+            initial_cursor.clone(),
+            now,
+            current_prompt_hash.clone(),
+            current_prompt_hash,
+            0,
+            0,
+            0,
+            None,
+        )),
         status: RunStatus::Running,
         cycle_history: snapshot.cycle_history.clone(),
         completion_rounds: 1,
@@ -727,6 +894,7 @@ where
         .unwrap_or(1);
     let stage_plan =
         resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, resume_cycle)?;
+    let project_root = project_root_path(base_dir, project_id);
     // Reconcile amendments from disk into snapshot before deriving resume state.
     reconcile_amendments_from_disk(
         &mut snapshot,
@@ -736,8 +904,9 @@ where
         project_id,
     )?;
 
-    let resume_state = derive_resume_state(&visible_events, &snapshot, &stage_plan, semantics)?;
-    let execution_context = derive_resume_execution_context(
+    let mut resume_state =
+        derive_resume_state(&visible_events, &snapshot, &stage_plan, semantics)?;
+    let mut execution_context = derive_resume_execution_context(
         artifact_store,
         base_dir,
         project_id,
@@ -747,6 +916,41 @@ where
     )?;
 
     let mut seq = journal::last_sequence(&events);
+    let prompt_change_baseline = project_record.prompt_hash.clone();
+    let stage_id_plan = stage_plan.iter().map(|entry| entry.stage_id).collect::<Vec<_>>();
+    let current_prompt_hash = match drift::evaluate_prompt_change_on_resume(
+        artifact_store,
+        artifact_write,
+        run_snapshot_write,
+        journal_store,
+        log_write,
+        base_dir,
+        project_id,
+        &project_root,
+        project_record.prompt_reference.as_str(),
+        &resume_state.run_id,
+        &mut seq,
+        &mut snapshot,
+        &resume_state.cursor,
+        resume_state.stage_index,
+        &stage_id_plan,
+        semantics.planning_stage,
+        &prompt_change_baseline,
+        effective_config.run_policy().prompt_change_action,
+    )? {
+        PromptChangeResumeDecision::NoChange { current_prompt_hash }
+        | PromptChangeResumeDecision::Continue { current_prompt_hash } => current_prompt_hash,
+        PromptChangeResumeDecision::RestartCycle {
+            current_prompt_hash,
+            next_cursor,
+            next_stage_index,
+        } => {
+            resume_state.cursor = next_cursor;
+            resume_state.stage_index = next_stage_index;
+            execution_context = None;
+            current_prompt_hash
+        }
+    };
 
     // ── Resume drift detection (runs BEFORE preflight) ────────────────────────
     // Re-resolve the current stage or panel, compare against the persisted
@@ -832,6 +1036,49 @@ where
                 panel.completers = available;
                 build_completion_snapshot(current_stage, &panel.completers)
             }
+            StageId::FinalReview => {
+                let mut panel =
+                    policy.resolve_final_review_panel(resume_state.cursor.cycle)?;
+                let min_reviewers = effective_config.final_review_policy().min_reviewers;
+                agent_service
+                    .adapter()
+                    .check_availability(&panel.arbiter)
+                    .await
+                    .map_err(|_| AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "required final-review arbiter ({}) unavailable on resume",
+                            panel.arbiter.backend.family,
+                        ),
+                    })?;
+                let mut available = Vec::new();
+                for member in &panel.reviewers {
+                    match agent_service.adapter().check_availability(&member.target).await {
+                        Ok(()) => available.push(member.clone()),
+                        Err(e) => {
+                            if member.required {
+                                return Err(AppError::ResumeDriftFailure {
+                                    stage_id: current_stage,
+                                    details: format!(
+                                        "required final-review reviewer unavailable on resume: {e}"
+                                    ),
+                                });
+                            }
+                        }
+                    }
+                }
+                if available.len() < min_reviewers {
+                    return Err(AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "available final-review reviewers ({}) < min_reviewers ({}) on resume",
+                            available.len(), min_reviewers,
+                        ),
+                    });
+                }
+                panel.reviewers = available;
+                build_final_review_snapshot(current_stage, &panel.reviewers, &panel.arbiter)
+            }
             _ => {
                 let target =
                     policy.resolve_stage_target(current_stage, resume_state.cursor.cycle)?;
@@ -875,13 +1122,20 @@ where
     // Seed the resumed ActiveRun with the (potentially updated) resolution
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
+    let (qa_iterations_current_cycle, review_iterations_current_cycle) =
+        count_iteration_counters_for_round(&visible_events, resume_state.cursor.completion_round);
     snapshot.status = RunStatus::Running;
-    snapshot.active_run = Some(ActiveRun {
-        run_id: resume_state.run_id.as_str().to_owned(),
-        stage_cursor: resume_state.cursor.clone(),
-        started_at: resume_state.started_at,
-        stage_resolution_snapshot: resumed_snapshot,
-    });
+    snapshot.active_run = Some(build_active_run(
+        &resume_state.run_id,
+        resume_state.cursor.clone(),
+        resume_state.started_at,
+        current_prompt_hash.clone(),
+        current_prompt_hash.clone(),
+        qa_iterations_current_cycle,
+        review_iterations_current_cycle,
+        count_final_review_restarts(&visible_events),
+        resumed_snapshot,
+    ));
     snapshot.completion_rounds = snapshot
         .completion_rounds
         .max(resume_state.cursor.completion_round);
@@ -1138,13 +1392,20 @@ where
                     }
                     let next_stage = stage_plan[stage_index + 1].stage_id;
                     cursor = cursor.advance_stage(next_stage);
+                    let current_prompt_hash =
+                        project_prompt_hash(&project_root, prompt_reference)?;
                     snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
+                    snapshot.active_run = Some(build_active_run(
+                        run_id,
+                        cursor.clone(),
+                        snapshot_started_at(snapshot)?,
+                        current_prompt_hash.clone(),
+                        current_prompt_hash,
+                        0,
+                        0,
+                        current_active_run(snapshot)?.final_review_restart_count,
+                        None,
+                    ));
                     snapshot.status_summary = format!(
                         "running: completed {}, next {}",
                         stage_id.display_name(),
@@ -1301,12 +1562,13 @@ where
                         .as_ref()
                         .and_then(|ar| ar.stage_resolution_snapshot.clone());
                     snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: advanced_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
+                    snapshot.active_run = Some(carry_forward_active_run(
+                        snapshot,
+                        run_id,
+                        advanced_cursor.clone(),
+                        project_prompt_hash(&project_root, prompt_reference)?,
+                        None,
+                    )?);
                     snapshot.status_summary = format!(
                         "running: completed {}, next {}",
                         stage_id.display_name(),
@@ -1490,12 +1752,14 @@ where
                         .completion_rounds
                         .max(next_cursor.completion_round);
                     snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: next_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
+                    snapshot.active_run = Some(advance_completion_round_active_run(
+                        snapshot,
+                        run_id,
+                        next_cursor.clone(),
+                        project_prompt_hash(&project_root, prompt_reference)?,
+                        current_active_run(snapshot)?.final_review_restart_count,
+                        None,
+                    )?);
                     snapshot.status_summary = format!(
                         "running: completion round {} -> {}",
                         from_round,
@@ -1604,6 +1868,475 @@ where
                 Err(error) => {
                     // dispatch_completion_panel persisted supporting records but
                     // did not write aggregate or transition on failure.
+                    return fail_run_result(
+                        &error,
+                        stage_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        journal_store,
+                        run_snapshot_write,
+                        base_dir,
+                        project_id,
+                        origin,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // ── Panel dispatch: FinalReview ───────────────────────────────────────
+        if stage_id == StageId::FinalReview {
+            let panel_result = dispatch_final_review_panel(
+                agent_service,
+                artifact_write,
+                log_write,
+                run_snapshot_write,
+                journal_store,
+                base_dir,
+                &project_root,
+                project_id,
+                run_id,
+                seq,
+                snapshot,
+                &cursor,
+                semantics.planning_stage,
+                effective_config,
+                prompt_reference,
+                cancellation_token.clone(),
+            )
+            .await;
+
+            match panel_result {
+                Ok(FinalReviewPanelOutcome::Complete(completed_cursor, commit_data)) => {
+                    cursor = completed_cursor;
+
+                    if let Err(error) = persist_final_review_aggregate_records(
+                        artifact_write,
+                        base_dir,
+                        project_id,
+                        &cursor,
+                        stage_id,
+                        &commit_data,
+                    ) {
+                        return fail_run_result(
+                            &error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    *seq += 1;
+                    let stage_completed = journal::stage_completed_event(
+                        *seq,
+                        Utc::now(),
+                        run_id,
+                        stage_id,
+                        cursor.cycle,
+                        cursor.attempt,
+                        &commit_data.payload_id,
+                        &commit_data.artifact_id,
+                    );
+                    let stage_completed_line = journal::serialize_event(&stage_completed)?;
+                    if let Err(error) =
+                        journal_store.append_event(base_dir, project_id, &stage_completed_line)
+                    {
+                        *seq -= 1;
+                        cleanup_final_review_aggregate_records(
+                            artifact_write,
+                            base_dir,
+                            project_id,
+                            &commit_data,
+                        );
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "journal append failed during final-review aggregate commit: {error}"
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    if stage_index + 1 == stage_plan.len() {
+                        complete_run(
+                            snapshot,
+                            run_snapshot_write,
+                            journal_store,
+                            amendment_queue_port,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                        )?;
+                        if let Err(error) = persist_rollback_point(
+                            rollback_store,
+                            journal_store,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            stage_id,
+                            cursor.cycle,
+                        ) {
+                            return checkpoint_failure_result(
+                                error,
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                        return Ok(RunOutcome::Completed);
+                    }
+
+                    let next_stage = stage_plan[stage_index + 1].stage_id;
+                    cursor = cursor.advance_stage(next_stage);
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(carry_forward_active_run(
+                        snapshot,
+                        run_id,
+                        cursor.clone(),
+                        project_prompt_hash(&project_root, prompt_reference)?,
+                        None,
+                    )?);
+                    snapshot.status_summary = format!(
+                        "running: completed {}, next {}",
+                        stage_id.display_name(),
+                        next_stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist next-stage cursor after {}: {}",
+                                    stage_id.as_str(),
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    stage_index += 1;
+                    continue;
+                }
+                Ok(FinalReviewPanelOutcome::Restart(next_cursor, commit_data)) => {
+                    let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
+                        .ok()
+                        .and_then(|value| value.parse::<u32>().ok())
+                        .unwrap_or(DEFAULT_MAX_COMPLETION_ROUNDS);
+                    if next_cursor.completion_round > max_rounds {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "max completion rounds ({}) exceeded",
+                                    max_rounds
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
+                    let from_round = cursor.completion_round;
+                    let to_round = next_cursor.completion_round;
+
+                    if let Err(error) = persist_final_review_aggregate_records(
+                        artifact_write,
+                        base_dir,
+                        project_id,
+                        &cursor,
+                        stage_id,
+                        &commit_data,
+                    ) {
+                        return fail_run_result(
+                            &error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    let mut written_ids: Vec<String> = Vec::new();
+                    for amendment in &commit_data.accepted_amendments {
+                        if let Err(error) =
+                            amendment_queue_port.write_amendment(base_dir, project_id, amendment)
+                        {
+                            for written_id in &written_ids {
+                                let _ = amendment_queue_port
+                                    .remove_amendment(base_dir, project_id, written_id);
+                            }
+                            cleanup_final_review_aggregate_records(
+                                artifact_write,
+                                base_dir,
+                                project_id,
+                                &commit_data,
+                            );
+                            return fail_run_result(
+                                &AppError::AmendmentQueueError {
+                                    details: format!(
+                                        "failed to persist final-review amendment '{}': {}",
+                                        amendment.amendment_id, error
+                                    ),
+                                },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                        written_ids.push(amendment.amendment_id.clone());
+                    }
+
+                    let mut last_journaled_amendment_index = None;
+                    for (index, amendment) in commit_data.accepted_amendments.iter().enumerate() {
+                        *seq += 1;
+                        let amendment_event = journal::amendment_queued_event(
+                            *seq,
+                            Utc::now(),
+                            run_id,
+                            &amendment.amendment_id,
+                            amendment.source_stage,
+                            &amendment.body,
+                        );
+                        let event_line = journal::serialize_event(&amendment_event)?;
+                        if let Err(error) =
+                            journal_store.append_event(base_dir, project_id, &event_line)
+                        {
+                            *seq -= 1;
+                            let cleanup_errors: Vec<String> = commit_data.accepted_amendments[index..]
+                                .iter()
+                                .filter_map(|pending| {
+                                    amendment_queue_port
+                                        .remove_amendment(
+                                            base_dir,
+                                            project_id,
+                                            &pending.amendment_id,
+                                        )
+                                        .err()
+                                        .map(|cleanup_error| {
+                                            format!("{}: {}", pending.amendment_id, cleanup_error)
+                                        })
+                                })
+                                .collect();
+                            snapshot.completion_rounds = snapshot.completion_rounds.max(to_round);
+                            if let Some(last_index) = last_journaled_amendment_index {
+                                snapshot
+                                    .amendment_queue
+                                    .pending
+                                    .extend(commit_data.accepted_amendments[..=last_index].iter().cloned());
+                            } else {
+                                snapshot
+                                    .amendment_queue
+                                    .pending
+                                    .extend(commit_data.accepted_amendments.iter().cloned());
+                            }
+                            let details = if cleanup_errors.is_empty() {
+                                format!(
+                                    "failed to persist final-review amendment_queued event: {}",
+                                    error
+                                )
+                            } else {
+                                format!(
+                                    "failed to persist final-review amendment_queued event: {}; cleanup failed for {}",
+                                    error,
+                                    cleanup_errors.join(", ")
+                                )
+                            };
+                            return fail_run_result(
+                                &AppError::AmendmentQueueError { details },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+                        last_journaled_amendment_index = Some(index);
+                    }
+
+                    snapshot.last_stage_resolution_snapshot = snapshot
+                        .active_run
+                        .as_ref()
+                        .and_then(|active_run| active_run.stage_resolution_snapshot.clone());
+                    snapshot.amendment_queue.pending.extend(
+                        commit_data.accepted_amendments.iter().cloned(),
+                    );
+                    snapshot.completion_rounds =
+                        snapshot.completion_rounds.max(next_cursor.completion_round);
+                    snapshot.status = RunStatus::Running;
+                    let current = current_active_run(snapshot)?;
+                    let prompt_hash = project_prompt_hash(&project_root, prompt_reference)?;
+                    snapshot.active_run = Some(advance_completion_round_active_run(
+                        snapshot,
+                        run_id,
+                        next_cursor.clone(),
+                        prompt_hash,
+                        current.final_review_restart_count.saturating_add(1),
+                        None,
+                    )?);
+                    snapshot.status_summary = format!(
+                        "running: final review restart round {} -> {}",
+                        to_round,
+                        next_cursor.stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist final-review restart cursor: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    *seq += 1;
+                    let round_event = journal::completion_round_advanced_event(
+                        *seq,
+                        Utc::now(),
+                        run_id,
+                        stage_id,
+                        from_round,
+                        to_round,
+                        snapshot.amendment_queue.pending.len() as u32,
+                    );
+                    let round_event_line = journal::serialize_event(&round_event)?;
+                    if let Err(error) =
+                        journal_store.append_event(base_dir, project_id, &round_event_line)
+                    {
+                        *seq -= 1;
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist final-review completion_round_advanced event: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    execution_context = None;
+                    stage_index = planning_index;
+                    cursor = next_cursor;
+                    continue;
+                }
+                Err(error) => {
                     return fail_run_result(
                         &error,
                         stage_id,
@@ -1928,12 +2661,13 @@ where
                     // Advance completion round and restart from the flow's planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
                     snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: next_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
+                    snapshot.active_run = Some(carry_forward_active_run(
+                        snapshot,
+                        run_id,
+                        next_cursor.clone(),
+                        project_prompt_hash(&project_root, prompt_reference)?,
+                        None,
+                    )?);
                     snapshot.status_summary = format!(
                         "running: completion round {} -> {}",
                         from_round,
@@ -2036,6 +2770,43 @@ where
                 ReviewOutcome::RequestChanges
                     if semantics.remediation_trigger_stages.contains(&stage_id) =>
                 {
+                    let current = current_active_run(snapshot)?;
+                    let (next_iteration, max_iterations, counter_label) =
+                        if stage_id == StageId::Review {
+                            (
+                                current.review_iterations_current_cycle.saturating_add(1),
+                                effective_config.run_policy().max_review_iterations,
+                                "review",
+                            )
+                        } else {
+                            (
+                                current.qa_iterations_current_cycle.saturating_add(1),
+                                effective_config.run_policy().max_qa_iterations,
+                                "qa",
+                            )
+                        };
+                    if next_iteration > max_iterations {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "{counter_label} iteration cap exceeded: {} > {}",
+                                    next_iteration, max_iterations
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
                     let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
                         AppError::StageCursorOverflow {
                             field: "cycle",
@@ -2101,13 +2872,37 @@ where
                         .await;
                     }
 
+                    let (
+                        next_qa_iterations,
+                        next_review_iterations,
+                        final_review_restart_count,
+                    ) = {
+                        let current = current_active_run(snapshot)?;
+                        (
+                            if stage_id == StageId::Review {
+                                current.qa_iterations_current_cycle
+                            } else {
+                                current.qa_iterations_current_cycle.saturating_add(1)
+                            },
+                            if stage_id == StageId::Review {
+                                current.review_iterations_current_cycle.saturating_add(1)
+                            } else {
+                                current.review_iterations_current_cycle
+                            },
+                            current.final_review_restart_count,
+                        )
+                    };
                     snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: next_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
+                    snapshot.active_run = Some(reset_cycle_active_run(
+                        snapshot,
+                        run_id,
+                        next_cursor.clone(),
+                        project_prompt_hash(&project_root, prompt_reference)?,
+                        next_qa_iterations,
+                        next_review_iterations,
+                        final_review_restart_count,
+                        None,
+                    )?);
                     snapshot.status_summary = format!(
                         "running: remediation cycle {} -> {}",
                         next_cursor.cycle,
@@ -2287,12 +3082,13 @@ where
         let next_stage = stage_plan[stage_index + 1].stage_id;
         cursor = cursor.advance_stage(next_stage);
         snapshot.status = RunStatus::Running;
-        snapshot.active_run = Some(ActiveRun {
-            run_id: run_id.as_str().to_owned(),
-            stage_cursor: cursor.clone(),
-            started_at: snapshot_started_at(snapshot)?,
-            stage_resolution_snapshot: None,
-        });
+        snapshot.active_run = Some(carry_forward_active_run(
+            snapshot,
+            run_id,
+            cursor.clone(),
+            project_prompt_hash(&project_root, prompt_reference)?,
+            None,
+        )?);
         snapshot.status_summary = format!(
             "running: completed {}, next {}",
             stage_id.display_name(),
@@ -2474,12 +3270,13 @@ where
         // Persist stage resolution snapshot before any agent invocation.
         let resolution = build_single_target_snapshot(stage_id, &resolved_target);
         snapshot.status = RunStatus::Running;
-        snapshot.active_run = Some(ActiveRun {
-            run_id: run_id.as_str().to_owned(),
-            stage_cursor: cursor.clone(),
-            started_at: snapshot_started_at(snapshot)?,
-            stage_resolution_snapshot: Some(resolution),
-        });
+        snapshot.active_run = Some(carry_forward_active_run(
+            snapshot,
+            run_id,
+            cursor.clone(),
+            project_prompt_hash(project_root, prompt_reference)?,
+            Some(resolution),
+        )?);
         snapshot.status_summary = format!("running: {}", stage_id.display_name());
         if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
             return fail_run_result(
@@ -3173,7 +3970,7 @@ fn build_recorded_follow_ups(
 }
 
 /// Completion guard: blocks run_completed when pending amendments remain.
-fn completion_guard(
+pub(crate) fn completion_guard(
     snapshot: &RunSnapshot,
     amendment_queue_port: &dyn AmendmentQueuePort,
     base_dir: &Path,
@@ -3747,6 +4544,20 @@ enum CompletionPanelOutcome {
     ContinueWork(StageCursor, CompletionCommitData),
 }
 
+struct FinalReviewCommitData {
+    aggregate_payload: serde_json::Value,
+    aggregate_artifact: String,
+    payload_id: String,
+    artifact_id: String,
+    completion_round: u32,
+    accepted_amendments: Vec<QueuedAmendment>,
+}
+
+enum FinalReviewPanelOutcome {
+    Complete(StageCursor, FinalReviewCommitData),
+    Restart(StageCursor, FinalReviewCommitData),
+}
+
 /// Dispatch the prompt-review panel stage: resolve panel, persist snapshot,
 /// invoke refiner + validators, persist primary record, and emit
 /// stage_completed. Returns the cursor on success.
@@ -4200,6 +5011,202 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_final_review_panel<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    cursor: &StageCursor,
+    planning_stage: StageId,
+    effective_config: &EffectiveConfig,
+    prompt_reference: &str,
+    cancellation_token: CancellationToken,
+) -> AppResult<FinalReviewPanelOutcome>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let stage_id = StageId::FinalReview;
+    let policy = BackendPolicyService::new(effective_config);
+    let mut panel = policy.resolve_final_review_panel(cursor.cycle)?;
+    let min_reviewers = effective_config.final_review_policy().min_reviewers;
+    let consensus_threshold = effective_config.final_review_policy().consensus_threshold;
+    let max_restarts = effective_config.final_review_policy().max_restarts;
+
+    let planner_target = policy.resolve_role_target(BackendPolicyRole::Planner, cursor.cycle)?;
+    agent_service
+        .adapter()
+        .check_availability(&planner_target)
+        .await
+        .map_err(|error| AppError::BackendUnavailable {
+            backend: planner_target.backend.family.to_string(),
+            details: format!("required final-review planner unavailable: {error}"),
+        })?;
+    agent_service
+        .adapter()
+        .check_availability(&panel.arbiter)
+        .await
+        .map_err(|error| AppError::BackendUnavailable {
+            backend: panel.arbiter.backend.family.to_string(),
+            details: format!("required final-review arbiter unavailable: {error}"),
+        })?;
+
+    let mut available_reviewers = Vec::new();
+    for member in &panel.reviewers {
+        match agent_service.adapter().check_availability(&member.target).await {
+            Ok(()) => available_reviewers.push(member.clone()),
+            Err(error) => {
+                if member.required {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    if available_reviewers.len() < min_reviewers {
+        return Err(AppError::InsufficientPanelMembers {
+            panel: "final_review".to_owned(),
+            resolved: available_reviewers.len(),
+            minimum: min_reviewers,
+        });
+    }
+    panel.reviewers = available_reviewers;
+
+    let resolution = build_final_review_snapshot(stage_id, &panel.reviewers, &panel.arbiter);
+    let planner_timeout =
+        policy.timeout_for_role(planner_target.backend.family, BackendPolicyRole::Planner);
+    let reviewer_timeout_for_backend = |family: BackendFamily| -> Duration {
+        policy.timeout_for_role(family, BackendPolicyRole::FinalReviewer)
+    };
+    let arbiter_timeout =
+        policy.timeout_for_role(panel.arbiter.backend.family, BackendPolicyRole::Arbiter);
+
+    *seq += 1;
+    let stage_entered = journal::stage_entered_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+    );
+    let stage_entered_line = journal::serialize_event(&stage_entered)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_entered_line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("failed to persist stage_entered for final_review: {error}"),
+        });
+    }
+
+    persist_stage_resolution_snapshot(
+        snapshot,
+        run_snapshot_write,
+        base_dir,
+        project_id,
+        resolution,
+    )?;
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!(
+                "final_review panel: {} reviewers, threshold={}, max_restarts={}",
+                panel.reviewers.len(),
+                consensus_threshold,
+                max_restarts
+            ),
+        },
+    );
+
+    let result = final_review::execute_final_review_panel(
+        agent_service,
+        artifact_write,
+        log_write,
+        base_dir,
+        project_root,
+        project_id,
+        run_id,
+        cursor,
+        &panel,
+        &planner_target,
+        min_reviewers,
+        consensus_threshold,
+        max_restarts,
+        current_active_run(snapshot)?.final_review_restart_count,
+        prompt_reference,
+        snapshot.rollback_point_meta.rollback_count,
+        planner_timeout,
+        &reviewer_timeout_for_backend,
+        arbiter_timeout,
+        cancellation_token,
+    )
+    .await?;
+
+    let base_id = format!(
+        "{}-{}-aggregate-c{}-a{}-cr{}",
+        run_id.as_str(),
+        stage_id.as_str(),
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round
+    );
+    let rollback_count = snapshot.rollback_point_meta.rollback_count;
+    let payload_id = if rollback_count == 0 {
+        format!("{base_id}-payload")
+    } else {
+        format!("{base_id}-rb{rollback_count}-payload")
+    };
+    let artifact_id = if rollback_count == 0 {
+        format!("{base_id}-artifact")
+    } else {
+        format!("{base_id}-rb{rollback_count}-artifact")
+    };
+
+    let accepted_amendments = result
+        .final_accepted_amendments
+        .iter()
+        .enumerate()
+        .map(|(index, amendment)| QueuedAmendment {
+            amendment_id: amendment.amendment_id.clone(),
+            source_stage: stage_id,
+            source_cycle: cursor.cycle,
+            source_completion_round: cursor.completion_round,
+            body: amendment.normalized_body.clone(),
+            created_at: Utc::now(),
+            batch_sequence: (index + 1) as u32,
+        })
+        .collect::<Vec<_>>();
+
+    let commit_data = FinalReviewCommitData {
+        aggregate_payload: result.aggregate_payload,
+        aggregate_artifact: result.aggregate_artifact,
+        payload_id,
+        artifact_id,
+        completion_round: cursor.completion_round,
+        accepted_amendments,
+    };
+
+    if result.restart_required {
+        let next_cursor = cursor.advance_completion_round(planning_stage)?;
+        Ok(FinalReviewPanelOutcome::Restart(next_cursor, commit_data))
+    } else {
+        Ok(FinalReviewPanelOutcome::Complete(cursor.clone(), commit_data))
+    }
+}
+
 // ── Completion Aggregate Commit ─────────────────────────────────────────────
 
 /// Persist the completion aggregate payload/artifact records WITHOUT writing
@@ -4256,6 +5263,49 @@ fn persist_completion_aggregate_records(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
+fn persist_final_review_aggregate_records(
+    artifact_write: &dyn PayloadArtifactWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    cursor: &StageCursor,
+    stage_id: StageId,
+    commit_data: &FinalReviewCommitData,
+) -> AppResult<()> {
+    let now = Utc::now();
+    let producer = RecordProducer::System {
+        component: "final_review_aggregator".to_owned(),
+    };
+    let payload_record = PayloadRecord {
+        payload_id: commit_data.payload_id.clone(),
+        stage_id,
+        cycle: cursor.cycle,
+        attempt: cursor.attempt,
+        created_at: now,
+        payload: commit_data.aggregate_payload.clone(),
+        record_kind: RecordKind::StageAggregate,
+        producer: Some(producer.clone()),
+        completion_round: commit_data.completion_round,
+    };
+    let artifact_record = ArtifactRecord {
+        artifact_id: commit_data.artifact_id.clone(),
+        payload_id: commit_data.payload_id.clone(),
+        stage_id,
+        created_at: now,
+        content: commit_data.aggregate_artifact.clone(),
+        record_kind: RecordKind::StageAggregate,
+        producer: Some(producer),
+        completion_round: commit_data.completion_round,
+    };
+    artifact_write.write_payload_artifact_pair(
+        base_dir,
+        project_id,
+        &payload_record,
+        &artifact_record,
+    )?;
+    Ok(())
+}
+
 /// Clean up aggregate payload/artifact files that were persisted by
 /// `persist_completion_aggregate_records` but whose journal commit failed.
 fn cleanup_completion_aggregate_records(
@@ -4263,6 +5313,20 @@ fn cleanup_completion_aggregate_records(
     base_dir: &Path,
     project_id: &ProjectId,
     commit_data: &CompletionCommitData,
+) {
+    let _ = artifact_write.remove_payload_artifact_pair(
+        base_dir,
+        project_id,
+        &commit_data.payload_id,
+        &commit_data.artifact_id,
+    );
+}
+
+fn cleanup_final_review_aggregate_records(
+    artifact_write: &dyn PayloadArtifactWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    commit_data: &FinalReviewCommitData,
 ) {
     let _ = artifact_write.remove_payload_artifact_pair(
         base_dir,
@@ -4293,6 +5357,8 @@ pub fn build_single_target_snapshot(
         prompt_review_validators: Vec::new(),
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
+        final_review_reviewers: Vec::new(),
+        final_review_arbiter: None,
     }
 }
 
@@ -4312,6 +5378,8 @@ pub fn build_prompt_review_snapshot(
             .collect(),
         prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
         completion_completers: Vec::new(),
+        final_review_reviewers: Vec::new(),
+        final_review_arbiter: None,
     }
 }
 
@@ -4330,6 +5398,29 @@ pub fn build_completion_snapshot(
             .iter()
             .map(|m| resolved_target_to_record(&m.target))
             .collect(),
+        final_review_reviewers: Vec::new(),
+        final_review_arbiter: None,
+    }
+}
+
+/// Build a stage resolution snapshot for the final-review panel.
+pub fn build_final_review_snapshot(
+    stage_id: StageId,
+    reviewers: &[crate::contexts::agent_execution::policy::ResolvedPanelMember],
+    arbiter: &ResolvedBackendTarget,
+) -> StageResolutionSnapshot {
+    StageResolutionSnapshot {
+        stage_id,
+        resolved_at: Utc::now(),
+        primary_target: None,
+        prompt_review_validators: Vec::new(),
+        prompt_review_refiner: None,
+        completion_completers: Vec::new(),
+        final_review_reviewers: reviewers
+            .iter()
+            .map(|member| resolved_target_to_record(&member.target))
+            .collect(),
+        final_review_arbiter: Some(resolved_target_to_record(arbiter)),
     }
 }
 
@@ -4365,6 +5456,8 @@ pub fn resolution_has_drifted(
         || old.prompt_review_validators != new.prompt_review_validators
         || old.prompt_review_refiner != new.prompt_review_refiner
         || old.completion_completers != new.completion_completers
+        || old.final_review_reviewers != new.final_review_reviewers
+        || old.final_review_arbiter != new.final_review_arbiter
 }
 
 /// Check whether a drifted resolution still satisfies the required-backend
@@ -4398,6 +5491,25 @@ pub fn drift_still_satisfies_requirements(
                         new_snapshot.completion_completers.len(),
                         min,
                     ),
+                });
+            }
+        }
+        StageId::FinalReview => {
+            let min = effective_config.final_review_policy().min_reviewers;
+            if new_snapshot.final_review_reviewers.len() < min {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: format!(
+                        "re-resolved final-review reviewers ({}) < min_reviewers ({})",
+                        new_snapshot.final_review_reviewers.len(),
+                        min,
+                    ),
+                });
+            }
+            if new_snapshot.final_review_arbiter.is_none() {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: "re-resolved final-review panel has no arbiter".to_owned(),
                 });
             }
         }

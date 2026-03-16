@@ -27,20 +27,22 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
+    let prompt_contents = "# Fixture prompt\n";
     // Write a complete canonical ProjectRecord so validation passes
     let project_toml = format!(
         r#"id = "{project_id}"
 name = "Fixture {project_id}"
 flow = "standard"
 prompt_reference = "prompt.md"
-prompt_hash = "0000000000000000"
+prompt_hash = "{}"
 created_at = "2026-03-11T19:00:00Z"
 status_summary = "created"
-"#
+"#,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents)
     );
     fs::write(project_root.join("project.toml"), project_toml).expect("write project");
     // Write required canonical files so run queries don't fail on missing files
-    fs::write(project_root.join("prompt.md"), "# Fixture prompt\n").expect("write prompt");
+    fs::write(project_root.join("prompt.md"), prompt_contents).expect("write prompt");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
@@ -3140,8 +3142,9 @@ fn run_start_persists_payload_and_artifact_records() {
     // Standard flow has 8 stages. Panel stages produce multiple records:
     // prompt_review: 1 refiner + 2 validators + 1 primary = 4
     // completion_panel: 2 completers + 1 aggregate = 3
-    // Other 6 stages: 1 each = 6
-    // Total: 13
+    // final_review: 2 reviewer proposals + 1 aggregate = 3
+    // Other 5 stages: 1 each = 5
+    // Total: 15
     let payload_files: Vec<_> = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -3155,14 +3158,14 @@ fn run_start_persists_payload_and_artifact_records() {
 
     assert_eq!(
         payload_files.len(),
-        13,
-        "expected 13 payload files for standard flow, got {}",
+        15,
+        "expected 15 payload files for standard flow, got {}",
         payload_files.len()
     );
     assert_eq!(
         artifact_files.len(),
-        13,
-        "expected 13 artifact files for standard flow, got {}",
+        15,
+        "expected 15 artifact files for standard flow, got {}",
         artifact_files.len()
     );
 }
@@ -3221,7 +3224,7 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 6);
 
     let journal = fs::read_to_string(
         temp_dir
@@ -3414,8 +3417,10 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         String::from_utf8_lossy(&start.stderr)
     );
 
-    // Verify 9 payloads (no prompt_review, but completion_panel produces 3)
-    // 6 single-agent stages + completion_panel (2 completers + 1 aggregate) = 9
+    // Verify 11 payloads (no prompt_review, but completion_panel and final_review
+    // both persist panel records).
+    // 5 single-agent stages + completion_panel (2 completers + 1 aggregate)
+    // + final_review (2 reviewers + 1 aggregate) = 11
     let payloads_dir = temp_dir
         .path()
         .join(".ralph-burning/projects/no-pr-cli/history/payloads");
@@ -3425,8 +3430,8 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     assert_eq!(
-        payload_count, 9,
-        "expected 9 payloads without prompt_review, got {payload_count}"
+        payload_count, 11,
+        "expected 11 payloads without prompt_review, got {payload_count}"
     );
 
     // Verify no prompt_review stage in journal

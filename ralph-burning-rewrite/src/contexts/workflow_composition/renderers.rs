@@ -12,7 +12,8 @@ use crate::shared::domain::StageId;
 
 use super::panel_contracts::{
     CompletionAggregatePayload, CompletionVotePayload, PromptRefinementPayload,
-    PromptReviewPrimaryPayload, PromptValidationPayload,
+    PromptReviewPrimaryPayload, PromptValidationPayload, FinalReviewAggregatePayload,
+    FinalReviewArbiterPayload, FinalReviewProposalPayload, FinalReviewVotePayload,
 };
 use super::payloads::{ExecutionPayload, PlanningPayload, ValidationPayload};
 
@@ -334,6 +335,170 @@ pub fn render_completion_aggregate(
     } else {
         for voter in &payload.executed_voters {
             writeln!(out, "- {voter}").unwrap();
+        }
+    }
+
+    out
+}
+
+/// Render a final-review proposal supporting artifact to deterministic Markdown.
+pub fn render_final_review_proposal(
+    payload: &FinalReviewProposalPayload,
+    producer: &str,
+) -> String {
+    let mut out = String::new();
+
+    writeln!(out, "# Final Review Proposal").unwrap();
+    writeln!(out, "**Producer:** {producer}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "## Summary").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "{}", payload.summary).unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Amendments").unwrap();
+    writeln!(out).unwrap();
+    if payload.amendments.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for (idx, amendment) in payload.amendments.iter().enumerate() {
+            writeln!(out, "{}. {}", idx + 1, amendment.body).unwrap();
+            if let Some(rationale) = &amendment.rationale {
+                writeln!(out, "   Rationale: {rationale}").unwrap();
+            }
+        }
+    }
+
+    out
+}
+
+/// Render a final-review vote supporting artifact to deterministic Markdown.
+pub fn render_final_review_vote(
+    title: &str,
+    payload: &FinalReviewVotePayload,
+    producer: &str,
+) -> String {
+    let mut out = String::new();
+
+    writeln!(out, "# {title}").unwrap();
+    writeln!(out, "**Producer:** {producer}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "## Summary").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "{}", payload.summary).unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Votes").unwrap();
+    writeln!(out).unwrap();
+    if payload.votes.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for vote in &payload.votes {
+            writeln!(out, "- `{}`: {}", vote.amendment_id, vote.decision).unwrap();
+            writeln!(out, "  {}", vote.rationale).unwrap();
+        }
+    }
+
+    out
+}
+
+/// Render a final-review arbiter supporting artifact to deterministic Markdown.
+pub fn render_final_review_arbiter(
+    payload: &FinalReviewArbiterPayload,
+    producer: &str,
+) -> String {
+    let mut out = String::new();
+
+    writeln!(out, "# Final Review Arbiter").unwrap();
+    writeln!(out, "**Producer:** {producer}").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "## Summary").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "{}", payload.summary).unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Rulings").unwrap();
+    writeln!(out).unwrap();
+    if payload.rulings.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for ruling in &payload.rulings {
+            writeln!(out, "- `{}`: {}", ruling.amendment_id, ruling.decision).unwrap();
+            writeln!(out, "  {}", ruling.rationale).unwrap();
+        }
+    }
+
+    out
+}
+
+/// Render a final-review aggregate artifact to deterministic Markdown.
+pub fn render_final_review_aggregate(payload: &FinalReviewAggregatePayload) -> String {
+    let mut out = String::new();
+
+    writeln!(out, "# Final Review Aggregate").unwrap();
+    writeln!(out).unwrap();
+    writeln!(out, "**Summary:** {}", payload.summary).unwrap();
+    writeln!(out, "**Restart Required:** {}", payload.restart_required).unwrap();
+    writeln!(out, "**Force Completed:** {}", payload.force_completed).unwrap();
+    writeln!(out, "**Total Reviewers:** {}", payload.total_reviewers).unwrap();
+    writeln!(
+        out,
+        "**Unique Amendments:** {}",
+        payload.unique_amendment_count
+    )
+    .unwrap();
+    writeln!(
+        out,
+        "**Final Review Restarts:** {}/{}",
+        payload.final_review_restart_count,
+        payload.max_restarts
+    )
+    .unwrap();
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Accepted").unwrap();
+    writeln!(out).unwrap();
+    if payload.accepted_amendment_ids.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for id in &payload.accepted_amendment_ids {
+            writeln!(out, "- `{id}`").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Rejected").unwrap();
+    writeln!(out).unwrap();
+    if payload.rejected_amendment_ids.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for id in &payload.rejected_amendment_ids {
+            writeln!(out, "- `{id}`").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Disputed").unwrap();
+    writeln!(out).unwrap();
+    if payload.disputed_amendment_ids.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for id in &payload.disputed_amendment_ids {
+            writeln!(out, "- `{id}`").unwrap();
+        }
+    }
+    writeln!(out).unwrap();
+
+    writeln!(out, "## Final Accepted Amendments").unwrap();
+    writeln!(out).unwrap();
+    if payload.final_accepted_amendments.is_empty() {
+        writeln!(out, "None.").unwrap();
+    } else {
+        for amendment in &payload.final_accepted_amendments {
+            writeln!(out, "### `{}`", amendment.amendment_id).unwrap();
+            writeln!(out).unwrap();
+            writeln!(out, "{}", amendment.normalized_body).unwrap();
+            writeln!(out).unwrap();
         }
     }
 

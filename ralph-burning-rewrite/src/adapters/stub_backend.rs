@@ -227,8 +227,8 @@ impl StubBackendAdapter {
             .unwrap_or_else(|| canned_payload_for_stage(stage_id))
     }
 
-    fn payload_for_contract(&self, contract: &InvocationContract) -> Value {
-        match contract {
+    fn payload_for_request(&self, request: &InvocationRequest) -> Value {
+        match &request.contract {
             InvocationContract::Stage(sc) => {
                 // Clear panel group tracking on non-panel invocations so that
                 // the next panel invocation starts a new group.
@@ -246,6 +246,17 @@ impl StubBackendAdapter {
                 self.payload_for_label(label)
             }
             InvocationContract::Panel { stage_id, role } => {
+                let contract_label = request.contract.label();
+                {
+                    let overrides = self
+                        .label_payload_overrides
+                        .lock()
+                        .expect("label payload override lock poisoned");
+                    if overrides.contains_key(&contract_label) {
+                        drop(overrides);
+                        return self.payload_for_label(&contract_label);
+                    }
+                }
                 // Check for stage-level overrides first (preserves existing test seam).
                 {
                     let overrides = self
@@ -258,7 +269,12 @@ impl StubBackendAdapter {
                         // same round get the same payload.
                         let raw = self.panel_payload_for_stage(*stage_id);
                         // Translate old validation format to panel format if needed.
-                        return translate_to_panel_payload(*stage_id, role, raw);
+                        return translate_to_panel_payload(
+                            *stage_id,
+                            role,
+                            raw,
+                            &request.payload.prompt,
+                        );
                     }
                 }
                 canned_panel_payload(*stage_id, role)
@@ -368,7 +384,7 @@ impl AgentExecutionPort for StubBackendAdapter {
             }
         }
 
-        let payload = self.payload_for_contract(&request.contract);
+        let payload = self.payload_for_request(&request);
         let raw_output = serde_json::to_string_pretty(&payload)?;
         let prompt_token_count = count_tokens(&request.payload.prompt);
         let completion_token_count = count_tokens(&raw_output);
@@ -479,7 +495,7 @@ fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
 /// Translate old-format stage override payloads to panel-specific format when needed.
 /// This allows existing test overrides using the validation schema (`"outcome"`, etc.)
 /// to work transparently with the new panel dispatch path.
-fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value) -> Value {
+fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value, prompt: &str) -> Value {
     match (stage_id, role) {
         (StageId::CompletionPanel, "completer") => {
             if raw.get("vote_complete").is_some() {
@@ -537,8 +553,80 @@ fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value) -> Valu
                 "concerns": concerns
             })
         }
+        (StageId::FinalReview, "reviewer") => {
+            if raw.get("amendments").is_some() {
+                return raw;
+            }
+            let amendments = raw
+                .get("follow_up_or_amendments")
+                .and_then(|value| value.as_array())
+                .cloned()
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|value| value.as_str().map(|body| json!({ "body": body })))
+                .collect::<Vec<_>>();
+            json!({
+                "summary": "Stub final-review proposal translated from validation payload.",
+                "amendments": amendments,
+            })
+        }
+        (StageId::FinalReview, "voter") => {
+            if raw.get("votes").is_some() {
+                return raw;
+            }
+            let amendment_ids = extract_final_review_amendment_ids(prompt);
+            let decision = raw
+                .get("outcome")
+                .and_then(|value| value.as_str())
+                .map(|outcome| {
+                    if outcome == "approved" {
+                        "accept"
+                    } else {
+                        "accept"
+                    }
+                })
+                .unwrap_or("accept");
+            json!({
+                "summary": "Stub final-review votes translated from validation payload.",
+                "votes": amendment_ids
+                    .into_iter()
+                    .map(|amendment_id| json!({
+                        "amendment_id": amendment_id,
+                        "decision": decision,
+                        "rationale": "Stub reviewer/planner vote.",
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        }
+        (StageId::FinalReview, "arbiter") => {
+            if raw.get("rulings").is_some() {
+                return raw;
+            }
+            let amendment_ids = extract_final_review_amendment_ids(prompt);
+            json!({
+                "summary": "Stub final-review arbiter translated from validation payload.",
+                "rulings": amendment_ids
+                    .into_iter()
+                    .map(|amendment_id| json!({
+                        "amendment_id": amendment_id,
+                        "decision": "accept",
+                        "rationale": "Stub arbiter accepts the disputed amendment.",
+                    }))
+                    .collect::<Vec<_>>(),
+            })
+        }
         _ => raw,
     }
+}
+
+fn extract_final_review_amendment_ids(prompt: &str) -> Vec<String> {
+    prompt
+        .lines()
+        .filter_map(|line| line.strip_prefix("## Amendment: "))
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 /// Deterministic canned payloads for panel contracts (prompt-review and completion).
@@ -558,6 +646,18 @@ fn canned_panel_payload(stage_id: StageId, role: &str) -> serde_json::Value {
             "vote_complete": true,
             "evidence": ["Stub completion vote: work is complete."],
             "remaining_work": []
+        }),
+        (StageId::FinalReview, "reviewer") => json!({
+            "summary": "Stub final-review pass found no amendments.",
+            "amendments": []
+        }),
+        (StageId::FinalReview, "voter") => json!({
+            "summary": "Stub final-review voter pass.",
+            "votes": []
+        }),
+        (StageId::FinalReview, "arbiter") => json!({
+            "summary": "Stub final-review arbiter pass.",
+            "rulings": []
         }),
         _ => canned_payload_for_stage(stage_id),
     }

@@ -44,6 +44,7 @@ fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset)
     let pid = ProjectId::new(project_id).unwrap();
     let store = FsProjectStore;
     let journal_store = FsJournalStore;
+    let prompt_contents = "# Test prompt";
     service::create_project(
         &store,
         &journal_store,
@@ -53,8 +54,8 @@ fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset)
             name: format!("Test {}", project_id),
             flow,
             prompt_path: "prompt.md".to_owned(),
-            prompt_contents: "# Test prompt".to_owned(),
-            prompt_hash: "testhash123".to_owned(),
+            prompt_contents: prompt_contents.to_owned(),
+            prompt_hash: ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents),
             created_at: Utc::now(),
         },
     )
@@ -259,10 +260,11 @@ async fn happy_path_standard_run_completes() {
     let artifact_count = fs::read_dir(&artifacts_dir).unwrap().count();
     // prompt_review: 4 records (1 refiner + 2 validators + 1 primary)
     // completion_panel: 3 records (2 completers + 1 aggregate)
-    // other 6 stages: 1 each = 6
-    // total = 13
-    assert_eq!(payload_count, 13, "expected 13 payloads");
-    assert_eq!(artifact_count, 13, "expected 13 artifacts");
+    // final_review: 3 records (2 reviewer proposals + 1 aggregate)
+    // other 5 stages: 1 each = 5
+    // total = 15
+    assert_eq!(payload_count, 15, "expected 15 payloads");
+    assert_eq!(artifact_count, 15, "expected 15 artifacts");
 }
 
 #[tokio::test]
@@ -302,11 +304,12 @@ async fn happy_path_prompt_review_disabled() {
     let payloads_dir = base_dir.join(".ralph-burning/projects/no-pr-test/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     // completion_panel: 3 records (2 completers + 1 aggregate)
-    // other 6 stages: 1 each = 6
-    // total = 9 (no prompt_review)
+    // final_review: 3 records (2 reviewers + 1 aggregate)
+    // other 5 stages: 1 each = 5
+    // total = 11 (no prompt_review)
     assert_eq!(
-        payload_count, 9,
-        "expected 9 payloads without prompt_review"
+        payload_count, 11,
+        "expected 11 payloads without prompt_review"
     );
 
     // Verify no prompt_review stage_entered in journal
@@ -494,16 +497,16 @@ async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
         "visible implementation history should come from the resumed branch"
     );
 
-    // prompt_review (first run, preserved): 4 records; completion_panel (resume): 3 records
-    // Old: 10 on disk, 8 visible → New: +3 (prompt_review) +2 (completion_panel) = +5
+    // The resumed visible branch now includes the final-review panel records
+    // and the abandoned implementation payload remains on disk.
     assert_eq!(
         payload_files.len(),
-        15,
+        17,
         "old branch payload files should remain on disk alongside the resumed branch"
     );
     assert_eq!(
         history.payloads.len(),
-        13,
+        15,
         "run history should hide rolled-back stages"
     );
 }
@@ -1047,8 +1050,8 @@ async fn happy_path_quick_dev_run_completes() {
         fs::read_dir(base_dir.join(".ralph-burning/projects/qd-happy/history/artifacts"))
             .unwrap()
             .count();
-    assert_eq!(payload_count, 4);
-    assert_eq!(artifact_count, 4);
+    assert_eq!(payload_count, 6);
+    assert_eq!(artifact_count, 6);
 }
 
 #[tokio::test]
@@ -1368,6 +1371,11 @@ async fn run_start_rejects_already_running() {
                     StageId::Planning,
                 ),
                 started_at: Utc::now(),
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
                 stage_resolution_snapshot: None,
             },
         ),
@@ -3884,13 +3892,13 @@ async fn resume_after_completion_aggregate_commit_failure_preserves_round() {
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "cr-resume-after-append-fail");
 
-    // First call: ContinueWork (vote_complete=false via translate_to_panel_payload).
-    // Second call (after resume): Complete (vote_complete=true).
+    // First call: Complete.
+    // Second call (after resume): Complete again.
     let agent_service = build_agent_service_with_adapter(
         StubBackendAdapter::default().with_stage_payload_sequence(
             StageId::CompletionPanel,
             vec![
-                conditionally_approved_payload(&["tighten the acceptance note"]),
+                approved_validation_payload(),
                 approved_validation_payload(),
             ],
         ),
