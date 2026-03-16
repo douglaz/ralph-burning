@@ -104,12 +104,30 @@ where
             details: format!("failed to read prompt for completion: {e}"),
         })?;
 
+    // ── Pre-filter completers by availability ────────────────────────────
+    // Check availability for each completer before any invocations. Required
+    // unavailable backends fail immediately; optional unavailable backends are
+    // filtered out. This prevents masking unrelated invoke/schema/timeout
+    // failures as optional-skip later.
+    let mut available_completers: Vec<(usize, &ResolvedPanelMember)> = Vec::new();
+    for (i, member) in completers.iter().enumerate() {
+        match agent_service.adapter().check_availability(&member.target).await {
+            Ok(()) => available_completers.push((i, member)),
+            Err(e) => {
+                if member.required {
+                    return Err(e);
+                }
+                // Optional completer unavailable — skip before invocation.
+            }
+        }
+    }
+
     let mut complete_votes = 0usize;
     let mut continue_votes = 0usize;
     let mut executed_voters: Vec<String> = Vec::new();
 
-    // ── Invoke each completer and persist supporting records ───────────────
-    for (i, member) in completers.iter().enumerate() {
+    // ── Invoke each available completer and persist supporting records ─────
+    for (i, member) in &available_completers {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
         let invoke_result = invoke_completer(
@@ -121,7 +139,7 @@ where
             cursor,
             completer_target,
             &project_prompt,
-            i,
+            *i,
             completer_timeout,
             cancellation_token.clone(),
         )
@@ -130,12 +148,9 @@ where
         let vote_payload = match invoke_result {
             Ok(payload) => payload,
             Err(e) => {
-                if !member.required {
-                    // Optional completer unavailable at runtime — skip without
-                    // counting as an executed voter.
-                    continue;
-                }
-                // Required completer failure propagates immediately.
+                // All completers in this loop passed availability pre-check,
+                // so any error here is a real invocation/schema/timeout failure
+                // — propagate it regardless of required/optional status.
                 return Err(e);
             }
         };

@@ -3642,7 +3642,6 @@ struct CompletionCommitData {
     aggregate_artifact: String,
     payload_id: String,
     artifact_id: String,
-    rollback_count: u32,
     /// The completion_round at which the aggregate was computed. In the
     /// ContinueWork path the cursor passed to `persist_completion_aggregate_records`
     /// already has an advanced round, so we store the original here.
@@ -4013,7 +4012,6 @@ where
         aggregate_artifact: result.aggregate_artifact,
         payload_id,
         artifact_id,
-        rollback_count,
         completion_round: cursor.completion_round,
     };
 
@@ -4332,7 +4330,12 @@ pub fn emit_resume_drift_warning(
     if let Some(ref mut active) = snapshot.active_run {
         active.stage_resolution_snapshot = Some(new.clone());
     }
-    let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+    run_snapshot_write
+        .write_run_snapshot(base_dir, project_id, snapshot)
+        .map_err(|e| AppError::SnapshotPersistFailed {
+            stage_id,
+            details: format!("failed to persist updated resolution snapshot after drift warning: {e}"),
+        })?;
 
     Ok(())
 }

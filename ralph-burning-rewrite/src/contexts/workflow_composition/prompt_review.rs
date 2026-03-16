@@ -134,18 +134,29 @@ where
         "refinement",
     )?;
 
-    // ── Step 3: Run validators against refined prompt ──────────────────────
+    // ── Step 3: Pre-filter validators by availability ─────────────────────
+    // Check availability for each validator before any invocations. Required
+    // unavailable backends fail immediately; optional unavailable backends are
+    // filtered out. This prevents masking unrelated invoke/schema/timeout
+    // failures as optional-skip later.
+    let mut available_validators: Vec<(usize, &crate::contexts::agent_execution::policy::ResolvedPanelMember)> = Vec::new();
+    for (i, member) in panel.validators.iter().enumerate() {
+        match agent_service.adapter().check_availability(&member.target).await {
+            Ok(()) => available_validators.push((i, member)),
+            Err(e) => {
+                if member.required {
+                    return Err(e);
+                }
+                // Optional validator unavailable — skip before invocation.
+            }
+        }
+    }
+
     let mut executed_count = 0usize;
     let mut accept_count = 0usize;
     let mut reject_count = 0usize;
 
-    // Fail early if any required validator's backend is unavailable before
-    // invoking anything. Optional unavailable validators are simply skipped.
-    // (Resolution already filtered out disabled backends, so this catches
-    // backends that resolved but became unavailable between resolution and
-    // invocation.)
-
-    for (i, member) in panel.validators.iter().enumerate() {
+    for (i, member) in &available_validators {
         let validator_target = &member.target;
         let validator_timeout = timeout_for_backend(validator_target.backend.family);
         let validation_result = invoke_panel_member(
@@ -166,12 +177,9 @@ where
         let validation_payload = match validation_result {
             Ok(payload) => payload,
             Err(e) => {
-                if !member.required {
-                    // Optional validator unavailable at runtime — skip without
-                    // counting as an executed reviewer.
-                    continue;
-                }
-                // Required validator failure propagates immediately.
+                // All validators in this loop passed availability pre-check,
+                // so any error here is a real invocation/schema/timeout failure
+                // — propagate it regardless of required/optional status.
                 return Err(e);
             }
         };

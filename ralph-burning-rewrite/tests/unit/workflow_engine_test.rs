@@ -24,8 +24,8 @@ use ralph_burning::contexts::project_run_record::model::{
 };
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::project_run_record::service::{
-    self, AmendmentQueuePort, CreateProjectInput, JournalStorePort, RunSnapshotPort,
-    RunSnapshotWritePort, RuntimeLogWritePort,
+    self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    RuntimeLogWritePort,
 };
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workspace_governance;
