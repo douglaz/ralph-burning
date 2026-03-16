@@ -23,9 +23,7 @@ use sha2::{Digest, Sha256};
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
-use crate::contexts::agent_execution::policy::{
-    FinalReviewPanelResolution,
-};
+use crate::contexts::agent_execution::policy::FinalReviewPanelResolution;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
@@ -69,6 +67,10 @@ struct ReviewerProposalRecord {
     backend_family: String,
     model_id: String,
     payload: FinalReviewProposalPayload,
+}
+
+fn final_review_reviewer_id(member_index: usize) -> String {
+    format!("reviewer-{}", member_index + 1)
 }
 
 pub fn normalize_amendment_body(body: &str) -> String {
@@ -255,26 +257,20 @@ where
             Err(error) => return Err(error),
         };
 
-        let proposal: FinalReviewProposalPayload =
-            serde_json::from_value(reviewer_payload.clone()).map_err(|e| {
-                AppError::InvocationFailed {
-                    backend: member.target.backend.family.to_string(),
-                    contract_id: "final_review:reviewer".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review proposal schema validation failed: {e}"),
-                }
+        let proposal: FinalReviewProposalPayload = serde_json::from_value(reviewer_payload.clone())
+            .map_err(|e| AppError::InvocationFailed {
+                backend: member.target.backend.family.to_string(),
+                contract_id: "final_review:reviewer".to_owned(),
+                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                details: format!("final-review proposal schema validation failed: {e}"),
             })?;
 
-        let reviewer_id = format!(
-            "reviewer-{}:{}",
-            member.target.backend.family, member.target.model.model_id
-        );
+        let reviewer_id = final_review_reviewer_id(idx);
         let producer = RecordProducer::Agent {
             backend_family: member.target.backend.family.to_string(),
             model_id: member.target.model.model_id.clone(),
         };
-        let artifact =
-            renderers::render_final_review_proposal(&proposal, &producer.to_string());
+        let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         persist_supporting_record(
             artifact_write,
             base_dir,
@@ -544,22 +540,19 @@ where
         )
         .await?;
 
-        let arbiter: FinalReviewArbiterPayload =
-            serde_json::from_value(arbiter_payload.clone()).map_err(|e| {
-                AppError::InvocationFailed {
-                    backend: panel.arbiter.backend.family.to_string(),
-                    contract_id: "final_review:arbiter".to_owned(),
-                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                    details: format!("final-review arbiter schema validation failed: {e}"),
-                }
+        let arbiter: FinalReviewArbiterPayload = serde_json::from_value(arbiter_payload.clone())
+            .map_err(|e| AppError::InvocationFailed {
+                backend: panel.arbiter.backend.family.to_string(),
+                contract_id: "final_review:arbiter".to_owned(),
+                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                details: format!("final-review arbiter schema validation failed: {e}"),
             })?;
         validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter)?;
         let producer = RecordProducer::Agent {
             backend_family: panel.arbiter.backend.family.to_string(),
             model_id: panel.arbiter.model.model_id.clone(),
         };
-        let artifact =
-            renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
+        let artifact = renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
         persist_supporting_record(
             artifact_write,
             base_dir,
@@ -709,8 +702,15 @@ fn validate_vote_payload(
     amendments: &[CanonicalAmendment],
     target: &ResolvedBackendTarget,
 ) -> AppResult<()> {
-    let expected_ids: Vec<&str> = amendments.iter().map(|amendment| amendment.amendment_id.as_str()).collect();
-    let actual_ids: Vec<&str> = payload.votes.iter().map(|vote| vote.amendment_id.as_str()).collect();
+    let expected_ids: Vec<&str> = amendments
+        .iter()
+        .map(|amendment| amendment.amendment_id.as_str())
+        .collect();
+    let actual_ids: Vec<&str> = payload
+        .votes
+        .iter()
+        .map(|vote| vote.amendment_id.as_str())
+        .collect();
     if actual_ids.len() != expected_ids.len()
         || !expected_ids.iter().all(|id| actual_ids.contains(id))
     {
@@ -915,7 +915,51 @@ mod tests {
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].normalized_body, "tighten wording");
         assert_eq!(merged[0].sources.len(), 2);
-        assert_eq!(merged[0].amendment_id, canonical_amendment_id(1, "tighten wording"));
+        assert_eq!(
+            merged[0].amendment_id,
+            canonical_amendment_id(1, "tighten wording")
+        );
+    }
+
+    #[test]
+    fn merge_final_review_amendments_keeps_duplicate_backend_slots_distinct() {
+        let shared_model = "claude-opus".to_owned();
+        let merged = merge_final_review_amendments(
+            1,
+            &[
+                ReviewerProposalRecord {
+                    reviewer_id: final_review_reviewer_id(0),
+                    backend_family: "claude".to_owned(),
+                    model_id: shared_model.clone(),
+                    payload: FinalReviewProposalPayload {
+                        summary: "slot one".to_owned(),
+                        amendments: vec![FinalReviewProposal {
+                            body: " tighten wording ".to_owned(),
+                            rationale: None,
+                        }],
+                    },
+                },
+                ReviewerProposalRecord {
+                    reviewer_id: final_review_reviewer_id(1),
+                    backend_family: "claude".to_owned(),
+                    model_id: shared_model,
+                    payload: FinalReviewProposalPayload {
+                        summary: "slot two".to_owned(),
+                        amendments: vec![FinalReviewProposal {
+                            body: "tighten wording".to_owned(),
+                            rationale: None,
+                        }],
+                    },
+                },
+            ],
+        );
+
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].sources.len(), 2);
+        assert_eq!(merged[0].sources[0].reviewer_id, "reviewer-1");
+        assert_eq!(merged[0].sources[1].reviewer_id, "reviewer-2");
+        assert_eq!(merged[0].sources[0].model_id, "claude-opus");
+        assert_eq!(merged[0].sources[1].model_id, "claude-opus");
     }
 
     #[test]

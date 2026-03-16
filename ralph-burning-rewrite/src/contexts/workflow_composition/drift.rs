@@ -21,8 +21,12 @@ use crate::shared::domain::{ProjectId, PromptChangeAction, RunId, StageCursor, S
 use crate::shared::error::{AppError, AppResult};
 
 pub enum PromptChangeResumeDecision {
-    NoChange { current_prompt_hash: String },
-    Continue { current_prompt_hash: String },
+    NoChange {
+        current_prompt_hash: String,
+    },
+    Continue {
+        current_prompt_hash: String,
+    },
     RestartCycle {
         current_prompt_hash: String,
         next_cursor: StageCursor,
@@ -59,27 +63,27 @@ pub fn evaluate_prompt_change_on_resume(
     let current_prompt_hash = FileSystem::prompt_hash(&prompt);
 
     if current_prompt_hash == prompt_hash_at_cycle_start {
-        return Ok(PromptChangeResumeDecision::NoChange { current_prompt_hash });
+        return Ok(PromptChangeResumeDecision::NoChange {
+            current_prompt_hash,
+        });
     }
 
     match action {
         PromptChangeAction::Continue => {
-            sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
-            emit_prompt_change_warning(
+            append_prompt_change_warning(
                 journal_store,
-                run_snapshot_write,
                 log_write,
                 base_dir,
                 project_id,
                 run_id,
                 seq,
-                snapshot,
                 cursor.stage,
                 prompt_hash_at_cycle_start,
                 &current_prompt_hash,
                 "continue",
                 "prompt changed after the cycle started; continuing with the updated prompt",
             )?;
+            sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
             Ok(PromptChangeResumeDecision::Continue { current_prompt_hash })
         }
         PromptChangeAction::Abort => Err(AppError::ResumeFailed {
@@ -88,6 +92,19 @@ pub fn evaluate_prompt_change_on_resume(
             ),
         }),
         PromptChangeAction::RestartCycle => {
+            append_prompt_change_warning(
+                journal_store,
+                log_write,
+                base_dir,
+                project_id,
+                run_id,
+                seq,
+                cursor.stage,
+                prompt_hash_at_cycle_start,
+                &current_prompt_hash,
+                "restart_cycle",
+                "prompt changed after the cycle started; restarting the cycle from planning",
+            )?;
             clear_abandoned_supporting_records(
                 artifact_store,
                 artifact_write,
@@ -97,23 +114,9 @@ pub fn evaluate_prompt_change_on_resume(
                 cursor.completion_round,
                 &stage_plan[current_stage_index..],
             )?;
-            sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
             snapshot.last_stage_resolution_snapshot = None;
-            emit_prompt_change_warning(
-                journal_store,
-                run_snapshot_write,
-                log_write,
-                base_dir,
-                project_id,
-                run_id,
-                seq,
-                snapshot,
-                cursor.stage,
-                prompt_hash_at_cycle_start,
-                &current_prompt_hash,
-                "restart_cycle",
-                "prompt changed after the cycle started; restarting the cycle from planning",
-            )?;
+            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+            sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
 
             let next_stage_index = stage_plan
                 .iter()
@@ -184,15 +187,13 @@ fn clear_abandoned_supporting_records(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn emit_prompt_change_warning(
+fn append_prompt_change_warning(
     journal_store: &dyn JournalStorePort,
-    run_snapshot_write: &dyn RunSnapshotWritePort,
     log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
-    snapshot: &mut RunSnapshot,
     stage_id: StageId,
     old_hash: &str,
     new_hash: &str,
@@ -210,9 +211,9 @@ fn emit_prompt_change_warning(
         },
     );
 
-    *seq += 1;
+    let next_seq = seq.saturating_add(1);
     let event = journal::durable_warning_event(
-        *seq,
+        next_seq,
         Utc::now(),
         run_id,
         stage_id,
@@ -226,7 +227,6 @@ fn emit_prompt_change_warning(
     );
     let line = journal::serialize_event(&event)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &line) {
-        *seq -= 1;
         return Err(AppError::StageCommitFailed {
             stage_id,
             details: format!(
@@ -235,7 +235,7 @@ fn emit_prompt_change_warning(
         });
     }
 
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    *seq = next_seq;
     Ok(())
 }
 
@@ -265,4 +265,222 @@ fn sync_project_prompt_hash(
             details: format!("failed to persist updated prompt hash: {error}"),
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+
+    use crate::adapters::fs::{
+        FileSystem, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore,
+        FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    };
+    use crate::contexts::project_run_record::model::{
+        ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord,
+    };
+    use crate::contexts::project_run_record::service::{
+        create_project, CreateProjectInput, PayloadArtifactWritePort, ProjectStorePort,
+    };
+    use crate::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
+    use crate::shared::domain::{FlowPreset, RunId};
+
+    struct FailingJournalStore;
+
+    impl JournalStorePort for FailingJournalStore {
+        fn read_journal(
+            &self,
+            base_dir: &Path,
+            project_id: &ProjectId,
+        ) -> AppResult<Vec<JournalEvent>> {
+            FsJournalStore.read_journal(base_dir, project_id)
+        }
+
+        fn append_event(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _line: &str,
+        ) -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::other(
+                "simulated journal append failure",
+            )))
+        }
+    }
+
+    fn setup_project(base_dir: &Path, project_name: &str) -> AppResult<(ProjectId, RunId, String)> {
+        FileSystem::create_workspace(&base_dir.join(".ralph-burning"), "", &["projects"])?;
+
+        let project_id = ProjectId::new(project_name)?;
+        let prompt_contents = "# Prompt\n\nOriginal prompt.\n";
+        let prompt_hash = FileSystem::prompt_hash(prompt_contents);
+        create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: project_name.to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: prompt_contents.to_owned(),
+                prompt_hash: prompt_hash.clone(),
+                created_at: Utc::now(),
+            },
+        )?;
+
+        Ok((project_id, RunId::new("run-1")?, prompt_hash))
+    }
+
+    fn read_project_record(base_dir: &Path, project_id: &ProjectId) -> ProjectRecord {
+        FsProjectStore
+            .read_project_record(base_dir, project_id)
+            .expect("project record")
+    }
+
+    fn project_root(base_dir: &Path, project_id: &ProjectId) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("projects")
+            .join(project_id.as_str())
+    }
+
+    fn supporting_record(
+        stage_id: StageId,
+        cycle: u32,
+        completion_round: u32,
+    ) -> (PayloadRecord, ArtifactRecord) {
+        let producer = RecordProducer::System {
+            component: "test".to_owned(),
+        };
+        let payload = PayloadRecord {
+            payload_id: "supporting-payload".to_owned(),
+            stage_id,
+            cycle,
+            attempt: 1,
+            created_at: Utc::now(),
+            payload: json!({ "ok": true }),
+            record_kind: RecordKind::StageSupporting,
+            producer: Some(producer.clone()),
+            completion_round,
+        };
+        let artifact = ArtifactRecord {
+            artifact_id: "supporting-artifact".to_owned(),
+            payload_id: payload.payload_id.clone(),
+            stage_id,
+            created_at: payload.created_at,
+            content: "supporting artifact".to_owned(),
+            record_kind: RecordKind::StageSupporting,
+            producer: Some(producer),
+            completion_round,
+        };
+        (payload, artifact)
+    }
+
+    #[test]
+    fn continue_does_not_advance_prompt_hash_when_warning_append_fails() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, original_prompt_hash) =
+            setup_project(base_dir, "prompt-continue-fail").expect("project setup");
+        std::fs::write(
+            project_root(base_dir, &project_id).join("prompt.md"),
+            "# Prompt\n\nChanged prompt.\n",
+        )
+        .expect("write changed prompt");
+
+        let mut seq = 1;
+        let mut snapshot = RunSnapshot::initial();
+        let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
+        let result = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FailingJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            0,
+            &[StageId::Review, StageId::CompletionPanel],
+            StageId::Planning,
+            &original_prompt_hash,
+            PromptChangeAction::Continue,
+        );
+
+        assert!(matches!(result, Err(AppError::StageCommitFailed { .. })));
+        assert_eq!(seq, 1);
+        assert_eq!(
+            read_project_record(base_dir, &project_id).prompt_hash,
+            original_prompt_hash
+        );
+    }
+
+    #[test]
+    fn restart_cycle_does_not_clear_records_before_warning_append_succeeds() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, original_prompt_hash) =
+            setup_project(base_dir, "prompt-restart-fail").expect("project setup");
+        std::fs::write(
+            project_root(base_dir, &project_id).join("prompt.md"),
+            "# Prompt\n\nChanged prompt.\n",
+        )
+        .expect("write changed prompt");
+
+        let (payload, artifact) = supporting_record(StageId::Review, 1, 1);
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(base_dir, &project_id, &payload, &artifact)
+            .expect("write supporting record");
+
+        let mut seq = 1;
+        let mut snapshot = RunSnapshot::initial();
+        let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
+        let result = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FailingJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            0,
+            &[StageId::Review, StageId::CompletionPanel],
+            StageId::Planning,
+            &original_prompt_hash,
+            PromptChangeAction::RestartCycle,
+        );
+
+        assert!(matches!(result, Err(AppError::StageCommitFailed { .. })));
+        assert_eq!(seq, 1);
+        assert_eq!(
+            read_project_record(base_dir, &project_id).prompt_hash,
+            original_prompt_hash
+        );
+        assert_eq!(
+            FsArtifactStore
+                .list_payloads(base_dir, &project_id)
+                .expect("payload listing")
+                .len(),
+            1
+        );
+        assert_eq!(
+            FsArtifactStore
+                .list_artifacts(base_dir, &project_id)
+                .expect("artifact listing")
+                .len(),
+            1
+        );
+    }
 }
