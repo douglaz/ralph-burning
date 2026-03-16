@@ -1,3 +1,28 @@
+---
+artifact: prompt-review
+project: p0-scope
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-16T02:04:44Z
+---
+
+# Prompt Review
+
+## Issues Found
+- The prompt asks for broad P0 parity but only loosely recommends slice-based delivery. Without an explicit “one slice per loop” rule, downstream agents can over-scope and fail to converge.
+- “Use the old repo as a behavior reference” is not strong enough by itself. The prompt does not clearly say what to do when old behavior conflicts with the new architecture, so agents may either cargo-cult legacy structure or ignore parity.
+- Several key terms are underdefined, including `opposite-family`, `planner-like roles`, `availability`, `capability`, `real backend path`, and `supporting payload/artifact`. That leaves room for incompatible implementations.
+- Backend alternation rules do not fully specify fallback behavior for every backend family, especially when `openrouter` is the base backend or when multiple families are disabled.
+- The testing model is incomplete. Many scenario IDs are listed, but the prompt does not make automated coverage and test execution mandatory for each slice.
+- GitHub and OpenRouter work depend on external tools and credentials, but the prompt does not define what to do when live verification is unavailable.
+- Config expansion is detailed, but some merge and failure semantics are still ambiguous, especially around disabled backends, optional panel members, and precedence on resume.
+- Resume behavior mixes prompt-change handling, backend drift, and rollback concerns without defining their precedence, which can produce contradictory implementations.
+- Validation execution requires timeouts and durable evidence, but the prompt does not define a default timeout policy or how to classify timeout failures.
+- The prompt mixes mandatory requirements, design guidance, and optional notes. Downstream implementation loops need a clearer separation between required behavior, sequencing, and acceptance criteria.
+- Some failure paths are implied but not explicit, such as what happens when checkpoint reset fails after logical rollback or when filtered panel members no longer meet minimum thresholds.
+- The prompt lacks an explicit blocker policy for missing old-repo references, missing tools, or unavailable credentials, which encourages guessing.
+
+## Refined Prompt
 # P0 Parity Implementation Spec for `ralph-burning`
 
 ## Objective
