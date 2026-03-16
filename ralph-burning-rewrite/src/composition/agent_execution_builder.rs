@@ -168,14 +168,31 @@ mod tests {
 
     #[test]
     fn build_backend_adapter_selects_stub_when_env_is_stub() {
-        // Verify the stub path returns BackendAdapter::Stub when explicitly
-        // requested.  The "unset → process" default is covered by the
-        // `backend.requirements.real_backend_path` conformance scenario which
-        // runs as a separate process and avoids env-var races.
         let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("RALPH_BURNING_BACKEND", "stub");
         let adapter = build_backend_adapter().expect("stub build should succeed");
         assert!(matches!(adapter, BackendAdapter::Stub(_)));
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+    }
+
+    #[test]
+    fn build_backend_adapter_defaults_to_process_when_env_unset() {
+        // Directly cover the unset-env → process default branch.
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+        let adapter = build_backend_adapter().expect("unset env should default to process");
+        assert!(
+            matches!(adapter, BackendAdapter::Process(_)),
+            "expected BackendAdapter::Process when RALPH_BURNING_BACKEND is unset"
+        );
+    }
+
+    #[test]
+    fn build_backend_adapter_selects_process_when_env_is_process() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        std::env::set_var("RALPH_BURNING_BACKEND", "process");
+        let adapter = build_backend_adapter().expect("explicit process should succeed");
+        assert!(matches!(adapter, BackendAdapter::Process(_)));
         std::env::remove_var("RALPH_BURNING_BACKEND");
     }
 

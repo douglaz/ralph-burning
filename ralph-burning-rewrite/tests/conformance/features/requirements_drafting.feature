@@ -274,6 +274,8 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then the requirements pipeline uses the process backend adapter
     And the run status is "completed"
     And seed files are written to the run directory
+    And the seed project.json contains the fake-binary project_id "test-proj"
+    And the seed project.json contains the fake-binary prompt_body "Build the thing."
 
   # RD-035
   @backend.requirements.real_backend_path.daemon
@@ -285,4 +287,6 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then the daemon task has a linked requirements run via the process backend
     And the requirements run status is "completed"
     And seed files are written to the requirements run directory
+    And the seed project.json contains the fake-binary project_id "daemon-proc-proj"
+    And the seed project.json contains the fake-binary prompt_body "Build daemon feature."
     And the task dispatch mode transitioned to Workflow

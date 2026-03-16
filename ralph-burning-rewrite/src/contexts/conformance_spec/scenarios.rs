@@ -6460,6 +6460,28 @@ fi
             return Err("seed project.json not written".into());
         }
 
+        // Assert fake-binary-specific evidence to prove the process adapter
+        // actually ran.  The stub backend returns project_id "stub-project";
+        // the fake claude binary returns "test-proj".  This distinguishes real
+        // process execution from a silent stub fallback.
+        let seed_content = std::fs::read_to_string(seed_dir.join("project.json"))
+            .map_err(|e| format!("read seed project.json: {e}"))?;
+        let seed: serde_json::Value =
+            serde_json::from_str(&seed_content).map_err(|e| format!("parse seed project.json: {e}"))?;
+        let project_id = seed.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+        if project_id != "test-proj" {
+            return Err(format!(
+                "expected project_id 'test-proj' from fake process binary, got '{project_id}' \
+                 (stub would produce 'stub-project')"
+            ));
+        }
+        let prompt_body = seed.get("prompt_body").and_then(|v| v.as_str()).unwrap_or("");
+        if prompt_body != "Build the thing." {
+            return Err(format!(
+                "expected prompt_body 'Build the thing.' from fake process binary, got '{prompt_body}'"
+            ));
+        }
+
         Ok(())
     });
 
@@ -6627,6 +6649,27 @@ fi
         }
         if !seed_dir.join("project.json").is_file() {
             return Err("seed project.json not written in daemon process backend path".into());
+        }
+
+        // Assert fake-binary-specific evidence to prove the process adapter
+        // actually ran.  The stub backend returns project_id "stub-project";
+        // the fake daemon claude binary returns "daemon-proc-proj".
+        let seed_content = std::fs::read_to_string(seed_dir.join("project.json"))
+            .map_err(|e| format!("read daemon seed project.json: {e}"))?;
+        let seed: serde_json::Value =
+            serde_json::from_str(&seed_content).map_err(|e| format!("parse daemon seed project.json: {e}"))?;
+        let project_id = seed.get("project_id").and_then(|v| v.as_str()).unwrap_or("");
+        if project_id != "daemon-proc-proj" {
+            return Err(format!(
+                "expected project_id 'daemon-proc-proj' from fake daemon process binary, got '{project_id}' \
+                 (stub would produce 'stub-project')"
+            ));
+        }
+        let prompt_body = seed.get("prompt_body").and_then(|v| v.as_str()).unwrap_or("");
+        if prompt_body != "Build daemon feature." {
+            return Err(format!(
+                "expected prompt_body 'Build daemon feature.' from fake daemon process binary, got '{prompt_body}'"
+            ));
         }
 
         // Task dispatch_mode should have transitioned to Workflow, confirming
