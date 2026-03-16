@@ -11,7 +11,7 @@ pub use model::{
 };
 pub use policy::{
     BackendPolicyService, CompletionPanelResolution, FinalReviewPanelResolution,
-    PromptReviewPanelResolution,
+    PromptReviewPanelResolution, ResolvedPanelMember,
 };
 pub use service::{
     AgentExecutionPort, AgentExecutionService, BackendResolver, BackendSelectionConfig,

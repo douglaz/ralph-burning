@@ -139,7 +139,14 @@ where
     let mut accept_count = 0usize;
     let mut reject_count = 0usize;
 
-    for (i, validator_target) in panel.validators.iter().enumerate() {
+    // Fail early if any required validator's backend is unavailable before
+    // invoking anything. Optional unavailable validators are simply skipped.
+    // (Resolution already filtered out disabled backends, so this catches
+    // backends that resolved but became unavailable between resolution and
+    // invocation.)
+
+    for (i, member) in panel.validators.iter().enumerate() {
+        let validator_target = &member.target;
         let validator_timeout = timeout_for_backend(validator_target.backend.family);
         let validation_result = invoke_panel_member(
             agent_service,
@@ -159,8 +166,12 @@ where
         let validation_payload = match validation_result {
             Ok(payload) => payload,
             Err(e) => {
-                // For optional validators that are unavailable, skip without counting.
-                // Required validators that fail should propagate the error.
+                if !member.required {
+                    // Optional validator unavailable at runtime — skip without
+                    // counting as an executed reviewer.
+                    continue;
+                }
+                // Required validator failure propagates immediately.
                 return Err(e);
             }
         };

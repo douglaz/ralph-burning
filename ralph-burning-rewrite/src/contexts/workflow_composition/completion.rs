@@ -22,6 +22,7 @@ use serde_json::Value;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
+use crate::contexts::agent_execution::policy::ResolvedPanelMember;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
@@ -82,7 +83,7 @@ pub async fn execute_completion_panel<A, R, S>(
     project_id: &ProjectId,
     run_id: &RunId,
     cursor: &StageCursor,
-    completers: &[ResolvedBackendTarget],
+    completers: &[ResolvedPanelMember],
     min_completers: usize,
     consensus_threshold: f64,
     prompt_reference: &str,
@@ -108,9 +109,10 @@ where
     let mut executed_voters: Vec<String> = Vec::new();
 
     // ── Invoke each completer and persist supporting records ───────────────
-    for (i, completer_target) in completers.iter().enumerate() {
+    for (i, member) in completers.iter().enumerate() {
+        let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let vote_payload = invoke_completer(
+        let invoke_result = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -123,7 +125,20 @@ where
             completer_timeout,
             cancellation_token.clone(),
         )
-        .await?;
+        .await;
+
+        let vote_payload = match invoke_result {
+            Ok(payload) => payload,
+            Err(e) => {
+                if !member.required {
+                    // Optional completer unavailable at runtime — skip without
+                    // counting as an executed voter.
+                    continue;
+                }
+                // Required completer failure propagates immediately.
+                return Err(e);
+            }
+        };
 
         let vote: CompletionVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {

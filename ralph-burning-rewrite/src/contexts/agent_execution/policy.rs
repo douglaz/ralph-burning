@@ -9,21 +9,28 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
+/// A resolved panel member with its required/optional status preserved.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedPanelMember {
+    pub target: ResolvedBackendTarget,
+    pub required: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompletionPanelResolution {
     pub planner: ResolvedBackendTarget,
-    pub completers: Vec<ResolvedBackendTarget>,
+    pub completers: Vec<ResolvedPanelMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PromptReviewPanelResolution {
     pub refiner: ResolvedBackendTarget,
-    pub validators: Vec<ResolvedBackendTarget>,
+    pub validators: Vec<ResolvedPanelMember>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalReviewPanelResolution {
-    pub reviewers: Vec<ResolvedBackendTarget>,
+    pub reviewers: Vec<ResolvedPanelMember>,
     pub arbiter: ResolvedBackendTarget,
 }
 
@@ -198,7 +205,7 @@ impl<'a> BackendPolicyService<'a> {
         specs: &[PanelBackendSpec],
         minimum: usize,
         role: BackendPolicyRole,
-    ) -> AppResult<Vec<ResolvedBackendTarget>> {
+    ) -> AppResult<Vec<ResolvedPanelMember>> {
         let mut resolved = Vec::new();
 
         for spec in specs {
@@ -213,7 +220,10 @@ impl<'a> BackendPolicyService<'a> {
                 });
             }
 
-            resolved.push(self.target_for_family(role, backend, None)?);
+            resolved.push(ResolvedPanelMember {
+                target: self.target_for_family(role, backend, None)?,
+                required: !spec.is_optional(),
+            });
         }
 
         if resolved.len() < minimum {
@@ -229,10 +239,16 @@ impl<'a> BackendPolicyService<'a> {
         Ok(resolved)
     }
 
-    fn default_completion_targets(&self, cycle: u32) -> AppResult<Vec<ResolvedBackendTarget>> {
+    fn default_completion_targets(&self, cycle: u32) -> AppResult<Vec<ResolvedPanelMember>> {
         let target = self.resolve_role_target(BackendPolicyRole::Completer, cycle)?;
         let count = self.config.completion_policy().min_completers.max(1);
-        Ok(vec![target; count])
+        Ok(vec![
+            ResolvedPanelMember {
+                target,
+                required: true,
+            };
+            count
+        ])
     }
 
     fn selection_to_target(

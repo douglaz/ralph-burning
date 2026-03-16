@@ -188,11 +188,13 @@ fn completion_panel_includes_enabled_openrouter_and_rejects_required_disabled_ba
         .resolve_completion_panel(1)
         .expect("resolve completion panel");
     assert_eq!(2, panel.completers.len());
-    assert_eq!(BackendFamily::Claude, panel.completers[0].backend.family);
+    assert_eq!(BackendFamily::Claude, panel.completers[0].target.backend.family);
     assert_eq!(
         BackendFamily::OpenRouter,
-        panel.completers[1].backend.family
+        panel.completers[1].target.backend.family
     );
+    assert!(panel.completers[0].required);
+    assert!(!panel.completers[1].required);
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
     workspace
@@ -260,7 +262,7 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
     assert!(first_cycle
         .completers
         .iter()
-        .all(|target| target.backend.family == BackendFamily::Codex));
+        .all(|member| member.target.backend.family == BackendFamily::Codex));
 
     let second_cycle = policy
         .resolve_completion_panel(2)
@@ -273,7 +275,7 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
     assert!(second_cycle
         .completers
         .iter()
-        .all(|target| target.backend.family == BackendFamily::Claude));
+        .all(|member| member.target.backend.family == BackendFamily::Claude));
 }
 
 #[test]

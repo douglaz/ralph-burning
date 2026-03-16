@@ -1545,7 +1545,7 @@ where
                 None
             };
 
-        let (completed_cursor, bundle) = execute_stage_with_retry(
+        let (completed_cursor, bundle, stage_producer) = execute_stage_with_retry(
             agent_service,
             run_snapshot_write,
             journal_store,
@@ -1587,6 +1587,7 @@ where
             stage_id,
             &completed_cursor,
             &bundle,
+            stage_producer,
             origin,
         )
         .await?;
@@ -2296,7 +2297,7 @@ async fn execute_stage_with_retry<A, R, S>(
     project_root: &Path,
     prompt_reference: &str,
     effective_config: &EffectiveConfig,
-) -> AppResult<(StageCursor, ValidatedBundle)>
+) -> AppResult<(StageCursor, ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -2482,7 +2483,7 @@ where
         .await;
 
         match result {
-            Ok(bundle) => return Ok((cursor.clone(), bundle)),
+            Ok((bundle, producer)) => return Ok((cursor.clone(), bundle, producer)),
             Err(error) => {
                 let Some(failure_class) = error.failure_class() else {
                     return fail_run_result(
@@ -2600,7 +2601,7 @@ async fn invoke_stage_on_backend<A, R, S>(
     cancellation_token: CancellationToken,
     resolved_target: ResolvedBackendTarget,
     timeout: Duration,
-) -> AppResult<ValidatedBundle>
+) -> AppResult<(ValidatedBundle, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: RawOutputPort,
@@ -2625,9 +2626,14 @@ where
     };
 
     agent_service.invoke(request).await.and_then(|envelope| {
+        let producer = RecordProducer::Agent {
+            backend_family: envelope.metadata.backend_used.family.to_string(),
+            model_id: envelope.metadata.model_used.model_id.clone(),
+        };
         stage_entry
             .contract
             .evaluate_permissive(&envelope.parsed_payload)
+            .map(|bundle| (bundle, producer))
             .map_err(|contract_error| AppError::InvocationFailed {
                 backend: resolved_target.backend.family.to_string(),
                 contract_id: stage_entry.stage_id.to_string(),
@@ -2651,6 +2657,7 @@ async fn persist_stage_success(
     stage_id: StageId,
     cursor: &StageCursor,
     bundle: &ValidatedBundle,
+    producer: RecordProducer,
     origin: ExecutionOrigin,
 ) -> AppResult<()> {
     let stage_now = Utc::now();
@@ -2671,8 +2678,8 @@ async fn persist_stage_success(
         attempt: cursor.attempt,
         created_at: stage_now,
         payload: serde_json::to_value(&bundle.payload)?,
-        record_kind: crate::contexts::workflow_composition::panel_contracts::RecordKind::StagePrimary,
-        producer: None,
+        record_kind: RecordKind::StagePrimary,
+        producer: Some(producer.clone()),
         completion_round: cursor.completion_round,
     };
     let artifact_record = ArtifactRecord {
@@ -2681,8 +2688,8 @@ async fn persist_stage_success(
         stage_id,
         created_at: stage_now,
         content: bundle.artifact.clone(),
-        record_kind: crate::contexts::workflow_composition::panel_contracts::RecordKind::StagePrimary,
-        producer: None,
+        record_kind: RecordKind::StagePrimary,
+        producer: Some(producer),
         completion_round: cursor.completion_round,
     };
 
@@ -4143,7 +4150,7 @@ pub fn build_prompt_review_snapshot(
         prompt_review_validators: panel
             .validators
             .iter()
-            .map(resolved_target_to_record)
+            .map(|m| resolved_target_to_record(&m.target))
             .collect(),
         prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
         completion_completers: Vec::new(),
@@ -4153,7 +4160,7 @@ pub fn build_prompt_review_snapshot(
 /// Build a stage resolution snapshot for the completion panel.
 pub fn build_completion_snapshot(
     stage_id: StageId,
-    completers: &[ResolvedBackendTarget],
+    completers: &[crate::contexts::agent_execution::policy::ResolvedPanelMember],
 ) -> StageResolutionSnapshot {
     StageResolutionSnapshot {
         stage_id,
@@ -4161,7 +4168,10 @@ pub fn build_completion_snapshot(
         primary_target: None,
         prompt_review_validators: Vec::new(),
         prompt_review_refiner: None,
-        completion_completers: completers.iter().map(resolved_target_to_record).collect(),
+        completion_completers: completers
+            .iter()
+            .map(|m| resolved_target_to_record(&m.target))
+            .collect(),
     }
 }
 
