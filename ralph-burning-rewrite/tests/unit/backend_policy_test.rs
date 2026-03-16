@@ -7,9 +7,9 @@ use ralph_burning::contexts::workspace_governance::config::{
     CliBackendOverrides, EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
 };
 use ralph_burning::shared::domain::{
-    BackendFamily, BackendPolicyRole, BackendRuntimeSettings, BackendSelection,
-    BackendRoleTimeouts, CompletionSettings, FlowPreset, PanelBackendSpec, ProjectConfig,
-    ProjectId, WorkspaceConfig,
+    BackendFamily, BackendPolicyRole, BackendRoleTimeouts, BackendRuntimeSettings,
+    BackendSelection, CompletionSettings, FlowPreset, PanelBackendSpec, ProjectConfig, ProjectId,
+    WorkspaceConfig,
 };
 use ralph_burning::shared::error::AppError;
 
@@ -24,7 +24,11 @@ fn write_workspace_config(base_dir: &std::path::Path, config: &WorkspaceConfig) 
     .expect("write workspace config");
 }
 
-fn write_project_config(base_dir: &std::path::Path, project_id: &ProjectId, config: &ProjectConfig) {
+fn write_project_config(
+    base_dir: &std::path::Path,
+    project_id: &ProjectId,
+    config: &ProjectConfig,
+) {
     FileSystem::write_project_config(base_dir, project_id, config).expect("write project config");
 }
 
@@ -123,7 +127,10 @@ fn merge_precedence_cli_overrides_project_and_workspace() {
 
     assert_eq!(BackendFamily::Codex, target.backend.family);
     assert!(matches!(
-        effective.get("workflow.reviewer_backend").expect("reviewer backend").source,
+        effective
+            .get("workflow.reviewer_backend")
+            .expect("reviewer backend")
+            .source,
         ralph_burning::contexts::workspace_governance::ConfigValueSource::CliOverride
     ));
 }
@@ -162,6 +169,9 @@ fn completion_panel_optional_backend_skips_and_required_backend_fails() {
     initialize_workspace_fixture(temp_dir.path());
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
     workspace.completion = CompletionSettings {
         backends: Some(vec![
             PanelBackendSpec::required(BackendFamily::Claude),
@@ -181,6 +191,9 @@ fn completion_panel_optional_backend_skips_and_required_backend_fails() {
     assert_eq!(BackendFamily::Claude, panel.completers[0].backend.family);
 
     let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
     workspace.completion = CompletionSettings {
         backends: Some(vec![
             PanelBackendSpec::required(BackendFamily::Claude),
@@ -198,6 +211,45 @@ fn completion_panel_optional_backend_skips_and_required_backend_fails() {
         .expect_err("required disabled backend should fail");
 
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
+}
+
+#[test]
+fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    let first_cycle = policy
+        .resolve_completion_panel(1)
+        .expect("resolve cycle one completion panel");
+    assert_eq!(BackendFamily::Claude, first_cycle.planner.backend.family);
+    assert_eq!(
+        effective.completion_policy().min_completers,
+        first_cycle.completers.len()
+    );
+    assert!(first_cycle
+        .completers
+        .iter()
+        .all(|target| target.backend.family == BackendFamily::Codex));
+
+    let second_cycle = policy
+        .resolve_completion_panel(2)
+        .expect("resolve cycle two completion panel");
+    assert_eq!(BackendFamily::Codex, second_cycle.planner.backend.family);
+    assert_eq!(
+        effective.completion_policy().min_completers,
+        second_cycle.completers.len()
+    );
+    assert!(second_cycle
+        .completers
+        .iter()
+        .all(|target| target.backend.family == BackendFamily::Claude));
 }
 
 #[test]

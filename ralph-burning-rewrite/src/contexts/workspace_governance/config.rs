@@ -6,10 +6,10 @@ use toml_edit::{value, Array, DocumentMut, Item};
 use crate::adapters::fs::FileSystem;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
-    BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy,
-    EffectiveCompletionPolicy, EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy,
-    EffectiveRunPolicy, EffectiveValidationPolicy, FlowPreset, PanelBackendSpec, ProjectConfig,
-    ProjectId, PromptChangeAction, WorkspaceConfig,
+    BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
+    EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy, EffectiveRunPolicy,
+    EffectiveValidationPolicy, FlowPreset, PanelBackendSpec, ProjectConfig, ProjectId,
+    PromptChangeAction, WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -318,7 +318,10 @@ impl EffectiveConfig {
         let mut base_backend = resolve_backend_selection(
             workspace_config.settings.default_backend.as_deref(),
             project_config.settings.default_backend.as_deref(),
-            cli_overrides.backend.as_ref().map(|selection| selection.display_string()),
+            cli_overrides
+                .backend
+                .as_ref()
+                .map(|selection| selection.display_string()),
         )?
         .unwrap_or_else(|| BackendSelection::new(DEFAULT_BASE_BACKEND, None));
 
@@ -404,6 +407,11 @@ impl EffectiveConfig {
         &self.completion_policy
     }
 
+    pub(crate) fn completion_backends_are_explicit(&self) -> bool {
+        self.project_config.completion.backends.is_some()
+            || self.workspace_config.completion.backends.is_some()
+    }
+
     pub fn final_review_policy(&self) -> &EffectiveFinalReviewPolicy {
         &self.final_review_policy
     }
@@ -438,7 +446,11 @@ impl EffectiveConfig {
         Self::load(base_dir)?.get(key)
     }
 
-    pub fn get_project(base_dir: &Path, project_id: &ProjectId, key: &str) -> AppResult<ConfigEntry> {
+    pub fn get_project(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        key: &str,
+    ) -> AppResult<ConfigEntry> {
         Self::load_for_project(base_dir, Some(project_id), CliBackendOverrides::default())?.get(key)
     }
 
@@ -509,22 +521,36 @@ impl EffectiveConfig {
                 ),
             ),
             ["default_backend"] => (
-                ConfigValue::String(Some(self.backend_policy.base_backend.family.as_str().to_owned())),
+                ConfigValue::String(Some(
+                    self.backend_policy.base_backend.family.as_str().to_owned(),
+                )),
                 source_for_option(
                     self.workspace_config
                         .settings
                         .default_backend
                         .clone()
                         .map(|_| ()),
-                    self.project_config.settings.default_backend.clone().map(|_| ()),
+                    self.project_config
+                        .settings
+                        .default_backend
+                        .clone()
+                        .map(|_| ()),
                     self.cli_overrides.backend.clone().map(|_| ()),
                 ),
             ),
             ["default_model"] => (
                 ConfigValue::String(self.default_model().map(str::to_owned)),
                 source_for_option(
-                    self.workspace_config.settings.default_model.clone().map(|_| ()),
-                    self.project_config.settings.default_model.clone().map(|_| ()),
+                    self.workspace_config
+                        .settings
+                        .default_model
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .settings
+                        .default_model
+                        .clone()
+                        .map(|_| ()),
                     self.cli_overrides
                         .backend
                         .as_ref()
@@ -655,9 +681,18 @@ impl EffectiveConfig {
                 ),
             ),
             ["workflow", "qa_backend"] => (
-                ConfigValue::String(self.backend_policy.qa_backend.as_ref().map(ToString::to_string)),
+                ConfigValue::String(
+                    self.backend_policy
+                        .qa_backend
+                        .as_ref()
+                        .map(ToString::to_string),
+                ),
                 source_for_option(
-                    self.workspace_config.workflow.qa_backend.clone().map(|_| ()),
+                    self.workspace_config
+                        .workflow
+                        .qa_backend
+                        .clone()
+                        .map(|_| ()),
                     self.project_config.workflow.qa_backend.clone().map(|_| ()),
                     self.cli_overrides.qa_backend.clone().map(|_| ()),
                 ),
@@ -679,13 +714,18 @@ impl EffectiveConfig {
                 ),
             ),
             ["workflow", "prompt_change_action"] => (
-                ConfigValue::String(Some(self.run_policy.prompt_change_action.as_str().to_owned())),
+                ConfigValue::String(Some(
+                    self.run_policy.prompt_change_action.as_str().to_owned(),
+                )),
                 source_for_option(
                     self.workspace_config
                         .workflow
                         .prompt_change_action
                         .map(|_| ()),
-                    self.project_config.workflow.prompt_change_action.map(|_| ()),
+                    self.project_config
+                        .workflow
+                        .prompt_change_action
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
@@ -698,7 +738,11 @@ impl EffectiveConfig {
                         .collect(),
                 ),
                 source_for_option(
-                    self.workspace_config.completion.backends.clone().map(|_| ()),
+                    self.workspace_config
+                        .completion
+                        .backends
+                        .clone()
+                        .map(|_| ()),
                     self.project_config.completion.backends.clone().map(|_| ()),
                     None::<()>,
                 ),
@@ -714,8 +758,14 @@ impl EffectiveConfig {
             ["completion", "consensus_threshold"] => (
                 ConfigValue::Float(self.completion_policy.consensus_threshold),
                 source_for_option(
-                    self.workspace_config.completion.consensus_threshold.map(|_| ()),
-                    self.project_config.completion.consensus_threshold.map(|_| ()),
+                    self.workspace_config
+                        .completion
+                        .consensus_threshold
+                        .map(|_| ()),
+                    self.project_config
+                        .completion
+                        .consensus_threshold
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
@@ -736,8 +786,16 @@ impl EffectiveConfig {
                         .collect(),
                 ),
                 source_for_option(
-                    self.workspace_config.final_review.backends.clone().map(|_| ()),
-                    self.project_config.final_review.backends.clone().map(|_| ()),
+                    self.workspace_config
+                        .final_review
+                        .backends
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .final_review
+                        .backends
+                        .clone()
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
@@ -773,8 +831,14 @@ impl EffectiveConfig {
             ["final_review", "consensus_threshold"] => (
                 ConfigValue::Float(self.final_review_policy.consensus_threshold),
                 source_for_option(
-                    self.workspace_config.final_review.consensus_threshold.map(|_| ()),
-                    self.project_config.final_review.consensus_threshold.map(|_| ()),
+                    self.workspace_config
+                        .final_review
+                        .consensus_threshold
+                        .map(|_| ()),
+                    self.project_config
+                        .final_review
+                        .consensus_threshold
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
@@ -789,24 +853,48 @@ impl EffectiveConfig {
             ["validation", "standard_commands"] => (
                 ConfigValue::StringList(self.validation_policy.standard_commands.clone()),
                 source_for_option(
-                    self.workspace_config.validation.standard_commands.clone().map(|_| ()),
-                    self.project_config.validation.standard_commands.clone().map(|_| ()),
+                    self.workspace_config
+                        .validation
+                        .standard_commands
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .validation
+                        .standard_commands
+                        .clone()
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
             ["validation", "docs_commands"] => (
                 ConfigValue::StringList(self.validation_policy.docs_commands.clone()),
                 source_for_option(
-                    self.workspace_config.validation.docs_commands.clone().map(|_| ()),
-                    self.project_config.validation.docs_commands.clone().map(|_| ()),
+                    self.workspace_config
+                        .validation
+                        .docs_commands
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .validation
+                        .docs_commands
+                        .clone()
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
             ["validation", "ci_commands"] => (
                 ConfigValue::StringList(self.validation_policy.ci_commands.clone()),
                 source_for_option(
-                    self.workspace_config.validation.ci_commands.clone().map(|_| ()),
-                    self.project_config.validation.ci_commands.clone().map(|_| ()),
+                    self.workspace_config
+                        .validation
+                        .ci_commands
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .validation
+                        .ci_commands
+                        .clone()
+                        .map(|_| ()),
                     None::<()>,
                 ),
             ),
@@ -846,7 +934,11 @@ impl EffectiveConfig {
                 let runtime = self.backend_runtime_settings(backend_name)?;
                 match *field {
                     "enabled" => (
-                        ConfigValue::Bool(runtime.enabled.unwrap_or(default_backend_enabled(backend_name)?)),
+                        ConfigValue::Bool(
+                            runtime
+                                .enabled
+                                .unwrap_or(default_backend_enabled(backend_name)?),
+                        ),
                         source_for_option(
                             self.workspace_config
                                 .backends
@@ -913,19 +1005,18 @@ impl EffectiveConfig {
                             None::<()>,
                         ),
                     ),
-                    _ => return Err(AppError::UnknownConfigKey { key: key.to_owned() }),
+                    _ => {
+                        return Err(AppError::UnknownConfigKey {
+                            key: key.to_owned(),
+                        })
+                    }
                 }
             }
             ["backends", backend_name, "role_models", role_name] => {
                 let runtime = self.backend_runtime_settings(backend_name)?;
                 let role = role_name.parse::<BackendPolicyRole>()?;
                 (
-                    ConfigValue::String(
-                        runtime
-                            .role_models
-                            .model_for(role)
-                            .map(str::to_owned),
-                    ),
+                    ConfigValue::String(runtime.role_models.model_for(role).map(str::to_owned)),
                     source_for_option(
                         workspace_role_model(&self.workspace_config, backend_name, role),
                         project_role_model(&self.project_config, backend_name, role),
@@ -938,14 +1029,11 @@ impl EffectiveConfig {
                 let role = role_name.parse::<BackendPolicyRole>()?;
                 (
                     ConfigValue::Integer(
-                        runtime
-                            .role_timeouts
-                            .timeout_for(role)
-                            .unwrap_or(
-                                runtime
-                                    .timeout_seconds
-                                    .unwrap_or(DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS),
-                            ),
+                        runtime.role_timeouts.timeout_for(role).unwrap_or(
+                            runtime
+                                .timeout_seconds
+                                .unwrap_or(DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS),
+                        ),
                     ),
                     source_for_option(
                         workspace_role_timeout(&self.workspace_config, backend_name, role),
@@ -954,7 +1042,11 @@ impl EffectiveConfig {
                     ),
                 )
             }
-            _ => return Err(AppError::UnknownConfigKey { key: key.to_owned() }),
+            _ => {
+                return Err(AppError::UnknownConfigKey {
+                    key: key.to_owned(),
+                })
+            }
         };
 
         Ok(ConfigEntry {
@@ -993,7 +1085,8 @@ fn resolve_vec<T: Clone>(
     cli: Option<&[T]>,
     default: Vec<T>,
 ) -> Vec<T> {
-    cli.or(project).or(workspace)
+    cli.or(project)
+        .or(workspace)
         .map(|values| values.to_vec())
         .unwrap_or(default)
 }
@@ -1032,11 +1125,7 @@ fn merge_backend_runtime_map(
         merged
             .entry(name.clone())
             .and_modify(|existing| {
-                *existing = merge_backend_runtime_settings(
-                    existing.clone(),
-                    None,
-                    Some(&settings),
-                )
+                *existing = merge_backend_runtime_settings(existing.clone(), None, Some(&settings))
             })
             .or_insert(settings);
     }
@@ -1292,7 +1381,11 @@ fn project_role_timeout(
         .and_then(|settings| settings.role_timeouts.timeout_for(role))
 }
 
-fn source_for_option<T>(workspace: Option<T>, project: Option<T>, cli: Option<T>) -> ConfigValueSource {
+fn source_for_option<T>(
+    workspace: Option<T>,
+    project: Option<T>,
+    cli: Option<T>,
+) -> ConfigValueSource {
     if cli.is_some() {
         ConfigValueSource::CliOverride
     } else if project.is_some() {
@@ -1396,18 +1489,29 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 document["settings"]["default_flow"] = value(parsed.as_str());
             }
         }
-        ["default_backend"] => apply_optional_string(document, &["settings", "default_backend"], raw_value)?,
-        ["default_model"] => apply_optional_string(document, &["settings", "default_model"], raw_value)?,
-        ["prompt_review", "enabled"] => apply_optional_bool(document, &["prompt_review", "enabled"], key, raw_value)?,
+        ["default_backend"] => {
+            apply_optional_string(document, &["settings", "default_backend"], raw_value)?
+        }
+        ["default_model"] => {
+            apply_optional_string(document, &["settings", "default_model"], raw_value)?
+        }
+        ["prompt_review", "enabled"] => {
+            apply_optional_bool(document, &["prompt_review", "enabled"], key, raw_value)?
+        }
         ["prompt_review", "refiner_backend"] => {
             apply_optional_string(document, &["prompt_review", "refiner_backend"], raw_value)?
         }
-        ["prompt_review", "validator_backends"] => {
-            apply_string_list(document, &["prompt_review", "validator_backends"], raw_value)?
-        }
-        ["prompt_review", "min_reviewers"] => {
-            apply_optional_u64(document, &["prompt_review", "min_reviewers"], key, raw_value)?
-        }
+        ["prompt_review", "validator_backends"] => apply_string_list(
+            document,
+            &["prompt_review", "validator_backends"],
+            raw_value,
+        )?,
+        ["prompt_review", "min_reviewers"] => apply_optional_u64(
+            document,
+            &["prompt_review", "min_reviewers"],
+            key,
+            raw_value,
+        )?,
         ["workflow", "planner_backend"] => {
             apply_optional_string(document, &["workflow", "planner_backend"], raw_value)?
         }
@@ -1423,9 +1527,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["workflow", "max_qa_iterations"] => {
             apply_optional_u64(document, &["workflow", "max_qa_iterations"], key, raw_value)?
         }
-        ["workflow", "max_review_iterations"] => {
-            apply_optional_u64(document, &["workflow", "max_review_iterations"], key, raw_value)?
-        }
+        ["workflow", "max_review_iterations"] => apply_optional_u64(
+            document,
+            &["workflow", "max_review_iterations"],
+            key,
+            raw_value,
+        )?,
         ["workflow", "prompt_change_action"] => {
             if is_unset(raw_value) {
                 document["workflow"]["prompt_change_action"] = Item::None;
@@ -1434,14 +1541,21 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 document["workflow"]["prompt_change_action"] = value(parsed.as_str());
             }
         }
-        ["completion", "backends"] => apply_string_list(document, &["completion", "backends"], raw_value)?,
+        ["completion", "backends"] => {
+            apply_string_list(document, &["completion", "backends"], raw_value)?
+        }
         ["completion", "min_completers"] => {
             apply_optional_u64(document, &["completion", "min_completers"], key, raw_value)?
         }
-        ["completion", "consensus_threshold"] => {
-            apply_optional_float(document, &["completion", "consensus_threshold"], key, raw_value)?
+        ["completion", "consensus_threshold"] => apply_optional_float(
+            document,
+            &["completion", "consensus_threshold"],
+            key,
+            raw_value,
+        )?,
+        ["final_review", "enabled"] => {
+            apply_optional_bool(document, &["final_review", "enabled"], key, raw_value)?
         }
-        ["final_review", "enabled"] => apply_optional_bool(document, &["final_review", "enabled"], key, raw_value)?,
         ["final_review", "backends"] => {
             apply_string_list(document, &["final_review", "backends"], raw_value)?
         }
@@ -1451,9 +1565,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["final_review", "min_reviewers"] => {
             apply_optional_u64(document, &["final_review", "min_reviewers"], key, raw_value)?
         }
-        ["final_review", "consensus_threshold"] => {
-            apply_optional_float(document, &["final_review", "consensus_threshold"], key, raw_value)?
-        }
+        ["final_review", "consensus_threshold"] => apply_optional_float(
+            document,
+            &["final_review", "consensus_threshold"],
+            key,
+            raw_value,
+        )?,
         ["final_review", "max_restarts"] => {
             apply_optional_u64(document, &["final_review", "max_restarts"], key, raw_value)?
         }
@@ -1469,20 +1586,24 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["validation", "pre_commit_fmt"] => {
             apply_optional_bool(document, &["validation", "pre_commit_fmt"], key, raw_value)?
         }
-        ["validation", "pre_commit_clippy"] => {
-            apply_optional_bool(document, &["validation", "pre_commit_clippy"], key, raw_value)?
-        }
-        ["validation", "pre_commit_nix_build"] => {
-            apply_optional_bool(document, &["validation", "pre_commit_nix_build"], key, raw_value)?
-        }
-        ["validation", "pre_commit_fmt_auto_fix"] => {
-            apply_optional_bool(
-                document,
-                &["validation", "pre_commit_fmt_auto_fix"],
-                key,
-                raw_value,
-            )?
-        }
+        ["validation", "pre_commit_clippy"] => apply_optional_bool(
+            document,
+            &["validation", "pre_commit_clippy"],
+            key,
+            raw_value,
+        )?,
+        ["validation", "pre_commit_nix_build"] => apply_optional_bool(
+            document,
+            &["validation", "pre_commit_nix_build"],
+            key,
+            raw_value,
+        )?,
+        ["validation", "pre_commit_fmt_auto_fix"] => apply_optional_bool(
+            document,
+            &["validation", "pre_commit_fmt_auto_fix"],
+            key,
+            raw_value,
+        )?,
         ["backends", backend_name, field] => match *field {
             "enabled" => apply_optional_bool(
                 document,
@@ -1490,7 +1611,9 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 key,
                 raw_value,
             )?,
-            "command" => apply_optional_string(document, &["backends", backend_name, "command"], raw_value)?,
+            "command" => {
+                apply_optional_string(document, &["backends", backend_name, "command"], raw_value)?
+            }
             "args" => apply_string_list(document, &["backends", backend_name, "args"], raw_value)?,
             "timeout_seconds" => apply_optional_u64(
                 document,
@@ -1633,19 +1756,25 @@ fn parse_bool(key: &str, raw_value: &str) -> AppResult<bool> {
 }
 
 fn parse_u64(key: &str, raw_value: &str) -> AppResult<u64> {
-    raw_value.trim().parse::<u64>().map_err(|_| AppError::InvalidConfigValue {
-        key: key.to_owned(),
-        value: raw_value.to_owned(),
-        reason: "expected a non-negative integer".to_owned(),
-    })
+    raw_value
+        .trim()
+        .parse::<u64>()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected a non-negative integer".to_owned(),
+        })
 }
 
 fn parse_f64(key: &str, raw_value: &str) -> AppResult<f64> {
-    raw_value.trim().parse::<f64>().map_err(|_| AppError::InvalidConfigValue {
-        key: key.to_owned(),
-        value: raw_value.to_owned(),
-        reason: "expected a floating-point number".to_owned(),
-    })
+    raw_value
+        .trim()
+        .parse::<f64>()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected a floating-point number".to_owned(),
+        })
 }
 
 fn parse_flow_preset(key: &str, raw_value: &str) -> AppResult<FlowPreset> {
@@ -1671,19 +1800,22 @@ fn parse_prompt_change_action(key: &str, raw_value: &str) -> AppResult<PromptCha
 }
 
 fn parse_string_list(key: &str, raw_value: &str) -> AppResult<Vec<String>> {
-    let parsed = raw_value
-        .trim()
-        .parse::<toml::Value>()
-        .map_err(|_| AppError::InvalidConfigValue {
+    let parsed =
+        raw_value
+            .trim()
+            .parse::<toml::Value>()
+            .map_err(|_| AppError::InvalidConfigValue {
+                key: key.to_owned(),
+                value: raw_value.to_owned(),
+                reason: "expected a TOML array of strings".to_owned(),
+            })?;
+    let array = parsed
+        .as_array()
+        .ok_or_else(|| AppError::InvalidConfigValue {
             key: key.to_owned(),
             value: raw_value.to_owned(),
-            reason: "expected a TOML array of strings".to_owned(),
+            reason: "expected a TOML array".to_owned(),
         })?;
-    let array = parsed.as_array().ok_or_else(|| AppError::InvalidConfigValue {
-        key: key.to_owned(),
-        value: raw_value.to_owned(),
-        reason: "expected a TOML array".to_owned(),
-    })?;
     let mut values = Vec::with_capacity(array.len());
     for value in array {
         let string = value.as_str().ok_or_else(|| AppError::InvalidConfigValue {

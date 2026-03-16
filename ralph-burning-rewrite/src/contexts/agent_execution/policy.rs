@@ -73,11 +73,15 @@ impl<'a> BackendPolicyService<'a> {
 
     pub fn resolve_completion_panel(&self, cycle: u32) -> AppResult<CompletionPanelResolution> {
         let planner = self.resolve_role_target(BackendPolicyRole::Planner, cycle)?;
-        let completers = self.resolve_panel_backends(
-            &self.config.completion_policy().backends,
-            self.config.completion_policy().min_completers,
-            BackendPolicyRole::Completer,
-        )?;
+        let completers = if self.config.completion_backends_are_explicit() {
+            self.resolve_panel_backends(
+                &self.config.completion_policy().backends,
+                self.config.completion_policy().min_completers,
+                BackendPolicyRole::Completer,
+            )?
+        } else {
+            self.default_completion_targets(cycle)?
+        };
 
         Ok(CompletionPanelResolution {
             planner,
@@ -109,10 +113,7 @@ impl<'a> BackendPolicyService<'a> {
         })
     }
 
-    pub fn resolve_final_review_panel(
-        &self,
-        cycle: u32,
-    ) -> AppResult<FinalReviewPanelResolution> {
+    pub fn resolve_final_review_panel(&self, cycle: u32) -> AppResult<FinalReviewPanelResolution> {
         let reviewers = self.resolve_panel_backends(
             &self.config.final_review_policy().backends,
             self.config.final_review_policy().min_reviewers,
@@ -202,7 +203,7 @@ impl<'a> BackendPolicyService<'a> {
 
         for spec in specs {
             let backend = spec.backend();
-            if !self.backend_enabled(backend) {
+            if !self.panel_backend_resolvable(backend) {
                 if spec.is_optional() {
                     continue;
                 }
@@ -219,11 +220,19 @@ impl<'a> BackendPolicyService<'a> {
             return Err(AppError::InvalidConfigValue {
                 key: "panel_backends".to_owned(),
                 value: resolved.len().to_string(),
-                reason: format!("resolved backend count is below the required minimum of {minimum}"),
+                reason: format!(
+                    "resolved backend count is below the required minimum of {minimum}"
+                ),
             });
         }
 
         Ok(resolved)
+    }
+
+    fn default_completion_targets(&self, cycle: u32) -> AppResult<Vec<ResolvedBackendTarget>> {
+        let target = self.resolve_role_target(BackendPolicyRole::Completer, cycle)?;
+        let count = self.config.completion_policy().min_completers.max(1);
+        Ok(vec![target; count])
     }
 
     fn selection_to_target(
@@ -295,15 +304,22 @@ impl<'a> BackendPolicyService<'a> {
         &self,
         family: BackendFamily,
     ) -> Option<&crate::shared::domain::BackendRuntimeSettings> {
-        self.config
-            .backend_policy()
-            .backends
-            .get(family.as_str())
+        self.config.backend_policy().backends.get(family.as_str())
     }
 
     fn backend_enabled(&self, family: BackendFamily) -> bool {
         self.runtime_settings(family)
             .and_then(|settings| settings.enabled)
-            .unwrap_or(matches!(family, BackendFamily::Claude | BackendFamily::Codex))
+            .unwrap_or(matches!(
+                family,
+                BackendFamily::Claude | BackendFamily::Codex
+            ))
+    }
+
+    fn panel_backend_resolvable(&self, family: BackendFamily) -> bool {
+        // Panel policy only admits backends that the current workflow runtime can execute.
+        // OpenRouter is wired in as a config family in Slice 1 but remains non-executable
+        // for workflow panels until the dedicated adapter lands.
+        self.backend_enabled(family) && !matches!(family, BackendFamily::OpenRouter)
     }
 }
