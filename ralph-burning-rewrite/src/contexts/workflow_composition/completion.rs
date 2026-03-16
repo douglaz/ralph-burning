@@ -33,7 +33,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 };
 use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
-    BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
+    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
+    StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -86,7 +87,7 @@ pub async fn execute_completion_panel<A, R, S>(
     consensus_threshold: f64,
     prompt_reference: &str,
     rollback_count: u32,
-    policy_timeout: Duration,
+    timeout_for_backend: &dyn Fn(BackendFamily) -> Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<CompletionResult>
 where
@@ -108,6 +109,7 @@ where
 
     // ── Invoke each completer and persist supporting records ───────────────
     for (i, completer_target) in completers.iter().enumerate() {
+        let completer_timeout = timeout_for_backend(completer_target.backend.family);
         let vote_payload = invoke_completer(
             agent_service,
             base_dir,
@@ -118,7 +120,7 @@ where
             completer_target,
             &project_prompt,
             i,
-            policy_timeout,
+            completer_timeout,
             cancellation_token.clone(),
         )
         .await?;

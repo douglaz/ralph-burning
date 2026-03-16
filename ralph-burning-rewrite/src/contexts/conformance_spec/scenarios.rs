@@ -8257,8 +8257,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         drift_still_satisfies_requirements, resolution_has_drifted,
     };
     use crate::contexts::workflow_composition::panel_contracts::{
-        CompletionVerdict, PromptReviewDecision, PromptReviewPrimaryPayload,
-        PromptValidationPayload, RecordKind,
+        CompletionAggregatePayload, CompletionVerdict, PromptReviewDecision,
+        PromptReviewPrimaryPayload, PromptRefinementPayload, PromptValidationPayload, RecordKind,
+        RecordProducer,
     };
     use crate::shared::domain::ResolvedBackendTarget;
 
@@ -8268,15 +8269,39 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.prompt_review.panel_accept",
         || {
-            // Verify that when all validators accept, the primary payload
-            // decision is Accepted and record_kind is StagePrimary.
+            // Exercise the full accept path: construct refinement + validation
+            // payloads, verify serialization round-trip, verify primary decision
+            // payload, and verify record kinds.
+            let refinement = PromptRefinementPayload {
+                refined_prompt: "Clarified prompt text.".to_owned(),
+                refinement_summary: "Improved clarity.".to_owned(),
+                improvements: vec!["Added acceptance criteria.".to_owned()],
+            };
+            let json = serde_json::to_string(&refinement)
+                .map_err(|e| format!("refinement serialize: {e}"))?;
+            let restored: PromptRefinementPayload = serde_json::from_str(&json)
+                .map_err(|e| format!("refinement deserialize: {e}"))?;
+            if restored.refined_prompt != refinement.refined_prompt {
+                return Err("refinement round-trip failed".to_owned());
+            }
+
+            let validation = PromptValidationPayload {
+                accepted: true,
+                evidence: vec!["All criteria met.".to_owned()],
+                concerns: vec![],
+            };
+            if !validation.accepted {
+                return Err("expected accepted validation".to_owned());
+            }
+
+            // Build primary payload as the workflow would.
             let primary = PromptReviewPrimaryPayload {
                 decision: PromptReviewDecision::Accepted,
-                refined_prompt: "refined".to_owned(),
+                refined_prompt: refinement.refined_prompt.clone(),
                 executed_reviewers: 2,
                 accept_count: 2,
                 reject_count: 0,
-                refinement_summary: "improved".to_owned(),
+                refinement_summary: refinement.refinement_summary.clone(),
             };
             if primary.decision != PromptReviewDecision::Accepted {
                 return Err("expected Accepted decision".to_owned());
@@ -8284,10 +8309,32 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if primary.reject_count != 0 {
                 return Err("expected zero rejects for acceptance".to_owned());
             }
-            // Verify StagePrimary is the correct record kind for primary records.
+            // Verify primary payload serialization matches StagePrimary kind.
+            let primary_json = serde_json::to_value(&primary)
+                .map_err(|e| format!("primary serialize: {e}"))?;
+            if primary_json["decision"] != "accepted" {
+                return Err(format!("expected decision 'accepted', got {}", primary_json["decision"]));
+            }
+
             let kind = RecordKind::StagePrimary;
             if kind.to_string() != "primary" {
                 return Err(format!("expected 'primary', got '{}'", kind));
+            }
+            // Supporting records use StageSupporting.
+            let supporting = RecordKind::StageSupporting;
+            if supporting.to_string() != "supporting" {
+                return Err(format!("expected 'supporting', got '{}'", supporting));
+            }
+
+            // Verify producer metadata serializes correctly.
+            let producer = RecordProducer::Agent {
+                backend_family: "claude".to_owned(),
+                model_id: "claude-opus-4-6".to_owned(),
+            };
+            let producer_json = serde_json::to_value(&producer)
+                .map_err(|e| format!("producer serialize: {e}"))?;
+            if producer_json["type"] != "agent" {
+                return Err("expected producer type 'agent'".to_owned());
             }
             Ok(())
         }
@@ -8297,8 +8344,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.prompt_review.panel_reject",
         || {
-            // Verify that a rejecting validator produces a rejection result
-            // without altering prompt.md.
+            // Exercise the reject path: a validator rejects, supporting records
+            // are written but prompt.md stays unchanged.
             let validation = PromptValidationPayload {
                 accepted: false,
                 evidence: vec!["prompt is unclear".to_owned()],
@@ -8307,7 +8354,28 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if validation.accepted {
                 return Err("expected rejected validation".to_owned());
             }
-            // A rejection means reject_count > 0 in the primary payload.
+            // Serialize the rejection payload and verify it round-trips.
+            let json = serde_json::to_string(&validation)
+                .map_err(|e| format!("validation serialize: {e}"))?;
+            let restored: PromptValidationPayload = serde_json::from_str(&json)
+                .map_err(|e| format!("validation deserialize: {e}"))?;
+            if restored.accepted {
+                return Err("round-tripped validation should still be rejected".to_owned());
+            }
+            if restored.concerns.is_empty() {
+                return Err("concerns should survive round-trip".to_owned());
+            }
+
+            // Verify rejection constructs the correct error.
+            let err = crate::shared::error::AppError::PromptReviewRejected {
+                details: "1 of 2 validators rejected the refined prompt".to_owned(),
+            };
+            let msg = err.to_string();
+            if !msg.contains("rejected") {
+                return Err(format!("expected 'rejected' in error: {msg}"));
+            }
+
+            // Verify that a rejected primary payload has decision=Rejected.
             let primary = PromptReviewPrimaryPayload {
                 decision: PromptReviewDecision::Rejected,
                 refined_prompt: "refined".to_owned(),
@@ -8327,8 +8395,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.prompt_review.min_reviewers_enforced",
         || {
-            // If executed validators < min_reviewers, error must be
-            // InsufficientPanelMembers.
+            // Exercise min_reviewers enforcement: if executed < min, stage must
+            // fail with InsufficientPanelMembers error.
             let executed = 1usize;
             let min_reviewers = 3usize;
             if executed >= min_reviewers {
@@ -8343,6 +8411,29 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !msg.contains("insufficient panel members") {
                 return Err(format!("unexpected error message: {msg}"));
             }
+            // Also verify that the error contains the panel name and counts.
+            if !msg.contains("prompt_review") {
+                return Err(format!("error should contain panel name: {msg}"));
+            }
+
+            // Verify snapshot records the correct validator count for min_reviewers checking.
+            let refiner = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let validator = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Codex,
+                "codex-1".to_owned(),
+            );
+            let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+                refiner,
+                validators: vec![validator],
+            };
+            let snap = build_prompt_review_snapshot(StageId::PromptReview, &panel);
+            // 1 validator < min_reviewers=3 would fail the enforcement check.
+            if snap.prompt_review_validators.len() >= min_reviewers {
+                return Err("snapshot should reflect insufficient validators".to_owned());
+            }
             Ok(())
         }
     );
@@ -8351,10 +8442,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.prompt_review.optional_validator_skip",
         || {
-            // Optional validators that are unavailable are skipped.
-            // The BackendPolicyService.resolve_panel_backends skips optional
-            // backends and only counts resolved ones as executed reviewers.
-            // Verify that filtering works: 3 specs, 1 optional unavailable -> 2 resolved.
+            // Exercise optional validator skip via PanelBackendSpec filtering.
             let specs = vec![
                 crate::shared::domain::PanelBackendSpec::required(
                     crate::shared::domain::BackendFamily::Claude,
@@ -8374,6 +8462,12 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if optional_count != 1 {
                 return Err(format!("expected 1 optional, got {optional_count}"));
             }
+            // Simulate: optional backend unavailable. After filtering, only 2 resolved.
+            // With min_reviewers=2, this should still pass.
+            let resolved_count = required_count; // optional skipped
+            if resolved_count < 2 {
+                return Err("resolved validators should still meet min_reviewers=2".to_owned());
+            }
             Ok(())
         }
     );
@@ -8382,19 +8476,62 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.prompt_review.prompt_replaced_and_original_preserved",
         || {
-            // On successful accept, prompt.original.md is written and prompt.md replaced.
-            // Verify the atomic helper exists and the hash computation is deterministic.
-            let prompt = "test prompt content";
-            let hash1 = crate::adapters::fs::FileSystem::prompt_hash(prompt);
-            let hash2 = crate::adapters::fs::FileSystem::prompt_hash(prompt);
-            if hash1 != hash2 {
-                return Err("prompt_hash is not deterministic".to_owned());
+            // Exercise atomic prompt replacement with actual file I/O.
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+            let pid_name = "wp-replace-test";
+            create_project_fixture(ws.path(), pid_name, "standard");
+            let pid = crate::shared::domain::ProjectId::new(pid_name.to_owned())
+                .map_err(|e| format!("project id: {e}"))?;
+
+            // Write an initial prompt.
+            let project_dir = ws.path()
+                .join(".ralph-burning")
+                .join("projects")
+                .join(pid_name);
+            let prompt_path = project_dir.join("prompt.md");
+            let original_prompt = "Original prompt content for testing.";
+            std::fs::write(&prompt_path, original_prompt)
+                .map_err(|e| format!("write prompt: {e}"))?;
+
+            // Compute the original hash.
+            let original_hash = crate::adapters::fs::FileSystem::prompt_hash(original_prompt);
+
+            // Perform atomic replacement.
+            let refined_prompt = "Refined prompt with better requirements.";
+            let new_hash = crate::adapters::fs::FileSystem::replace_prompt_atomically(
+                ws.path(),
+                &pid,
+                original_prompt,
+                refined_prompt,
+            )
+            .map_err(|e| format!("replace_prompt_atomically: {e}"))?;
+
+            // Verify prompt.md now contains the refined text.
+            let actual_prompt = std::fs::read_to_string(&prompt_path)
+                .map_err(|e| format!("read prompt.md: {e}"))?;
+            if actual_prompt != refined_prompt {
+                return Err(format!("prompt.md should contain refined text, got: {actual_prompt}"));
             }
-            let different_hash = crate::adapters::fs::FileSystem::prompt_hash("different");
-            if hash1 == different_hash {
-                return Err("different prompts produced same hash".to_owned());
+
+            // Verify prompt.original.md contains the original text.
+            let original_path = project_dir.join("prompt.original.md");
+            let actual_original = std::fs::read_to_string(&original_path)
+                .map_err(|e| format!("read prompt.original.md: {e}"))?;
+            if actual_original != original_prompt {
+                return Err(format!("prompt.original.md should contain original text, got: {actual_original}"));
             }
-            // Verify that the prompt-review snapshot records both refiner and validators.
+
+            // Verify hash changed.
+            if new_hash == original_hash {
+                return Err("hash should change after replacement".to_owned());
+            }
+            let expected_hash = crate::adapters::fs::FileSystem::prompt_hash(refined_prompt);
+            if new_hash != expected_hash {
+                return Err("new hash should match the refined prompt hash".to_owned());
+            }
+
+            // Verify snapshot records refiner and validators.
             let refiner_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
                 "claude-opus-4-6".to_owned(),
@@ -8427,10 +8564,43 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.completion.panel_two_completer_consensus_complete",
         || {
-            // 2 completers, both vote complete, min=1, threshold=0.5
+            // Exercise the full consensus path with 2 completers both voting complete.
             let verdict = compute_completion_verdict(2, 2, 1, 0.5);
             if verdict != CompletionVerdict::Complete {
                 return Err(format!("expected Complete, got {verdict}"));
+            }
+
+            // Build and verify the aggregate payload that would be persisted.
+            let aggregate = CompletionAggregatePayload {
+                verdict,
+                complete_votes: 2,
+                continue_votes: 0,
+                total_voters: 2,
+                consensus_threshold: 0.5,
+                min_completers: 1,
+                executed_voters: vec![
+                    "claude:claude-opus-4-6".to_owned(),
+                    "codex:codex-1".to_owned(),
+                ],
+            };
+            let json = serde_json::to_value(&aggregate)
+                .map_err(|e| format!("aggregate serialize: {e}"))?;
+            if json["verdict"] != "complete" {
+                return Err(format!("expected verdict 'complete' in JSON, got {}", json["verdict"]));
+            }
+            // Verify StageAggregate record kind for the aggregate.
+            let kind = RecordKind::StageAggregate;
+            if kind.to_string() != "aggregate" {
+                return Err(format!("expected 'aggregate', got '{kind}'"));
+            }
+            // Round-trip the aggregate payload.
+            let restored: CompletionAggregatePayload = serde_json::from_value(json)
+                .map_err(|e| format!("aggregate deserialize: {e}"))?;
+            if restored.verdict != CompletionVerdict::Complete {
+                return Err("aggregate round-trip failed".to_owned());
+            }
+            if restored.executed_voters.len() != 2 {
+                return Err("executed voters should survive round-trip".to_owned());
             }
             Ok(())
         }
@@ -8440,10 +8610,38 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.completion.panel_continue_verdict",
         || {
-            // 2 completers both vote continue_work
+            // Exercise continue_work path: both completers vote continue.
             let verdict = compute_completion_verdict(0, 2, 1, 0.5);
             if verdict != CompletionVerdict::ContinueWork {
                 return Err(format!("expected ContinueWork, got {verdict}"));
+            }
+
+            // Build aggregate and verify continue_work serialization.
+            let aggregate = CompletionAggregatePayload {
+                verdict,
+                complete_votes: 0,
+                continue_votes: 2,
+                total_voters: 2,
+                consensus_threshold: 0.5,
+                min_completers: 1,
+                executed_voters: vec!["claude:claude-opus-4-6".to_owned(), "codex:codex-1".to_owned()],
+            };
+            let json = serde_json::to_value(&aggregate)
+                .map_err(|e| format!("aggregate serialize: {e}"))?;
+            if json["verdict"] != "continue_work" {
+                return Err(format!("expected 'continue_work', got {}", json["verdict"]));
+            }
+            // Verify completion_round would advance (the engine increments it).
+            let cursor = crate::shared::domain::StageCursor::new(
+                StageId::CompletionPanel, 1, 1, 1,
+            ).map_err(|e| format!("cursor: {e}"))?;
+            let next = cursor.advance_completion_round(StageId::Planning)
+                .map_err(|e| format!("advance: {e}"))?;
+            if next.completion_round != 2 {
+                return Err(format!("expected round 2, got {}", next.completion_round));
+            }
+            if next.stage != StageId::Planning {
+                return Err("continue_work should restart from planning".to_owned());
             }
             Ok(())
         }
@@ -8453,13 +8651,29 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.completion.optional_backend_skip",
         || {
-            // Optional unavailable completers are excluded. Only executed
-            // voters count toward aggregate.
+            // Optional unavailable completers are excluded; aggregate only
+            // counts executed voters.
             // With 2 executed out of 3 configured (1 optional skipped),
-            // aggregate should use total_voters = 2.
+            // aggregate uses total_voters = 2.
             let verdict = compute_completion_verdict(2, 2, 1, 0.5);
             if verdict != CompletionVerdict::Complete {
                 return Err(format!("expected Complete with 2 executed voters, got {verdict}"));
+            }
+            // Verify the optional-skip behavior through PanelBackendSpec.
+            let specs = vec![
+                crate::shared::domain::PanelBackendSpec::required(
+                    crate::shared::domain::BackendFamily::Claude,
+                ),
+                crate::shared::domain::PanelBackendSpec::required(
+                    crate::shared::domain::BackendFamily::Codex,
+                ),
+                crate::shared::domain::PanelBackendSpec::optional(
+                    crate::shared::domain::BackendFamily::OpenRouter,
+                ),
+            ];
+            let required = specs.iter().filter(|s| !s.is_optional()).count();
+            if required != 2 {
+                return Err(format!("expected 2 required backends, got {required}"));
             }
             Ok(())
         }
@@ -8479,6 +8693,13 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !msg.contains("unavailable") {
                 return Err(format!("expected 'unavailable' in error message: {msg}"));
             }
+            // Verify the required spec would trigger this path.
+            let spec = crate::shared::domain::PanelBackendSpec::required(
+                crate::shared::domain::BackendFamily::Codex,
+            );
+            if spec.is_optional() {
+                return Err("required spec should not be optional".to_owned());
+            }
             Ok(())
         }
     );
@@ -8487,7 +8708,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.completion.threshold_consensus",
         || {
-            // 3 completers, 2 vote complete, threshold=0.75
+            // Exercise threshold boundary: 2/3 vs different thresholds.
             // 2/3 ≈ 0.667 < 0.75 -> ContinueWork
             let verdict = compute_completion_verdict(2, 3, 2, 0.75);
             if verdict != CompletionVerdict::ContinueWork {
@@ -8495,11 +8716,25 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                     "expected ContinueWork (2/3 < 0.75), got {verdict}"
                 ));
             }
-            // But with threshold=0.5: 2/3 ≈ 0.667 >= 0.5 and 2 >= 2 -> Complete
+            // With threshold=0.5: 2/3 ≈ 0.667 >= 0.5 and 2 >= 2 -> Complete
             let verdict2 = compute_completion_verdict(2, 3, 2, 0.5);
             if verdict2 != CompletionVerdict::Complete {
                 return Err(format!(
                     "expected Complete (2/3 >= 0.5 and 2 >= 2), got {verdict2}"
+                ));
+            }
+            // Exact boundary: 3/4 = 0.75 >= 0.75 -> Complete
+            let verdict3 = compute_completion_verdict(3, 4, 3, 0.75);
+            if verdict3 != CompletionVerdict::Complete {
+                return Err(format!(
+                    "expected Complete (3/4 >= 0.75 and 3 >= 3), got {verdict3}"
+                ));
+            }
+            // Just below: 2/3 ≈ 0.667 < 0.67 with higher threshold
+            let verdict4 = compute_completion_verdict(2, 3, 2, 0.67);
+            if verdict4 != CompletionVerdict::ContinueWork {
+                return Err(format!(
+                    "expected ContinueWork (2/3 ≈ 0.667 < 0.67), got {verdict4}"
                 ));
             }
             Ok(())
@@ -8510,7 +8745,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "workflow.completion.insufficient_min_completers",
         || {
-            // min_completers=3 but only 2 resolved => error.
+            // min_completers=3 but only 2 resolved => InsufficientPanelMembers error.
             let err = crate::shared::error::AppError::InsufficientPanelMembers {
                 panel: "completion".to_owned(),
                 resolved: 2,
@@ -8520,11 +8755,19 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !msg.contains("insufficient") {
                 return Err(format!("unexpected error: {msg}"));
             }
-            // Also: if 2 vote complete but min=3, verdict must be ContinueWork.
+            // Also: if 2 vote complete but min=3, verdict must be ContinueWork
+            // because compute_completion_verdict checks min_completers.
             let verdict = compute_completion_verdict(2, 2, 3, 0.5);
             if verdict != CompletionVerdict::ContinueWork {
                 return Err(format!(
                     "expected ContinueWork (2 < min_completers=3), got {verdict}"
+                ));
+            }
+            // With 0 voters: always ContinueWork (guard against division by zero).
+            let verdict2 = compute_completion_verdict(0, 0, 1, 0.5);
+            if verdict2 != CompletionVerdict::ContinueWork {
+                return Err(format!(
+                    "expected ContinueWork for 0 voters, got {verdict2}"
                 ));
             }
             Ok(())
@@ -8537,7 +8780,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "backend.resume_drift.implementation_warns_and_reresolves",
         || {
-            // Build two snapshots with different targets for Implementation.
+            // Exercise drift detection for Implementation stage end-to-end:
+            // build snapshots, detect drift, verify requirement satisfaction,
+            // and verify failure when requirements are not met.
             let old_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
                 "claude-opus-4-6".to_owned(),
@@ -8552,11 +8797,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !resolution_has_drifted(&old, &new) {
                 return Err("expected drift between claude and codex targets".to_owned());
             }
-            // New resolution still has a primary target, so it satisfies requirements.
             if new.primary_target.is_none() {
                 return Err("new snapshot should have a primary target".to_owned());
             }
-            // Verify drift_still_satisfies_requirements validates correctly.
+
+            // Verify requirement satisfaction with real config.
             let ws = TempWorkspace::new()?;
             run_cli(&["init"], ws.path())?;
             let config = crate::contexts::workspace_governance::config::EffectiveConfig::load(
@@ -8565,7 +8810,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("load effective config: {e}"))?;
             drift_still_satisfies_requirements(&new, StageId::Implementation, &config)
                 .map_err(|e| format!("expected drift to satisfy requirements: {e}"))?;
-            // Verify it fails when primary_target is absent.
+
+            // Verify failure when primary_target is absent.
             let empty_snap = crate::contexts::project_run_record::model::StageResolutionSnapshot {
                 stage_id: StageId::Implementation,
                 resolved_at: chrono::Utc::now(),
@@ -8577,6 +8823,12 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if drift_still_satisfies_requirements(&empty_snap, StageId::Implementation, &config).is_ok() {
                 return Err("expected failure when primary target is missing".to_owned());
             }
+
+            // Verify no false positive: identical snapshots should not drift.
+            let same = build_single_target_snapshot(StageId::Implementation, &old_target);
+            if resolution_has_drifted(&old, &same) {
+                return Err("identical targets should not report drift".to_owned());
+            }
             Ok(())
         }
     );
@@ -8585,6 +8837,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "backend.resume_drift.qa_warns_and_reresolves",
         || {
+            // Exercise drift detection for AcceptanceQA stage.
             let old_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Codex,
                 "codex-1".to_owned(),
@@ -8599,6 +8852,16 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !resolution_has_drifted(&old, &new) {
                 return Err("expected drift for QA".to_owned());
             }
+
+            // Verify requirement satisfaction.
+            let ws = TempWorkspace::new()?;
+            run_cli(&["init"], ws.path())?;
+            let config = crate::contexts::workspace_governance::config::EffectiveConfig::load(
+                ws.path(),
+            )
+            .map_err(|e| format!("load effective config: {e}"))?;
+            drift_still_satisfies_requirements(&new, StageId::AcceptanceQa, &config)
+                .map_err(|e| format!("expected QA drift to satisfy requirements: {e}"))?;
             Ok(())
         }
     );
@@ -8607,6 +8870,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "backend.resume_drift.review_warns_and_reresolves",
         || {
+            // Exercise drift detection for Review stage: model change within
+            // same family should still be detected.
             let old_target = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
                 "claude-opus-4-6".to_owned(),
@@ -8626,6 +8891,16 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if resolution_has_drifted(&old, &same) {
                 return Err("identical targets should not report drift".to_owned());
             }
+
+            // Verify requirement satisfaction with real config.
+            let ws = TempWorkspace::new()?;
+            run_cli(&["init"], ws.path())?;
+            let config = crate::contexts::workspace_governance::config::EffectiveConfig::load(
+                ws.path(),
+            )
+            .map_err(|e| format!("load effective config: {e}"))?;
+            drift_still_satisfies_requirements(&new, StageId::Review, &config)
+                .map_err(|e| format!("expected review drift to satisfy requirements: {e}"))?;
             Ok(())
         }
     );
@@ -8634,6 +8909,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         m,
         "backend.resume_drift.completion_panel_warns_and_reresolves",
         || {
+            // Exercise drift detection for completion panel: model change in
+            // one completer should be detected.
             let target_a = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
                 "claude-opus-4-6".to_owned(),
@@ -8646,18 +8923,42 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 StageId::CompletionPanel,
                 &[target_a.clone(), target_b.clone()],
             );
-            // New resolution has different order or different completers.
             let target_c = ResolvedBackendTarget::new(
                 crate::shared::domain::BackendFamily::Claude,
                 "claude-sonnet-4-6".to_owned(),
             );
             let new = build_completion_snapshot(
                 StageId::CompletionPanel,
-                &[target_c, target_b],
+                &[target_c, target_b.clone()],
             );
 
             if !resolution_has_drifted(&old, &new) {
                 return Err("expected drift when completer model changes".to_owned());
+            }
+
+            // Same completers: no drift.
+            let same = build_completion_snapshot(
+                StageId::CompletionPanel,
+                &[target_a.clone(), target_b.clone()],
+            );
+            if resolution_has_drifted(&old, &same) {
+                return Err("identical panel should not report drift".to_owned());
+            }
+
+            // Verify drift satisfaction with real config.
+            let ws = TempWorkspace::new()?;
+            run_cli(&["init"], ws.path())?;
+            let config = crate::contexts::workspace_governance::config::EffectiveConfig::load(
+                ws.path(),
+            )
+            .map_err(|e| format!("load effective config: {e}"))?;
+            drift_still_satisfies_requirements(&new, StageId::CompletionPanel, &config)
+                .map_err(|e| format!("expected panel drift to satisfy requirements: {e}"))?;
+
+            // Verify failure when completers are empty (below min_completers).
+            let empty = build_completion_snapshot(StageId::CompletionPanel, &[]);
+            if drift_still_satisfies_requirements(&empty, StageId::CompletionPanel, &config).is_ok() {
+                return Err("expected failure when no completers remain".to_owned());
             }
             Ok(())
         }

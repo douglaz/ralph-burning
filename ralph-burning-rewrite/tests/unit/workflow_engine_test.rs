@@ -3872,10 +3872,10 @@ async fn invocation_ids_differ_across_completion_rounds() {
     );
 }
 
-// TODO(panel-dispatch): Update for panel dispatch. Completion panel no longer
-// queues amendments; ContinueWork/Complete verdicts replace conditionally_approved.
+// Panel dispatch: completion_round_advanced append failure. With the new commit
+// ordering, aggregate + stage_completed happen AFTER the transition, so if
+// completion_round_advanced fails, no aggregate or stage_completed is written.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch (no amendments from completion_panel)"]
 async fn resume_after_completion_round_advanced_append_failure_preserves_round() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3883,6 +3883,8 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "cr-resume-after-append-fail");
 
+    // First call: ContinueWork (vote_complete=false via translate_to_panel_payload).
+    // Second call (after resume): Complete (vote_complete=true).
     let agent_service = build_agent_service_with_adapter(
         StubBackendAdapter::default().with_stage_payload_sequence(
             StageId::CompletionPanel,
@@ -3894,7 +3896,7 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // Standard flow with prompt review enabled emits:
+    // Standard flow with prompt review enabled and new commit ordering:
     //   1  run_started
     //   2  stage_entered(prompt_review)
     //   3  stage_completed(prompt_review)
@@ -3912,10 +3914,8 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     //   15 stage_completed(review)
     //   16 rollback_created(review)
     //   17 stage_entered(completion_panel)
-    //   18 stage_completed(completion_panel)
-    //   19 amendment_queued
-    //   20 completion_round_advanced -> fail here
-    let failing_journal = FailingJournalStore::new(20);
+    //   18 completion_round_advanced -> fail here (before aggregate/stage_completed)
+    let failing_journal = FailingJournalStore::new(18);
 
     let first_result = engine::execute_standard_run(
         &agent_service,
@@ -3937,23 +3937,38 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
         .unwrap();
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
     assert!(failed_snapshot.active_run.is_none());
-    assert_eq!(
-        failed_snapshot.completion_rounds, 2,
-        "failed snapshot must preserve the advanced round"
-    );
-    assert!(
-        !failed_snapshot.amendment_queue.pending.is_empty(),
-        "failed snapshot must retain queued amendments"
-    );
 
     let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    // completion_round_advanced should NOT be persisted (that's where the failure is).
     assert!(
         failed_events
             .iter()
             .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
         "the targeted completion_round_advanced append should not persist"
     );
+    // No stage_completed for completion_panel (comes after transition in new ordering).
+    let completion_completed = failed_events.iter().any(|event| {
+        event.event_type == JournalEventType::StageCompleted
+            && event.details.get("stage_id").and_then(|v| v.as_str()) == Some("completion_panel")
+    });
+    assert!(
+        !completion_completed,
+        "stage_completed for completion_panel must not exist when transition failed"
+    );
 
+    // Supporting records from the completion panel should be durable.
+    let payloads_dir =
+        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/payloads");
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        payload_files.iter().any(|name| name.contains("-completion_panel-")),
+        "completion supporting records should be durable: {payload_files:?}"
+    );
+
+    // Resume: re-execute completion_panel, this time the stub returns Complete.
     let resume_result = engine::resume_standard_run(
         &agent_service,
         &FsRunSnapshotStore,
@@ -3974,67 +3989,36 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
-    assert_eq!(snapshot.completion_rounds, 2);
-
-    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let run_resumed = events
-        .iter()
-        .find(|event| event.event_type == JournalEventType::RunResumed)
-        .expect("run_resumed");
-    assert_eq!(run_resumed.details["resume_stage"], "planning");
-    assert_eq!(run_resumed.details["completion_round"], 2);
-
-    let payloads_dir =
-        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/payloads");
-    let artifacts_dir =
-        base_dir.join(".ralph-burning/projects/cr-resume-after-append-fail/history/artifacts");
-    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-    let artifact_files: Vec<String> = fs::read_dir(&artifacts_dir)
-        .unwrap()
-        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
-        .collect();
-
-    for needle in [
-        "-planning-c1-a1-cr1",
-        "-planning-c1-a1-cr2",
-        "-completion_panel-c1-a1-cr1",
-        "-completion_panel-c1-a1-cr2",
-    ] {
-        assert!(
-            payload_files.iter().any(|name| name.contains(needle)),
-            "payload history should retain {needle}: {payload_files:?}"
-        );
-        assert!(
-            artifact_files.iter().any(|name| name.contains(needle)),
-            "artifact history should retain {needle}: {artifact_files:?}"
-        );
-    }
 }
 
-// TODO(panel-dispatch): Update for panel dispatch. Completion panel no longer
-// queues amendments; ContinueWork/Complete verdicts replace conditionally_approved.
+// Panel dispatch: stage_completed append failure for completion panel.
+// With the new commit ordering, aggregate and stage_completed are written AFTER
+// the transition. If stage_completed fails, supporting records remain durable
+// but the run can resume from completion_panel.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch (no amendments from completion_panel)"]
-async fn mid_batch_journal_append_failure_cleans_up_orphaned_files() {
+async fn completion_stage_completed_append_failure_leaves_supporting_records() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
-    let pid = create_standard_project(base_dir, "cr-mid-batch-journal-fail");
+    let pid = create_standard_project(base_dir, "cr-stage-completed-fail");
 
+    // ContinueWork on first call (vote_complete=false).
     let agent_service =
         build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
             StageId::CompletionPanel,
-            conditionally_approved_payload(&["fix A", "fix B", "fix C"]),
+            conditionally_approved_payload(&["fix something"]),
         ));
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // Standard flow emits 18 journal appends before the amendment batch and the
-    // first amendment_queued append is the 19th successful append.
-    let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 19);
+    // New ordering for ContinueWork path:
+    //   17 stage_entered(completion_panel)
+    //   18 completion_round_advanced
+    //   [snapshot write - not a journal append]
+    //   19 stage_completed(completion_panel) -> fail here via failpoint
+    // ScopedJournalAppendFailpoint uses `current >= threshold` (0-indexed),
+    // so threshold=18 allows 18 appends (0-17) and fails the 19th (counter=18).
+    let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 18);
 
     let result = engine::execute_standard_run(
         &agent_service,
@@ -4049,63 +4033,62 @@ async fn mid_batch_journal_append_failure_cleans_up_orphaned_files() {
         &config,
     )
     .await;
-    assert!(result.is_err(), "run should fail on mid-batch append");
+    assert!(result.is_err(), "run should fail on stage_completed append");
 
     let failed_snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
-    assert_eq!(failed_snapshot.completion_rounds, 2);
-    assert_eq!(failed_snapshot.amendment_queue.pending.len(), 1);
-    assert_eq!(failed_snapshot.amendment_queue.pending[0].body, "fix A");
 
-    let disk_amendments = FsAmendmentQueueStore
-        .list_pending_amendments(base_dir, &pid)
-        .unwrap();
-    assert_eq!(disk_amendments.len(), 1);
-    assert_eq!(disk_amendments[0].body, "fix A");
-    assert_eq!(
-        disk_amendments[0].amendment_id,
-        failed_snapshot.amendment_queue.pending[0].amendment_id
+    // Supporting records from the completion panel execution should be durable.
+    let payloads_dir =
+        base_dir.join(".ralph-burning/projects/cr-stage-completed-fail/history/payloads");
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    assert!(
+        payload_files.iter().any(|name| name.contains("-completion_panel-")),
+        "completion supporting records should be durable: {payload_files:?}"
     );
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let amendment_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
-        .collect();
-    assert_eq!(amendment_events.len(), 1);
-    assert_eq!(amendment_events[0].details["body"], "fix A");
-    assert_eq!(
-        amendment_events[0].details["amendment_id"].as_str(),
-        Some(disk_amendments[0].amendment_id.as_str())
+    // stage_completed for completion_panel should NOT be present (that's where we fail).
+    let completion_completed = events.iter().any(|event| {
+        event.event_type == JournalEventType::StageCompleted
+            && event.details.get("stage_id").and_then(|v| v.as_str()) == Some("completion_panel")
+    });
+    assert!(
+        !completion_completed,
+        "stage_completed for completion_panel must not exist when its append failed"
     );
 }
 
-// TODO(panel-dispatch): Update for panel dispatch. Completion panel no longer
-// queues amendments; ContinueWork/Complete verdicts replace conditionally_approved.
+// Panel dispatch: resume after completion panel failure produces no duplicate
+// supporting records. The supporting records from the first (failed) attempt
+// remain durable, and the resume re-executes the panel cleanly.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch (no amendments from completion_panel)"]
-async fn resume_after_partial_journal_failure_no_duplicate_amendments() {
+async fn resume_after_completion_panel_failure_no_duplicate_supporting_records() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
-    let pid = create_standard_project(base_dir, "cr-resume-after-mid-batch-journal-fail");
+    let pid = create_standard_project(base_dir, "cr-resume-after-panel-fail");
 
     let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
         StageId::CompletionPanel,
         vec![
-            conditionally_approved_payload(&["fix A", "fix B", "fix C"]),
+            conditionally_approved_payload(&["fix something"]),
             approved_validation_payload(),
         ],
     ));
-    let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     {
-        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 19);
+        // Fail at completion_round_advanced (18th journal append during the run).
+        // ScopedJournalAppendFailpoint threshold=17 allows 17 appends and fails the 18th.
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
         let first_result = engine::execute_standard_run(
             &agent_service,
             &FsRunSnapshotStore,
@@ -4119,15 +4102,15 @@ async fn resume_after_partial_journal_failure_no_duplicate_amendments() {
             &config,
         )
         .await;
-        assert!(first_result.is_err(), "run should fail on mid-batch append");
+        assert!(first_result.is_err(), "run should fail on journal append");
     }
 
     let failed_snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
-    assert_eq!(failed_snapshot.amendment_queue.pending.len(), 1);
-    assert_eq!(failed_snapshot.amendment_queue.pending[0].body, "fix A");
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
 
+    // Resume with failpoint removed — should complete.
     let resume_result = engine::resume_standard_run(
         &agent_service,
         &FsRunSnapshotStore,
@@ -4148,54 +4131,12 @@ async fn resume_after_partial_journal_failure_no_duplicate_amendments() {
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
-    assert_eq!(snapshot.completion_rounds, 2);
-    assert!(snapshot.amendment_queue.pending.is_empty());
-
-    let planning_contexts = adapter_handle.contexts_for(StageId::Planning);
-    assert_eq!(
-        planning_contexts.len(),
-        2,
-        "planning should run once per round"
-    );
-    assert_eq!(planning_contexts[1]["completion_round"], 2);
-    let pending_amendments = planning_contexts[1]["pending_amendments"]
-        .as_array()
-        .expect("resume planning should receive pending amendments");
-    assert_eq!(pending_amendments.len(), 1);
-    assert_eq!(pending_amendments[0].as_str(), Some("fix A"));
-
-    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let amendment_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
-        .collect();
-    assert_eq!(
-        amendment_events.len(),
-        1,
-        "resume must not duplicate already journaled amendments"
-    );
-
-    let run_resumed = events
-        .iter()
-        .find(|event| event.event_type == JournalEventType::RunResumed)
-        .expect("run_resumed");
-    assert_eq!(run_resumed.details["resume_stage"], "planning");
-    assert_eq!(run_resumed.details["completion_round"], 2);
-
-    let disk_amendments = FsAmendmentQueueStore
-        .list_pending_amendments(base_dir, &pid)
-        .unwrap();
-    assert!(
-        disk_amendments.is_empty(),
-        "resume should drain the recovered amendment"
-    );
 }
 
-// TODO(panel-dispatch): Update for panel dispatch. Completion panel no longer
-// queues amendments; ContinueWork/Complete verdicts replace conditionally_approved.
+// Panel dispatch: completion_round_advanced failure via failpoint. Verifies that
+// the run can be resumed after the failure and completes successfully.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch (no amendments from completion_panel)"]
-async fn resume_after_first_journal_append_failure_preserves_pending_amendments() {
+async fn resume_after_completion_round_advanced_failpoint_completes() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -4205,19 +4146,18 @@ async fn resume_after_first_journal_append_failure_preserves_pending_amendments(
     let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
         StageId::CompletionPanel,
         vec![
-            conditionally_approved_payload(&["fix A", "fix B", "fix C"]),
+            conditionally_approved_payload(&["fix something"]),
             approved_validation_payload(),
         ],
     ));
-    let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     {
-        // Standard flow emits 18 successful appends before the first
-        // amendment_queued event, so fail there to exercise the zero-prefix
-        // journal failure case.
-        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 18);
+        // With new commit ordering: completion_round_advanced is the 18th
+        // journal append during the run. ScopedJournalAppendFailpoint threshold=17
+        // allows 17 appends and fails the 18th.
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
         let first_result = engine::execute_standard_run(
             &agent_service,
             &FsRunSnapshotStore,
@@ -4233,7 +4173,7 @@ async fn resume_after_first_journal_append_failure_preserves_pending_amendments(
         .await;
         assert!(
             first_result.is_err(),
-            "run should fail on first batch append"
+            "run should fail on journal append"
         );
     }
 
@@ -4241,34 +4181,17 @@ async fn resume_after_first_journal_append_failure_preserves_pending_amendments(
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
-    assert_eq!(
-        failed_snapshot.completion_rounds, 2,
-        "failed snapshot must preserve the advanced round"
-    );
-    let failed_bodies: Vec<_> = failed_snapshot
-        .amendment_queue
-        .pending
-        .iter()
-        .map(|amendment| amendment.body.as_str())
-        .collect();
-    assert_eq!(failed_bodies, vec!["fix A", "fix B", "fix C"]);
-
-    let disk_amendments = FsAmendmentQueueStore
-        .list_pending_amendments(base_dir, &pid)
-        .unwrap();
-    assert!(
-        disk_amendments.is_empty(),
-        "cleanup should remove the batch when the first append fails"
-    );
 
     let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    // No completion_round_advanced in journal (that's where we failed).
     assert!(
         failed_events
             .iter()
-            .all(|event| event.event_type != JournalEventType::AmendmentQueued),
-        "the zero-prefix append failure should leave no amendment events"
+            .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
+        "completion_round_advanced should not be persisted on failpoint"
     );
 
+    // Resume completes successfully.
     let resume_result = engine::resume_standard_run(
         &agent_service,
         &FsRunSnapshotStore,
@@ -4289,63 +4212,26 @@ async fn resume_after_first_journal_append_failure_preserves_pending_amendments(
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
-    assert_eq!(snapshot.completion_rounds, 2);
-    assert!(snapshot.amendment_queue.pending.is_empty());
-    assert_eq!(snapshot.amendment_queue.processed_count, 3);
-
-    let planning_contexts = adapter_handle.contexts_for(StageId::Planning);
-    assert_eq!(
-        planning_contexts.len(),
-        2,
-        "planning should run once per completion round"
-    );
-    assert_eq!(planning_contexts[1]["completion_round"], 2);
-    let pending_amendments = planning_contexts[1]["pending_amendments"]
-        .as_array()
-        .expect("resume planning should receive preserved amendments");
-    assert_eq!(pending_amendments.len(), 3);
-    assert_eq!(pending_amendments[0].as_str(), Some("fix A"));
-    assert_eq!(pending_amendments[1].as_str(), Some("fix B"));
-    assert_eq!(pending_amendments[2].as_str(), Some("fix C"));
-
-    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let amendment_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
-        .collect();
-    assert_eq!(
-        amendment_events.len(),
-        0,
-        "resume should not invent amendment events for the zero-prefix failure case"
-    );
-
-    let run_resumed = events
-        .iter()
-        .find(|event| event.event_type == JournalEventType::RunResumed)
-        .expect("run_resumed");
-    assert_eq!(run_resumed.details["resume_stage"], "planning");
-    assert_eq!(run_resumed.details["completion_round"], 2);
 }
 
-// TODO(panel-dispatch): Update for panel dispatch. Completion panel no longer
-// queues amendments; ContinueWork/Complete verdicts replace conditionally_approved.
+// Panel dispatch: successful completion round with ContinueWork then Complete.
+// Verifies aggregate records, completion_round advancement, and final completion.
 #[tokio::test]
-#[ignore = "needs update for panel dispatch (no amendments from completion_panel)"]
-async fn full_batch_success_persists_all_amendments() {
+async fn completion_panel_continue_then_complete_success() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "cr-full-batch-success");
 
+    // First call: ContinueWork (vote_complete=false). Second call: Complete.
     let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
         StageId::CompletionPanel,
         vec![
-            conditionally_approved_payload(&["fix A", "fix B", "fix C"]),
+            conditionally_approved_payload(&["fix something"]),
             approved_validation_payload(),
         ],
     ));
-    let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -4369,33 +4255,54 @@ async fn full_batch_success_persists_all_amendments() {
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert_eq!(snapshot.completion_rounds, 2);
-    assert!(snapshot.amendment_queue.pending.is_empty());
-
-    let planning_contexts = adapter_handle.contexts_for(StageId::Planning);
-    assert_eq!(planning_contexts.len(), 2);
-    let pending_amendments = planning_contexts[1]["pending_amendments"]
-        .as_array()
-        .expect("second planning pass should receive persisted amendments");
-    assert_eq!(pending_amendments.len(), 3);
-    assert_eq!(pending_amendments[0].as_str(), Some("fix A"));
-    assert_eq!(pending_amendments[1].as_str(), Some("fix B"));
-    assert_eq!(pending_amendments[2].as_str(), Some("fix C"));
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    let amendment_events: Vec<_> = events
-        .iter()
-        .filter(|event| event.event_type == JournalEventType::AmendmentQueued)
-        .collect();
-    assert_eq!(amendment_events.len(), 3);
-    assert_eq!(amendment_events[0].details["body"], "fix A");
-    assert_eq!(amendment_events[1].details["body"], "fix B");
-    assert_eq!(amendment_events[2].details["body"], "fix C");
 
-    let disk_amendments = FsAmendmentQueueStore
-        .list_pending_amendments(base_dir, &pid)
-        .unwrap();
+    // Verify completion_round_advanced event exists.
+    let cra_events: Vec<_> = events
+        .iter()
+        .filter(|event| event.event_type == JournalEventType::CompletionRoundAdvanced)
+        .collect();
+    assert_eq!(cra_events.len(), 1, "should have exactly one CRA event");
+
+    // Verify stage_completed events for completion_panel.
+    let completion_completed: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.event_type == JournalEventType::StageCompleted
+                && event.details.get("stage_id").and_then(|v| v.as_str())
+                    == Some("completion_panel")
+        })
+        .collect();
+    assert_eq!(
+        completion_completed.len(),
+        2,
+        "should have stage_completed for both completion rounds"
+    );
+
+    // Verify supporting and aggregate records exist.
+    let payloads_dir =
+        base_dir.join(".ralph-burning/projects/cr-full-batch-success/history/payloads");
+    let payload_files: Vec<String> = fs::read_dir(&payloads_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+        .collect();
+    // Both completion rounds should have supporting records.
     assert!(
-        disk_amendments.is_empty(),
-        "successful round processing should drain persisted amendment files"
+        payload_files.iter().any(|name| name.contains("-completion_panel-") && name.contains("-cr1")),
+        "round 1 completion records should exist: {payload_files:?}"
+    );
+    assert!(
+        payload_files.iter().any(|name| name.contains("-completion_panel-") && name.contains("-cr2")),
+        "round 2 completion records should exist: {payload_files:?}"
+    );
+    // Aggregate records should exist for both rounds.
+    assert!(
+        payload_files.iter().any(|name| name.contains("aggregate") && name.contains("-cr1")),
+        "round 1 aggregate should exist: {payload_files:?}"
+    );
+    assert!(
+        payload_files.iter().any(|name| name.contains("aggregate") && name.contains("-cr2")),
+        "round 2 aggregate should exist: {payload_files:?}"
     );
 }

@@ -35,7 +35,8 @@ use crate::contexts::workflow_composition::panel_contracts::{
 };
 use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
-    BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
+    BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor,
+    StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -67,7 +68,7 @@ pub async fn execute_prompt_review<A, R, S>(
     min_reviewers: usize,
     prompt_reference: &str,
     rollback_count: u32,
-    policy_timeout: Duration,
+    timeout_for_backend: &dyn Fn(BackendFamily) -> Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<PromptReviewResult>
 where
@@ -85,6 +86,7 @@ where
 
     // ── Step 1: Run the refiner ────────────────────────────────────────────
     let refiner_target = &panel.refiner;
+    let refiner_timeout = timeout_for_backend(refiner_target.backend.family);
     let refinement_payload = invoke_panel_member(
         agent_service,
         base_dir,
@@ -95,7 +97,7 @@ where
         refiner_target,
         &original_prompt,
         "refiner",
-        policy_timeout,
+        refiner_timeout,
         cancellation_token.clone(),
     )
     .await?;
@@ -137,6 +139,7 @@ where
     let mut reject_count = 0usize;
 
     for (i, validator_target) in panel.validators.iter().enumerate() {
+        let validator_timeout = timeout_for_backend(validator_target.backend.family);
         let validation_result = invoke_panel_member(
             agent_service,
             base_dir,
@@ -147,7 +150,7 @@ where
             validator_target,
             &refinement.refined_prompt,
             "validator",
-            policy_timeout,
+            validator_timeout,
             cancellation_token.clone(),
         )
         .await;
