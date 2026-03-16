@@ -3137,7 +3137,11 @@ fn run_start_persists_payload_and_artifact_records() {
         .path()
         .join(".ralph-burning/projects/run-artifacts/history/artifacts");
 
-    // Standard flow has 8 stages, each producing a payload + artifact
+    // Standard flow has 8 stages. Panel stages produce multiple records:
+    // prompt_review: 1 refiner + 2 validators + 1 primary = 4
+    // completion_panel: 2 completers + 1 aggregate = 3
+    // Other 6 stages: 1 each = 6
+    // Total: 13
     let payload_files: Vec<_> = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -3151,14 +3155,14 @@ fn run_start_persists_payload_and_artifact_records() {
 
     assert_eq!(
         payload_files.len(),
-        8,
-        "expected 8 payload files for standard flow, got {}",
+        13,
+        "expected 13 payload files for standard flow, got {}",
         payload_files.len()
     );
     assert_eq!(
         artifact_files.len(),
-        8,
-        "expected 8 artifact files for standard flow, got {}",
+        13,
+        "expected 13 artifact files for standard flow, got {}",
         artifact_files.len()
     );
 }
@@ -3410,7 +3414,8 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         String::from_utf8_lossy(&start.stderr)
     );
 
-    // Verify 7 payloads (no prompt_review)
+    // Verify 9 payloads (no prompt_review, but completion_panel produces 3)
+    // 6 single-agent stages + completion_panel (2 completers + 1 aggregate) = 9
     let payloads_dir = temp_dir
         .path()
         .join(".ralph-burning/projects/no-pr-cli/history/payloads");
@@ -3420,8 +3425,8 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     assert_eq!(
-        payload_count, 7,
-        "expected 7 payloads without prompt_review, got {payload_count}"
+        payload_count, 9,
+        "expected 9 payloads without prompt_review, got {payload_count}"
     );
 
     // Verify no prompt_review stage in journal

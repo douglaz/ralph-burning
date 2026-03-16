@@ -18,6 +18,8 @@ use chrono::Utc;
 use serde_json::Value;
 
 use crate::adapters::fs::FileSystem;
+use std::time::Duration;
+
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
@@ -65,6 +67,7 @@ pub async fn execute_prompt_review<A, R, S>(
     min_reviewers: usize,
     prompt_reference: &str,
     rollback_count: u32,
+    policy_timeout: Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<PromptReviewResult>
 where
@@ -92,6 +95,7 @@ where
         refiner_target,
         &original_prompt,
         "refiner",
+        policy_timeout,
         cancellation_token.clone(),
     )
     .await?;
@@ -143,6 +147,7 @@ where
             validator_target,
             &refinement.refined_prompt,
             "validator",
+            policy_timeout,
             cancellation_token.clone(),
         )
         .await;
@@ -256,6 +261,7 @@ async fn invoke_panel_member<A, R, S>(
     target: &ResolvedBackendTarget,
     prompt_text: &str,
     role_label: &str,
+    timeout: Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<Value>
 where
@@ -263,7 +269,6 @@ where
     R: crate::contexts::agent_execution::service::RawOutputPort,
     S: SessionStorePort,
 {
-    let contract_label = format!("prompt_review:{role_label}");
     let invocation_id = format!(
         "{}-{}-{role_label}-c{}-a{}-cr{}",
         run_id.as_str(),
@@ -284,8 +289,9 @@ where
         invocation_id,
         project_root: project_root.to_path_buf(),
         working_dir: project_root.to_path_buf(),
-        contract: InvocationContract::Requirements {
-            label: contract_label,
+        contract: InvocationContract::Panel {
+            stage_id,
+            role: role_label.to_owned(),
         },
         role: BackendRole::Planner,
         resolved_target: target.clone(),
@@ -293,7 +299,7 @@ where
             prompt,
             context: Value::Null,
         },
-        timeout: std::time::Duration::from_secs(300),
+        timeout,
         cancellation_token,
         session_policy: SessionPolicy::NewSession,
         prior_session: None,

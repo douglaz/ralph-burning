@@ -25,6 +25,7 @@ pub const DEFAULT_MIN_REVIEWERS: usize = 2;
 pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 2;
+pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 10;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
 
 const DEFAULT_BASE_BACKEND: BackendFamily = BackendFamily::Claude;

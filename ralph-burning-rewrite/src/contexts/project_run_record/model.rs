@@ -36,6 +36,9 @@ pub struct RunSnapshot {
     pub rollback_point_meta: RollbackPointMeta,
     pub amendment_queue: AmendmentQueueState,
     pub status_summary: String,
+    /// Preserved across failure/pause so resume can detect drift.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_stage_resolution_snapshot: Option<StageResolutionSnapshot>,
 }
 
 impl RunSnapshot {
@@ -48,6 +51,7 @@ impl RunSnapshot {
             rollback_point_meta: RollbackPointMeta::default(),
             amendment_queue: AmendmentQueueState::default(),
             status_summary: "not started".to_owned(),
+            last_stage_resolution_snapshot: None,
         }
     }
 

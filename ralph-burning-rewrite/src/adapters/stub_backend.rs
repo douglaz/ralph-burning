@@ -37,6 +37,9 @@ pub struct StubBackendAdapter {
     label_payload_counters: HashMap<String, Arc<AtomicU32>>,
     cancelled_invocations: Arc<Mutex<Vec<String>>>,
     recorded_invocations: Arc<Mutex<Vec<RecordedInvocation>>>,
+    /// Panel round tracking: all panel members within the same stage invocation
+    /// group share the same sequence index. Stores (stage_id, current_index).
+    last_panel_stage_index: Arc<Mutex<Option<(StageId, usize)>>>,
 }
 
 impl Default for StubBackendAdapter {
@@ -54,6 +57,7 @@ impl Default for StubBackendAdapter {
             label_payload_counters: HashMap::new(),
             cancelled_invocations: Arc::new(Mutex::new(Vec::new())),
             recorded_invocations: Arc::new(Mutex::new(Vec::new())),
+            last_panel_stage_index: Arc::new(Mutex::new(None)),
         }
     }
 }
@@ -182,12 +186,82 @@ impl StubBackendAdapter {
             .unwrap_or_else(|| canned_requirements_payload(label))
     }
 
+    /// Return the stage override payload for a panel invocation using round-based
+    /// indexing: all panel members within the same stage invocation group share
+    /// the same sequence index. The counter only advances on the FIRST panel
+    /// member invocation for each new round.
+    fn panel_payload_for_stage(&self, stage_id: StageId) -> Value {
+        let overrides = self
+            .stage_payload_overrides
+            .lock()
+            .expect("stage payload override lock poisoned");
+        let Some(payloads) = overrides.get(&stage_id) else {
+            return canned_payload_for_stage(stage_id);
+        };
+        let Some(counter) = self.stage_payload_counters.get(&stage_id) else {
+            return payloads
+                .last()
+                .cloned()
+                .unwrap_or_else(|| canned_payload_for_stage(stage_id));
+        };
+
+        // Check if we're in the same panel group (same stage_id) as the last
+        // panel invocation. If so, reuse the same index. Otherwise, advance.
+        let mut last = self
+            .last_panel_stage_index
+            .lock()
+            .expect("last panel stage index lock poisoned");
+        let idx = match *last {
+            Some((last_stage, last_idx)) if last_stage == stage_id => last_idx,
+            _ => {
+                let new_idx = counter.fetch_add(1, Ordering::SeqCst) as usize;
+                *last = Some((stage_id, new_idx));
+                new_idx
+            }
+        };
+
+        payloads
+            .get(idx)
+            .cloned()
+            .or_else(|| payloads.last().cloned())
+            .unwrap_or_else(|| canned_payload_for_stage(stage_id))
+    }
+
     fn payload_for_contract(&self, contract: &InvocationContract) -> Value {
         match contract {
-            InvocationContract::Stage(sc) => self.payload_for_stage(sc.stage_id),
-            InvocationContract::Requirements { label } => self.payload_for_label(label),
-            InvocationContract::Panel { stage_id, .. } => {
-                self.payload_for_stage(*stage_id)
+            InvocationContract::Stage(sc) => {
+                // Clear panel group tracking on non-panel invocations so that
+                // the next panel invocation starts a new group.
+                *self
+                    .last_panel_stage_index
+                    .lock()
+                    .expect("last panel stage index lock poisoned") = None;
+                self.payload_for_stage(sc.stage_id)
+            }
+            InvocationContract::Requirements { label } => {
+                *self
+                    .last_panel_stage_index
+                    .lock()
+                    .expect("last panel stage index lock poisoned") = None;
+                self.payload_for_label(label)
+            }
+            InvocationContract::Panel { stage_id, role } => {
+                // Check for stage-level overrides first (preserves existing test seam).
+                {
+                    let overrides = self
+                        .stage_payload_overrides
+                        .lock()
+                        .expect("stage payload override lock poisoned");
+                    if overrides.contains_key(stage_id) {
+                        drop(overrides);
+                        // Use round-based indexing so all panel members in the
+                        // same round get the same payload.
+                        let raw = self.panel_payload_for_stage(*stage_id);
+                        // Translate old validation format to panel format if needed.
+                        return translate_to_panel_payload(*stage_id, role, raw);
+                    }
+                }
+                canned_panel_payload(*stage_id, role)
             }
         }
     }
@@ -399,6 +473,93 @@ fn canned_payload_for_stage(stage_id: StageId) -> serde_json::Value {
             "findings_or_gaps": [],
             "follow_up_or_amendments": []
         }),
+    }
+}
+
+/// Translate old-format stage override payloads to panel-specific format when needed.
+/// This allows existing test overrides using the validation schema (`"outcome"`, etc.)
+/// to work transparently with the new panel dispatch path.
+fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value) -> Value {
+    match (stage_id, role) {
+        (StageId::CompletionPanel, "completer") => {
+            if raw.get("vote_complete").is_some() {
+                return raw; // already in panel format
+            }
+            let vote_complete = raw
+                .get("outcome")
+                .and_then(|v| v.as_str())
+                .map(|outcome| outcome == "approved")
+                .unwrap_or(false);
+            let evidence = raw.get("evidence").cloned().unwrap_or(json!([]));
+            let remaining_work = raw
+                .get("follow_up_or_amendments")
+                .cloned()
+                .unwrap_or(json!([]));
+            json!({
+                "vote_complete": vote_complete,
+                "evidence": evidence,
+                "remaining_work": remaining_work
+            })
+        }
+        (StageId::PromptReview, "refiner") => {
+            if raw.get("refined_prompt").is_some() {
+                return raw; // already in panel format
+            }
+            let summary = raw
+                .get("problem_framing")
+                .and_then(|v| v.as_str())
+                .unwrap_or("No changes")
+                .to_string();
+            json!({
+                "refined_prompt": "Stub refined prompt text.",
+                "refinement_summary": summary,
+                "improvements": []
+            })
+        }
+        (StageId::PromptReview, "validator") => {
+            if raw.get("accepted").is_some() {
+                return raw; // already in panel format
+            }
+            // Honour old-format readiness.ready field: if explicitly false, reject.
+            let accepted = raw
+                .get("readiness")
+                .and_then(|r| r.get("ready"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+            let concerns = raw
+                .get("readiness")
+                .and_then(|r| r.get("risks"))
+                .cloned()
+                .unwrap_or(json!([]));
+            json!({
+                "accepted": accepted,
+                "evidence": ["Stub validation: translated from old format."],
+                "concerns": concerns
+            })
+        }
+        _ => raw,
+    }
+}
+
+/// Deterministic canned payloads for panel contracts (prompt-review and completion).
+fn canned_panel_payload(stage_id: StageId, role: &str) -> serde_json::Value {
+    match (stage_id, role) {
+        (StageId::PromptReview, "refiner") => json!({
+            "refined_prompt": "Stub refined prompt text.",
+            "refinement_summary": "No substantive changes needed.",
+            "improvements": []
+        }),
+        (StageId::PromptReview, "validator") => json!({
+            "accepted": true,
+            "evidence": ["Stub validation: prompt is acceptable."],
+            "concerns": []
+        }),
+        (StageId::CompletionPanel, "completer") => json!({
+            "vote_complete": true,
+            "evidence": ["Stub completion vote: work is complete."],
+            "remaining_work": []
+        }),
+        _ => canned_payload_for_stage(stage_id),
     }
 }
 

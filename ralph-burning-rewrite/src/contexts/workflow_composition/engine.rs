@@ -33,14 +33,19 @@ use crate::contexts::project_run_record::service::{
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
 };
-use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::contexts::workspace_governance::config::{
+    EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
+};
 use crate::shared::domain::{
     BackendRole, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
     StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
+use super::completion;
 use super::contracts::{self, ValidatedBundle};
+use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
+use super::prompt_review;
 use super::retry_policy::RetryPolicy;
 use super::{flow_semantics, stage_plan_for_flow, FlowSemantics};
 
@@ -439,6 +444,7 @@ where
         rollback_point_meta: snapshot.rollback_point_meta.clone(),
         amendment_queue: snapshot.amendment_queue.clone(),
         status_summary: format!("running: {}", first_stage.display_name()),
+        last_stage_resolution_snapshot: None,
     };
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
 
@@ -750,6 +756,55 @@ where
     })?;
 
     let mut seq = journal::last_sequence(&events);
+
+    // ── Resume drift detection ────────────────────────────────────────────────
+    // Compare persisted snapshot against current resolution. If drift is
+    // detected but still satisfies requirements, warn and continue.
+    if let Some(old_snapshot) = snapshot.last_stage_resolution_snapshot.clone() {
+        let policy = BackendPolicyService::new(effective_config);
+        let current_stage = resume_state.cursor.stage;
+        let new_snapshot = match current_stage {
+            StageId::PromptReview => {
+                let panel =
+                    policy.resolve_prompt_review_panel(resume_state.cursor.cycle)?;
+                build_prompt_review_snapshot(current_stage, &panel)
+            }
+            StageId::CompletionPanel => {
+                let panel =
+                    policy.resolve_completion_panel(resume_state.cursor.cycle)?;
+                build_completion_snapshot(current_stage, &panel.completers)
+            }
+            _ => {
+                let target =
+                    policy.resolve_stage_target(current_stage, resume_state.cursor.cycle)?;
+                build_single_target_snapshot(current_stage, &target)
+            }
+        };
+
+        if resolution_has_drifted(&old_snapshot, &new_snapshot) {
+            // Fail early if requirements no longer met.
+            drift_still_satisfies_requirements(
+                &new_snapshot,
+                current_stage,
+                effective_config,
+            )?;
+            // Warn and update snapshot.
+            emit_resume_drift_warning(
+                &old_snapshot,
+                &new_snapshot,
+                &resume_state.run_id,
+                current_stage,
+                &mut seq,
+                &mut snapshot,
+                journal_store,
+                run_snapshot_write,
+                log_write,
+                base_dir,
+                project_id,
+            )?;
+        }
+    }
+
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(ActiveRun {
         run_id: resume_state.run_id.as_str().to_owned(),
@@ -935,7 +990,6 @@ where
     let project_root = project_root_path(base_dir, project_id);
     let mut stage_index = start_stage_index;
     let mut cursor = start_cursor;
-    let _ = effective_config;
 
     while stage_index < stage_plan.len() {
         let stage_entry = &stage_plan[stage_index];
@@ -946,6 +1000,400 @@ where
             cursor.attempt,
             cursor.completion_round,
         )?;
+
+        // ── Panel dispatch: PromptReview ──────────────────────────────────────
+        if stage_id == StageId::PromptReview {
+            let panel_result = dispatch_prompt_review_panel(
+                agent_service,
+                artifact_write,
+                log_write,
+                run_snapshot_write,
+                journal_store,
+                base_dir,
+                &project_root,
+                project_id,
+                run_id,
+                seq,
+                snapshot,
+                &cursor,
+                effective_config,
+                prompt_reference,
+                cancellation_token.clone(),
+                origin,
+            )
+            .await;
+
+            match panel_result {
+                Ok(_completed_cursor) => {
+                    // Persist rollback point after successful prompt review.
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Advance to next stage.
+                    if stage_index + 1 == stage_plan.len() {
+                        complete_run(
+                            snapshot,
+                            run_snapshot_write,
+                            journal_store,
+                            amendment_queue_port,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                        )?;
+                        return Ok(RunOutcome::Completed);
+                    }
+                    let next_stage = stage_plan[stage_index + 1].stage_id;
+                    cursor = cursor.advance_stage(next_stage);
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: completed {}, next {}",
+                        stage_id.display_name(),
+                        next_stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist next-stage cursor after {}: {}",
+                                    stage_id.as_str(),
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    stage_index += 1;
+                    continue;
+                }
+                Err(error) => {
+                    // dispatch_prompt_review_panel persisted supporting records but
+                    // did not write stage_completed or change prompt.md on failure.
+                    return fail_run_result(
+                        &error,
+                        stage_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        journal_store,
+                        run_snapshot_write,
+                        base_dir,
+                        project_id,
+                        origin,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // ── Panel dispatch: CompletionPanel ───────────────────────────────────
+        if stage_id == StageId::CompletionPanel {
+            let panel_result = dispatch_completion_panel(
+                agent_service,
+                artifact_write,
+                log_write,
+                run_snapshot_write,
+                journal_store,
+                base_dir,
+                &project_root,
+                project_id,
+                run_id,
+                seq,
+                snapshot,
+                &cursor,
+                effective_config,
+                prompt_reference,
+                cancellation_token.clone(),
+                origin,
+            )
+            .await;
+
+            match panel_result {
+                Ok(CompletionPanelOutcome::Complete(completed_cursor)) => {
+                    cursor = completed_cursor;
+                    // Persist rollback point after completion aggregate.
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Advance to next stage (acceptance_qa).
+                    if stage_index + 1 == stage_plan.len() {
+                        complete_run(
+                            snapshot,
+                            run_snapshot_write,
+                            journal_store,
+                            amendment_queue_port,
+                            base_dir,
+                            project_id,
+                            run_id,
+                            seq,
+                        )?;
+                        return Ok(RunOutcome::Completed);
+                    }
+                    let next_stage = stage_plan[stage_index + 1].stage_id;
+                    cursor = cursor.advance_stage(next_stage);
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: completed {}, next {}",
+                        stage_id.display_name(),
+                        next_stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist next-stage cursor after {}: {}",
+                                    stage_id.as_str(),
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    stage_index += 1;
+                    continue;
+                }
+                Ok(CompletionPanelOutcome::ContinueWork(next_cursor)) => {
+                    // Safety limit: prevent infinite completion round loops.
+                    let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(DEFAULT_MAX_COMPLETION_ROUNDS);
+                    if next_cursor.completion_round > max_rounds {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "max completion rounds ({}) exceeded",
+                                    max_rounds
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Advance completion round, restart from planning stage.
+                    let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
+                    snapshot.completion_rounds = snapshot
+                        .completion_rounds
+                        .max(next_cursor.completion_round);
+
+                    // Emit completion_round_advanced event.
+                    let from_round = cursor.completion_round;
+                    let to_round = next_cursor.completion_round;
+                    *seq += 1;
+                    let round_event = journal::completion_round_advanced_event(
+                        *seq,
+                        Utc::now(),
+                        run_id,
+                        stage_id,
+                        from_round,
+                        to_round,
+                        0, // no amendments from completion panel
+                    );
+                    let round_event_line = journal::serialize_event(&round_event)?;
+                    if let Err(error) =
+                        journal_store.append_event(base_dir, project_id, &round_event_line)
+                    {
+                        *seq -= 1;
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist completion_round_advanced event: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: next_cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: completion round {} -> {}",
+                        from_round,
+                        next_cursor.stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist completion round cursor: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+                    if let Err(error) = persist_rollback_point(
+                        rollback_store,
+                        journal_store,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        stage_id,
+                        cursor.cycle,
+                    ) {
+                        return checkpoint_failure_result(
+                            error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    execution_context = None;
+                    stage_index = planning_index;
+                    cursor = next_cursor;
+                    continue;
+                }
+                Err(error) => {
+                    // dispatch_completion_panel persisted supporting records but
+                    // did not write aggregate or transition on failure.
+                    return fail_run_result(
+                        &error,
+                        stage_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        journal_store,
+                        run_snapshot_write,
+                        base_dir,
+                        project_id,
+                        origin,
+                    )
+                    .await;
+                }
+            }
+        }
+
+        // ── Generic single-agent stage dispatch ───────────────────────────────
 
         // Inject pending amendments into planning invocation context.
         let planning_amendments: Option<Vec<QueuedAmendment>> =
@@ -1007,6 +1455,10 @@ where
         if stage_id == semantics.execution_stage {
             execution_context = None;
         }
+
+        // Prompt review pause check is no longer needed for generic path since
+        // PromptReview is now dispatched through the panel path above.
+        // The generic path only handles non-panel stages.
 
         if Some(stage_id) == semantics.prompt_review_stage
             && prompt_review_requires_pause(&bundle.payload)
@@ -1790,12 +2242,14 @@ where
             .await;
         }
 
+        // Persist stage resolution snapshot before any agent invocation.
+        let resolution = build_single_target_snapshot(stage_id, &resolved_target);
         snapshot.status = RunStatus::Running;
         snapshot.active_run = Some(ActiveRun {
             run_id: run_id.as_str().to_owned(),
             stage_cursor: cursor.clone(),
             started_at: snapshot_started_at(snapshot)?,
-            stage_resolution_snapshot: None,
+            stage_resolution_snapshot: Some(resolution),
         });
         snapshot.status_summary = format!("running: {}", stage_id.display_name());
         if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
@@ -2270,6 +2724,11 @@ fn pause_run(
     project_id: &ProjectId,
     summary: String,
 ) -> AppResult<()> {
+    // Preserve the stage resolution snapshot for resume drift detection.
+    snapshot.last_stage_resolution_snapshot = snapshot
+        .active_run
+        .as_ref()
+        .and_then(|ar| ar.stage_resolution_snapshot.clone());
     snapshot.status = RunStatus::Paused;
     snapshot.active_run = None;
     snapshot.status_summary = summary;
@@ -2293,6 +2752,11 @@ async fn fail_run(
     let failure_class = failure_label(err);
     let message = err.to_string();
 
+    // Preserve the stage resolution snapshot for resume drift detection.
+    snapshot.last_stage_resolution_snapshot = snapshot
+        .active_run
+        .as_ref()
+        .and_then(|ar| ar.stage_resolution_snapshot.clone());
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);
@@ -3020,6 +3484,381 @@ fn project_root_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         .join(".ralph-burning")
         .join("projects")
         .join(project_id.as_str())
+}
+
+// ── Panel Dispatch ────────────────────────────────────────────────────────
+
+enum CompletionPanelOutcome {
+    Complete(StageCursor),
+    ContinueWork(StageCursor),
+}
+
+/// Dispatch the prompt-review panel stage: resolve panel, persist snapshot,
+/// invoke refiner + validators, persist primary record, and emit
+/// stage_completed. Returns the cursor on success.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_prompt_review_panel<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    cursor: &StageCursor,
+    effective_config: &EffectiveConfig,
+    prompt_reference: &str,
+    cancellation_token: CancellationToken,
+    _origin: ExecutionOrigin,
+) -> AppResult<StageCursor>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let stage_id = StageId::PromptReview;
+    let policy = BackendPolicyService::new(effective_config);
+    let panel = policy.resolve_prompt_review_panel(cursor.cycle)?;
+    let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
+    let resolution = build_prompt_review_snapshot(stage_id, &panel);
+    // Resolve policy timeout for prompt-review panel members via the refiner's backend.
+    let panel_timeout = policy.timeout_for_role(
+        panel.refiner.backend.family,
+        policy.policy_role_for_stage(stage_id),
+    );
+
+    // Emit stage_entered journal event.
+    *seq += 1;
+    let stage_entered = journal::stage_entered_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+    );
+    let stage_entered_line = journal::serialize_event(&stage_entered)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_entered_line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("failed to persist stage_entered for prompt_review: {error}"),
+        });
+    }
+
+    // Persist stage resolution snapshot before any agent invocation.
+    persist_stage_resolution_snapshot(
+        snapshot,
+        run_snapshot_write,
+        base_dir,
+        project_id,
+        resolution,
+    )?;
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!(
+                "prompt_review panel: refiner + {} validators",
+                panel.validators.len()
+            ),
+        },
+    );
+
+    // Execute the prompt-review panel workflow.
+    let result = prompt_review::execute_prompt_review(
+        agent_service,
+        artifact_write,
+        log_write,
+        base_dir,
+        project_root,
+        project_id,
+        run_id,
+        cursor,
+        &panel,
+        min_reviewers,
+        prompt_reference,
+        snapshot.rollback_point_meta.rollback_count,
+        panel_timeout,
+        cancellation_token,
+    )
+    .await?;
+
+    // Persist the canonical primary record.
+    let payload_id = format!(
+        "{}-{}-primary-c{}-a{}-cr{}",
+        run_id.as_str(),
+        stage_id.as_str(),
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round
+    );
+    let artifact_id = format!("{payload_id}-artifact");
+    let now = Utc::now();
+
+    let payload_record = PayloadRecord {
+        payload_id: payload_id.clone(),
+        stage_id,
+        cycle: cursor.cycle,
+        attempt: cursor.attempt,
+        created_at: now,
+        payload: result.primary_payload,
+        record_kind: RecordKind::StagePrimary,
+        producer: Some(RecordProducer::System {
+            component: "prompt_review".to_owned(),
+        }),
+        completion_round: cursor.completion_round,
+    };
+    let artifact_record = ArtifactRecord {
+        artifact_id: artifact_id.clone(),
+        payload_id: payload_id.clone(),
+        stage_id,
+        created_at: now,
+        content: result.primary_artifact,
+        record_kind: RecordKind::StagePrimary,
+        producer: Some(RecordProducer::System {
+            component: "prompt_review".to_owned(),
+        }),
+        completion_round: cursor.completion_round,
+    };
+    artifact_write.write_payload_artifact_pair(
+        base_dir,
+        project_id,
+        &payload_record,
+        &artifact_record,
+    )?;
+
+    // Emit stage_completed journal event.
+    *seq += 1;
+    let stage_completed = journal::stage_completed_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+        &payload_id,
+        &artifact_id,
+    );
+    let stage_completed_line = journal::serialize_event(&stage_completed)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
+        *seq -= 1;
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &payload_id,
+            &artifact_id,
+        );
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("journal append failed during prompt_review commit: {error}"),
+        });
+    }
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!("stage_completed: {} (prompt_review accepted)", stage_id.as_str()),
+        },
+    );
+
+    Ok(cursor.clone())
+}
+
+/// Dispatch the completion panel stage: resolve panel, persist snapshot,
+/// invoke completers, compute aggregate, persist records, and determine
+/// whether to advance or restart.
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_completion_panel<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_root: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    cursor: &StageCursor,
+    effective_config: &EffectiveConfig,
+    prompt_reference: &str,
+    cancellation_token: CancellationToken,
+    _origin: ExecutionOrigin,
+) -> AppResult<CompletionPanelOutcome>
+where
+    A: AgentExecutionPort,
+    R: RawOutputPort,
+    S: SessionStorePort,
+{
+    let stage_id = StageId::CompletionPanel;
+    let policy = BackendPolicyService::new(effective_config);
+    let panel = policy.resolve_completion_panel(cursor.cycle)?;
+    let min_completers = effective_config.completion_policy().min_completers;
+    let consensus_threshold = effective_config.completion_policy().consensus_threshold;
+    let resolution = build_completion_snapshot(stage_id, &panel.completers);
+    // Resolve policy timeout for completion panel members via the planner's backend.
+    let panel_timeout = policy.timeout_for_role(
+        panel.planner.backend.family,
+        policy.policy_role_for_stage(stage_id),
+    );
+
+    // Emit stage_entered journal event.
+    *seq += 1;
+    let stage_entered = journal::stage_entered_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+    );
+    let stage_entered_line = journal::serialize_event(&stage_entered)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_entered_line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("failed to persist stage_entered for completion_panel: {error}"),
+        });
+    }
+
+    // Persist stage resolution snapshot before any agent invocation.
+    persist_stage_resolution_snapshot(
+        snapshot,
+        run_snapshot_write,
+        base_dir,
+        project_id,
+        resolution,
+    )?;
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!(
+                "completion panel: {} completers, min={}, threshold={}",
+                panel.completers.len(),
+                min_completers,
+                consensus_threshold
+            ),
+        },
+    );
+
+    // Execute the completion panel workflow.
+    let result = completion::execute_completion_panel(
+        agent_service,
+        artifact_write,
+        log_write,
+        base_dir,
+        project_root,
+        project_id,
+        run_id,
+        cursor,
+        &panel.completers,
+        min_completers,
+        consensus_threshold,
+        prompt_reference,
+        snapshot.rollback_point_meta.rollback_count,
+        panel_timeout,
+        cancellation_token,
+    )
+    .await?;
+
+    // Persist the canonical aggregate record.
+    completion::persist_aggregate_record(
+        artifact_write,
+        base_dir,
+        project_id,
+        run_id,
+        cursor,
+        stage_id,
+        snapshot.rollback_point_meta.rollback_count,
+        &result.aggregate_payload,
+        &result.aggregate_artifact,
+    )?;
+
+    // Emit stage_completed journal event.
+    // Payload/artifact IDs must match those produced by persist_aggregate_record.
+    let base_id = format!(
+        "{}-{}-aggregate-c{}-a{}-cr{}",
+        run_id.as_str(),
+        stage_id.as_str(),
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round
+    );
+    let rollback_count = snapshot.rollback_point_meta.rollback_count;
+    let payload_id = if rollback_count == 0 {
+        format!("{base_id}-payload")
+    } else {
+        format!("{base_id}-rb{rollback_count}-payload")
+    };
+    let artifact_id = if rollback_count == 0 {
+        format!("{base_id}-artifact")
+    } else {
+        format!("{base_id}-rb{rollback_count}-artifact")
+    };
+
+    *seq += 1;
+    let stage_completed = journal::stage_completed_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        cursor.cycle,
+        cursor.attempt,
+        &payload_id,
+        &artifact_id,
+    );
+    let stage_completed_line = journal::serialize_event(&stage_completed)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("journal append failed during completion_panel commit: {error}"),
+        });
+    }
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!(
+                "stage_completed: {} verdict={}",
+                stage_id.as_str(),
+                result.verdict
+            ),
+        },
+    );
+
+    // Determine outcome based on verdict.
+    match result.verdict {
+        CompletionVerdict::Complete => Ok(CompletionPanelOutcome::Complete(cursor.clone())),
+        CompletionVerdict::ContinueWork => {
+            let next_cursor =
+                cursor.advance_completion_round(StageId::Planning)?;
+            Ok(CompletionPanelOutcome::ContinueWork(next_cursor))
+        }
+    }
 }
 
 // ── Stage Resolution Snapshot ──────────────────────────────────────────────

@@ -39,6 +39,7 @@ fn running_snapshot(stage: StageId) -> RunSnapshot {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: format!("running: {}", stage.display_name()),
+        last_stage_resolution_snapshot: None,
     }
 }
 
@@ -51,6 +52,7 @@ fn paused_snapshot(summary: &str) -> RunSnapshot {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: summary.to_owned(),
+        last_stage_resolution_snapshot: None,
     }
 }
 
@@ -270,6 +272,7 @@ fn perform_rollback_rejects_stage_outside_project_flow() {
     let run_store = FakeRunSnapshotStore {
         snapshot: RunSnapshot {
             status: RunStatus::Failed,
+            last_stage_resolution_snapshot: None,
             ..paused_snapshot("failed")
         },
     };
@@ -308,6 +311,7 @@ fn perform_rollback_restores_snapshot_and_updates_meta() {
         },
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at review".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let point_snapshot = running_snapshot(StageId::Implementation);
     let rollback_point = rollback_point("rb-planning", StageId::Planning, point_snapshot.clone());
@@ -441,6 +445,7 @@ fn perform_rollback_restores_previous_snapshot_when_journal_append_fails() {
         },
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at review".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let run_store = FakeRunSnapshotStore {
         snapshot: original_snapshot.clone(),

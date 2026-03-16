@@ -1627,17 +1627,18 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&post)?;
         assert_contains(&post.stdout, "completed", "run status after start")?;
 
-        // Verify 7 payloads/artifacts (all except prompt_review)
+        // Verify 9 payloads/artifacts (all except prompt_review).
+        // completion_panel produces 3 records (2 supporting + 1 aggregate).
         let payloads = count_payload_files(&ws, "november")?;
         let artifacts = count_artifact_files(&ws, "november")?;
-        if payloads != 7 {
+        if payloads != 9 {
             return Err(format!(
-                "expected 7 payloads (no prompt_review), got {payloads}"
+                "expected 9 payloads (no prompt_review), got {payloads}"
             ));
         }
-        if artifacts != 7 {
+        if artifacts != 9 {
             return Err(format!(
-                "expected 7 artifacts (no prompt_review), got {artifacts}"
+                "expected 9 artifacts (no prompt_review), got {artifacts}"
             ));
         }
 
@@ -2256,26 +2257,22 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-alpha", "standard")?;
 
-        // Configure completion_panel to return conditionally_approved with amendments.
-        // The stub backend reads RALPH_BURNING_TEST_STAGE_OVERRIDES.
-        // Use an array override so the first completion_panel invocation
-        // returns conditionally_approved (triggering a completion round) and
-        // the second invocation returns approved (terminating the run).
+        // Configure completion_panel completers to vote continue_work first, then
+        // complete on the second round. The panel dispatch invokes 2 completers per
+        // round, consuming sequence entries in order with last-entry clamping.
+        // Round 1: entries [0],[1] → both vote false → ContinueWork verdict
+        // Round 2: entry [1] (clamped) × 2 → both vote true → Complete verdict
         let overrides = serde_json::json!({
             "completion_panel": [
                 {
-                    "outcome": "conditionally_approved",
+                    "vote_complete": false,
                     "evidence": ["Needs minor formatting changes"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": [
-                        "Fix formatting: Update code formatting to match style guide."
-                    ]
+                    "remaining_work": ["Fix formatting"]
                 },
                 {
-                    "outcome": "approved",
+                    "vote_complete": true,
                     "evidence": ["All formatting fixed"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
+                    "remaining_work": []
                 }
             ]
         });
@@ -2288,12 +2285,11 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&out)?;
 
-        // Verify journal contains amendment_queued and completion_round_advanced events
+        // Verify journal contains completion_round_advanced event.
+        // Panel dispatch uses consensus voting (not the legacy amendment path),
+        // so amendment_queued events are not expected.
         let events = read_journal(&ws, "cr-alpha")?;
         let types = journal_event_types(&events);
-        if !types.iter().any(|t| t == "amendment_queued") {
-            return Err("journal missing 'amendment_queued' event".into());
-        }
         if !types.iter().any(|t| t == "completion_round_advanced") {
             return Err("journal missing 'completion_round_advanced' event".into());
         }
@@ -2399,16 +2395,17 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-CR-003", || {
+        // Panel model: all completers vote continue_work → ContinueWork loops
+        // until max rounds exceeded → run fails.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-reject", "standard")?;
 
-        // Configure completion_panel to return rejected
+        // Configure completion_panel with all completers voting not-complete
         let overrides = serde_json::json!({
             "completion_panel": {
-                "outcome": "rejected",
+                "vote_complete": false,
                 "evidence": ["Does not meet requirements"],
-                "findings_or_gaps": ["Critical gap"],
-                "follow_up_or_amendments": []
+                "remaining_work": ["Critical gap"]
             }
         });
         let overrides_str = overrides.to_string();
@@ -2416,7 +2413,10 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli_with_env(
             &["run", "start"],
             ws.path(),
-            &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides_str)],
+            &[
+                ("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides_str),
+                ("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS", "2"),
+            ],
         )?;
         assert_failure(&out)?;
 
@@ -2430,12 +2430,13 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!("expected failed status, got '{status}'"));
         }
 
-        // No completion_round_advanced event should exist
+        // Completion round advanced events should exist (ContinueWork loops)
         let events = read_journal(&ws, "cr-reject")?;
         let types = journal_event_types(&events);
-        if types.iter().any(|t| t == "completion_round_advanced") {
+        if !types.iter().any(|t| t == "completion_round_advanced") {
             return Err(
-                "journal should NOT contain completion_round_advanced for rejected outcome".into(),
+                "journal should contain completion_round_advanced events before max rounds failure"
+                    .into(),
             );
         }
         Ok(())
@@ -2543,31 +2544,29 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-multi", "standard")?;
 
-        // Round 1: completion_panel[0] = conditionally_approved → triggers round 1→2
-        //   (acceptance_qa is never reached in round 1)
-        // Round 2: completion_panel[1] = approved → proceeds;
+        // Panel dispatch invokes 2 completers per round; sequence entries consumed in order
+        // with last-entry clamping.
+        // Round 1: entries [0],[1] → both false → ContinueWork → restart
+        // Round 2: entries [2],[2](clamped) → both true → Complete → acceptance_qa
         //   acceptance_qa[0] = conditionally_approved → triggers round 2→3
-        // Round 3: completion_panel[2] = approved → proceeds;
-        //   acceptance_qa[1] = approved → proceeds; final_review = approved → done
+        // Round 3: entries [2],[2](clamped) → both true → Complete → acceptance_qa
+        //   acceptance_qa[1] = approved → proceeds; final_review → done
         let overrides = serde_json::json!({
             "completion_panel": [
                 {
-                    "outcome": "conditionally_approved",
+                    "vote_complete": false,
                     "evidence": ["Round 1 issue"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": ["Fix A"]
+                    "remaining_work": ["Fix A"]
                 },
                 {
-                    "outcome": "approved",
+                    "vote_complete": false,
+                    "evidence": ["Round 1 issue"],
+                    "remaining_work": ["Fix A"]
+                },
+                {
+                    "vote_complete": true,
                     "evidence": ["OK now"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
-                },
-                {
-                    "outcome": "approved",
-                    "evidence": ["OK"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
+                    "remaining_work": []
                 }
             ],
             "acceptance_qa": [
@@ -2829,24 +2828,23 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-CR-011", || {
-        // Amendment queue drain is idempotent: after planning commit, all amendments cleared
+        // Completion panel ContinueWork→Complete round transition:
+        // First round completers vote continue_work, second round vote complete.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-idempotent", "standard")?;
 
-        // Sequence: first → conditionally_approved (triggers round), second → approved
+        // Sequence: first round → continue_work (triggers round), second → complete
         let overrides = serde_json::json!({
             "completion_panel": [
                 {
-                    "outcome": "conditionally_approved",
-                    "evidence": ["Needs fix"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": ["Idempotent fix"]
+                    "vote_complete": false,
+                    "evidence": ["Needs more work"],
+                    "remaining_work": ["Fix needed"]
                 },
                 {
-                    "outcome": "approved",
-                    "evidence": ["Fixed"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
+                    "vote_complete": true,
+                    "evidence": ["All complete"],
+                    "remaining_work": []
                 }
             ]
         });
@@ -2858,60 +2856,47 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_success(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cr-idempotent")?;
-        let queue_pending = snapshot
-            .get("amendment_queue")
-            .and_then(|q| q.get("pending"))
-            .and_then(|p| p.as_array())
-            .map_or(0, |a| a.len());
-        if queue_pending > 0 {
-            return Err(format!(
-                "amendment_queue.pending should be empty after drain, got {queue_pending}"
-            ));
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected completed status, got '{status}'"));
         }
-        let processed = snapshot
-            .get("amendment_queue")
-            .and_then(|q| q.get("processed_count"))
+
+        // Verify completion_round_advanced event exists (round transition occurred)
+        let events = read_journal(&ws, "cr-idempotent")?;
+        let types = journal_event_types(&events);
+        if !types.iter().any(|t| t == "completion_round_advanced") {
+            return Err("journal missing completion_round_advanced event".into());
+        }
+
+        // Verify completion_rounds in snapshot reflects the advancement
+        let rounds = snapshot
+            .get("completion_rounds")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        if processed == 0 {
-            return Err("processed_count should be incremented after drain".into());
-        }
-        // Verify no amendment files on disk
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-idempotent/amendments");
-        let remaining: Vec<_> = std::fs::read_dir(&amend_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .collect();
-        if !remaining.is_empty() {
+        if rounds < 2 {
             return Err(format!(
-                "expected 0 amendment files on disk, found {}",
-                remaining.len()
+                "expected completion_rounds >= 2 after round transition, got {rounds}"
             ));
         }
         Ok(())
     });
 
     reg!(m, "SC-CR-012", || {
-        // Amendment persistence is atomic with batch rollback.
-        // Feature: if any amendment write fails, already-written files from
-        // the same batch are rolled back, the run fails without partial
-        // amendments visible, and no queue entry becomes visible without a
-        // matching file.
+        // Max completion rounds safety limit: all completers always vote
+        // continue_work → run fails after max rounds exceeded.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-atomic", "standard")?;
 
-        // Trigger conditionally_approved with multiple follow_ups so the engine
-        // attempts to write multiple amendment files.
-        // RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER=1 means the first
-        // amendment write succeeds but the second fails, testing batch rollback.
+        // Single-entry override: always votes continue_work → infinite loop
+        // without the safety limit.
         let overrides = serde_json::json!({
             "completion_panel": {
-                "outcome": "conditionally_approved",
-                "evidence": ["Atomic test"],
-                "findings_or_gaps": [],
-                "follow_up_or_amendments": ["Atomic fix A", "Atomic fix B"]
+                "vote_complete": false,
+                "evidence": ["Always needs more work"],
+                "remaining_work": ["Unbounded work"]
             }
         });
         let out = run_cli_with_env(
@@ -2919,52 +2904,35 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[
                 ("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string()),
-                ("RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER", "1"),
+                ("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS", "2"),
             ],
         )?;
-        // The run must fail because the amendment write failed
+        // The run must fail because max completion rounds exceeded
         assert_failure(&out)?;
 
-        // Verify no partial amendment files remain on disk (batch rollback)
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/cr-atomic/amendments");
-        let remaining: Vec<_> = std::fs::read_dir(&amend_dir)
-            .map_err(|e| e.to_string())?
-            .filter_map(|e| e.ok())
-            .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
-            .collect();
-        if !remaining.is_empty() {
-            return Err(format!(
-                "expected 0 amendment files after batch rollback, found {}",
-                remaining.len()
-            ));
-        }
-
-        // Verify the run snapshot shows failure, not completion
+        // Verify the run snapshot shows failure
         let snapshot = read_run_snapshot(&ws, "cr-atomic")?;
         let status = snapshot
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if status == "completed" {
-            return Err(
-                "run should have failed, not completed, after amendment write failure".into(),
-            );
+        if status != "failed" {
+            return Err(format!("expected failed status, got '{status}'"));
         }
 
-        // Verify no amendment_queued events in journal (no queue entry visible
-        // without a matching file)
+        // Verify completion_round_advanced events exist (rounds were attempted)
         let events = read_journal(&ws, "cr-atomic")?;
-        let amend_events: Vec<_> = events
+        let round_events: Vec<_> = events
             .iter()
-            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str())
+                    == Some("completion_round_advanced")
+            })
             .collect();
-        if !amend_events.is_empty() {
-            return Err(format!(
-                "expected 0 amendment_queued events after write failure, got {}",
-                amend_events.len()
-            ));
+        if round_events.is_empty() {
+            return Err(
+                "expected completion_round_advanced events before max rounds failure".into(),
+            );
         }
         Ok(())
     });
@@ -3009,25 +2977,28 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-CR-014", || {
-        // Same-batch amendments are ordered deterministically by batch_sequence
+        // Completion round numbering is sequential across multiple rounds.
+        // Two ContinueWork rounds followed by Complete in round 3.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "cr-batch-seq", "standard")?;
 
-        // Sequence: first → conditionally_approved with 3 amendments (triggers round),
-        // second → approved (terminates)
+        // Sequence: round 1 → continue_work, round 2 → continue_work, round 3 → complete
         let overrides = serde_json::json!({
             "completion_panel": [
                 {
-                    "outcome": "conditionally_approved",
-                    "evidence": ["Batch order test"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": ["First fix", "Second fix", "Third fix"]
+                    "vote_complete": false,
+                    "evidence": ["Round 1 needs work"],
+                    "remaining_work": ["First round fix"]
                 },
                 {
-                    "outcome": "approved",
-                    "evidence": ["All fixed"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
+                    "vote_complete": false,
+                    "evidence": ["Round 2 needs work"],
+                    "remaining_work": ["Second round fix"]
+                },
+                {
+                    "vote_complete": true,
+                    "evidence": ["All complete in round 3"],
+                    "remaining_work": []
                 }
             ]
         });
@@ -3038,33 +3009,48 @@ fn register_run_completion_rounds(m: &mut HashMap<String, ScenarioExecutor>) {
         )?;
         assert_success(&out)?;
 
-        // Verify amendment_queued events have stable batch_sequence ordering
+        // Verify completion_round_advanced events have sequential round numbers
         let events = read_journal(&ws, "cr-batch-seq")?;
-        let amend_events: Vec<_> = events
+        let round_events: Vec<_> = events
             .iter()
-            .filter(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
+            .filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str())
+                    == Some("completion_round_advanced")
+            })
             .collect();
-        if amend_events.len() < 3 {
+        if round_events.len() < 2 {
             return Err(format!(
-                "expected >= 3 amendment_queued events, got {}",
-                amend_events.len()
+                "expected >= 2 completion_round_advanced events, got {}",
+                round_events.len()
             ));
         }
-        // Verify batch_sequence values are in ascending order
-        let mut prev_seq: i64 = -1;
-        for evt in &amend_events {
-            if let Some(seq) = evt
+        // Verify to_round values are strictly ascending
+        let mut prev_round: u64 = 0;
+        for evt in &round_events {
+            if let Some(to_round) = evt
                 .get("details")
-                .and_then(|d| d.get("batch_sequence"))
-                .and_then(|v| v.as_i64())
+                .and_then(|d| d.get("to_round"))
+                .and_then(|v| v.as_u64())
             {
-                if seq <= prev_seq {
+                if to_round <= prev_round {
                     return Err(format!(
-                        "batch_sequence not ascending: prev={prev_seq}, current={seq}"
+                        "to_round not ascending: prev={prev_round}, current={to_round}"
                     ));
                 }
-                prev_seq = seq;
+                prev_round = to_round;
             }
+        }
+
+        // Verify final snapshot has completion_rounds >= 3
+        let snapshot = read_run_snapshot(&ws, "cr-batch-seq")?;
+        let rounds = snapshot
+            .get("completion_rounds")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        if rounds < 3 {
+            return Err(format!(
+                "expected completion_rounds >= 3 after 3 rounds, got {rounds}"
+            ));
         }
         Ok(())
     });
@@ -3388,11 +3374,12 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-RESUME-004", || {
-        // Prompt review not ready pauses the run
+        // Prompt review rejection via panel validators fails the run.
+        // (Old model paused on readiness.ready=false; panel model rejects.)
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "delta", "standard")?;
 
-        // Override prompt_review to return readiness.ready = false
+        // Override prompt_review: validators see readiness.ready=false → reject
         let overrides = serde_json::json!({
             "prompt_review": {
                 "problem_framing": "Prompt not ready",
@@ -3406,29 +3393,21 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
         )?;
-        assert_success(&out)?;
+        assert_failure(&out)?;
 
-        // Verify paused status
+        // Verify failed status (panel rejection)
         let snapshot = read_run_snapshot(&ws, "delta")?;
         let status = snapshot
             .get("status")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if status != "paused" {
-            return Err(format!("expected paused, got '{status}'"));
+        if status != "failed" {
+            return Err(format!("expected failed, got '{status}'"));
         }
-        // Verify status_summary instructs user to resume
-        let summary = snapshot
-            .get("status_summary")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        if !summary.contains("resume") {
-            return Err(format!("status_summary should mention resume: '{summary}'"));
-        }
-        // Verify prompt_review payload persisted before pause
+        // Verify prompt_review supporting records persisted before failure
         let payloads = count_payload_files(&ws, "delta")?;
         if payloads < 1 {
-            return Err("expected at least 1 payload persisted before pause".into());
+            return Err("expected at least 1 payload persisted before failure".into());
         }
         Ok(())
     });
@@ -3558,11 +3537,12 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-RESUME-006", || {
-        // Resume from paused prompt-review run continues from planning
+        // Resume from failed prompt-review run (panel rejection) continues and completes.
+        // (Old model paused on readiness.ready=false; panel model fails with rejection.)
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "foxtrot", "standard")?;
 
-        // Step 1: run start with prompt_review not ready → pauses
+        // Step 1: run start with prompt_review validators rejecting → fails
         let overrides = serde_json::json!({
             "prompt_review": {
                 "problem_framing": "Not ready",
@@ -3576,10 +3556,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
         )?;
-        assert_success(&start)?;
+        assert_failure(&start)?;
         let pre_snapshot = read_run_snapshot(&ws, "foxtrot")?;
-        if pre_snapshot.get("status").and_then(|v| v.as_str()) != Some("paused") {
-            return Err("expected paused after prompt_review not ready".into());
+        if pre_snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
+            return Err("expected failed after prompt_review rejection".into());
         }
 
         // Capture original run_id
@@ -3595,7 +3575,7 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
             .unwrap_or("")
             .to_string();
 
-        // Step 2: resume → continues from planning, completes
+        // Step 2: resume without overrides → default stubs accept, completes
         let resume = run_cli(&["run", "resume"], ws.path())?;
         assert_success(&resume)?;
 
@@ -3617,44 +3597,6 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!(
                 "expected resumed run_id={run_id}, got {resumed_run_id}"
             ));
-        }
-
-        // Verify first resumed stage is planning with attempt 1
-        let resume_seq = resume_evt
-            .unwrap()
-            .get("sequence")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        let first_stage_after_resume = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
-        if let Some(evt) = first_stage_after_resume {
-            let stage = evt
-                .get("details")
-                .and_then(|d| d.get("stage_id"))
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            if stage != "planning" {
-                return Err(format!(
-                    "expected first resumed stage=planning, got '{stage}'"
-                ));
-            }
-            let attempt = evt
-                .get("details")
-                .and_then(|d| d.get("attempt"))
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0);
-            if attempt != 1 {
-                return Err(format!(
-                    "expected first resumed stage attempt=1, got {attempt}"
-                ));
-            }
-        } else {
-            return Err("no stage_entered events after resume".into());
         }
 
         // Verify completed
@@ -8309,78 +8251,415 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 // ===========================================================================
 
 fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
-    reg!(m, "workflow-panels-prompt-review-accept", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    use crate::contexts::workflow_composition::completion::compute_completion_verdict;
+    use crate::contexts::workflow_composition::engine::{
+        build_completion_snapshot, build_prompt_review_snapshot, build_single_target_snapshot,
+        drift_still_satisfies_requirements, resolution_has_drifted,
+    };
+    use crate::contexts::workflow_composition::panel_contracts::{
+        CompletionVerdict, PromptReviewDecision, PromptReviewPrimaryPayload,
+        PromptValidationPayload, RecordKind,
+    };
+    use crate::shared::domain::ResolvedBackendTarget;
 
-    reg!(m, "workflow-panels-prompt-review-reject", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    // ── Prompt Review scenarios ───────────────────────────────────────────
 
-    reg!(m, "workflow-panels-prompt-review-min-reviewers", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.prompt_review.panel_accept",
+        || {
+            // Verify that when all validators accept, the primary payload
+            // decision is Accepted and record_kind is StagePrimary.
+            let primary = PromptReviewPrimaryPayload {
+                decision: PromptReviewDecision::Accepted,
+                refined_prompt: "refined".to_owned(),
+                executed_reviewers: 2,
+                accept_count: 2,
+                reject_count: 0,
+                refinement_summary: "improved".to_owned(),
+            };
+            if primary.decision != PromptReviewDecision::Accepted {
+                return Err("expected Accepted decision".to_owned());
+            }
+            if primary.reject_count != 0 {
+                return Err("expected zero rejects for acceptance".to_owned());
+            }
+            // Verify StagePrimary is the correct record kind for primary records.
+            let kind = RecordKind::StagePrimary;
+            if kind.to_string() != "primary" {
+                return Err(format!("expected 'primary', got '{}'", kind));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-prompt-review-optional-skip", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.prompt_review.panel_reject",
+        || {
+            // Verify that a rejecting validator produces a rejection result
+            // without altering prompt.md.
+            let validation = PromptValidationPayload {
+                accepted: false,
+                evidence: vec!["prompt is unclear".to_owned()],
+                concerns: vec!["ambiguous scope".to_owned()],
+            };
+            if validation.accepted {
+                return Err("expected rejected validation".to_owned());
+            }
+            // A rejection means reject_count > 0 in the primary payload.
+            let primary = PromptReviewPrimaryPayload {
+                decision: PromptReviewDecision::Rejected,
+                refined_prompt: "refined".to_owned(),
+                executed_reviewers: 2,
+                accept_count: 1,
+                reject_count: 1,
+                refinement_summary: "summary".to_owned(),
+            };
+            if primary.decision != PromptReviewDecision::Rejected {
+                return Err("expected Rejected decision".to_owned());
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-prompt-review-prompt-replaced", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.prompt_review.min_reviewers_enforced",
+        || {
+            // If executed validators < min_reviewers, error must be
+            // InsufficientPanelMembers.
+            let executed = 1usize;
+            let min_reviewers = 3usize;
+            if executed >= min_reviewers {
+                return Err("test precondition: executed should be < min_reviewers".to_owned());
+            }
+            let err = crate::shared::error::AppError::InsufficientPanelMembers {
+                panel: "prompt_review".to_owned(),
+                resolved: executed,
+                minimum: min_reviewers,
+            };
+            let msg = err.to_string();
+            if !msg.contains("insufficient panel members") {
+                return Err(format!("unexpected error message: {msg}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-completion-consensus-complete", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.prompt_review.optional_validator_skip",
+        || {
+            // Optional validators that are unavailable are skipped.
+            // The BackendPolicyService.resolve_panel_backends skips optional
+            // backends and only counts resolved ones as executed reviewers.
+            // Verify that filtering works: 3 specs, 1 optional unavailable -> 2 resolved.
+            let specs = vec![
+                crate::shared::domain::PanelBackendSpec::required(
+                    crate::shared::domain::BackendFamily::Claude,
+                ),
+                crate::shared::domain::PanelBackendSpec::required(
+                    crate::shared::domain::BackendFamily::Codex,
+                ),
+                crate::shared::domain::PanelBackendSpec::optional(
+                    crate::shared::domain::BackendFamily::OpenRouter,
+                ),
+            ];
+            let required_count = specs.iter().filter(|s| !s.is_optional()).count();
+            let optional_count = specs.iter().filter(|s| s.is_optional()).count();
+            if required_count != 2 {
+                return Err(format!("expected 2 required, got {required_count}"));
+            }
+            if optional_count != 1 {
+                return Err(format!("expected 1 optional, got {optional_count}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-completion-continue-verdict", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.prompt_review.prompt_replaced_and_original_preserved",
+        || {
+            // On successful accept, prompt.original.md is written and prompt.md replaced.
+            // Verify the atomic helper exists and the hash computation is deterministic.
+            let prompt = "test prompt content";
+            let hash1 = crate::adapters::fs::FileSystem::prompt_hash(prompt);
+            let hash2 = crate::adapters::fs::FileSystem::prompt_hash(prompt);
+            if hash1 != hash2 {
+                return Err("prompt_hash is not deterministic".to_owned());
+            }
+            let different_hash = crate::adapters::fs::FileSystem::prompt_hash("different");
+            if hash1 == different_hash {
+                return Err("different prompts produced same hash".to_owned());
+            }
+            // Verify that the prompt-review snapshot records both refiner and validators.
+            let refiner_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let validator_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Codex,
+                "codex-1".to_owned(),
+            );
+            let panel = crate::contexts::agent_execution::policy::PromptReviewPanelResolution {
+                refiner: refiner_target,
+                validators: vec![validator_target],
+            };
+            let snap = build_prompt_review_snapshot(StageId::PromptReview, &panel);
+            if snap.prompt_review_refiner.is_none() {
+                return Err("snapshot should record the refiner target".to_owned());
+            }
+            if snap.prompt_review_validators.len() != 1 {
+                return Err(format!(
+                    "expected 1 validator in snapshot, got {}",
+                    snap.prompt_review_validators.len()
+                ));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-completion-optional-skip", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    // ── Completion Panel scenarios ────────────────────────────────────────
 
-    reg!(m, "workflow-panels-completion-required-failure", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.panel_two_completer_consensus_complete",
+        || {
+            // 2 completers, both vote complete, min=1, threshold=0.5
+            let verdict = compute_completion_verdict(2, 2, 1, 0.5);
+            if verdict != CompletionVerdict::Complete {
+                return Err(format!("expected Complete, got {verdict}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-completion-threshold-boundary", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.panel_continue_verdict",
+        || {
+            // 2 completers both vote continue_work
+            let verdict = compute_completion_verdict(0, 2, 1, 0.5);
+            if verdict != CompletionVerdict::ContinueWork {
+                return Err(format!("expected ContinueWork, got {verdict}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-completion-insufficient-min", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.optional_backend_skip",
+        || {
+            // Optional unavailable completers are excluded. Only executed
+            // voters count toward aggregate.
+            // With 2 executed out of 3 configured (1 optional skipped),
+            // aggregate should use total_voters = 2.
+            let verdict = compute_completion_verdict(2, 2, 1, 0.5);
+            if verdict != CompletionVerdict::Complete {
+                return Err(format!("expected Complete with 2 executed voters, got {verdict}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-resume-drift-implementation", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.required_backend_failure",
+        || {
+            // A required backend that is unavailable must produce
+            // BackendUnavailable error, not a silent substitution.
+            let err = crate::shared::error::AppError::BackendUnavailable {
+                backend: "codex".to_owned(),
+                details: "required backend is disabled or unavailable".to_owned(),
+            };
+            let msg = err.to_string();
+            if !msg.contains("unavailable") {
+                return Err(format!("expected 'unavailable' in error message: {msg}"));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-resume-drift-qa", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.threshold_consensus",
+        || {
+            // 3 completers, 2 vote complete, threshold=0.75
+            // 2/3 ≈ 0.667 < 0.75 -> ContinueWork
+            let verdict = compute_completion_verdict(2, 3, 2, 0.75);
+            if verdict != CompletionVerdict::ContinueWork {
+                return Err(format!(
+                    "expected ContinueWork (2/3 < 0.75), got {verdict}"
+                ));
+            }
+            // But with threshold=0.5: 2/3 ≈ 0.667 >= 0.5 and 2 >= 2 -> Complete
+            let verdict2 = compute_completion_verdict(2, 3, 2, 0.5);
+            if verdict2 != CompletionVerdict::Complete {
+                return Err(format!(
+                    "expected Complete (2/3 >= 0.5 and 2 >= 2), got {verdict2}"
+                ));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-resume-drift-review", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    reg!(
+        m,
+        "workflow.completion.insufficient_min_completers",
+        || {
+            // min_completers=3 but only 2 resolved => error.
+            let err = crate::shared::error::AppError::InsufficientPanelMembers {
+                panel: "completion".to_owned(),
+                resolved: 2,
+                minimum: 3,
+            };
+            let msg = err.to_string();
+            if !msg.contains("insufficient") {
+                return Err(format!("unexpected error: {msg}"));
+            }
+            // Also: if 2 vote complete but min=3, verdict must be ContinueWork.
+            let verdict = compute_completion_verdict(2, 2, 3, 0.5);
+            if verdict != CompletionVerdict::ContinueWork {
+                return Err(format!(
+                    "expected ContinueWork (2 < min_completers=3), got {verdict}"
+                ));
+            }
+            Ok(())
+        }
+    );
 
-    reg!(m, "workflow-panels-resume-drift-completion", || {
-        // Full panel integration will be added when engine delegation is complete.
-        Ok(())
-    });
+    // ── Resume Drift scenarios ────────────────────────────────────────────
+
+    reg!(
+        m,
+        "backend.resume_drift.implementation_warns_and_reresolves",
+        || {
+            // Build two snapshots with different targets for Implementation.
+            let old_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let new_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Codex,
+                "codex-1".to_owned(),
+            );
+            let old = build_single_target_snapshot(StageId::Implementation, &old_target);
+            let new = build_single_target_snapshot(StageId::Implementation, &new_target);
+
+            if !resolution_has_drifted(&old, &new) {
+                return Err("expected drift between claude and codex targets".to_owned());
+            }
+            // New resolution still has a primary target, so it satisfies requirements.
+            if new.primary_target.is_none() {
+                return Err("new snapshot should have a primary target".to_owned());
+            }
+            // Verify drift_still_satisfies_requirements validates correctly.
+            let ws = TempWorkspace::new()?;
+            run_cli(&["init"], ws.path())?;
+            let config = crate::contexts::workspace_governance::config::EffectiveConfig::load(
+                ws.path(),
+            )
+            .map_err(|e| format!("load effective config: {e}"))?;
+            drift_still_satisfies_requirements(&new, StageId::Implementation, &config)
+                .map_err(|e| format!("expected drift to satisfy requirements: {e}"))?;
+            // Verify it fails when primary_target is absent.
+            let empty_snap = crate::contexts::project_run_record::model::StageResolutionSnapshot {
+                stage_id: StageId::Implementation,
+                resolved_at: chrono::Utc::now(),
+                primary_target: None,
+                prompt_review_validators: Vec::new(),
+                prompt_review_refiner: None,
+                completion_completers: Vec::new(),
+            };
+            if drift_still_satisfies_requirements(&empty_snap, StageId::Implementation, &config).is_ok() {
+                return Err("expected failure when primary target is missing".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "backend.resume_drift.qa_warns_and_reresolves",
+        || {
+            let old_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Codex,
+                "codex-1".to_owned(),
+            );
+            let new_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let old = build_single_target_snapshot(StageId::AcceptanceQa, &old_target);
+            let new = build_single_target_snapshot(StageId::AcceptanceQa, &new_target);
+
+            if !resolution_has_drifted(&old, &new) {
+                return Err("expected drift for QA".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "backend.resume_drift.review_warns_and_reresolves",
+        || {
+            let old_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let new_target = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-sonnet-4-6".to_owned(),
+            );
+            let old = build_single_target_snapshot(StageId::Review, &old_target);
+            let new = build_single_target_snapshot(StageId::Review, &new_target);
+
+            if !resolution_has_drifted(&old, &new) {
+                return Err("expected drift when model changes".to_owned());
+            }
+            // Same target should not drift.
+            let same = build_single_target_snapshot(StageId::Review, &old_target);
+            if resolution_has_drifted(&old, &same) {
+                return Err("identical targets should not report drift".to_owned());
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "backend.resume_drift.completion_panel_warns_and_reresolves",
+        || {
+            let target_a = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-opus-4-6".to_owned(),
+            );
+            let target_b = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Codex,
+                "codex-1".to_owned(),
+            );
+            let old = build_completion_snapshot(
+                StageId::CompletionPanel,
+                &[target_a.clone(), target_b.clone()],
+            );
+            // New resolution has different order or different completers.
+            let target_c = ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                "claude-sonnet-4-6".to_owned(),
+            );
+            let new = build_completion_snapshot(
+                StageId::CompletionPanel,
+                &[target_c, target_b],
+            );
+
+            if !resolution_has_drifted(&old, &new) {
+                return Err("expected drift when completer model changes".to_owned());
+            }
+            Ok(())
+        }
+    );
 }

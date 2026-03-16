@@ -277,19 +277,30 @@ impl FileSystem {
             }
         };
 
-        // Parse and update prompt_hash
+        // Parse and update prompt_hash. If parse or serialize fails, rollback
+        // prompt.md and prompt.original.md to preserve the atomicity invariant.
         let mut project_record: crate::contexts::project_run_record::model::ProjectRecord =
-            toml::from_str(&project_toml_content).map_err(|e| {
-                AppError::PromptReplacementFailed {
-                    details: format!("failed to parse project.toml: {e}"),
+            match toml::from_str(&project_toml_content) {
+                Ok(record) => record,
+                Err(e) => {
+                    let _ = Self::write_atomic(&prompt_path, original_prompt);
+                    let _ = fs::remove_file(&original_path);
+                    return Err(AppError::PromptReplacementFailed {
+                        details: format!("failed to parse project.toml: {e}"),
+                    });
                 }
-            })?;
+            };
         project_record.prompt_hash = new_hash.clone();
-        let updated_toml = toml::to_string_pretty(&project_record).map_err(|e| {
-            AppError::PromptReplacementFailed {
-                details: format!("failed to serialize project.toml: {e}"),
+        let updated_toml = match toml::to_string_pretty(&project_record) {
+            Ok(toml) => toml,
+            Err(e) => {
+                let _ = Self::write_atomic(&prompt_path, original_prompt);
+                let _ = fs::remove_file(&original_path);
+                return Err(AppError::PromptReplacementFailed {
+                    details: format!("failed to serialize project.toml: {e}"),
+                });
             }
-        })?;
+        };
         if let Err(e) = Self::write_atomic(&project_toml_path, &updated_toml) {
             let _ = Self::write_atomic(&prompt_path, original_prompt);
             let _ = fs::remove_file(&original_path);

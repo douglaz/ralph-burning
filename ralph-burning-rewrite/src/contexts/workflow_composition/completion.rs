@@ -14,6 +14,7 @@
 //! 7. Otherwise reopen work (advance completion_round, return to planning).
 
 use std::path::Path;
+use std::time::Duration;
 
 use chrono::Utc;
 use serde_json::Value;
@@ -85,6 +86,7 @@ pub async fn execute_completion_panel<A, R, S>(
     consensus_threshold: f64,
     prompt_reference: &str,
     rollback_count: u32,
+    policy_timeout: Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<CompletionResult>
 where
@@ -116,6 +118,7 @@ where
             completer_target,
             &project_prompt,
             i,
+            policy_timeout,
             cancellation_token.clone(),
         )
         .await?;
@@ -213,6 +216,7 @@ async fn invoke_completer<A, R, S>(
     target: &ResolvedBackendTarget,
     prompt_text: &str,
     index: usize,
+    timeout: Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<Value>
 where
@@ -240,8 +244,9 @@ where
         invocation_id,
         project_root: project_root.to_path_buf(),
         working_dir: project_root.to_path_buf(),
-        contract: InvocationContract::Requirements {
-            label: "completion:completer".to_owned(),
+        contract: InvocationContract::Panel {
+            stage_id,
+            role: "completer".to_owned(),
         },
         role: BackendRole::Planner,
         resolved_target: target.clone(),
@@ -249,7 +254,7 @@ where
             prompt,
             context: Value::Null,
         },
-        timeout: std::time::Duration::from_secs(300),
+        timeout,
         cancellation_token,
         session_policy: SessionPolicy::NewSession,
         prior_session: None,

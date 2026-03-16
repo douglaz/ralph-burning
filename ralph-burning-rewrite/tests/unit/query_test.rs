@@ -36,6 +36,7 @@ fn status_view_reports_completed_terminal_state_without_active_run() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "completed after 3 rounds".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 
@@ -54,6 +55,7 @@ fn status_view_reports_failed_terminal_state_without_active_run() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 
@@ -76,6 +78,7 @@ fn status_view_reports_running_with_cursor() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "running at planning".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 

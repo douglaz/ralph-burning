@@ -143,6 +143,7 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                 rollback_point_meta: RollbackPointMeta::default(),
                 amendment_queue: AmendmentQueueState::default(),
                 status_summary: "running".to_owned(),
+                last_stage_resolution_snapshot: None,
             })
         } else {
             Ok(RunSnapshot::initial())
@@ -447,6 +448,7 @@ fn run_snapshot_validates_running_without_active_run_as_corrupt() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "running".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let result = snapshot.validate_semantics();
     assert!(result.is_err());
@@ -463,6 +465,7 @@ fn run_snapshot_validates_paused_without_active_run_as_valid() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "paused".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     assert!(snapshot.validate_semantics().is_ok());
 }
@@ -484,6 +487,7 @@ fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "paused".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let result = snapshot.validate_semantics();
     assert!(result.is_err());
@@ -507,6 +511,7 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "not started".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let result = snapshot.validate_semantics();
     assert!(result.is_err());
@@ -523,6 +528,7 @@ fn run_snapshot_validates_completed_without_active_run_as_valid() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "completed".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     assert!(snapshot.validate_semantics().is_ok());
 }
@@ -537,6 +543,7 @@ fn run_snapshot_validates_failed_without_active_run_as_valid() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     assert!(snapshot.validate_semantics().is_ok());
 }
@@ -558,6 +565,7 @@ fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let result = snapshot.validate_semantics();
     assert!(result.is_err());
@@ -585,6 +593,7 @@ impl RunSnapshotPort for FakeTerminalRunSnapshotStore {
             rollback_point_meta: RollbackPointMeta::default(),
             amendment_queue: AmendmentQueueState::default(),
             status_summary: self.summary.clone(),
+            last_stage_resolution_snapshot: None,
         })
     }
 }
@@ -867,6 +876,7 @@ fn run_snapshot_completed_has_no_active_run() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "completed".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     assert!(snapshot.validate_semantics().is_ok());
     assert!(!snapshot.has_active_run());
@@ -882,6 +892,7 @@ fn run_snapshot_failed_has_no_active_run() {
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at QA".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     assert!(snapshot.validate_semantics().is_ok());
     assert!(!snapshot.has_active_run());
