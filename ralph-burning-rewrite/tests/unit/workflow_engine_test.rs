@@ -22,12 +22,12 @@ use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
-use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
     RuntimeLogWritePort,
 };
 use ralph_burning::contexts::workflow_composition::engine;
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
 use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, RunId, StageId};
@@ -1629,6 +1629,41 @@ impl RunSnapshotWritePort for FailingSnapshotWriteStore {
     }
 }
 
+#[derive(Clone)]
+struct RecordingSnapshotWriteStore {
+    writes: Arc<Mutex<Vec<RunSnapshot>>>,
+}
+
+impl RecordingSnapshotWriteStore {
+    fn new() -> Self {
+        Self {
+            writes: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    fn writes(&self) -> Vec<RunSnapshot> {
+        self.writes
+            .lock()
+            .expect("recording snapshot write lock poisoned")
+            .clone()
+    }
+}
+
+impl RunSnapshotWritePort for RecordingSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        self.writes
+            .lock()
+            .expect("recording snapshot write lock poisoned")
+            .push(snapshot.clone());
+        FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, snapshot)
+    }
+}
+
 /// Stage-entered journal append failure must persist failed state.
 /// The run must never be left in an ambiguous running state when the
 /// stage_entered event cannot be persisted.
@@ -2798,7 +2833,10 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
         &config,
     )
     .await;
-    assert!(first_result.is_err(), "prompt review rejection should fail the run");
+    assert!(
+        first_result.is_err(),
+        "prompt review rejection should fail the run"
+    );
 
     let paused_snapshot = FsRunSnapshotStore
         .read_run_snapshot(base_dir, &pid)
@@ -3202,7 +3240,8 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
     assert!(result.is_err(), "run should fail on overflow");
     let err_msg = format!("{:?}", result.unwrap_err());
     assert!(
-        err_msg.contains("completion_round") || err_msg.contains("overflow")
+        err_msg.contains("completion_round")
+            || err_msg.contains("overflow")
             || err_msg.contains("max completion rounds"),
         "error should reference overflow: {err_msg}"
     );
@@ -3897,10 +3936,7 @@ async fn resume_after_completion_aggregate_commit_failure_preserves_round() {
     let agent_service = build_agent_service_with_adapter(
         StubBackendAdapter::default().with_stage_payload_sequence(
             StageId::CompletionPanel,
-            vec![
-                approved_validation_payload(),
-                approved_validation_payload(),
-            ],
+            vec![approved_validation_payload(), approved_validation_payload()],
         ),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
@@ -3975,7 +4011,9 @@ async fn resume_after_completion_aggregate_commit_failure_preserves_round() {
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     assert!(
-        payload_files.iter().any(|name| name.contains("-completion_panel-")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("-completion_panel-")),
         "completion supporting records should be durable: {payload_files:?}"
     );
 
@@ -4057,7 +4095,9 @@ async fn completion_stage_completed_append_failure_leaves_supporting_records() {
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
         .collect();
     assert!(
-        payload_files.iter().any(|name| name.contains("-completion_panel-")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("-completion_panel-")),
         "completion supporting records should be durable: {payload_files:?}"
     );
 
@@ -4185,10 +4225,7 @@ async fn resume_after_completion_round_advanced_failpoint_completes() {
             &config,
         )
         .await;
-        assert!(
-            first_result.is_err(),
-            "run should fail on journal append"
-        );
+        assert!(first_result.is_err(), "run should fail on journal append");
     }
 
     let failed_snapshot = FsRunSnapshotStore
@@ -4237,6 +4274,130 @@ async fn resume_after_completion_round_advanced_failpoint_completes() {
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
+}
+
+#[tokio::test]
+async fn qa_iteration_counter_survives_completion_round_restart_and_resume() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "qa-cap-round-restart");
+    EffectiveConfig::set(base_dir, "workflow.max_qa_iterations", "1").unwrap();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default()
+            .with_stage_payload_sequence(
+                StageId::Qa,
+                vec![
+                    request_changes_payload(&["cycle-one-fix"]),
+                    approved_validation_payload(),
+                    request_changes_payload(&["round-two-fix"]),
+                ],
+            )
+            .with_stage_payload(
+                StageId::CompletionPanel,
+                conditionally_approved_payload(&["restart from completion"]),
+            ),
+    );
+    let snapshot_writes = RecordingSnapshotWriteStore::new();
+    let failing_journal = FailingJournalStore::new(26);
+
+    let first_result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &snapshot_writes,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(
+        first_result.is_err(),
+        "run should fail after persisting completion_round_advanced"
+    );
+
+    let round_restart_snapshot = snapshot_writes
+        .writes()
+        .into_iter()
+        .find(|snapshot| {
+            snapshot.status == RunStatus::Running
+                && snapshot.active_run.as_ref().is_some_and(|active_run| {
+                    active_run.stage_cursor.stage == StageId::Planning
+                        && active_run.stage_cursor.completion_round == 2
+                        && active_run.qa_iterations_current_cycle == 1
+                        && active_run.review_iterations_current_cycle == 0
+                })
+        })
+        .expect("round restart snapshot should preserve the QA iteration count");
+    let active_run = round_restart_snapshot
+        .active_run
+        .expect("round restart snapshot should include active run metadata");
+    assert_eq!(active_run.qa_iterations_current_cycle, 1);
+    assert_eq!(active_run.review_iterations_current_cycle, 0);
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::CompletionRoundAdvanced)
+            .count(),
+        1,
+        "completion round advance should be committed before the forced failure"
+    );
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
+            .count(),
+        1,
+        "only the original QA remediation should have advanced the cycle"
+    );
+
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_err(),
+        "resume should fail on the preserved QA cap"
+    );
+    let resume_error = resume_result.unwrap_err().to_string();
+    assert!(
+        resume_error.contains("qa iteration cap exceeded"),
+        "expected QA cap failure after resume, got: {resume_error}"
+    );
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let run_resumed = resumed_events
+        .iter()
+        .find(|event| event.event_type == JournalEventType::RunResumed)
+        .expect("run_resumed");
+    assert_eq!(run_resumed.details["resume_stage"], "planning");
+    assert_eq!(run_resumed.details["completion_round"], 2);
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| event.event_type == JournalEventType::CycleAdvanced)
+            .count(),
+        1,
+        "resume should fail before emitting another cycle_advanced"
+    );
 }
 
 // Panel dispatch: successful completion round with ContinueWork then Complete.
@@ -4314,20 +4475,28 @@ async fn completion_panel_continue_then_complete_success() {
         .collect();
     // Both completion rounds should have supporting records.
     assert!(
-        payload_files.iter().any(|name| name.contains("-completion_panel-") && name.contains("-cr1")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("-completion_panel-") && name.contains("-cr1")),
         "round 1 completion records should exist: {payload_files:?}"
     );
     assert!(
-        payload_files.iter().any(|name| name.contains("-completion_panel-") && name.contains("-cr2")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("-completion_panel-") && name.contains("-cr2")),
         "round 2 completion records should exist: {payload_files:?}"
     );
     // Aggregate records should exist for both rounds.
     assert!(
-        payload_files.iter().any(|name| name.contains("aggregate") && name.contains("-cr1")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("aggregate") && name.contains("-cr1")),
         "round 1 aggregate should exist: {payload_files:?}"
     );
     assert!(
-        payload_files.iter().any(|name| name.contains("aggregate") && name.contains("-cr2")),
+        payload_files
+            .iter()
+            .any(|name| name.contains("aggregate") && name.contains("-cr2")),
         "round 2 aggregate should exist: {payload_files:?}"
     );
 }
