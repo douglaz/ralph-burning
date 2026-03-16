@@ -104,33 +104,18 @@ where
             details: format!("failed to read prompt for completion: {e}"),
         })?;
 
-    // ── Pre-filter completers by availability ────────────────────────────
-    // Check availability for each completer before any invocations. Required
-    // unavailable backends fail immediately; optional unavailable backends are
-    // filtered out. This prevents masking unrelated invoke/schema/timeout
-    // failures as optional-skip later.
-    let mut available_completers: Vec<(usize, &ResolvedPanelMember)> = Vec::new();
-    for (i, member) in completers.iter().enumerate() {
-        match agent_service.adapter().check_availability(&member.target).await {
-            Ok(()) => available_completers.push((i, member)),
-            Err(e) => {
-                if member.required {
-                    return Err(e);
-                }
-                // Optional completer unavailable — skip before invocation.
-            }
-        }
-    }
-
+    // ── Invoke completers and persist supporting records ──────────────────
+    // Availability filtering is done by the engine before snapshot
+    // persistence; all completers in the panel are available and expected
+    // to execute. Any invocation error is propagated directly.
     let mut complete_votes = 0usize;
     let mut continue_votes = 0usize;
     let mut executed_voters: Vec<String> = Vec::new();
 
-    // ── Invoke each available completer and persist supporting records ─────
-    for (i, member) in &available_completers {
+    for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let invoke_result = invoke_completer(
+        let vote_payload = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -139,21 +124,11 @@ where
             cursor,
             completer_target,
             &project_prompt,
-            *i,
+            i,
             completer_timeout,
             cancellation_token.clone(),
         )
-        .await;
-
-        let vote_payload = match invoke_result {
-            Ok(payload) => payload,
-            Err(e) => {
-                // All completers in this loop passed availability pre-check,
-                // so any error here is a real invocation/schema/timeout failure
-                // — propagate it regardless of required/optional status.
-                return Err(e);
-            }
-        };
+        .await?;
 
         let vote: CompletionVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {

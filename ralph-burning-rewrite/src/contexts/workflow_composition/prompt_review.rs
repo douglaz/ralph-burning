@@ -134,32 +134,18 @@ where
         "refinement",
     )?;
 
-    // ── Step 3: Pre-filter validators by availability ─────────────────────
-    // Check availability for each validator before any invocations. Required
-    // unavailable backends fail immediately; optional unavailable backends are
-    // filtered out. This prevents masking unrelated invoke/schema/timeout
-    // failures as optional-skip later.
-    let mut available_validators: Vec<(usize, &crate::contexts::agent_execution::policy::ResolvedPanelMember)> = Vec::new();
-    for (i, member) in panel.validators.iter().enumerate() {
-        match agent_service.adapter().check_availability(&member.target).await {
-            Ok(()) => available_validators.push((i, member)),
-            Err(e) => {
-                if member.required {
-                    return Err(e);
-                }
-                // Optional validator unavailable — skip before invocation.
-            }
-        }
-    }
-
+    // ── Step 3: Invoke validators ──────────────────────────────────────────
+    // Availability filtering is done by the engine before snapshot
+    // persistence; all validators in the panel are available and expected
+    // to execute. Any invocation error is propagated directly.
     let mut executed_count = 0usize;
     let mut accept_count = 0usize;
     let mut reject_count = 0usize;
 
-    for (i, member) in &available_validators {
+    for (i, member) in panel.validators.iter().enumerate() {
         let validator_target = &member.target;
         let validator_timeout = timeout_for_backend(validator_target.backend.family);
-        let validation_result = invoke_panel_member(
+        let validation_payload = invoke_panel_member(
             agent_service,
             base_dir,
             project_root,
@@ -172,17 +158,7 @@ where
             validator_timeout,
             cancellation_token.clone(),
         )
-        .await;
-
-        let validation_payload = match validation_result {
-            Ok(payload) => payload,
-            Err(e) => {
-                // All validators in this loop passed availability pre-check,
-                // so any error here is a real invocation/schema/timeout failure
-                // — propagate it regardless of required/optional status.
-                return Err(e);
-            }
-        };
+        .await?;
 
         let validation: PromptValidationPayload =
             serde_json::from_value(validation_payload.clone()).map_err(|e| {

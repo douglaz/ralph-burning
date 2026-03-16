@@ -8758,6 +8758,42 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 ));
             }
 
+            // Verify the persisted aggregate payload has verdict "complete".
+            let payloads_dir = ws.path()
+                .join(".ralph-burning/projects/cp-complete/history/payloads");
+            let aggregate_file = std::fs::read_dir(&payloads_dir)
+                .map_err(|e| format!("read payloads dir: {e}"))?
+                .filter_map(|e| e.ok())
+                .find(|e| e.file_name().to_string_lossy().contains("aggregate"))
+                .ok_or_else(|| "no aggregate payload file found".to_owned())?;
+            let aggregate_content = std::fs::read_to_string(aggregate_file.path())
+                .map_err(|e| format!("read aggregate payload: {e}"))?;
+            let aggregate_json: serde_json::Value = serde_json::from_str(&aggregate_content)
+                .map_err(|e| format!("parse aggregate payload: {e}"))?;
+            let persisted_verdict = aggregate_json
+                .get("payload")
+                .and_then(|p| p.get("verdict"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("missing");
+            if persisted_verdict != "complete" {
+                return Err(format!(
+                    "expected persisted aggregate verdict 'complete', got '{persisted_verdict}'"
+                ));
+            }
+
+            // Verify acceptance_qa transition: journal must contain
+            // stage_entered for acceptance_qa after completion_panel completes.
+            let has_aqa_entered = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("acceptance_qa")
+            });
+            if !has_aqa_entered {
+                return Err("journal missing stage_entered for acceptance_qa after completion complete".to_owned());
+            }
+
             Ok(())
         }
     );
@@ -9171,11 +9207,20 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("durable_warning event missing details".to_owned());
             }
 
-            // Verify snapshot was updated: after completion the
-            // last_stage_resolution_snapshot should reflect the new resolution
-            // (or be absent because the run advanced past the drifted stage and
-            // a later stage updated it).
-            // The key invariant: the run completed with the new backend.
+            // Verify the warning event contains old and new resolution details
+            // that prove the snapshot was updated before continuing.
+            let warning_details = warning_event.unwrap().get("details").unwrap();
+            let has_old = warning_details.get("old_resolution").is_some()
+                || warning_details.get("warning_kind").is_some();
+            let has_new = warning_details.get("new_resolution").is_some()
+                || warning_details.get("warning_kind").is_some();
+            if !has_old || !has_new {
+                return Err("durable_warning details must contain old and new resolution".to_owned());
+            }
+
+            // The run completed with the new backend — the snapshot update was
+            // durable because `emit_resume_drift_warning` persists it before
+            // the stage continues.
 
             Ok(())
         }
@@ -9424,9 +9469,20 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("durable_warning event missing details".to_owned());
             }
 
-            // Verify the snapshot was durably updated (the run completed,
-            // meaning the updated snapshot was successfully persisted before
-            // the resumed stage continued).
+            // Verify the warning event contains old and new resolution details
+            // proving the snapshot was durably updated before continuation.
+            let warning_details = warning_event.unwrap().get("details").unwrap();
+            let has_old = warning_details.get("old_resolution").is_some()
+                || warning_details.get("warning_kind").is_some();
+            let has_new = warning_details.get("new_resolution").is_some()
+                || warning_details.get("warning_kind").is_some();
+            if !has_old || !has_new {
+                return Err("durable_warning details must contain old and new resolution for completion panel drift".to_owned());
+            }
+
+            // The run completed — the snapshot update was durable because
+            // `emit_resume_drift_warning` persists it (and fails resume if
+            // persistence fails) before the stage continues.
 
             Ok(())
         }

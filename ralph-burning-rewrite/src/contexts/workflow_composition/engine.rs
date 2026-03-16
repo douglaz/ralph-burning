@@ -755,15 +755,69 @@ where
     if let Some(old_snapshot) = snapshot.last_stage_resolution_snapshot.clone() {
         let policy = BackendPolicyService::new(effective_config);
         let current_stage = resume_state.cursor.stage;
+        // Re-resolve with runtime availability filtering so the drift
+        // comparison reflects the actual executable panel, not just
+        // config-enabled state. Required unavailable backends fail here;
+        // optional unavailable backends are removed before comparison.
         let new_snapshot = match current_stage {
             StageId::PromptReview => {
-                let panel =
+                let mut panel =
                     policy.resolve_prompt_review_panel(resume_state.cursor.cycle)?;
+                let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
+                let mut available = Vec::new();
+                for member in &panel.validators {
+                    match agent_service.adapter().check_availability(&member.target).await {
+                        Ok(()) => available.push(member.clone()),
+                        Err(e) => {
+                            if member.required {
+                                return Err(AppError::ResumeDriftFailure {
+                                    stage_id: current_stage,
+                                    details: format!("required prompt-review validator unavailable on resume: {e}"),
+                                });
+                            }
+                        }
+                    }
+                }
+                if available.len() < min_reviewers {
+                    return Err(AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "available prompt-review validators ({}) < min_reviewers ({}) on resume",
+                            available.len(), min_reviewers,
+                        ),
+                    });
+                }
+                panel.validators = available;
                 build_prompt_review_snapshot(current_stage, &panel)
             }
             StageId::CompletionPanel => {
-                let panel =
+                let mut panel =
                     policy.resolve_completion_panel(resume_state.cursor.cycle)?;
+                let min_completers = effective_config.completion_policy().min_completers;
+                let mut available = Vec::new();
+                for member in &panel.completers {
+                    match agent_service.adapter().check_availability(&member.target).await {
+                        Ok(()) => available.push(member.clone()),
+                        Err(e) => {
+                            if member.required {
+                                return Err(AppError::ResumeDriftFailure {
+                                    stage_id: current_stage,
+                                    details: format!("required completer unavailable on resume: {e}"),
+                                });
+                            }
+                        }
+                    }
+                }
+                if available.len() < min_completers {
+                    return Err(AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "available completers ({}) < min_completers ({}) on resume",
+                            available.len(), min_completers,
+                        ),
+                    });
+                }
+                panel.completers = available;
                 build_completion_snapshot(current_stage, &panel.completers)
             }
             _ => {
@@ -1365,15 +1419,18 @@ where
                     let to_round = next_cursor.completion_round;
 
                     // ── Completion failure invariant (ContinueWork) ───────
-                    // Persist aggregate records first (reversible), then
-                    // write completion_round_advanced as the journal commit
-                    // point. NO stage_completed is written for ContinueWork:
-                    // the round has not "completed" the stage, it has
-                    // transitioned to a new round. Resume uses
-                    // CompletionRoundAdvanced to restart from planning.
+                    // Persist aggregate records and cursor snapshot first
+                    // (both reversible), then write completion_round_advanced
+                    // as the journal commit point LAST. NO stage_completed
+                    // is written for ContinueWork: the round has not
+                    // "completed" the stage, it has transitioned to a new
+                    // round. Resume uses CompletionRoundAdvanced to restart
+                    // from planning.
+                    //
                     // If any step fails before the journal commit point,
-                    // aggregate records are cleaned up and resume restarts
-                    // from completion_panel.
+                    // aggregate records are cleaned up and fail_run_result
+                    // overwrites the snapshot, so resume restarts from
+                    // completion_panel.
 
                     // Step 1: persist aggregate payload/artifact (reversible).
                     if let Err(error) = persist_completion_aggregate_records(
@@ -1399,12 +1456,51 @@ where
                         .await;
                     }
 
-                    // Step 2: completion_round_advanced is the journal commit
-                    // point. After this succeeds, the round transition is
-                    // durable and resume goes to planning.
+                    // Step 2: advance cursor snapshot (reversible — overwritten
+                    // by fail_run_result if the journal commit fails).
                     snapshot.completion_rounds = snapshot
                         .completion_rounds
                         .max(next_cursor.completion_round);
+                    snapshot.status = RunStatus::Running;
+                    snapshot.active_run = Some(ActiveRun {
+                        run_id: run_id.as_str().to_owned(),
+                        stage_cursor: next_cursor.clone(),
+                        started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
+                    });
+                    snapshot.status_summary = format!(
+                        "running: completion round {} -> {}",
+                        from_round,
+                        next_cursor.stage.display_name()
+                    );
+                    if let Err(error) =
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                    {
+                        cleanup_completion_aggregate_records(artifact_write, base_dir, project_id, &commit_data);
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "failed to persist completion round cursor: {}",
+                                    error
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Step 3: completion_round_advanced is the journal commit
+                    // point (LAST write). After this succeeds, the round
+                    // transition is durable and resume goes to planning.
                     *seq += 1;
                     let round_event = journal::completion_round_advanced_event(
                         *seq,
@@ -1445,43 +1541,6 @@ where
                         timestamp: Utc::now(), level: LogLevel::Info, source: "engine".to_owned(),
                         message: format!("completion round advanced: {} -> {}", from_round, to_round),
                     });
-
-                    // Step 3: advance cursor snapshot.
-                    snapshot.status = RunStatus::Running;
-                    snapshot.active_run = Some(ActiveRun {
-                        run_id: run_id.as_str().to_owned(),
-                        stage_cursor: next_cursor.clone(),
-                        started_at: snapshot_started_at(snapshot)?,
-                        stage_resolution_snapshot: None,
-                    });
-                    snapshot.status_summary = format!(
-                        "running: completion round {} -> {}",
-                        from_round,
-                        next_cursor.stage.display_name()
-                    );
-                    if let Err(error) =
-                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
-                    {
-                        return fail_run_result(
-                            &AppError::StageCommitFailed {
-                                stage_id,
-                                details: format!(
-                                    "failed to persist completion round cursor: {}",
-                                    error
-                                ),
-                            },
-                            stage_id,
-                            run_id,
-                            seq,
-                            snapshot,
-                            journal_store,
-                            run_snapshot_write,
-                            base_dir,
-                            project_id,
-                            origin,
-                        )
-                        .await;
-                    }
 
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
@@ -3682,8 +3741,35 @@ where
 {
     let stage_id = StageId::PromptReview;
     let policy = BackendPolicyService::new(effective_config);
-    let panel = policy.resolve_prompt_review_panel(cursor.cycle)?;
+    let mut panel = policy.resolve_prompt_review_panel(cursor.cycle)?;
     let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
+
+    // ── Pre-snapshot availability filtering ─────────────────────────────
+    // Check runtime availability of each validator BEFORE building and
+    // persisting the snapshot. Required unavailable backends fail
+    // resolution; optional unavailable backends are removed so the
+    // snapshot only records members that will actually execute.
+    let mut available_validators = Vec::new();
+    for member in &panel.validators {
+        match agent_service.adapter().check_availability(&member.target).await {
+            Ok(()) => available_validators.push(member.clone()),
+            Err(e) => {
+                if member.required {
+                    return Err(e);
+                }
+                // Optional validator unavailable — remove before snapshot.
+            }
+        }
+    }
+    if available_validators.len() < min_reviewers {
+        return Err(AppError::InsufficientPanelMembers {
+            panel: "prompt_review".to_owned(),
+            resolved: available_validators.len(),
+            minimum: min_reviewers,
+        });
+    }
+    panel.validators = available_validators;
+
     let resolution = build_prompt_review_snapshot(stage_id, &panel);
     // Resolve per-member timeouts using panel-specific roles: PromptReviewer
     // for the refiner and PromptValidator for validators, rather than the
@@ -3909,9 +3995,36 @@ where
 {
     let stage_id = StageId::CompletionPanel;
     let policy = BackendPolicyService::new(effective_config);
-    let panel = policy.resolve_completion_panel(cursor.cycle)?;
+    let mut panel = policy.resolve_completion_panel(cursor.cycle)?;
     let min_completers = effective_config.completion_policy().min_completers;
     let consensus_threshold = effective_config.completion_policy().consensus_threshold;
+
+    // ── Pre-snapshot availability filtering ─────────────────────────────
+    // Check runtime availability of each completer BEFORE building and
+    // persisting the snapshot. Required unavailable backends fail
+    // resolution; optional unavailable backends are removed so the
+    // snapshot only records members that will actually execute.
+    let mut available_completers = Vec::new();
+    for member in &panel.completers {
+        match agent_service.adapter().check_availability(&member.target).await {
+            Ok(()) => available_completers.push(member.clone()),
+            Err(e) => {
+                if member.required {
+                    return Err(e);
+                }
+                // Optional completer unavailable — remove before snapshot.
+            }
+        }
+    }
+    if available_completers.len() < min_completers {
+        return Err(AppError::InsufficientPanelMembers {
+            panel: "completion".to_owned(),
+            resolved: available_completers.len(),
+            minimum: min_completers,
+        });
+    }
+    panel.completers = available_completers;
+
     let resolution = build_completion_snapshot(stage_id, &panel.completers);
     // Resolve per-member timeouts via the backend family of each invoked member.
     let policy_role = policy.policy_role_for_stage(stage_id);
