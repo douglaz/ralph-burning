@@ -20,8 +20,8 @@ use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::StageId;
+use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
+use crate::shared::domain::{BackendSelection, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -32,8 +32,8 @@ pub struct RunCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RunSubcommand {
-    Start,
-    Resume,
+    Start(RunBackendOverrideArgs),
+    Resume(RunBackendOverrideArgs),
     Status,
     History,
     Tail {
@@ -48,13 +48,27 @@ pub enum RunSubcommand {
     },
 }
 
+#[derive(Debug, Args, Clone, Default)]
+pub struct RunBackendOverrideArgs {
+    #[arg(long = "backend")]
+    pub backend: Option<String>,
+    #[arg(long = "planner-backend")]
+    pub planner_backend: Option<String>,
+    #[arg(long = "implementer-backend")]
+    pub implementer_backend: Option<String>,
+    #[arg(long = "reviewer-backend")]
+    pub reviewer_backend: Option<String>,
+    #[arg(long = "qa-backend")]
+    pub qa_backend: Option<String>,
+}
+
 pub async fn handle(command: RunCommand) -> AppResult<()> {
     match command.command {
         RunSubcommand::Status => handle_status().await,
         RunSubcommand::History => handle_history().await,
         RunSubcommand::Tail { logs } => handle_tail(logs).await,
-        RunSubcommand::Start => handle_start().await,
-        RunSubcommand::Resume => handle_resume().await,
+        RunSubcommand::Start(args) => handle_start(args).await,
+        RunSubcommand::Resume(args) => handle_resume(args).await,
         RunSubcommand::Rollback { to, hard } => handle_rollback(to, hard).await,
     }
 }
@@ -140,7 +154,7 @@ fn build_stub_backend_adapter() -> StubBackendAdapter {
     adapter
 }
 
-async fn handle_start() -> AppResult<()> {
+async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -195,7 +209,9 @@ async fn handle_start() -> AppResult<()> {
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )?;
 
-    let effective_config = EffectiveConfig::load(&current_dir)?;
+    let cli_overrides = parse_cli_backend_overrides(&overrides)?;
+    let effective_config =
+        EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
 
     let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
@@ -245,7 +261,7 @@ async fn handle_start() -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_resume() -> AppResult<()> {
+async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -293,7 +309,9 @@ async fn handle_resume() -> AppResult<()> {
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )?;
 
-    let effective_config = EffectiveConfig::load(&current_dir)?;
+    let cli_overrides = parse_cli_backend_overrides(&overrides)?;
+    let effective_config =
+        EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
     let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
@@ -529,4 +547,30 @@ async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBackendOverrides> {
+    Ok(CliBackendOverrides {
+        backend: parse_backend_selection_arg("backend", args.backend.as_deref())?,
+        planner_backend: parse_backend_selection_arg(
+            "planner_backend",
+            args.planner_backend.as_deref(),
+        )?,
+        implementer_backend: parse_backend_selection_arg(
+            "implementer_backend",
+            args.implementer_backend.as_deref(),
+        )?,
+        reviewer_backend: parse_backend_selection_arg(
+            "reviewer_backend",
+            args.reviewer_backend.as_deref(),
+        )?,
+        qa_backend: parse_backend_selection_arg("qa_backend", args.qa_backend.as_deref())?,
+    })
+}
+
+fn parse_backend_selection_arg(
+    _key: &str,
+    raw: Option<&str>,
+) -> AppResult<Option<BackendSelection>> {
+    raw.map(BackendSelection::from_backend_name).transpose()
 }

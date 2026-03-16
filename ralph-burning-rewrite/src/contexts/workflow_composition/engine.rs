@@ -12,6 +12,7 @@ use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
+use crate::contexts::agent_execution::policy::BackendPolicyService;
 use crate::contexts::agent_execution::service::{
     AgentExecutionPort, BackendSelectionConfig, RawOutputPort,
 };
@@ -83,7 +84,8 @@ pub fn build_stage_prompt(
         run_id,
         cursor,
     )?;
-    let schema = serde_json::to_string_pretty(&contract.json_schema())?;
+    let schema =
+        serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
 
     let mut sections = vec![
         format!(
@@ -162,6 +164,27 @@ pub fn resolve_stage_plan(
         let role = role_for_stage(stage_id);
         let contract = contracts::contract_for_stage(stage_id);
         let target = resolver.resolve(role, None, None, workspace_defaults)?;
+        plan.push(StagePlan {
+            stage_id,
+            role,
+            contract,
+            target,
+        });
+    }
+    Ok(plan)
+}
+
+fn resolve_stage_plan_for_cycle(
+    stages: &[StageId],
+    effective_config: &EffectiveConfig,
+    cycle: u32,
+) -> AppResult<Vec<StagePlan>> {
+    let policy = BackendPolicyService::new(effective_config);
+    let mut plan = Vec::with_capacity(stages.len());
+    for &stage_id in stages {
+        let role = role_for_stage(stage_id);
+        let contract = contracts::contract_for_stage(stage_id);
+        let target = policy.resolve_stage_target(stage_id, cycle)?;
         plan.push(StagePlan {
             stage_id,
             role,
@@ -392,12 +415,8 @@ where
 
     let stage_ids = stage_plan_for_flow(preset, effective_config.prompt_review_enabled());
     let semantics = flow_semantics(preset);
-    let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
-    let stage_plan = resolve_stage_plan(
-        stage_ids.as_slice(),
-        agent_service.resolver(),
-        Some(&workspace_defaults),
-    )?;
+    let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
+    let stage_plan = resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, 1)?;
     preflight_check(agent_service.adapter(), &stage_plan).await?;
 
     let run_id = generate_run_id()?;
@@ -692,12 +711,13 @@ where
         })?;
     let stage_ids = stage_plan_for_resume(preset, &visible_events, effective_config)?;
     let semantics = flow_semantics(preset);
-    let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
-    let stage_plan = resolve_stage_plan(
-        stage_ids.as_slice(),
-        agent_service.resolver(),
-        Some(&workspace_defaults),
-    )?;
+    let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
+    let resume_cycle = snapshot
+        .cycle_history
+        .last()
+        .map(|entry| entry.cycle)
+        .unwrap_or(1);
+    let stage_plan = resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, resume_cycle)?;
     // Reconcile amendments from disk into snapshot before deriving resume state.
     reconcile_amendments_from_disk(
         &mut snapshot,
@@ -957,6 +977,7 @@ where
                 .filter(|_| stage_id == semantics.planning_stage),
             &project_root,
             prompt_reference,
+            effective_config,
         )
         .await?;
 
@@ -1674,6 +1695,7 @@ async fn execute_stage_with_retry<A, R, S>(
     pending_amendments: Option<&[QueuedAmendment]>,
     project_root: &Path,
     prompt_reference: &str,
+    effective_config: &EffectiveConfig,
 ) -> AppResult<(StageCursor, ValidatedBundle)>
 where
     A: AgentExecutionPort,
@@ -1682,12 +1704,36 @@ where
 {
     let stage_id = stage_entry.stage_id;
     let mut cursor = starting_cursor.clone();
+    let policy = BackendPolicyService::new(effective_config);
 
     loop {
+        let resolved_target = match policy.resolve_stage_target(stage_id, cursor.cycle) {
+            Ok(target) => target,
+            Err(error) => {
+                return fail_run_result(
+                    &error,
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await
+            }
+        };
+        let timeout = policy.timeout_for_role(
+            resolved_target.backend.family,
+            policy.policy_role_for_stage(stage_id),
+        );
+
         if cancellation_token.is_cancelled() {
             return fail_run_result(
                 &AppError::InvocationCancelled {
-                    backend: stage_entry.target.backend.family.to_string(),
+                    backend: resolved_target.backend.family.to_string(),
                     contract_id: stage_id.to_string(),
                 },
                 stage_id,
@@ -1827,6 +1873,8 @@ where
             execution_context,
             pending_amendments,
             cancellation_token.clone(),
+            resolved_target.clone(),
+            timeout,
         )
         .await;
 
@@ -1947,6 +1995,8 @@ async fn invoke_stage_on_backend<A, R, S>(
     execution_context: Option<&Value>,
     pending_amendments: Option<&[QueuedAmendment]>,
     cancellation_token: CancellationToken,
+    resolved_target: ResolvedBackendTarget,
+    timeout: Duration,
 ) -> AppResult<ValidatedBundle>
 where
     A: AgentExecutionPort,
@@ -1959,12 +2009,12 @@ where
         working_dir: execution_cwd.unwrap_or(base_dir).to_path_buf(),
         contract: InvocationContract::Stage(stage_entry.contract),
         role: stage_entry.role,
-        resolved_target: stage_entry.target.clone(),
+        resolved_target: resolved_target.clone(),
         payload: InvocationPayload {
             prompt,
             context: invocation_context(cursor, execution_context, pending_amendments),
         },
-        timeout: Duration::from_secs(3600),
+        timeout,
         cancellation_token,
         session_policy: SessionPolicy::ReuseIfAllowed,
         prior_session: None,
@@ -1976,7 +2026,7 @@ where
             .contract
             .evaluate_permissive(&envelope.parsed_payload)
             .map_err(|contract_error| AppError::InvocationFailed {
-                backend: stage_entry.target.backend.family.to_string(),
+                backend: resolved_target.backend.family.to_string(),
                 contract_id: stage_entry.stage_id.to_string(),
                 failure_class: contract_error.failure_class(),
                 details: contract_error.to_string(),

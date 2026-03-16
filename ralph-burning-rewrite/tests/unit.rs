@@ -63,3 +63,6 @@ mod automation_runtime_test;
 
 #[path = "unit/conformance_spec_test.rs"]
 mod conformance_spec_test;
+
+#[path = "unit/backend_policy_test.rs"]
+mod backend_policy_test;

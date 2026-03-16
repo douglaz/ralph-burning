@@ -292,6 +292,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
 
     register_workspace_init(&mut m);
     register_workspace_config(&mut m);
+    register_backend_policy(&mut m);
     register_active_project(&mut m);
     register_flow_discovery(&mut m);
     register_project_records(&mut m);
@@ -477,6 +478,103 @@ fn register_workspace_config(m: &mut HashMap<String, ScenarioExecutor>) {
         if out.status.success() {
             return Err("config edit with invalid toml should fail".into());
         }
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Backend Policy (2 scenarios)
+// ===========================================================================
+
+fn register_backend_policy(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "backend.role_overrides.per_role_override_beats_default", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let created_at = chrono::DateTime::parse_from_rfc3339("2026-03-16T02:10:31Z")
+            .expect("valid timestamp")
+            .with_timezone(&chrono::Utc);
+
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(created_at);
+        workspace.settings.default_backend = Some("claude".to_owned());
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            toml::to_string_pretty(&workspace).unwrap(),
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let project_id = crate::shared::domain::ProjectId::new("demo").unwrap();
+        let mut project = crate::shared::domain::ProjectConfig::default();
+        project.workflow.reviewer_backend = Some("codex".to_owned());
+        crate::adapters::fs::FileSystem::write_project_config(ws.path(), &project_id, &project)
+            .map_err(|e| format!("write project config: {e}"))?;
+
+        let effective = crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+            ws.path(),
+            Some(&project_id),
+            crate::contexts::workspace_governance::config::CliBackendOverrides::default(),
+        )
+        .map_err(|e| format!("load effective config: {e}"))?;
+        let policy = crate::contexts::agent_execution::policy::BackendPolicyService::new(&effective);
+        let target = policy
+            .resolve_role_target(crate::shared::domain::BackendPolicyRole::Reviewer, 1)
+            .map_err(|e| format!("resolve reviewer target: {e}"))?;
+
+        if target.backend.family != crate::shared::domain::BackendFamily::Codex {
+            return Err(format!(
+                "expected reviewer target codex, got {}",
+                target.backend.family
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "backend.role_timeouts.config_roundtrip", || {
+        let mut project = crate::shared::domain::ProjectConfig::default();
+        project.backends.insert(
+            "claude".to_owned(),
+            crate::shared::domain::BackendRuntimeSettings {
+                enabled: Some(true),
+                command: Some("claude".to_owned()),
+                args: Some(vec![]),
+                timeout_seconds: Some(120),
+                role_models: Default::default(),
+                role_timeouts: crate::shared::domain::BackendRoleTimeouts {
+                    planner: Some(90),
+                    implementer: None,
+                    reviewer: Some(60),
+                    qa: None,
+                    completer: None,
+                    final_reviewer: None,
+                    prompt_reviewer: None,
+                    prompt_validator: None,
+                    arbiter: None,
+                    acceptance_qa: None,
+                    extra: toml::Table::new(),
+                },
+                extra: toml::Table::new(),
+            },
+        );
+
+        let rendered =
+            toml::to_string_pretty(&project).map_err(|e| format!("serialize project config: {e}"))?;
+        let parsed: crate::shared::domain::ProjectConfig =
+            toml::from_str(&rendered).map_err(|e| format!("deserialize project config: {e}"))?;
+
+        let timeouts = parsed
+            .backends
+            .get("claude")
+            .ok_or("missing claude backend after round trip")?
+            .role_timeouts
+            .clone();
+        if timeouts.planner != Some(90) || timeouts.reviewer != Some(60) {
+            return Err(format!(
+                "unexpected round-trip timeouts: planner={:?}, reviewer={:?}",
+                timeouts.planner, timeouts.reviewer
+            ));
+        }
+
         Ok(())
     });
 }

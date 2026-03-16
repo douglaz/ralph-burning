@@ -27,6 +27,13 @@ fn effective_config_loads_compiled_defaults() {
     assert_eq!(DEFAULT_FLOW_PRESET, config.default_flow());
     assert_eq!(None, config.default_backend());
     assert_eq!(None, config.default_model());
+    assert_eq!(
+        Some("claude".to_owned()),
+        match config.get("default_backend").expect("default backend").value {
+            ralph_burning::contexts::workspace_governance::ConfigValue::String(value) => value,
+            other => panic!("expected string config value, got {other:?}"),
+        }
+    );
     assert!(matches!(
         config.get("default_flow").expect("default flow").source,
         ralph_burning::contexts::workspace_governance::ConfigValueSource::Default
@@ -44,11 +51,14 @@ fn effective_config_merges_workspace_overrides() {
         .single()
         .expect("valid timestamp");
     let mut config = WorkspaceConfig::new(created_at);
+    config.prompt_review = PromptReviewSettings {
+        enabled: Some(false),
+        refiner_backend: None,
+        validator_backends: None,
+        min_reviewers: None,
+        extra: toml::map::Map::new(),
+    };
     config.settings = WorkspaceSettings {
-        prompt_review: PromptReviewSettings {
-            enabled: Some(false),
-            extra: toml::map::Map::new(),
-        },
         default_flow: Some(FlowPreset::QuickDev),
         default_backend: Some("claude".to_owned()),
         default_model: Some("opus".to_owned()),
@@ -82,11 +92,14 @@ fn workspace_config_round_trips_extended_settings() {
         .single()
         .expect("valid timestamp");
     let mut config = WorkspaceConfig::new(created_at);
+    config.prompt_review = PromptReviewSettings {
+        enabled: Some(false),
+        refiner_backend: None,
+        validator_backends: None,
+        min_reviewers: None,
+        extra: toml::map::Map::new(),
+    };
     config.settings = WorkspaceSettings {
-        prompt_review: PromptReviewSettings {
-            enabled: Some(false),
-            extra: toml::map::Map::new(),
-        },
         default_flow: Some(FlowPreset::DocsChange),
         default_backend: Some("openrouter".to_owned()),
         default_model: Some("gpt-5".to_owned()),
@@ -112,11 +125,11 @@ created_at = "2026-03-11T17:50:55Z"
 default_backend = "claude"
 future_toggle = "enabled"
 
-[settings.prompt_review]
+[prompt_review]
 enabled = false
 owner = "ops"
 
-[settings.routing]
+[routing]
 mode = "repo_default"
 "#;
     fs::write(&config_path, raw).expect("write config");
@@ -130,7 +143,7 @@ mode = "repo_default"
     let updated = fs::read_to_string(&config_path).expect("read updated config");
     assert!(updated.contains("future_toggle = \"enabled\""));
     assert!(updated.contains("owner = \"ops\""));
-    assert!(updated.contains("[settings.routing]"));
+    assert!(updated.contains("[routing]"));
 }
 
 #[test]
@@ -143,11 +156,11 @@ created_at = "2026-03-11T17:50:55Z"
 default_backend = "claude"
 future_toggle = "enabled"
 
-[settings.prompt_review]
+[prompt_review]
 enabled = true
 owner = "ops"
 
-[settings.routing]
+[routing]
 mode = "repo_default"
 "#;
 
@@ -161,12 +174,11 @@ mode = "repo_default"
     );
     assert_eq!(
         Some(&toml::Value::String("ops".to_owned())),
-        reparsed.settings.prompt_review.extra.get("owner")
+        reparsed.prompt_review.extra.get("owner")
     );
     assert_eq!(
         Some(&toml::Value::String("repo_default".to_owned())),
         reparsed
-            .settings
             .extra
             .get("routing")
             .and_then(|value| value.as_table())

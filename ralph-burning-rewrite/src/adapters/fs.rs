@@ -24,13 +24,14 @@ use crate::contexts::project_run_record::service::{
     ProjectStorePort, RollbackPointStorePort, RunSnapshotPort, RunSnapshotWritePort,
     RuntimeLogStorePort, RuntimeLogWritePort,
 };
-use crate::shared::domain::{ProjectId, StageId, WorkspaceConfig};
+use crate::shared::domain::{ProjectConfig, ProjectId, StageId, WorkspaceConfig};
 use crate::shared::error::{AppError, AppResult};
 
 const ACTIVE_PROJECT_FILE: &str = "active-project";
 const WORKSPACE_DIR: &str = ".ralph-burning";
 const PROJECTS_DIR: &str = "projects";
 const PROJECT_CONFIG_FILE: &str = "project.toml";
+const PROJECT_POLICY_CONFIG_FILE: &str = "config.toml";
 const RUN_FILE: &str = "run.json";
 const JOURNAL_FILE: &str = "journal.ndjson";
 const SESSIONS_FILE: &str = "sessions.json";
@@ -247,6 +248,34 @@ impl FileSystem {
         Self::workspace_root_path(base_dir)
             .join(PROJECTS_DIR)
             .join(project_id.as_str())
+    }
+
+    pub fn read_project_config(base_dir: &Path, project_id: &ProjectId) -> AppResult<ProjectConfig> {
+        let path = Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE);
+        match fs::read_to_string(&path) {
+            Ok(raw) => toml::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+                file: format!("projects/{}/config.toml", project_id),
+                details: error.to_string(),
+            }),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(ProjectConfig::default()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub fn write_project_config(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        config: &ProjectConfig,
+    ) -> AppResult<()> {
+        let rendered = toml::to_string_pretty(config)?;
+        Self::write_atomic(
+            &Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE),
+            &rendered,
+        )
+    }
+
+    pub(crate) fn project_policy_config_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::project_root(base_dir, project_id).join(PROJECT_POLICY_CONFIG_FILE)
     }
 
     fn pending_delete_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
@@ -482,6 +511,11 @@ impl ProjectStorePort for FsProjectStore {
             let project_toml = toml::to_string_pretty(record)
                 .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
             fs::write(staging_root.join(PROJECT_CONFIG_FILE), project_toml)?;
+
+            // config.toml
+            let project_config_toml = toml::to_string_pretty(&ProjectConfig::default())
+                .map_err(|e| AppError::Io(std::io::Error::other(e.to_string())))?;
+            fs::write(staging_root.join(PROJECT_POLICY_CONFIG_FILE), project_config_toml)?;
 
             // prompt.md
             fs::write(staging_root.join(PROMPT_FILE), prompt_contents)?;

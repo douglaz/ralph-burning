@@ -26,9 +26,7 @@ pub enum AppError {
     InvalidFlowPreset { flow_id: String },
     #[error("unsupported workspace version {version}; supported version is {supported}")]
     UnsupportedWorkspaceVersion { version: u32, supported: u32 },
-    #[error(
-        "unknown config key '{key}'. supported keys: prompt_review.enabled, default_flow, default_backend, default_model"
-    )]
+    #[error("unknown config key '{key}'")]
     UnknownConfigKey { key: String },
     #[error("invalid value '{value}' for config key '{key}': {reason}")]
     InvalidConfigValue {

@@ -5,6 +5,7 @@ use chrono::Utc;
 use serde_json::json;
 use tempfile::tempdir;
 
+use ralph_burning::contexts::agent_execution::model::InvocationContract;
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, QueuedAmendment,
@@ -198,7 +199,8 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
     assert!(prompt.contains("Tighten the validation copy"));
     assert!(prompt.contains("## Authoritative JSON Schema"));
     assert!(prompt.contains(
-        &serde_json::to_string_pretty(&contract.json_schema()).expect("serialize schema"),
+        &serde_json::to_string_pretty(&InvocationContract::Stage(contract).json_schema_value())
+            .expect("serialize schema"),
     ));
 
     let first_index = prompt.find("first-output").expect("first prior output");

@@ -3524,10 +3524,9 @@ async fn daemon_requirements_partial_defaults_model_only() {
 
 #[test]
 fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
-    // Pre-run failure invariant: if workspace-default resolution fails before a
-    // requirements run is created, no requirements run directory/history is
-    // created and the error propagates so the daemon can mark the task as
-    // requirements_quick_failed.
+    // Pre-run failure invariant: invalid backend config is rejected before a
+    // requirements service or run can be created, so no requirements history is
+    // materialized on disk.
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
@@ -3539,25 +3538,14 @@ fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
         "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"invalid_backend_xyz\"\n",
     )
     .expect("write workspace.toml");
-    let effective_config =
-        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
-            .expect("load effective config");
-
-    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
-
-    // build_requirements_service must fail — this is the exact function the daemon
-    // calls before creating any requirements run.
     let result =
-        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
-            adapter.clone(),
-            &effective_config,
-        );
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir);
     match result {
-        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Ok(_) => panic!("effective config load should fail with invalid default_backend"),
         Err(AppError::InvalidConfigValue {
             ref key, ref value, ..
         }) => {
-            assert_eq!(key, "default_backend");
+            assert_eq!(key, "backend");
             assert_eq!(value, "invalid_backend_xyz");
         }
         Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
@@ -3569,19 +3557,12 @@ fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
         !requirements_dir.exists(),
         "no requirements directory should exist when service construction fails before run creation"
     );
-
-    // No invocations should have been recorded
-    assert!(
-        adapter.recorded_invocations().is_empty(),
-        "no invocations should occur when service construction fails"
-    );
 }
 
 #[test]
 fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
-    // Pre-run failure invariant: same as the quick path — if workspace-default
-    // resolution fails, no requirements run is created and the error propagates
-    // so the daemon can mark the task as requirements_draft_failed.
+    // Pre-run failure invariant: same as the quick path. Invalid backend config
+    // is rejected before a requirements service or run exists.
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
@@ -3593,25 +3574,14 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
         "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"nonexistent_provider\"\n",
     )
     .expect("write workspace.toml");
-    let effective_config =
-        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
-            .expect("load effective config");
-
-    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
-
-    // build_requirements_service must fail — this is the exact function the daemon
-    // calls before creating any requirements run.
     let result =
-        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
-            adapter.clone(),
-            &effective_config,
-        );
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir);
     match result {
-        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Ok(_) => panic!("effective config load should fail with invalid default_backend"),
         Err(AppError::InvalidConfigValue {
             ref key, ref value, ..
         }) => {
-            assert_eq!(key, "default_backend");
+            assert_eq!(key, "backend");
             assert_eq!(value, "nonexistent_provider");
         }
         Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
@@ -3622,12 +3592,6 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
     assert!(
         !requirements_dir.exists(),
         "no requirements directory should exist when service construction fails before run creation"
-    );
-
-    // No invocations should have been recorded
-    assert!(
-        adapter.recorded_invocations().is_empty(),
-        "no invocations should occur when service construction fails"
     );
 }
 

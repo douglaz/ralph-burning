@@ -8,6 +8,8 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use tokio::sync::Notify;
 
+use crate::contexts::requirements_drafting::contracts::RequirementsContract;
+use crate::contexts::requirements_drafting::model::RequirementsStageId;
 use crate::contexts::agent_execution::session::SessionMetadata;
 use crate::contexts::workflow_composition::contracts::StageContract;
 use crate::shared::domain::{
@@ -103,6 +105,42 @@ impl InvocationContract {
             Self::Requirements { .. } => None,
         }
     }
+
+    pub fn family_name(&self) -> &'static str {
+        match self {
+            Self::Stage(_) => "workflow",
+            Self::Requirements { .. } => "requirements",
+        }
+    }
+
+    pub fn json_schema_value(&self) -> Value {
+        match self {
+            Self::Stage(contract) => {
+                serde_json::to_value(contract.json_schema()).unwrap_or_else(|_| Value::Object(Default::default()))
+            }
+            Self::Requirements { label } => requirements_contract_for_label(label)
+                .and_then(|contract| serde_json::to_value(contract.json_schema()).ok())
+                .unwrap_or_else(|| Value::Object(Default::default())),
+        }
+    }
+}
+
+fn requirements_contract_for_label(label: &str) -> Option<RequirementsContract> {
+    let stage = label.strip_prefix("requirements:")?;
+    let stage = match stage {
+        "question_set" => RequirementsStageId::QuestionSet,
+        "requirements_draft" => RequirementsStageId::RequirementsDraft,
+        "requirements_review" => RequirementsStageId::RequirementsReview,
+        "project_seed" => RequirementsStageId::ProjectSeed,
+        _ => return None,
+    };
+
+    Some(match stage {
+        RequirementsStageId::QuestionSet => RequirementsContract::question_set(),
+        RequirementsStageId::RequirementsDraft => RequirementsContract::draft(),
+        RequirementsStageId::RequirementsReview => RequirementsContract::review(),
+        RequirementsStageId::ProjectSeed => RequirementsContract::seed(),
+    })
 }
 
 #[derive(Debug, Clone)]

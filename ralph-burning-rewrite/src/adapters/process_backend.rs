@@ -163,11 +163,9 @@ impl ProcessBackendAdapter {
 
         let schema_json = request
             .contract
-            .stage_contract()
-            .map(|sc| {
-                serde_json::to_string_pretty(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned())
-            })
-            .unwrap_or_else(|| "{}".to_owned());
+            .json_schema_value();
+        let schema_json =
+            serde_json::to_string_pretty(&schema_json).unwrap_or_else(|_| "{}".to_owned());
 
         input.push_str("\nReturn ONLY valid JSON matching the following schema:\n");
         input.push_str(&schema_json);
@@ -303,11 +301,8 @@ impl ProcessBackendAdapter {
 
     async fn invoke_claude(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         let model_id = &request.resolved_target.model.model_id;
-        let schema_json = request
-            .contract
-            .stage_contract()
-            .map(|sc| serde_json::to_string(&sc.json_schema()).unwrap_or_else(|_| "{}".to_owned()))
-            .unwrap_or_else(|| "{}".to_owned());
+        let schema_json = serde_json::to_string(&request.contract.json_schema_value())
+            .unwrap_or_else(|_| "{}".to_owned());
 
         let mut args = vec![
             "-p".to_owned(),
@@ -458,17 +453,10 @@ impl ProcessBackendAdapter {
         let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
         let message_path = temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
-        let schema_json = request
-            .contract
-            .stage_contract()
-            .map(|sc| {
-                let mut schema_value = serde_json::to_value(sc.json_schema())
-                    .unwrap_or_else(|_| serde_json::json!({}));
-                inject_additional_properties_false(&mut schema_value);
-                serde_json::to_string_pretty(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned())
-            })
-            .unwrap_or_else(|| "{}".to_owned());
+        let mut schema_value = request.contract.json_schema_value();
+        inject_additional_properties_false(&mut schema_value);
+        let schema_json =
+            serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
         if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
             best_effort_cleanup(Some(&schema_path), &message_path).await;

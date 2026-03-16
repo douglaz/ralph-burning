@@ -9,6 +9,8 @@
 //!
 //! Rendered Markdown is never parsed for control flow.
 
+use schemars::schema::RootSchema;
+
 use crate::shared::domain::FlowPreset;
 use crate::shared::error::ContractError;
 
@@ -62,6 +64,19 @@ impl RequirementsContract {
     pub fn seed() -> Self {
         Self {
             stage_id: RequirementsStageId::ProjectSeed,
+        }
+    }
+
+    pub fn json_schema(&self) -> RootSchema {
+        match self.stage_id {
+            RequirementsStageId::QuestionSet => schemars::schema_for!(QuestionSetPayload),
+            RequirementsStageId::RequirementsDraft => {
+                schemars::schema_for!(RequirementsDraftPayload)
+            }
+            RequirementsStageId::RequirementsReview => {
+                schemars::schema_for!(RequirementsReviewPayload)
+            }
+            RequirementsStageId::ProjectSeed => schemars::schema_for!(ProjectSeedPayload),
         }
     }
 

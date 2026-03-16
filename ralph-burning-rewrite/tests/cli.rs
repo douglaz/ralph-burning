@@ -274,7 +274,7 @@ fn config_show_prints_effective_values_and_sources() {
     assert!(stdout.contains("[settings]"));
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
     assert!(stdout.contains("default_flow = \"standard\" # source: default"));
-    assert!(stdout.contains("default_backend = \"<unset>\" # source: default"));
+    assert!(stdout.contains("default_backend = \"claude\" # source: default"));
 }
 
 #[test]
@@ -820,6 +820,47 @@ fn config_set_updates_valid_keys_and_rejects_invalid_values() {
 }
 
 #[test]
+fn config_get_and_set_support_project_level_policy() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let set_output = Command::new(binary())
+        .args([
+            "config",
+            "set",
+            "workflow.reviewer_backend",
+            "codex",
+            "--project",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project config set");
+    assert!(
+        set_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&set_output.stdout).contains("project config.toml"));
+
+    let project_config = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/config.toml"),
+    )
+    .expect("read project config");
+    assert!(project_config.contains("reviewer_backend = \"codex\""));
+
+    let get_output = Command::new(binary())
+        .args(["config", "get", "workflow.reviewer_backend", "--project"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project config get");
+    assert!(get_output.status.success());
+    assert_eq!("codex\n", String::from_utf8_lossy(&get_output.stdout));
+}
+
+#[test]
 fn config_edit_revalidates_workspace_file() {
     let temp_dir = initialize_workspace_fixture();
     let editor = write_editor_script(
@@ -846,12 +887,12 @@ fn config_edit_prefers_editor_over_visual() {
     let editor = write_editor_script(
         temp_dir.path(),
         "editor-wins.sh",
-        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"editor\"\nEOF\n",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"codex\"\nEOF\n",
     );
     let visual = write_editor_script(
         temp_dir.path(),
         "visual-loses.sh",
-        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"visual\"\nEOF\n",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\nEOF\n",
     );
 
     let output = Command::new(binary())
@@ -867,8 +908,8 @@ fn config_edit_prefers_editor_over_visual() {
     let workspace_config =
         fs::read_to_string(temp_dir.path().join(".ralph-burning/workspace.toml"))
             .expect("read workspace config");
-    assert!(workspace_config.contains("default_backend = \"editor\""));
-    assert!(!workspace_config.contains("default_backend = \"visual\""));
+    assert!(workspace_config.contains("default_backend = \"codex\""));
+    assert!(!workspace_config.contains("default_backend = \"openrouter\""));
 }
 
 #[test]
