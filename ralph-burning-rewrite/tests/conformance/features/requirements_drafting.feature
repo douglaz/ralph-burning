@@ -267,10 +267,22 @@ Feature: Requirements Drafting and Project Seed Handoff
 
   # RD-034
   @backend.requirements.real_backend_path
-  Scenario: Real backend path exercises process adapter for requirements
+  Scenario: Real backend path exercises process adapter for CLI requirements
     Given a workspace with RALPH_BURNING_BACKEND=process
     And fake claude and codex binaries on PATH that return valid structured output
     When the user runs "requirements quick --idea 'Test real backend'"
     Then the requirements pipeline uses the process backend adapter
     And the run status is "completed"
     And seed files are written to the run directory
+
+  # RD-035
+  @backend.requirements.real_backend_path.daemon
+  Scenario: Real backend path exercises process adapter for daemon requirements
+    Given a workspace with RALPH_BURNING_BACKEND=process and a git repository
+    And fake claude and codex binaries on PATH that return valid structured output
+    And a watched issue file requesting "/rb requirements quick"
+    When the daemon runs a single iteration with RALPH_BURNING_BACKEND=process
+    Then the daemon task has a linked requirements run via the process backend
+    And the requirements run status is "completed"
+    And seed files are written to the requirements run directory
+    And the task dispatch mode transitioned to Workflow

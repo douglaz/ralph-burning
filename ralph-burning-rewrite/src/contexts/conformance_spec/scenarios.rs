@@ -6462,6 +6462,186 @@ fi
 
         Ok(())
     });
+
+    // Daemon real-backend path: exercises the daemon requirements quick path
+    // with RALPH_BURNING_BACKEND=process and fake claude/codex binaries,
+    // proving the daemon uses the shared process builder rather than stubs.
+    reg!(m, "backend.requirements.real_backend_path.daemon", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        init_git_repo(&ws)?;
+
+        // Create a temporary bin directory with fake claude/codex binaries
+        let bin_dir = ws.path().join("fake-bin");
+        std::fs::create_dir_all(&bin_dir)
+            .map_err(|e| format!("create fake-bin dir: {e}"))?;
+
+        // Fake claude that returns appropriate JSON based on contract label.
+        let fake_claude = r##"#!/bin/sh
+INPUT=""
+while IFS= read -r line; do
+    INPUT="$INPUT $line"
+done
+
+PAYLOAD='{"questions":[]}'
+
+case "$INPUT" in
+    *requirements:requirements_draft*)
+        PAYLOAD='{"problem_summary":"Daemon test summary","goals":["Ship it"],"non_goals":["Over-engineer"],"constraints":["Budget"],"acceptance_criteria":["Tests pass"],"risks_or_open_questions":[],"recommended_flow":"standard"}'
+        ;;
+    *requirements:requirements_review*)
+        PAYLOAD='{"outcome":"approved","evidence":["LGTM"],"findings":[]}'
+        ;;
+    *requirements:project_seed*)
+        PAYLOAD='{"project_id":"daemon-proc-proj","project_name":"Daemon Process Test","flow":"standard","prompt_body":"Build daemon feature.","handoff_summary":"Ready."}'
+        ;;
+esac
+
+printf '{"result":"","session_id":"fake-session","structured_output":%s}\n' "$PAYLOAD"
+"##;
+
+        std::fs::write(bin_dir.join("claude"), fake_claude)
+            .map_err(|e| format!("write fake claude: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bin_dir.join("claude"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .map_err(|e| format!("chmod fake claude: {e}"))?;
+        }
+
+        // Fake codex that writes output to --output-last-message file.
+        let fake_codex = r##"#!/bin/sh
+INPUT=""
+while IFS= read -r line; do
+    INPUT="$INPUT $line"
+done
+
+PAYLOAD='{"outcome":"approved","evidence":["LGTM"],"findings":[]}'
+
+msg_path=""
+next_is_msg=0
+for arg in "$@"; do
+    if [ "$next_is_msg" = "1" ]; then
+        msg_path="$arg"
+        next_is_msg=0
+    fi
+    if [ "$arg" = "--output-last-message" ]; then
+        next_is_msg=1
+    fi
+done
+if [ -n "$msg_path" ]; then
+    printf '%s\n' "$PAYLOAD" > "$msg_path"
+fi
+"##;
+        std::fs::write(bin_dir.join("codex"), fake_codex)
+            .map_err(|e| format!("write fake codex: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bin_dir.join("codex"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .map_err(|e| format!("chmod fake codex: {e}"))?;
+        }
+
+        // Build PATH with our fake binaries first
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", bin_dir.display(), original_path);
+
+        // Write a watched issue file for the daemon's FileIssueWatcher
+        let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
+        std::fs::create_dir_all(&watched_dir)
+            .map_err(|e| format!("mkdir watched: {e}"))?;
+        let issue_json = serde_json::json!({
+            "issue_ref": "test/repo#99",
+            "source_revision": "rev99999",
+            "title": "Daemon process backend test",
+            "body": "/rb requirements quick\n\nDaemon real backend test",
+            "labels": [],
+            "routing_command": null
+        });
+        std::fs::write(
+            watched_dir.join("issue-99.json"),
+            serde_json::to_string_pretty(&issue_json).unwrap(),
+        )
+        .map_err(|e| format!("write watched issue: {e}"))?;
+
+        // Run one daemon cycle with RALPH_BURNING_BACKEND=process and fake binaries
+        let out = run_cli_with_env(
+            &["daemon", "start", "--single-iteration"],
+            ws.path(),
+            &[
+                ("RALPH_BURNING_BACKEND", "process"),
+                ("PATH", &new_path),
+            ],
+        )?;
+        assert_success(&out)?;
+
+        // Verify the task was created and the requirements portion completed.
+        // The subsequent workflow dispatch may fail because the fake binaries
+        // only handle requirements contracts.  What matters for this scenario
+        // is that the daemon requirements path exercised the process adapter.
+        let store = FsDaemonStore;
+        let tasks = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
+        let task = tasks
+            .iter()
+            .find(|t| t.issue_ref == "test/repo#99")
+            .ok_or("no task created for issue test/repo#99")?;
+
+        // Task should have a linked requirements_run_id, proving the daemon
+        // requirements path ran (and used the process backend builder).
+        if task.requirements_run_id.is_none() {
+            return Err(
+                "requirements_run_id should be set after daemon quick handoff with process backend"
+                    .to_owned(),
+            );
+        }
+        let run_id = task.requirements_run_id.as_ref().unwrap();
+
+        // The linked requirements run should be completed
+        let req_run_path = ws
+            .path()
+            .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+        let run_content = std::fs::read_to_string(&req_run_path)
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
+        let req_status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if req_status != "completed" {
+            return Err(format!(
+                "expected requirements run 'completed' for daemon process backend, got '{req_status}'"
+            ));
+        }
+
+        // Verify seed files exist in the requirements run directory
+        let seed_dir = req_run_path.parent().unwrap().join("seed");
+        if !seed_dir.join("prompt.md").is_file() {
+            return Err("seed prompt.md not written in daemon process backend path".into());
+        }
+        if !seed_dir.join("project.json").is_file() {
+            return Err("seed project.json not written in daemon process backend path".into());
+        }
+
+        // Task dispatch_mode should have transitioned to Workflow, confirming
+        // the requirements→workflow handoff path was reached.
+        if task.dispatch_mode
+            != crate::contexts::automation_runtime::model::DispatchMode::Workflow
+        {
+            return Err(format!(
+                "expected dispatch_mode Workflow after requirements handoff, got {}",
+                task.dispatch_mode
+            ));
+        }
+
+        Ok(())
+    });
 }
 
 // ===========================================================================

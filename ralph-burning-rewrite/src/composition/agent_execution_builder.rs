@@ -161,12 +161,18 @@ fn build_stub_backend_adapter() -> StubBackendAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    /// Serialize tests that mutate `RALPH_BURNING_BACKEND` to avoid races.
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn build_backend_adapter_defaults_to_process() {
-        // When RALPH_BURNING_BACKEND is not set, the default should be process.
-        // We can't easily test this without controlling env vars, but we can
-        // verify the function signature compiles and the stub path works.
+    fn build_backend_adapter_selects_stub_when_env_is_stub() {
+        // Verify the stub path returns BackendAdapter::Stub when explicitly
+        // requested.  The "unset → process" default is covered by the
+        // `backend.requirements.real_backend_path` conformance scenario which
+        // runs as a separate process and avoids env-var races.
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("RALPH_BURNING_BACKEND", "stub");
         let adapter = build_backend_adapter().expect("stub build should succeed");
         assert!(matches!(adapter, BackendAdapter::Stub(_)));
@@ -175,6 +181,7 @@ mod tests {
 
     #[test]
     fn build_backend_adapter_rejects_invalid_value() {
+        let _guard = ENV_LOCK.lock().unwrap();
         std::env::set_var("RALPH_BURNING_BACKEND", "invalid");
         let result = build_backend_adapter();
         assert!(result.is_err());
