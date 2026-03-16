@@ -1292,6 +1292,14 @@ where
                     // Step 2: advance cursor snapshot (best-effort, overwritten on resume).
                     let next_stage = stage_plan[stage_index + 1].stage_id;
                     let advanced_cursor = cursor.advance_stage(next_stage);
+                    // Preserve the completion panel's resolution snapshot before
+                    // clearing active_run.  If the commit point (Step 3) fails,
+                    // fail_run will retain this so resume drift detection still
+                    // has the original panel resolution.
+                    snapshot.last_stage_resolution_snapshot = snapshot
+                        .active_run
+                        .as_ref()
+                        .and_then(|ar| ar.stage_resolution_snapshot.clone());
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
                         run_id: run_id.as_str().to_owned(),
@@ -1470,6 +1478,14 @@ where
 
                     // Step 2: advance cursor snapshot (reversible — overwritten
                     // by fail_run_result if the journal commit fails).
+                    // Preserve the completion panel's resolution snapshot before
+                    // clearing active_run.  If the commit point (Step 3) fails,
+                    // fail_run will retain this so resume drift detection still
+                    // has the original panel resolution.
+                    snapshot.last_stage_resolution_snapshot = snapshot
+                        .active_run
+                        .as_ref()
+                        .and_then(|ar| ar.stage_resolution_snapshot.clone());
                     snapshot.completion_rounds = snapshot
                         .completion_rounds
                         .max(next_cursor.completion_round);
@@ -2972,10 +2988,17 @@ async fn fail_run(
     let message = err.to_string();
 
     // Preserve the stage resolution snapshot for resume drift detection.
-    snapshot.last_stage_resolution_snapshot = snapshot
+    // Only overwrite if the active run carries an explicit snapshot;
+    // otherwise retain any snapshot previously copied forward (e.g. by
+    // completion panel commit paths that clear active_run's snapshot
+    // before the journal commit point).
+    if let Some(resolution) = snapshot
         .active_run
         .as_ref()
-        .and_then(|ar| ar.stage_resolution_snapshot.clone());
+        .and_then(|ar| ar.stage_resolution_snapshot.clone())
+    {
+        snapshot.last_stage_resolution_snapshot = Some(resolution);
+    }
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);

@@ -4323,3 +4323,86 @@ async fn completion_panel_continue_then_complete_success() {
         "round 2 aggregate should exist: {payload_files:?}"
     );
 }
+
+// Regression: completion panel commit failure after cursor advance must
+// retain last_stage_resolution_snapshot so resume drift detection works.
+// Previously, the Complete/ContinueWork paths cleared active_run's
+// stage_resolution_snapshot before the journal commit point, and fail_run
+// would copy that None into last_stage_resolution_snapshot.
+#[tokio::test]
+async fn completion_panel_commit_failure_retains_resolution_snapshot() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "cr-snapshot-retain");
+
+    // ContinueWork on first call (vote_complete=false via conditionally_approved).
+    let agent_service =
+        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
+            StageId::CompletionPanel,
+            conditionally_approved_payload(&["fix something"]),
+        ));
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // Standard flow event numbering:
+    //   1  run_started
+    //   2  stage_entered(prompt_review)
+    //   3  stage_completed(prompt_review)
+    //   4  rollback_created(prompt_review)
+    //   5  stage_entered(planning)
+    //   6  stage_completed(planning)
+    //   7  rollback_created(planning)
+    //   8  stage_entered(implementation)
+    //   9  stage_completed(implementation)
+    //   10 rollback_created(implementation)
+    //   11 stage_entered(qa)
+    //   12 stage_completed(qa)
+    //   13 rollback_created(qa)
+    //   14 stage_entered(review)
+    //   15 stage_completed(review)
+    //   16 rollback_created(review)
+    //   17 stage_entered(completion_panel)
+    //   18 completion_round_advanced -> fail here (ContinueWork commit point)
+    let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(result.is_err(), "run should fail on commit point append");
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert!(failed_snapshot.active_run.is_none());
+
+    // The critical assertion: last_stage_resolution_snapshot must still
+    // contain the completion panel's resolution, even though active_run
+    // was overwritten with stage_resolution_snapshot: None before the
+    // commit point failed.
+    assert!(
+        failed_snapshot.last_stage_resolution_snapshot.is_some(),
+        "last_stage_resolution_snapshot must be retained after completion panel commit failure"
+    );
+    let snapshot = failed_snapshot.last_stage_resolution_snapshot.unwrap();
+    assert_eq!(
+        snapshot.stage_id,
+        StageId::CompletionPanel,
+        "retained snapshot must be for completion_panel"
+    );
+    assert!(
+        !snapshot.completion_completers.is_empty(),
+        "retained snapshot must include completion panel members"
+    );
+}
