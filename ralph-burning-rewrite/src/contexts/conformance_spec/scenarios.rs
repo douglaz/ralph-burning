@@ -8943,6 +8943,41 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if !cp_completed {
                 return Err("completion_panel should complete when optional backend is skipped".to_owned());
             }
+
+            // Verify the persisted aggregate only counts executed voters
+            // (2 of the 3 configured, since the optional one was skipped).
+            let payloads_dir = ws.path()
+                .join(".ralph-burning/projects/cp-opt-skip/history/payloads");
+            let aggregate_file = std::fs::read_dir(&payloads_dir)
+                .map_err(|e| format!("read payloads dir: {e}"))?
+                .filter_map(|e| e.ok())
+                .find(|e| e.file_name().to_string_lossy().contains("aggregate"))
+                .ok_or_else(|| "no aggregate payload file found for optional_backend_skip".to_owned())?;
+            let aggregate_content = std::fs::read_to_string(aggregate_file.path())
+                .map_err(|e| format!("read aggregate payload: {e}"))?;
+            let aggregate_json: serde_json::Value = serde_json::from_str(&aggregate_content)
+                .map_err(|e| format!("parse aggregate payload: {e}"))?;
+            let payload = aggregate_json.get("payload")
+                .ok_or_else(|| "aggregate payload missing 'payload' field".to_owned())?;
+
+            let total_voters = payload.get("total_voters")
+                .and_then(|v| v.as_u64())
+                .ok_or_else(|| "aggregate missing total_voters".to_owned())?;
+            if total_voters != 2 {
+                return Err(format!(
+                    "expected total_voters = 2 (optional skipped), got {total_voters}"
+                ));
+            }
+
+            let executed_voters = payload.get("executed_voters")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| "aggregate missing executed_voters".to_owned())?;
+            if executed_voters.len() != 2 {
+                return Err(format!(
+                    "expected 2 executed voters (optional skipped), got {}",
+                    executed_voters.len()
+                ));
+            }
             Ok(())
         }
     );

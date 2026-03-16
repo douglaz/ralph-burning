@@ -763,6 +763,18 @@ where
             StageId::PromptReview => {
                 let mut panel =
                     policy.resolve_prompt_review_panel(resume_state.cursor.cycle)?;
+                // Refiner is always required — fail early if unavailable.
+                agent_service
+                    .adapter()
+                    .check_availability(&panel.refiner)
+                    .await
+                    .map_err(|_| AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "required prompt-review refiner ({}) unavailable on resume",
+                            panel.refiner.backend.family,
+                        ),
+                    })?;
                 let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
                 let mut available = Vec::new();
                 for member in &panel.validators {
@@ -3745,10 +3757,22 @@ where
     let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
 
     // ── Pre-snapshot availability filtering ─────────────────────────────
-    // Check runtime availability of each validator BEFORE building and
-    // persisting the snapshot. Required unavailable backends fail
-    // resolution; optional unavailable backends are removed so the
-    // snapshot only records members that will actually execute.
+    // Check runtime availability of the refiner and each validator BEFORE
+    // building and persisting the snapshot. The refiner is always required;
+    // if it is unavailable, the stage fails before any snapshot or
+    // invocation side effects.
+    agent_service
+        .adapter()
+        .check_availability(&panel.refiner)
+        .await
+        .map_err(|e| AppError::BackendUnavailable {
+            backend: panel.refiner.backend.family.to_string(),
+            details: format!("required prompt-review refiner unavailable: {e}"),
+        })?;
+
+    // Required unavailable validators fail resolution; optional
+    // unavailable validators are removed so the snapshot only records
+    // members that will actually execute.
     let mut available_validators = Vec::new();
     for member in &panel.validators {
         match agent_service.adapter().check_availability(&member.target).await {
@@ -4420,17 +4444,10 @@ pub fn emit_resume_drift_warning(
     let line = journal::serialize_event(&warning_event)?;
     if let Err(e) = journal_store.append_event(base_dir, project_id, &line) {
         *seq -= 1;
-        // Non-fatal: log but continue
-        let _ = log_write.append_runtime_log(
-            base_dir,
-            project_id,
-            &RuntimeLogEntry {
-                timestamp: Utc::now(),
-                level: LogLevel::Error,
-                source: "engine".to_owned(),
-                message: format!("failed to persist resume drift warning: {e}"),
-            },
-        );
+        return Err(AppError::StageCommitFailed {
+            stage_id,
+            details: format!("resume drift warning must be durably persisted before continuing, but journal append failed: {e}"),
+        });
     }
 
     // Update both the active_run snapshot and the top-level
