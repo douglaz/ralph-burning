@@ -23,8 +23,8 @@ use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
 use ralph_burning::contexts::project_run_record::service::{
-    self, CreateProjectInput, JournalStorePort, RunSnapshotPort, RunSnapshotWritePort,
-    RuntimeLogWritePort,
+    self, CreateProjectInput, JournalStorePort, ProjectStorePort, RunSnapshotPort,
+    RunSnapshotWritePort, RuntimeLogWritePort,
 };
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
@@ -1379,6 +1379,7 @@ async fn run_start_rejects_already_running() {
                 stage_resolution_snapshot: None,
             },
         ),
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: vec![],
         completion_rounds: 0,
@@ -1423,6 +1424,7 @@ async fn run_start_rejects_completed_project() {
 
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Completed,
         cycle_history: vec![],
         completion_rounds: 1,
@@ -2807,6 +2809,158 @@ async fn resume_from_failed_run_skips_completed_stages() {
 }
 
 #[tokio::test]
+async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record_hash() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "resume-prompt-baseline");
+    let project_root = base_dir
+        .join(".ralph-burning")
+        .join("projects")
+        .join(pid.as_str());
+    fs::write(
+        project_root.join("config.toml"),
+        "[workflow]\nprompt_change_action = \"abort\"\n",
+    )
+    .unwrap();
+    let config =
+        EffectiveConfig::load_for_project(base_dir, Some(&pid), Default::default()).unwrap();
+    assert_eq!(
+        config.run_policy().prompt_change_action,
+        ralph_burning::shared::domain::PromptChangeAction::Abort
+    );
+
+    let original_cycle_hash = FsProjectStore
+        .read_project_record(base_dir, &pid)
+        .unwrap()
+        .prompt_hash;
+    let run_id = RunId::new("run-prompt-baseline").unwrap();
+    let started_at = Utc::now();
+    let snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::new(
+                    StageId::Implementation,
+                    1,
+                    1,
+                    1,
+                )
+                .unwrap(),
+                started_at,
+                prompt_hash_at_cycle_start: original_cycle_hash.clone(),
+                prompt_hash_at_stage_start: original_cycle_hash.clone(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed at implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    let run_started = journal::run_started_event(2, started_at, &run_id, StageId::PromptReview);
+    FsJournalStore
+        .append_event(
+            base_dir,
+            &pid,
+            &journal::serialize_event(&run_started).unwrap(),
+        )
+        .unwrap();
+    let prompt_review_completed = journal::stage_completed_event(
+        3,
+        started_at,
+        &run_id,
+        StageId::PromptReview,
+        1,
+        1,
+        "prompt-review-payload",
+        "prompt-review-artifact",
+    );
+    FsJournalStore
+        .append_event(
+            base_dir,
+            &pid,
+            &journal::serialize_event(&prompt_review_completed).unwrap(),
+        )
+        .unwrap();
+    let planning_completed = journal::stage_completed_event(
+        4,
+        started_at,
+        &run_id,
+        StageId::Planning,
+        1,
+        1,
+        "planning-payload",
+        "planning-artifact",
+    );
+    FsJournalStore
+        .append_event(
+            base_dir,
+            &pid,
+            &journal::serialize_event(&planning_completed).unwrap(),
+        )
+        .unwrap();
+
+    let changed_prompt = "# Test prompt\n\nChanged after failure.\n";
+    fs::write(project_root.join("prompt.md"), changed_prompt).unwrap();
+    let changed_prompt_hash = ralph_burning::adapters::fs::FileSystem::prompt_hash(changed_prompt);
+    assert_ne!(original_cycle_hash, changed_prompt_hash);
+
+    let mut project_record = FsProjectStore.read_project_record(base_dir, &pid).unwrap();
+    project_record.prompt_hash = changed_prompt_hash;
+    fs::write(
+        project_root.join("project.toml"),
+        toml::to_string_pretty(&project_record).unwrap(),
+    )
+    .unwrap();
+
+    let resume_result = engine::resume_standard_run(
+        &build_agent_service(),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(resume_result.is_err(), "resume should fail on prompt drift");
+    let resume_error = resume_result.unwrap_err().to_string();
+    assert!(
+        resume_error.contains("prompt hash mismatch on resume"),
+        "unexpected resume error: {resume_error}"
+    );
+    assert!(
+        resume_error.contains(&original_cycle_hash),
+        "resume error should reference the interrupted cycle baseline: {resume_error}"
+    );
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert!(
+        events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::RunResumed),
+        "resume should fail before persisting run_resumed"
+    );
+}
+
+#[tokio::test]
 async fn resume_from_paused_prompt_review_run_continues_from_planning() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3137,6 +3291,25 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
 
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::new(
+                    StageId::CompletionPanel,
+                    1,
+                    1,
+                    u32::MAX,
+                )
+                .unwrap(),
+                started_at,
+                prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+                prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
         status: RunStatus::Failed,
         cycle_history: vec![],
         completion_rounds: u32::MAX,

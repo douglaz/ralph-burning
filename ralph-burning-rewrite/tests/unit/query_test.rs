@@ -30,6 +30,7 @@ fn status_view_not_started_when_no_active_run() {
 fn status_view_reports_completed_terminal_state_without_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Completed,
         cycle_history: Vec::new(),
         completion_rounds: 3,
@@ -49,6 +50,7 @@ fn status_view_reports_completed_terminal_state_without_active_run() {
 fn status_view_reports_failed_terminal_state_without_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -77,6 +79,7 @@ fn status_view_reports_running_with_cursor() {
             final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 0,

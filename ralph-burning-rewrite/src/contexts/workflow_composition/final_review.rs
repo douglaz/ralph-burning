@@ -63,9 +63,11 @@ pub struct FinalReviewResult {
 }
 
 struct ReviewerProposalRecord {
+    member_index: usize,
     reviewer_id: String,
     backend_family: String,
     model_id: String,
+    target: ResolvedBackendTarget,
     payload: FinalReviewProposalPayload,
 }
 
@@ -228,6 +230,7 @@ where
 
     let mut reviewer_records = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
+        let reviewer_id = final_review_reviewer_id(idx);
         let reviewer_payload = invoke_final_review_member(
             agent_service,
             project_root,
@@ -236,6 +239,7 @@ where
             cursor,
             &member.target,
             BackendRole::Reviewer,
+            &reviewer_id,
             "reviewer",
             build_reviewer_prompt(&project_prompt)?,
             Value::Null,
@@ -265,7 +269,6 @@ where
                 details: format!("final-review proposal schema validation failed: {e}"),
             })?;
 
-        let reviewer_id = final_review_reviewer_id(idx);
         let producer = RecordProducer::Agent {
             backend_family: member.target.backend.family.to_string(),
             model_id: member.target.model.model_id.clone(),
@@ -286,9 +289,11 @@ where
         )?;
 
         reviewer_records.push(ReviewerProposalRecord {
+            member_index: idx,
             reviewer_id,
             backend_family: member.target.backend.family.to_string(),
             model_id: member.target.model.model_id.clone(),
+            target: member.target.clone(),
             payload: proposal,
         });
     }
@@ -340,6 +345,7 @@ where
         cursor,
         planner_target,
         BackendRole::Planner,
+        "planner",
         "voter",
         build_voter_prompt("Planner Positions", &amendments, None)?,
         json!({
@@ -397,15 +403,16 @@ where
         .collect();
 
     let mut reviewer_votes = Vec::new();
-    for (idx, member) in panel.reviewers.iter().enumerate() {
+    for reviewer in &reviewer_records {
         let vote_payload = invoke_final_review_member(
             agent_service,
             project_root,
             run_id,
             stage_id,
             cursor,
-            &member.target,
+            &reviewer.target,
             BackendRole::Reviewer,
+            &reviewer.reviewer_id,
             "voter",
             build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes))?,
             json!({
@@ -422,31 +429,25 @@ where
                     })
                     .collect::<Vec<_>>(),
             }),
-            reviewer_timeout_for_backend(member.target.backend.family),
+            reviewer_timeout_for_backend(reviewer.target.backend.family),
             cancellation_token.clone(),
         )
-        .await;
-
-        let vote_payload = match vote_payload {
-            Ok(payload) => payload,
-            Err(error) if !member.required => continue,
-            Err(error) => return Err(error),
-        };
+        .await?;
 
         let votes: FinalReviewVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {
                 AppError::InvocationFailed {
-                    backend: member.target.backend.family.to_string(),
+                    backend: reviewer.target.backend.family.to_string(),
                     contract_id: "final_review:voter".to_owned(),
                     failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
                     details: format!("final-review vote schema validation failed: {e}"),
                 }
             })?;
-        validate_vote_payload(&votes, &amendments, &member.target)?;
+        validate_vote_payload(&votes, &amendments, &reviewer.target)?;
 
         let producer = RecordProducer::Agent {
-            backend_family: member.target.backend.family.to_string(),
-            model_id: member.target.model.model_id.clone(),
+            backend_family: reviewer.target.backend.family.to_string(),
+            model_id: reviewer.target.model.model_id.clone(),
         };
         let artifact = renderers::render_final_review_vote(
             "Final Review Votes",
@@ -464,7 +465,7 @@ where
             &vote_payload,
             &artifact,
             producer,
-            &format!("vote-{idx}"),
+            &format!("vote-{}", reviewer.member_index),
         )?;
 
         reviewer_votes.push(votes);
@@ -522,6 +523,7 @@ where
             cursor,
             &panel.arbiter,
             BackendRole::Reviewer,
+            "arbiter",
             "arbiter",
             build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes)?,
             json!({
@@ -759,6 +761,7 @@ async fn invoke_final_review_member<A, R, S>(
     cursor: &StageCursor,
     target: &ResolvedBackendTarget,
     role: BackendRole,
+    member_key: &str,
     panel_role: &str,
     prompt: String,
     context: Value,
@@ -770,14 +773,8 @@ where
     R: crate::contexts::agent_execution::service::RawOutputPort,
     S: SessionStorePort,
 {
-    let invocation_id = format!(
-        "{}-{}-{panel_role}-c{}-a{}-cr{}",
-        run_id.as_str(),
-        stage_id.as_str(),
-        cursor.cycle,
-        cursor.attempt,
-        cursor.completion_round
-    );
+    let invocation_id =
+        final_review_invocation_id(run_id, stage_id, cursor, panel_role, member_key);
 
     let request = InvocationRequest {
         invocation_id,
@@ -799,6 +796,23 @@ where
 
     let envelope = agent_service.invoke(request).await?;
     Ok(envelope.parsed_payload)
+}
+
+fn final_review_invocation_id(
+    run_id: &RunId,
+    stage_id: StageId,
+    cursor: &StageCursor,
+    panel_role: &str,
+    member_key: &str,
+) -> String {
+    format!(
+        "{}-{}-{panel_role}-{member_key}-c{}-a{}-cr{}",
+        run_id.as_str(),
+        stage_id.as_str(),
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round
+    )
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -867,14 +881,179 @@ fn persist_supporting_record(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashSet;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+
+    use chrono::Utc;
+    use tempfile::tempdir;
+
+    use crate::adapters::fs::{
+        FileSystem, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
+        FsSessionStore,
+    };
+    use crate::contexts::agent_execution::model::{
+        InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
+    };
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::service::AgentExecutionPort;
+    use crate::contexts::agent_execution::AgentExecutionService;
+    use crate::contexts::project_run_record::service::{self, CreateProjectInput};
+    use crate::contexts::workspace_governance;
+    use crate::shared::domain::{BackendFamily, FlowPreset};
+
     use super::*;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewProposal;
 
+    #[derive(Clone, Default)]
+    struct RecordingFinalReviewAdapter {
+        requests: Arc<Mutex<Vec<(String, String)>>>,
+    }
+
+    impl RecordingFinalReviewAdapter {
+        fn invocation_ids_for(&self, contract_label: &str) -> Vec<String> {
+            self.requests
+                .lock()
+                .expect("recording adapter lock poisoned")
+                .iter()
+                .filter(|(label, _)| label == contract_label)
+                .map(|(_, invocation_id)| invocation_id.clone())
+                .collect()
+        }
+
+        fn all_invocation_ids(&self) -> Vec<String> {
+            self.requests
+                .lock()
+                .expect("recording adapter lock poisoned")
+                .iter()
+                .map(|(_, invocation_id)| invocation_id.clone())
+                .collect()
+        }
+    }
+
+    impl AgentExecutionPort for RecordingFinalReviewAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(&self, _backend: &ResolvedBackendTarget) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+            let contract_label = request.contract.label();
+            self.requests
+                .lock()
+                .expect("recording adapter lock poisoned")
+                .push((contract_label.clone(), request.invocation_id.clone()));
+
+            if contract_label == "final_review:reviewer"
+                && request.invocation_id.contains("reviewer-3")
+            {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: contract_label,
+                    failure_class: crate::shared::domain::FailureClass::TransportFailure,
+                    details: "optional reviewer failed during proposals".to_owned(),
+                });
+            }
+
+            let amendment_id = canonical_amendment_id(1, "tighten wording");
+            let payload = match contract_label.as_str() {
+                "final_review:reviewer" => json!({
+                    "summary": "proposal",
+                    "amendments": [
+                        {
+                            "body": "tighten wording",
+                            "rationale": "worth doing"
+                        }
+                    ]
+                }),
+                "final_review:voter" => json!({
+                    "summary": "vote",
+                    "votes": [
+                        {
+                            "amendment_id": amendment_id,
+                            "decision": "accept",
+                            "rationale": "agree"
+                        }
+                    ]
+                }),
+                "final_review:arbiter" => json!({
+                    "summary": "arbiter",
+                    "rulings": []
+                }),
+                other => panic!("unexpected contract label: {other}"),
+            };
+
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline("{}".to_owned()),
+                parsed_payload: payload,
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id,
+                    duration: Duration::from_millis(1),
+                    token_counts: TokenCounts::default(),
+                    backend_used: request.resolved_target.backend.clone(),
+                    model_used: request.resolved_target.model.clone(),
+                    attempt_number: request.attempt_number,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    fn setup_project(base_dir: &Path, project_name: &str) -> ProjectId {
+        workspace_governance::initialize_workspace(base_dir, Utc::now()).expect("workspace init");
+        let project_id = ProjectId::new(project_name).expect("project id");
+        service::create_project(
+            &FsProjectStore,
+            &FsJournalStore,
+            base_dir,
+            CreateProjectInput {
+                id: project_id.clone(),
+                name: project_name.to_owned(),
+                flow: FlowPreset::Standard,
+                prompt_path: "prompt.md".to_owned(),
+                prompt_contents: "# Prompt\n\nTest prompt.\n".to_owned(),
+                prompt_hash: FileSystem::prompt_hash("# Prompt\n\nTest prompt.\n"),
+                created_at: Utc::now(),
+            },
+        )
+        .expect("project creation");
+        project_id
+    }
+
+    fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("projects")
+            .join(project_id.as_str())
+    }
+
     fn proposal_record(reviewer_id: &str, body: &str) -> ReviewerProposalRecord {
         ReviewerProposalRecord {
+            member_index: reviewer_id
+                .rsplit_once('-')
+                .and_then(|(_, value)| value.parse::<usize>().ok())
+                .unwrap_or(1)
+                .saturating_sub(1),
             reviewer_id: reviewer_id.to_owned(),
             backend_family: "claude".to_owned(),
             model_id: format!("model-{reviewer_id}"),
+            target: ResolvedBackendTarget::new(
+                crate::shared::domain::BackendFamily::Claude,
+                format!("model-{reviewer_id}"),
+            ),
             payload: FinalReviewProposalPayload {
                 summary: format!("proposal from {reviewer_id}"),
                 amendments: vec![FinalReviewProposal {
@@ -928,9 +1107,14 @@ mod tests {
             1,
             &[
                 ReviewerProposalRecord {
+                    member_index: 0,
                     reviewer_id: final_review_reviewer_id(0),
                     backend_family: "claude".to_owned(),
                     model_id: shared_model.clone(),
+                    target: ResolvedBackendTarget::new(
+                        crate::shared::domain::BackendFamily::Claude,
+                        shared_model.clone(),
+                    ),
                     payload: FinalReviewProposalPayload {
                         summary: "slot one".to_owned(),
                         amendments: vec![FinalReviewProposal {
@@ -940,9 +1124,14 @@ mod tests {
                     },
                 },
                 ReviewerProposalRecord {
+                    member_index: 1,
                     reviewer_id: final_review_reviewer_id(1),
                     backend_family: "claude".to_owned(),
                     model_id: shared_model,
+                    target: ResolvedBackendTarget::new(
+                        crate::shared::domain::BackendFamily::Claude,
+                        "claude-opus",
+                    ),
                     payload: FinalReviewProposalPayload {
                         summary: "slot two".to_owned(),
                         amendments: vec![FinalReviewProposal {
@@ -975,6 +1164,84 @@ mod tests {
         assert_eq!(
             consensus_status(1, 2, 0.75),
             FinalReviewConsensusStatus::Disputed
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_votes_only_with_successful_proposal_reviewers_and_uses_unique_ids() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-sticky-reviewers");
+        let adapter = RecordingFinalReviewAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
+                    required: true,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(
+                        BackendFamily::OpenRouter,
+                        "reviewer-3-model",
+                    ),
+                    required: false,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            &project_id,
+            &run_id,
+            &cursor,
+            &panel,
+            &planner_target,
+            2,
+            0.66,
+            2,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        assert!(result.restart_required);
+        assert!(!result.final_accepted_amendments.is_empty());
+
+        let vote_ids = adapter.invocation_ids_for("final_review:voter");
+        assert_eq!(vote_ids.len(), 3, "planner plus two successful reviewers");
+        assert!(
+            vote_ids
+                .iter()
+                .all(|invocation_id| !invocation_id.contains("reviewer-3")),
+            "optional reviewer skipped during proposals must not re-enter voting: {vote_ids:?}"
+        );
+
+        let all_ids = adapter.all_invocation_ids();
+        let unique_ids = all_ids.iter().cloned().collect::<HashSet<_>>();
+        assert_eq!(
+            all_ids.len(),
+            unique_ids.len(),
+            "every final-review invocation id must be distinct: {all_ids:?}"
         );
     }
 }

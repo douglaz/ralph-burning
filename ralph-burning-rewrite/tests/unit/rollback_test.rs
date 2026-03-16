@@ -38,6 +38,7 @@ fn running_snapshot(stage: StageId) -> RunSnapshot {
             final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 1,
@@ -51,6 +52,7 @@ fn running_snapshot(stage: StageId) -> RunSnapshot {
 fn paused_snapshot(summary: &str) -> RunSnapshot {
     RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
         completion_rounds: 1,
@@ -307,6 +309,7 @@ fn perform_rollback_rejects_stage_outside_project_flow() {
 fn perform_rollback_restores_snapshot_and_updates_meta() {
     let current_snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 2,
@@ -441,6 +444,7 @@ fn hard_rollback_failure_preserves_logical_rollback_state() {
 fn perform_rollback_restores_previous_snapshot_when_journal_append_fails() {
     let original_snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 2,

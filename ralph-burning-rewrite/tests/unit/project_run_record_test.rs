@@ -142,6 +142,7 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                     final_review_restart_count: 0,
                     stage_resolution_snapshot: None,
                 }),
+                interrupted_run: None,
                 status: RunStatus::Running,
                 cycle_history: Vec::new(),
                 completion_rounds: 0,
@@ -447,6 +448,7 @@ fn run_status_reports_running_with_stage_cursor() {
 fn run_snapshot_validates_running_without_active_run_as_corrupt() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -464,6 +466,7 @@ fn run_snapshot_validates_running_without_active_run_as_corrupt() {
 fn run_snapshot_validates_paused_without_active_run_as_valid() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -491,6 +494,7 @@ fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
             final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -520,6 +524,7 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
             final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::NotStarted,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -537,6 +542,7 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
 fn run_snapshot_validates_completed_without_active_run_as_valid() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Completed,
         cycle_history: Vec::new(),
         completion_rounds: 3,
@@ -552,6 +558,7 @@ fn run_snapshot_validates_completed_without_active_run_as_valid() {
 fn run_snapshot_validates_failed_without_active_run_as_valid() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -579,6 +586,7 @@ fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
             final_review_restart_count: 0,
             stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -607,6 +615,7 @@ impl RunSnapshotPort for FakeTerminalRunSnapshotStore {
     ) -> AppResult<RunSnapshot> {
         Ok(RunSnapshot {
             active_run: None,
+            interrupted_run: None,
             status: self.status,
             cycle_history: Vec::new(),
             completion_rounds: 0,
@@ -890,6 +899,7 @@ fn run_status_display_matches_display_str() {
 fn run_snapshot_completed_has_no_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Completed,
         cycle_history: Vec::new(),
         completion_rounds: 1,
@@ -906,6 +916,7 @@ fn run_snapshot_completed_has_no_active_run() {
 fn run_snapshot_failed_has_no_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
@@ -1029,7 +1040,9 @@ fn active_run_without_snapshot_omits_field() {
 
 #[test]
 fn payload_record_with_record_kind_and_producer_round_trip() {
-    use ralph_burning::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
+    use ralph_burning::contexts::workflow_composition::panel_contracts::{
+        RecordKind, RecordProducer,
+    };
 
     let record = PayloadRecord {
         payload_id: "test-payload-1".to_owned(),

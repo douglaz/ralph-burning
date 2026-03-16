@@ -30,6 +30,10 @@ pub enum ProjectStatusSummary {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunSnapshot {
     pub active_run: Option<ActiveRun>,
+    /// Preserved across failure/pause/rollback so resume can recover the
+    /// interrupted cycle baseline even after `active_run` is cleared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interrupted_run: Option<ActiveRun>,
     pub status: RunStatus,
     pub cycle_history: Vec<CycleHistoryEntry>,
     pub completion_rounds: u32,
@@ -45,6 +49,7 @@ impl RunSnapshot {
     pub fn initial() -> Self {
         Self {
             active_run: None,
+            interrupted_run: None,
             status: RunStatus::NotStarted,
             cycle_history: Vec::new(),
             completion_rounds: 0,

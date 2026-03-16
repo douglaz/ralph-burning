@@ -300,6 +300,20 @@ fn current_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
         })
 }
 
+fn interrupted_active_run(snapshot: &RunSnapshot) -> AppResult<&ActiveRun> {
+    snapshot
+        .interrupted_run
+        .as_ref()
+        .ok_or_else(|| AppError::ResumeFailed {
+            reason: "run snapshot lost interrupted active_run metadata needed for resume"
+                .to_owned(),
+        })
+}
+
+fn preserve_interrupted_run(snapshot: &mut RunSnapshot) {
+    snapshot.interrupted_run = snapshot.active_run.clone();
+}
+
 fn carry_forward_active_run(
     snapshot: &RunSnapshot,
     run_id: &RunId,
@@ -397,6 +411,12 @@ fn count_final_review_restarts(events: &[JournalEvent]) -> u32 {
                     == Some(StageId::FinalReview.as_str())
         })
         .count() as u32
+}
+
+fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
+    Ok(interrupted_active_run(snapshot)?
+        .prompt_hash_at_cycle_start
+        .clone())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -590,6 +610,7 @@ where
             0,
             None,
         )),
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: snapshot.cycle_history.clone(),
         completion_rounds: 1,
@@ -900,7 +921,7 @@ where
     )?;
 
     let mut seq = journal::last_sequence(&events);
-    let prompt_change_baseline = project_record.prompt_hash.clone();
+    let prompt_change_baseline = prompt_change_baseline(&snapshot)?;
     let stage_id_plan = stage_plan
         .iter()
         .map(|entry| entry.stage_id)
@@ -1136,6 +1157,7 @@ where
         count_final_review_restarts(&visible_events),
         resumed_snapshot,
     ));
+    snapshot.interrupted_run = None;
     snapshot.completion_rounds = snapshot
         .completion_rounds
         .max(resume_state.cursor.completion_round);
@@ -3769,6 +3791,7 @@ fn complete_run(
     // so that `run resume` can pick the run back up.
     if let Err(e) = completion_guard(snapshot, amendment_queue_port, base_dir, project_id) {
         if matches!(&e, AppError::CompletionBlocked { .. }) {
+            preserve_interrupted_run(snapshot);
             snapshot.status = RunStatus::Failed;
             snapshot.active_run = None;
             snapshot.status_summary = format!("blocked: {}", e);
@@ -3786,6 +3809,7 @@ fn complete_run(
 
     snapshot.status = RunStatus::Completed;
     snapshot.active_run = None;
+    snapshot.interrupted_run = None;
     snapshot.completion_rounds = snapshot.completion_rounds.max(1);
     snapshot.status_summary = "completed".to_owned();
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
@@ -3810,6 +3834,7 @@ fn pause_run(
         .active_run
         .as_ref()
         .and_then(|ar| ar.stage_resolution_snapshot.clone());
+    preserve_interrupted_run(snapshot);
     snapshot.status = RunStatus::Paused;
     snapshot.active_run = None;
     snapshot.status_summary = summary;
@@ -3845,6 +3870,7 @@ async fn fail_run(
     {
         snapshot.last_stage_resolution_snapshot = Some(resolution);
     }
+    preserve_interrupted_run(snapshot);
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);
