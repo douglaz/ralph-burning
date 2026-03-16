@@ -3290,7 +3290,7 @@ fn build_test_requirements_service_with_defaults(
     ralph_burning::adapters::fs::FsSessionStore,
     ralph_burning::adapters::fs::FsRequirementsStore,
 > {
-    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service_for_test(
         adapter,
         effective_config,
     )

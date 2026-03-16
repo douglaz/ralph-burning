@@ -307,6 +307,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_run_resume_non_standard(&mut m);
     register_run_rollback(&mut m);
     register_requirements_drafting(&mut m);
+    register_backend_requirements(&mut m);
     register_daemon_lifecycle(&mut m);
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
@@ -6311,6 +6312,154 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "completed" {
             return Err(format!("expected 'completed', got '{status}'"));
         }
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Backend Requirements – Real Backend Path (1 scenario)
+// ===========================================================================
+
+fn register_backend_requirements(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "backend.requirements.real_backend_path", || {
+        // Verify that `requirements quick` runs through ProcessBackendAdapter
+        // when `RALPH_BURNING_BACKEND=process` and fake binaries are on PATH.
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Create a temporary bin directory with fake claude/codex binaries
+        let bin_dir = ws.path().join("fake-bin");
+        std::fs::create_dir_all(&bin_dir)
+            .map_err(|e| format!("create fake-bin dir: {e}"))?;
+
+        // The requirements pipeline invokes four stages:
+        // question_set, requirements_draft, requirements_review, project_seed.
+        // Each needs a valid structured JSON response.
+        //
+        // We use a single fake claude that returns an appropriate JSON payload
+        // based on the contract label in stdin.
+        // Build a fake claude that returns different payloads based on the
+        // contract label found in stdin.  The script avoids external binaries
+        // (cat, grep) that may not be on PATH in sandboxed test environments.
+        // Instead it reads stdin with a `while read` loop and pattern-matches
+        // with shell `case` globs.
+        let fake_claude = r##"#!/bin/sh
+INPUT=""
+while IFS= read -r line; do
+    INPUT="$INPUT $line"
+done
+
+PAYLOAD='{"questions":[]}'
+
+case "$INPUT" in
+    *requirements:requirements_draft*)
+        PAYLOAD='{"problem_summary":"Test problem summary","goals":["Ship feature"],"non_goals":["Rewrite everything"],"constraints":["Must be backward compatible"],"acceptance_criteria":["Tests pass"],"risks_or_open_questions":[],"recommended_flow":"standard"}'
+        ;;
+    *requirements:requirements_review*)
+        PAYLOAD='{"outcome":"approved","evidence":["Looks good"],"findings":[]}'
+        ;;
+    *requirements:project_seed*)
+        PAYLOAD='{"project_id":"test-proj","project_name":"Test Project","flow":"standard","prompt_body":"Build the thing.","handoff_summary":"Ready to implement."}'
+        ;;
+esac
+
+printf '{"result":"","session_id":"fake-session","structured_output":%s}\n' "$PAYLOAD"
+"##;
+
+        std::fs::write(bin_dir.join("claude"), fake_claude)
+            .map_err(|e| format!("write fake claude: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bin_dir.join("claude"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .map_err(|e| format!("chmod fake claude: {e}"))?;
+        }
+
+        // Fake codex writes output to the --output-last-message file path.
+        // The review stage is dispatched to codex (BackendRole::Reviewer).
+        let fake_codex = r##"#!/bin/sh
+INPUT=""
+while IFS= read -r line; do
+    INPUT="$INPUT $line"
+done
+
+PAYLOAD='{"outcome":"approved","evidence":["Looks good"],"findings":[]}'
+
+# Parse --output-last-message path from args
+msg_path=""
+next_is_msg=0
+for arg in "$@"; do
+    if [ "$next_is_msg" = "1" ]; then
+        msg_path="$arg"
+        next_is_msg=0
+    fi
+    if [ "$arg" = "--output-last-message" ]; then
+        next_is_msg=1
+    fi
+done
+if [ -n "$msg_path" ]; then
+    printf '%s\n' "$PAYLOAD" > "$msg_path"
+fi
+"##;
+        std::fs::write(bin_dir.join("codex"), fake_codex)
+            .map_err(|e| format!("write fake codex: {e}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(
+                bin_dir.join("codex"),
+                std::fs::Permissions::from_mode(0o755),
+            )
+            .map_err(|e| format!("chmod fake codex: {e}"))?;
+        }
+
+        // Build PATH with our fake binaries first
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        let new_path = format!("{}:{}", bin_dir.display(), original_path);
+
+        let out = run_cli_with_env(
+            &["requirements", "quick", "--idea", "Test real backend"],
+            ws.path(),
+            &[
+                ("RALPH_BURNING_BACKEND", "process"),
+                ("PATH", &new_path),
+            ],
+        )?;
+        assert_success(&out)?;
+
+        // Verify run completed
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read requirements run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse run.json: {e}"))?;
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!(
+                "expected 'completed' for real backend path, got '{status}'"
+            ));
+        }
+
+        // Verify seed files exist
+        let seed_dir = run_dir.join("seed");
+        if !seed_dir.join("prompt.md").is_file() {
+            return Err("seed prompt.md not written".into());
+        }
+        if !seed_dir.join("project.json").is_file() {
+            return Err("seed project.json not written".into());
+        }
+
         Ok(())
     });
 }

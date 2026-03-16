@@ -567,17 +567,17 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         contract: &InvocationContract,
     ) -> AppResult<()> {
         match (backend.backend.family, contract) {
-            (BackendFamily::Claude | BackendFamily::Codex, InvocationContract::Stage(_)) => Ok(()),
-            (_, InvocationContract::Requirements { .. }) => Err(Self::capability_mismatch(
-                backend,
-                contract,
-                "ProcessBackendAdapter currently supports workflow stage invocations only",
-            )),
-            (BackendFamily::OpenRouter | BackendFamily::Stub, _) => Err(Self::capability_mismatch(
-                backend,
-                contract,
-                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
-            )),
+            (
+                BackendFamily::Claude | BackendFamily::Codex,
+                InvocationContract::Stage(_) | InvocationContract::Requirements { .. },
+            ) => Ok(()),
+            (BackendFamily::OpenRouter | BackendFamily::Stub, _) => {
+                Err(Self::capability_mismatch(
+                    backend,
+                    contract,
+                    "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
+                ))
+            }
         }
     }
 

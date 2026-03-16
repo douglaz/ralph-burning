@@ -264,3 +264,13 @@ Feature: Requirements Drafting and Project Seed Handoff
     Then the run remains in "completed" status
     And all seed files and history are preserved
     And the journal contains seed_generated but not run_completed
+
+  # RD-034
+  @backend.requirements.real_backend_path
+  Scenario: Real backend path exercises process adapter for requirements
+    Given a workspace with RALPH_BURNING_BACKEND=process
+    And fake claude and codex binaries on PATH that return valid structured output
+    When the user runs "requirements quick --idea 'Test real backend'"
+    Then the requirements pipeline uses the process backend adapter
+    And the run status is "completed"
+    And seed files are written to the run directory

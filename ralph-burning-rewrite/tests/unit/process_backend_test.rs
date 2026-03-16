@@ -256,7 +256,7 @@ async fn process_backend_accepts_stage_contracts_for_claude_and_codex() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn process_backend_rejects_unsupported_backend_families_and_requirements() {
+async fn process_backend_rejects_unsupported_backend_families() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, openrouter_request) = request_fixture(BackendFamily::OpenRouter);
 
@@ -281,22 +281,45 @@ async fn process_backend_rejects_unsupported_backend_families_and_requirements()
         }
         other => panic!("expected CapabilityMismatch, got: {other:?}"),
     }
+}
 
-    let (_dir, mut requirements_request) = request_fixture(BackendFamily::Claude);
-    requirements_request.contract = InvocationContract::Requirements {
+#[tokio::test(flavor = "current_thread")]
+async fn process_backend_accepts_requirements_contracts_for_claude_and_codex() {
+    let adapter = ProcessBackendAdapter::new();
+
+    for family in [BackendFamily::Claude, BackendFamily::Codex] {
+        let (_dir, mut request) = request_fixture(family);
+        request.contract = InvocationContract::Requirements {
+            label: "requirements:question_set".to_owned(),
+        };
+        adapter
+            .check_capability(&request.resolved_target, &request.contract)
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "requirements should be accepted for {}: {e}",
+                    family.as_str()
+                )
+            });
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn process_backend_rejects_requirements_for_unsupported_families() {
+    let adapter = ProcessBackendAdapter::new();
+
+    let (_dir, mut openrouter_request) = request_fixture(BackendFamily::OpenRouter);
+    openrouter_request.contract = InvocationContract::Requirements {
         label: "requirements:question_set".to_owned(),
     };
-    let requirements_error = adapter
+    let error = adapter
         .check_capability(
-            &requirements_request.resolved_target,
-            &requirements_request.contract,
+            &openrouter_request.resolved_target,
+            &openrouter_request.contract,
         )
         .await
-        .expect_err("requirements should be rejected");
-    assert!(matches!(
-        requirements_error,
-        AppError::CapabilityMismatch { .. }
-    ));
+        .expect_err("openrouter requirements should be rejected");
+    assert!(matches!(error, AppError::CapabilityMismatch { .. }));
 }
 
 // ── Availability checks ─────────────────────────────────────────────────────
@@ -1114,30 +1137,85 @@ async fn codex_invalid_last_message_returns_schema_validation_failure() {
     }
 }
 
-// ── invoke() rejects Requirements contract with CapabilityMismatch ──────────
+// ── invoke() routes Requirements contract through structured output path ─────
 
 #[tokio::test(flavor = "current_thread")]
-async fn invoke_rejects_requirements_contract_with_capability_mismatch() {
+async fn invoke_requirements_contract_via_claude() {
     let adapter = ProcessBackendAdapter::new();
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let payload_json = serde_json::json!({
+        "questions": [
+            {"id": "q1", "prompt": "What language?", "required": true}
+        ]
+    });
+
+    // Write pre-baked envelope to a file and use the same write_fake_claude
+    // pattern that existing tests use (reads stdin, outputs envelope file).
     let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    let envelope_file = request.working_dir.join("req-claude-envelope.json");
+    {
+        let envelope = serde_json::json!({
+            "type": "result",
+            "result": "",
+            "session_id": "req-session-1",
+            "structured_output": payload_json,
+        });
+        fs::write(&envelope_file, serde_json::to_string(&envelope).unwrap())
+            .expect("write envelope file");
+    }
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
     request.contract = InvocationContract::Requirements {
         label: "requirements:question_set".to_owned(),
     };
 
-    let error = adapter
+    let result = adapter
         .invoke(request)
         .await
-        .expect_err("requirements should be rejected at invoke");
+        .expect("requirements invoke should succeed");
+    assert_eq!(result.parsed_payload, payload_json);
+    assert_eq!(
+        result.metadata.session_id.as_deref(),
+        Some("req-session-1")
+    );
+}
 
-    match error {
-        AppError::CapabilityMismatch { details, .. } => {
-            assert!(
-                details.contains("stage"),
-                "should mention stage-only support: {details}"
-            );
-        }
-        other => panic!("expected CapabilityMismatch, got: {other:?}"),
-    }
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_requirements_contract_via_codex() {
+    let adapter = ProcessBackendAdapter::new();
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let payload_json = serde_json::json!({
+        "questions": [
+            {"id": "q1", "prompt": "Describe the feature", "required": true}
+        ]
+    });
+
+    // Write pre-baked payload to a file and use the same write_fake_codex
+    // pattern that existing tests use.
+    let (_dir, mut request) = request_fixture(BackendFamily::Codex);
+    let payload_file = request.working_dir.join("req-codex-payload.json");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&payload_json).unwrap(),
+    )
+    .expect("write payload file");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    request.contract = InvocationContract::Requirements {
+        label: "requirements:question_set".to_owned(),
+    };
+
+    let result = adapter
+        .invoke(request)
+        .await
+        .expect("codex requirements invoke should succeed");
+    assert_eq!(result.parsed_payload, payload_json);
 }
 
 // ── invoke() rejects OpenRouter with CapabilityMismatch ─────────────────────

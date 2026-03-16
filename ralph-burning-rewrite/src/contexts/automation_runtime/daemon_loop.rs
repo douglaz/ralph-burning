@@ -1163,13 +1163,18 @@ where
     }
 }
 
-/// Build a requirements service for daemon-initiated requirements runs, using the
-/// provided `StubBackendAdapter`. This is `pub(crate)` so that tests can call the
-/// exact same construction path the daemon uses, guaranteeing that a regression in
-/// workspace-default wiring is caught by the test suite.
-///
-/// Honors workspace backend/model defaults from `EffectiveConfig` (same as CLI path).
-pub fn build_requirements_service(
+/// Build a requirements service for production daemon use via the shared builder.
+/// Uses the same environment-driven adapter selection as the CLI requirements path.
+fn build_requirements_service_default(
+    effective_config: &EffectiveConfig,
+) -> AppResult<crate::composition::agent_execution_builder::ProductionRequirementsService> {
+    crate::composition::agent_execution_builder::build_requirements_service(effective_config)
+}
+
+/// Test-only seam: build a requirements service from an explicit
+/// `StubBackendAdapter`.  Tests call this to inject custom stub payloads while
+/// exercising the same workspace-default wiring the daemon uses.
+pub fn build_requirements_service_for_test(
     adapter: crate::adapters::stub_backend::StubBackendAdapter,
     effective_config: &EffectiveConfig,
 ) -> AppResult<
@@ -1193,43 +1198,6 @@ pub fn build_requirements_service(
     let requirements_store = FsRequirementsStore;
     Ok(RequirementsService::new(agent_service, requirements_store)
         .with_workspace_defaults(workspace_defaults))
-}
-
-/// Build a requirements service for production daemon use. Creates a default
-/// `StubBackendAdapter` with `RALPH_BURNING_TEST_LABEL_OVERRIDES` applied, then
-/// delegates to `build_requirements_service`.
-fn build_requirements_service_default(
-    effective_config: &EffectiveConfig,
-) -> AppResult<
-    crate::contexts::requirements_drafting::service::RequirementsService<
-        crate::adapters::stub_backend::StubBackendAdapter,
-        crate::adapters::fs::FsRawOutputStore,
-        crate::adapters::fs::FsSessionStore,
-        crate::adapters::fs::FsRequirementsStore,
-    >,
-> {
-    use crate::adapters::stub_backend::StubBackendAdapter;
-
-    let mut adapter = StubBackendAdapter::default();
-
-    // Test-only seam: same label override mechanism as the CLI handler.
-    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
-        if let Ok(overrides) = serde_json::from_str::<
-            std::collections::HashMap<String, serde_json::Value>,
-        >(&overrides_json)
-        {
-            for (label, payload) in overrides {
-                let full_label = if label.starts_with("requirements:") {
-                    label
-                } else {
-                    format!("requirements:{label}")
-                };
-                adapter = adapter.with_label_payload(full_label, payload);
-            }
-        }
-    }
-
-    build_requirements_service(adapter, effective_config)
 }
 
 async fn wait_for_shutdown_signal() -> AppResult<()> {

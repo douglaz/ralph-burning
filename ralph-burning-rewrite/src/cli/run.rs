@@ -4,15 +4,11 @@ use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRollbackPointStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsSessionStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRollbackPointStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
 };
-use crate::adapters::process_backend::ProcessBackendAdapter;
-use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
-use crate::adapters::BackendAdapter;
-use crate::contexts::agent_execution::service::AgentExecutionService;
+use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
@@ -74,84 +70,8 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
 }
 
 pub fn build_agent_execution_service(
-) -> AppResult<AgentExecutionService<BackendAdapter, FsRawOutputStore, FsSessionStore>> {
-    let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => "process".to_owned(),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(AppError::InvalidConfigValue {
-                key: "RALPH_BURNING_BACKEND".to_owned(),
-                value: "<non-unicode>".to_owned(),
-                reason: "expected one of stub, process".to_owned(),
-            });
-        }
-    };
-
-    let adapter = match backend_selector.as_str() {
-        "stub" => BackendAdapter::Stub(build_stub_backend_adapter()),
-        "process" => BackendAdapter::Process(ProcessBackendAdapter::new()),
-        other => {
-            return Err(AppError::InvalidConfigValue {
-                key: "RALPH_BURNING_BACKEND".to_owned(),
-                value: other.to_owned(),
-                reason: "expected one of stub, process".to_owned(),
-            });
-        }
-    };
-
-    Ok(AgentExecutionService::new(
-        adapter,
-        FsRawOutputStore,
-        FsSessionStore,
-    ))
-}
-
-fn build_stub_backend_adapter() -> StubBackendAdapter {
-    let mut adapter = StubBackendAdapter::default();
-
-    // Test-only injection seam: environment variables configure the stub backend
-    // to simulate failure modes that aren't reachable through normal CLI usage.
-    if std::env::var("RALPH_BURNING_TEST_BACKEND_UNAVAILABLE").is_ok() {
-        adapter = adapter.unavailable();
-    }
-    if let Ok(stage_str) = std::env::var("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE") {
-        if let Ok(stage_id) = stage_str.parse::<StageId>() {
-            adapter = adapter.with_invoke_failure(stage_id);
-        }
-    }
-    // Test-only seam: configure a stage to fail the first N invocations, then succeed.
-    // Format: "stage_id:count" e.g. "implementation:1"
-    if let Ok(spec) = std::env::var("RALPH_BURNING_TEST_TRANSIENT_FAILURE") {
-        if let Some((stage_str, count_str)) = spec.split_once(':') {
-            if let (Ok(stage_id), Ok(count)) =
-                (stage_str.parse::<StageId>(), count_str.parse::<u32>())
-            {
-                adapter = adapter.with_transient_failure(stage_id, count);
-            }
-        }
-    }
-    // Test-only seam: JSON map from stage-id string to payload JSON.
-    // Values may be a single object or an array of objects (payload sequence).
-    // Example: {"completion_panel": {"outcome":"conditionally_approved",...}}
-    // Example sequence: {"qa": [{"outcome":"request_changes",...}, {"outcome":"approved",...}]}
-    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_STAGE_OVERRIDES") {
-        if let Ok(overrides) = serde_json::from_str::<
-            std::collections::HashMap<String, serde_json::Value>,
-        >(&overrides_json)
-        {
-            for (stage_str, payload) in overrides {
-                if let Ok(stage_id) = stage_str.parse::<StageId>() {
-                    if let Some(arr) = payload.as_array() {
-                        adapter = adapter.with_stage_payload_sequence(stage_id, arr.clone());
-                    } else {
-                        adapter = adapter.with_stage_payload(stage_id, payload);
-                    }
-                }
-            }
-        }
-    }
-
-    adapter
+) -> AppResult<agent_execution_builder::ProductionAgentService> {
+    agent_execution_builder::build_agent_execution_service()
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {

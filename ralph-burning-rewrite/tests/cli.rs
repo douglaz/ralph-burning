@@ -3705,6 +3705,7 @@ fn requirements_quick_creates_completed_run() {
 
     let output = Command::new(binary())
         .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements quick");
@@ -3762,6 +3763,7 @@ fn requirements_show_displays_completed_run() {
     // First create a quick run
     let output = Command::new(binary())
         .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements quick");
@@ -3780,6 +3782,7 @@ fn requirements_show_displays_completed_run() {
     // Now show the run
     let output = Command::new(binary())
         .args(["requirements", "show", &run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements show");
@@ -3819,6 +3822,7 @@ fn requirements_draft_with_empty_questions_completes() {
 
     let output = Command::new(binary())
         .args(["requirements", "draft", "--idea", "Simple refactoring"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements draft");
@@ -3843,6 +3847,7 @@ fn requirements_show_on_nonexistent_run_fails() {
 
     let output = Command::new(binary())
         .args(["requirements", "show", "nonexistent-run"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements show");
@@ -3942,6 +3947,7 @@ fn requirements_answer_happy_path_completes_run() {
     // Run requirements answer with EDITOR=true (no-op editor)
     let output = Command::new(binary())
         .args(["requirements", "answer", run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .env("EDITOR", "true")
         .current_dir(temp_dir.path())
         .output()
@@ -3981,6 +3987,7 @@ fn requirements_answer_on_nonexistent_run_fails() {
 
     let output = Command::new(binary())
         .args(["requirements", "answer", "nonexistent-run"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements answer");

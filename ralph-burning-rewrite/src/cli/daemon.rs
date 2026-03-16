@@ -16,7 +16,7 @@ use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
 
-use super::run::build_agent_execution_service;
+use crate::composition::agent_execution_builder::build_agent_execution_service;
 
 #[derive(Debug, Args)]
 pub struct DaemonCommand {
