@@ -49,7 +49,6 @@ pub fn evaluate_prompt_change_on_resume(
     seq: &mut u64,
     snapshot: &mut RunSnapshot,
     cursor: &StageCursor,
-    current_stage_index: usize,
     stage_plan: &[StageId],
     planning_stage: StageId,
     prompt_hash_at_cycle_start: &str,
@@ -92,6 +91,16 @@ pub fn evaluate_prompt_change_on_resume(
             ),
         }),
         PromptChangeAction::RestartCycle => {
+            let next_stage_index = stage_plan
+                .iter()
+                .position(|stage_id| *stage_id == planning_stage)
+                .ok_or_else(|| AppError::CorruptRecord {
+                    file: "journal.ndjson".to_owned(),
+                    details: format!(
+                        "planning stage '{}' is not part of the active stage plan",
+                        planning_stage.as_str()
+                    ),
+                })?;
             append_prompt_change_warning(
                 journal_store,
                 log_write,
@@ -112,22 +121,11 @@ pub fn evaluate_prompt_change_on_resume(
                 project_id,
                 cursor.cycle,
                 cursor.completion_round,
-                &stage_plan[current_stage_index..],
+                &stage_plan[next_stage_index..],
             )?;
             snapshot.last_stage_resolution_snapshot = None;
             run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
             sync_project_prompt_hash(base_dir, project_id, &current_prompt_hash)?;
-
-            let next_stage_index = stage_plan
-                .iter()
-                .position(|stage_id| *stage_id == planning_stage)
-                .ok_or_else(|| AppError::CorruptRecord {
-                    file: "journal.ndjson".to_owned(),
-                    details: format!(
-                        "planning stage '{}' is not part of the active stage plan",
-                        planning_stage.as_str()
-                    ),
-                })?;
             let next_cursor = StageCursor::new(
                 planning_stage,
                 cursor.cycle,
@@ -350,11 +348,12 @@ mod tests {
         cycle: u32,
         completion_round: u32,
     ) -> (PayloadRecord, ArtifactRecord) {
+        let record_id = format!("{}-c{}-cr{}", stage_id.as_str(), cycle, completion_round);
         let producer = RecordProducer::System {
             component: "test".to_owned(),
         };
         let payload = PayloadRecord {
-            payload_id: "supporting-payload".to_owned(),
+            payload_id: format!("{record_id}-payload"),
             stage_id,
             cycle,
             attempt: 1,
@@ -365,7 +364,7 @@ mod tests {
             completion_round,
         };
         let artifact = ArtifactRecord {
-            artifact_id: "supporting-artifact".to_owned(),
+            artifact_id: format!("{record_id}-artifact"),
             payload_id: payload.payload_id.clone(),
             stage_id,
             created_at: payload.created_at,
@@ -406,7 +405,6 @@ mod tests {
             &mut seq,
             &mut snapshot,
             &cursor,
-            0,
             &[StageId::Review, StageId::CompletionPanel],
             StageId::Planning,
             &original_prompt_hash,
@@ -455,8 +453,7 @@ mod tests {
             &mut seq,
             &mut snapshot,
             &cursor,
-            0,
-            &[StageId::Review, StageId::CompletionPanel],
+            &[StageId::Planning, StageId::Review, StageId::CompletionPanel],
             StageId::Planning,
             &original_prompt_hash,
             PromptChangeAction::RestartCycle,
@@ -481,6 +478,87 @@ mod tests {
                 .expect("artifact listing")
                 .len(),
             1
+        );
+    }
+
+    #[test]
+    fn restart_cycle_clears_current_cycle_supporting_records_from_planning_onward() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, original_prompt_hash) =
+            setup_project(base_dir, "prompt-restart-cleanup").expect("project setup");
+        std::fs::write(
+            project_root(base_dir, &project_id).join("prompt.md"),
+            "# Prompt\n\nChanged prompt.\n",
+        )
+        .expect("write changed prompt");
+
+        for stage_id in [
+            StageId::PromptReview,
+            StageId::Planning,
+            StageId::CompletionPanel,
+            StageId::FinalReview,
+        ] {
+            let (payload, artifact) = supporting_record(stage_id, 1, 1);
+            FsPayloadArtifactWriteStore
+                .write_payload_artifact_pair(base_dir, &project_id, &payload, &artifact)
+                .expect("write supporting record");
+        }
+
+        let mut seq = 1;
+        let mut snapshot = RunSnapshot::initial();
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let result = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            &[
+                StageId::PromptReview,
+                StageId::Planning,
+                StageId::Review,
+                StageId::CompletionPanel,
+                StageId::FinalReview,
+            ],
+            StageId::Planning,
+            &original_prompt_hash,
+            PromptChangeAction::RestartCycle,
+        )
+        .expect("restart_cycle should succeed");
+
+        let PromptChangeResumeDecision::RestartCycle {
+            next_cursor,
+            next_stage_index,
+            ..
+        } = result
+        else {
+            panic!("expected restart_cycle decision");
+        };
+        assert_eq!(next_cursor.stage, StageId::Planning);
+        assert_eq!(next_stage_index, 1);
+
+        let remaining_payloads = FsArtifactStore
+            .list_payloads(base_dir, &project_id)
+            .expect("payload listing");
+        assert_eq!(remaining_payloads.len(), 1);
+        assert_eq!(remaining_payloads[0].stage_id, StageId::PromptReview);
+
+        let remaining_artifacts = FsArtifactStore
+            .list_artifacts(base_dir, &project_id)
+            .expect("artifact listing");
+        assert_eq!(remaining_artifacts.len(), 1);
+        assert_eq!(
+            read_project_record(base_dir, &project_id).prompt_hash,
+            FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
         );
     }
 }

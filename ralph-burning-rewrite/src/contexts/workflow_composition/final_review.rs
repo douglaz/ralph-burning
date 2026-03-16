@@ -65,6 +65,7 @@ pub struct FinalReviewResult {
 struct ReviewerProposalRecord {
     member_index: usize,
     reviewer_id: String,
+    required: bool,
     backend_family: String,
     model_id: String,
     target: ResolvedBackendTarget,
@@ -291,6 +292,7 @@ where
         reviewer_records.push(ReviewerProposalRecord {
             member_index: idx,
             reviewer_id,
+            required: member.required,
             backend_family: member.target.backend.family.to_string(),
             model_id: member.target.model.model_id.clone(),
             target: member.target.clone(),
@@ -403,7 +405,7 @@ where
         .collect();
 
     let mut reviewer_votes = Vec::new();
-    for reviewer in &reviewer_records {
+    for (idx, reviewer) in reviewer_records.iter().enumerate() {
         let vote_payload = invoke_final_review_member(
             agent_service,
             project_root,
@@ -432,7 +434,20 @@ where
             reviewer_timeout_for_backend(reviewer.target.backend.family),
             cancellation_token.clone(),
         )
-        .await?;
+        .await;
+
+        let vote_payload = match vote_payload {
+            Ok(payload) => payload,
+            Err(error) if !reviewer.required => {
+                if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
+                    < min_reviewers
+                {
+                    return Err(error);
+                }
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
 
         let votes: FinalReviewVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {
@@ -908,9 +923,27 @@ mod tests {
     #[derive(Clone, Default)]
     struct RecordingFinalReviewAdapter {
         requests: Arc<Mutex<Vec<(String, String)>>>,
+        proposal_failures: Arc<HashSet<String>>,
+        vote_failures: Arc<HashSet<String>>,
     }
 
     impl RecordingFinalReviewAdapter {
+        fn with_proposal_failure(member_key: &str) -> Self {
+            Self {
+                requests: Arc::default(),
+                proposal_failures: Arc::new(HashSet::from([member_key.to_owned()])),
+                vote_failures: Arc::default(),
+            }
+        }
+
+        fn with_vote_failure(member_key: &str) -> Self {
+            Self {
+                requests: Arc::default(),
+                proposal_failures: Arc::default(),
+                vote_failures: Arc::new(HashSet::from([member_key.to_owned()])),
+            }
+        }
+
         fn invocation_ids_for(&self, contract_label: &str) -> Vec<String> {
             self.requests
                 .lock()
@@ -952,13 +985,29 @@ mod tests {
                 .push((contract_label.clone(), request.invocation_id.clone()));
 
             if contract_label == "final_review:reviewer"
-                && request.invocation_id.contains("reviewer-3")
+                && self
+                    .proposal_failures
+                    .iter()
+                    .any(|member_key| request.invocation_id.contains(member_key))
             {
                 return Err(AppError::InvocationFailed {
                     backend: request.resolved_target.backend.family.to_string(),
                     contract_id: contract_label,
                     failure_class: crate::shared::domain::FailureClass::TransportFailure,
                     details: "optional reviewer failed during proposals".to_owned(),
+                });
+            }
+            if contract_label == "final_review:voter"
+                && self
+                    .vote_failures
+                    .iter()
+                    .any(|member_key| request.invocation_id.contains(member_key))
+            {
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: contract_label,
+                    failure_class: crate::shared::domain::FailureClass::TransportFailure,
+                    details: "optional reviewer failed during voting".to_owned(),
                 });
             }
 
@@ -1048,6 +1097,7 @@ mod tests {
                 .unwrap_or(1)
                 .saturating_sub(1),
             reviewer_id: reviewer_id.to_owned(),
+            required: true,
             backend_family: "claude".to_owned(),
             model_id: format!("model-{reviewer_id}"),
             target: ResolvedBackendTarget::new(
@@ -1109,6 +1159,7 @@ mod tests {
                 ReviewerProposalRecord {
                     member_index: 0,
                     reviewer_id: final_review_reviewer_id(0),
+                    required: true,
                     backend_family: "claude".to_owned(),
                     model_id: shared_model.clone(),
                     target: ResolvedBackendTarget::new(
@@ -1126,6 +1177,7 @@ mod tests {
                 ReviewerProposalRecord {
                     member_index: 1,
                     reviewer_id: final_review_reviewer_id(1),
+                    required: true,
                     backend_family: "claude".to_owned(),
                     model_id: shared_model,
                     target: ResolvedBackendTarget::new(
@@ -1172,7 +1224,7 @@ mod tests {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
         let project_id = setup_project(base_dir, "fr-sticky-reviewers");
-        let adapter = RecordingFinalReviewAdapter::default();
+        let adapter = RecordingFinalReviewAdapter::with_proposal_failure("reviewer-3");
         let agent_service =
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review").expect("run id");
@@ -1242,6 +1294,72 @@ mod tests {
             all_ids.len(),
             unique_ids.len(),
             "every final-review invocation id must be distinct: {all_ids:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_skips_optional_vote_failures_when_min_reviewers_still_hold() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-optional-vote-failure");
+        let adapter = RecordingFinalReviewAdapter::with_vote_failure("reviewer-3");
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-vote-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
+        let panel = FinalReviewPanelResolution {
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
+                    required: true,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(
+                        BackendFamily::OpenRouter,
+                        "reviewer-3-model",
+                    ),
+                    required: false,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            &project_id,
+            &run_id,
+            &cursor,
+            &panel,
+            &planner_target,
+            2,
+            0.66,
+            2,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should tolerate optional vote failures");
+
+        assert!(result.restart_required);
+        assert_eq!(result.aggregate_payload["total_reviewers"], json!(2));
+        assert_eq!(
+            adapter.invocation_ids_for("final_review:voter").len(),
+            4,
+            "planner plus three reviewer vote attempts should be recorded"
         );
     }
 }

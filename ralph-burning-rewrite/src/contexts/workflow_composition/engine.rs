@@ -940,7 +940,6 @@ where
         &mut seq,
         &mut snapshot,
         &resume_state.cursor,
-        resume_state.stage_index,
         &stage_id_plan,
         semantics.planning_stage,
         &prompt_change_baseline,
