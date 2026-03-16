@@ -8336,6 +8336,50 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if producer_json["type"] != "agent" {
                 return Err("expected producer type 'agent'".to_owned());
             }
+
+            // ── Behavioral: exercise actual prompt-review accept via CLI ──
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "pr-accept", "standard")?;
+            let out = run_cli(&["run", "start"], ws.path())?;
+            assert_success(&out)?;
+
+            // Journal must contain prompt_review stage_entered and stage_completed.
+            let events = read_journal(&ws, "pr-accept")?;
+            let has_pr_entered = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("prompt_review")
+            });
+            if !has_pr_entered {
+                return Err("journal missing stage_entered for prompt_review".to_owned());
+            }
+            let has_pr_completed = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_completed")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("prompt_review")
+            });
+            if !has_pr_completed {
+                return Err("journal missing stage_completed for prompt_review".to_owned());
+            }
+
+            // prompt.original.md must exist after accept (prompt was replaced).
+            let project_dir = ws.path().join(".ralph-burning/projects/pr-accept");
+            if !project_dir.join("prompt.original.md").exists() {
+                return Err("prompt.original.md missing after prompt-review accept".to_owned());
+            }
+
+            // Supporting + primary records must include prompt-review artifacts.
+            let payloads = count_payload_files(&ws, "pr-accept")?;
+            if payloads < 11 {
+                return Err(format!(
+                    "expected >= 11 payloads (stages + prompt-review supporting), got {payloads}"
+                ));
+            }
+
             Ok(())
         }
     );
@@ -8387,6 +8431,37 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if primary.decision != PromptReviewDecision::Rejected {
                 return Err("expected Rejected decision".to_owned());
             }
+
+            // ── Behavioral: exercise prompt-review rejection via CLI ──
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "pr-reject", "standard")?;
+            // Override prompt_review: old-format readiness.ready=false → validator rejects.
+            let overrides = serde_json::json!({
+                "prompt_review": {
+                    "readiness": {"ready": false, "risks": ["ambiguous scope"]}
+                }
+            });
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
+            )?;
+            assert_failure(&out)?;
+
+            // Run must have failed status.
+            let snapshot = read_run_snapshot(&ws, "pr-reject")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
+                return Err("expected failed status after prompt-review rejection".to_owned());
+            }
+
+            // Supporting records (refiner + validators) must still be written.
+            let payloads = count_payload_files(&ws, "pr-reject")?;
+            if payloads < 2 {
+                return Err(format!(
+                    "expected >= 2 supporting payloads after rejection, got {payloads}"
+                ));
+            }
+
             Ok(())
         }
     );
@@ -8602,6 +8677,44 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if restored.executed_voters.len() != 2 {
                 return Err("executed voters should survive round-trip".to_owned());
             }
+
+            // ── Behavioral: exercise completion panel Complete path via CLI ──
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "cp-complete", "standard")?;
+            let out = run_cli(&["run", "start"], ws.path())?;
+            assert_success(&out)?;
+
+            // Journal must contain completion_panel stage events.
+            let events = read_journal(&ws, "cp-complete")?;
+            let has_cp_entered = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("completion_panel")
+            });
+            if !has_cp_entered {
+                return Err("journal missing stage_entered for completion_panel".to_owned());
+            }
+            let has_cp_completed = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_completed")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("completion_panel")
+            });
+            if !has_cp_completed {
+                return Err("journal missing stage_completed for completion_panel".to_owned());
+            }
+
+            // Completion produces supporting + aggregate records.
+            let payloads = count_payload_files(&ws, "cp-complete")?;
+            if payloads < 11 {
+                return Err(format!(
+                    "expected >= 11 payloads (stages + panel records), got {payloads}"
+                ));
+            }
+
             Ok(())
         }
     );
@@ -8643,6 +8756,49 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             if next.stage != StageId::Planning {
                 return Err("continue_work should restart from planning".to_owned());
             }
+
+            // ── Behavioral: exercise ContinueWork → completion_round advance via CLI ──
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "cp-continue", "standard")?;
+            // First round: all completers vote continue_work.
+            // Second round: all completers vote complete.
+            let overrides = serde_json::json!({
+                "completion_panel": [
+                    {"vote_complete": false, "evidence": ["Needs more work"], "remaining_work": ["Fix issues"]},
+                    {"vote_complete": true, "evidence": ["All done"], "remaining_work": []}
+                ]
+            });
+            let out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
+            )?;
+            assert_success(&out)?;
+
+            // Journal must contain completion_round_advanced event.
+            let events = read_journal(&ws, "cp-continue")?;
+            let has_round_advanced = events.iter().any(|e| {
+                e.get("event_type").and_then(|v| v.as_str())
+                    == Some("completion_round_advanced")
+            });
+            if !has_round_advanced {
+                return Err("journal missing completion_round_advanced event".to_owned());
+            }
+
+            // Two completion_panel stage_entered events (one per round).
+            let cp_entered_count = events.iter().filter(|e| {
+                e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+                    && e.get("details")
+                        .and_then(|d| d.get("stage_id"))
+                        .and_then(|v| v.as_str())
+                        == Some("completion_panel")
+            }).count();
+            if cp_entered_count < 2 {
+                return Err(format!(
+                    "expected >= 2 completion_panel stage_entered events, got {cp_entered_count}"
+                ));
+            }
+
             Ok(())
         }
     );

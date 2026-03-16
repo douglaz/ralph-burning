@@ -17,7 +17,6 @@ use std::path::Path;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::adapters::fs::FileSystem;
 use std::time::Duration;
 
 use crate::contexts::agent_execution::model::{
@@ -46,8 +45,10 @@ pub struct PromptReviewResult {
     pub primary_payload: Value,
     /// The primary artifact text.
     pub primary_artifact: String,
-    /// New prompt hash after replacement.
-    pub new_prompt_hash: String,
+    /// The original prompt text (before refinement) for writing prompt.original.md.
+    pub original_prompt: String,
+    /// The refined prompt text for replacing prompt.md.
+    pub refined_prompt: String,
 }
 
 /// Execute the prompt-review panel workflow.
@@ -68,6 +69,7 @@ pub async fn execute_prompt_review<A, R, S>(
     min_reviewers: usize,
     prompt_reference: &str,
     rollback_count: u32,
+    refiner_timeout: Duration,
     timeout_for_backend: &dyn Fn(BackendFamily) -> Duration,
     cancellation_token: CancellationToken,
 ) -> AppResult<PromptReviewResult>
@@ -86,7 +88,6 @@ where
 
     // ── Step 1: Run the refiner ────────────────────────────────────────────
     let refiner_target = &panel.refiner;
-    let refiner_timeout = timeout_for_backend(refiner_target.backend.family);
     let refinement_payload = invoke_panel_member(
         agent_service,
         base_dir,
@@ -225,14 +226,11 @@ where
     }
 
     // ── Step 6: Success path ──────────────────────────────────────────────
-    // Write prompt.original.md, replace prompt.md, update prompt hash.
-    let new_hash = FileSystem::replace_prompt_atomically(
-        base_dir,
-        project_id,
-        &original_prompt,
-        &refinement.refined_prompt,
-    )?;
-
+    // Do NOT mutate prompt files here. Return the texts so the caller can
+    // write prompt.original.md / prompt.md AFTER the primary record and
+    // stage_completed have been durably committed. This prevents file
+    // mutations when the subsequent journal append fails.
+    let refined = refinement.refined_prompt.clone();
     let primary = PromptReviewPrimaryPayload {
         decision: PromptReviewDecision::Accepted,
         refined_prompt: refinement.refined_prompt,
@@ -248,7 +246,8 @@ where
     Ok(PromptReviewResult {
         primary_payload,
         primary_artifact,
-        new_prompt_hash: new_hash,
+        original_prompt,
+        refined_prompt: refined,
     })
 }
 

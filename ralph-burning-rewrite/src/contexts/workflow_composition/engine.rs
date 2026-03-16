@@ -37,8 +37,8 @@ use crate::contexts::workspace_governance::config::{
     EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
 };
 use crate::shared::domain::{
-    BackendFamily, BackendRole, FailureClass, FlowPreset, ProjectId, ResolvedBackendTarget, RunId,
-    SessionPolicy, StageCursor, StageId,
+    BackendFamily, BackendPolicyRole, BackendRole, FailureClass, FlowPreset, ProjectId,
+    ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -806,12 +806,15 @@ where
         reason: error.to_string(),
     })?;
 
+    // Seed the resumed ActiveRun with the (potentially updated) resolution
+    // snapshot from drift detection so the stage can compare against it later.
+    let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(ActiveRun {
         run_id: resume_state.run_id.as_str().to_owned(),
         stage_cursor: resume_state.cursor.clone(),
         started_at: resume_state.started_at,
-        stage_resolution_snapshot: None,
+        stage_resolution_snapshot: resumed_snapshot,
     });
     snapshot.completion_rounds = snapshot
         .completion_rounds
@@ -1154,11 +1157,11 @@ where
                 Ok(CompletionPanelOutcome::Complete(completed_cursor, commit_data)) => {
                     cursor = completed_cursor;
 
-                    // Advance to next stage (acceptance_qa) FIRST, then commit
-                    // aggregate + stage_completed. This ensures that if the
-                    // transition fails, no aggregate or stage_completed leaks.
+                    // Commit aggregate + stage_completed FIRST, before any
+                    // cursor transition. If aggregate commit fails, no
+                    // aggregate or stage_completed leaks, and resume restarts
+                    // from completion_panel.
                     if stage_index + 1 == stage_plan.len() {
-                        // Commit aggregate before completing the run.
                         commit_completion_aggregate(
                             artifact_write,
                             journal_store,
@@ -1183,6 +1186,36 @@ where
                         )?;
                         return Ok(RunOutcome::Completed);
                     }
+
+                    // Commit aggregate + stage_completed before cursor advance.
+                    if let Err(error) = commit_completion_aggregate(
+                        artifact_write,
+                        journal_store,
+                        log_write,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        &cursor,
+                        stage_id,
+                        seq,
+                        &commit_data,
+                    ) {
+                        return fail_run_result(
+                            &error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Now advance cursor to next stage.
                     let next_stage = stage_plan[stage_index + 1].stage_id;
                     cursor = cursor.advance_stage(next_stage);
                     snapshot.status = RunStatus::Running;
@@ -1200,7 +1233,6 @@ where
                     if let Err(error) =
                         run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
                     {
-                        // Transition failed: no aggregate or stage_completed written.
                         return fail_run_result(
                             &AppError::StageCommitFailed {
                                 stage_id,
@@ -1210,34 +1242,6 @@ where
                                     error
                                 ),
                             },
-                            stage_id,
-                            run_id,
-                            seq,
-                            snapshot,
-                            journal_store,
-                            run_snapshot_write,
-                            base_dir,
-                            project_id,
-                            origin,
-                        )
-                        .await;
-                    }
-
-                    // Transition succeeded: now commit aggregate + stage_completed.
-                    if let Err(error) = commit_completion_aggregate(
-                        artifact_write,
-                        journal_store,
-                        log_write,
-                        base_dir,
-                        project_id,
-                        run_id,
-                        &cursor,
-                        stage_id,
-                        seq,
-                        &commit_data,
-                    ) {
-                        return fail_run_result(
-                            &error,
                             stage_id,
                             run_id,
                             seq,
@@ -1309,15 +1313,45 @@ where
                         .await;
                     }
 
-                    // Advance completion round, restart from planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
+                    let from_round = cursor.completion_round;
+                    let to_round = next_cursor.completion_round;
+
+                    // Commit aggregate + stage_completed FIRST, before any
+                    // transition writes. If this fails, no aggregate or
+                    // stage_completed leaks, and resume restarts from
+                    // completion_panel.
+                    if let Err(error) = commit_completion_aggregate(
+                        artifact_write,
+                        journal_store,
+                        log_write,
+                        base_dir,
+                        project_id,
+                        run_id,
+                        &cursor,
+                        stage_id,
+                        seq,
+                        &commit_data,
+                    ) {
+                        return fail_run_result(
+                            &error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
+                    // Emit completion_round_advanced event AFTER aggregate.
                     snapshot.completion_rounds = snapshot
                         .completion_rounds
                         .max(next_cursor.completion_round);
-
-                    // Emit completion_round_advanced event FIRST.
-                    let from_round = cursor.completion_round;
-                    let to_round = next_cursor.completion_round;
                     *seq += 1;
                     let round_event = journal::completion_round_advanced_event(
                         *seq,
@@ -1354,6 +1388,7 @@ where
                         .await;
                     }
 
+                    // Advance cursor to planning for the new round.
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(ActiveRun {
                         run_id: run_id.as_str().to_owned(),
@@ -1377,34 +1412,6 @@ where
                                     error
                                 ),
                             },
-                            stage_id,
-                            run_id,
-                            seq,
-                            snapshot,
-                            journal_store,
-                            run_snapshot_write,
-                            base_dir,
-                            project_id,
-                            origin,
-                        )
-                        .await;
-                    }
-
-                    // Transition succeeded: now commit aggregate + stage_completed.
-                    if let Err(error) = commit_completion_aggregate(
-                        artifact_write,
-                        journal_store,
-                        log_write,
-                        base_dir,
-                        project_id,
-                        run_id,
-                        &next_cursor,
-                        stage_id,
-                        seq,
-                        &commit_data,
-                    ) {
-                        return fail_run_result(
-                            &error,
                             stage_id,
                             run_id,
                             seq,
@@ -3614,10 +3621,15 @@ where
     let panel = policy.resolve_prompt_review_panel(cursor.cycle)?;
     let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
     let resolution = build_prompt_review_snapshot(stage_id, &panel);
-    // Resolve per-member timeouts via the backend family of each invoked member.
-    let policy_role = policy.policy_role_for_stage(stage_id);
+    // Resolve per-member timeouts using panel-specific roles: PromptReviewer
+    // for the refiner and PromptValidator for validators, rather than the
+    // generic stage-level Planner role.
+    let refiner_timeout = policy.timeout_for_role(
+        panel.refiner.backend.family,
+        BackendPolicyRole::PromptReviewer,
+    );
     let timeout_for_backend = |family: BackendFamily| -> Duration {
-        policy.timeout_for_role(family, policy_role)
+        policy.timeout_for_role(family, BackendPolicyRole::PromptValidator)
     };
 
     // Emit stage_entered journal event.
@@ -3676,6 +3688,7 @@ where
         min_reviewers,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
+        refiner_timeout,
         &timeout_for_backend,
         cancellation_token,
     )
@@ -3762,6 +3775,17 @@ where
             message: format!("stage_completed: {} (prompt_review accepted)", stage_id.as_str()),
         },
     );
+
+    // Write prompt.original.md, replace prompt.md, and update prompt_hash
+    // AFTER the primary record and stage_completed are durably committed.
+    // This ensures that prompt files are never mutated unless the stage
+    // has been fully committed to the journal.
+    crate::adapters::fs::FileSystem::replace_prompt_atomically(
+        base_dir,
+        project_id,
+        &result.original_prompt,
+        &result.refined_prompt,
+    )?;
 
     Ok(cursor.clone())
 }
@@ -3930,9 +3954,11 @@ where
 // ── Completion Aggregate Commit ─────────────────────────────────────────────
 
 /// Persist the completion aggregate record and emit stage_completed journal
-/// event. Called by the engine AFTER the post-panel transition has been durably
-/// committed, so that a transition failure leaves no aggregate or
-/// stage_completed event in the journal.
+/// event. Called by the engine BEFORE the post-panel transition (cursor advance,
+/// completion_round_advanced), so that an aggregate commit failure leaves no
+/// aggregate or stage_completed event and resume restarts from completion_panel.
+/// If stage_completed append fails, the aggregate payload/artifact files are
+/// cleaned up to avoid orphaned records.
 #[allow(clippy::too_many_arguments)]
 fn commit_completion_aggregate(
     artifact_write: &dyn PayloadArtifactWritePort,
@@ -3996,6 +4022,14 @@ fn commit_completion_aggregate(
     let stage_completed_line = journal::serialize_event(&stage_completed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &stage_completed_line) {
         *seq -= 1;
+        // Clean up orphaned aggregate records so they don't leak without
+        // a matching stage_completed event.
+        let _ = artifact_write.remove_payload_artifact_pair(
+            base_dir,
+            project_id,
+            &commit_data.payload_id,
+            &commit_data.artifact_id,
+        );
         return Err(AppError::StageCommitFailed {
             stage_id,
             details: format!("journal append failed during completion aggregate commit: {error}"),
@@ -4221,7 +4255,13 @@ pub fn emit_resume_drift_warning(
         );
     }
 
-    // Update the snapshot with the new resolution
+    // Update both the active_run snapshot and the top-level
+    // last_stage_resolution_snapshot so that:
+    // 1. The resumed ActiveRun carries the new resolution forward.
+    // 2. If the run fails/pauses again, fail_run/pause_run copies from
+    //    active_run.stage_resolution_snapshot to last_stage_resolution_snapshot,
+    //    so the next resume drift check uses the updated resolution.
+    snapshot.last_stage_resolution_snapshot = Some(new.clone());
     if let Some(ref mut active) = snapshot.active_run {
         active.stage_resolution_snapshot = Some(new.clone());
     }

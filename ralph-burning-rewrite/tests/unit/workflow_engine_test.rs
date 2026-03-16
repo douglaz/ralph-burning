@@ -3872,11 +3872,12 @@ async fn invocation_ids_differ_across_completion_rounds() {
     );
 }
 
-// Panel dispatch: completion_round_advanced append failure. With the new commit
-// ordering, aggregate + stage_completed happen AFTER the transition, so if
-// completion_round_advanced fails, no aggregate or stage_completed is written.
+// Panel dispatch: aggregate commit failure (stage_completed append). With the
+// commit ordering (aggregate + stage_completed BEFORE transition), if
+// stage_completed fails, no aggregate or stage_completed leaks, and resume
+// restarts from completion_panel.
 #[tokio::test]
-async fn resume_after_completion_round_advanced_append_failure_preserves_round() {
+async fn resume_after_completion_aggregate_commit_failure_preserves_round() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
@@ -3896,7 +3897,8 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // Standard flow with prompt review enabled and new commit ordering:
+    // Standard flow with commit ordering: aggregate + stage_completed first,
+    // then completion_round_advanced and cursor snapshot.
     //   1  run_started
     //   2  stage_entered(prompt_review)
     //   3  stage_completed(prompt_review)
@@ -3914,7 +3916,7 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     //   15 stage_completed(review)
     //   16 rollback_created(review)
     //   17 stage_entered(completion_panel)
-    //   18 completion_round_advanced -> fail here (before aggregate/stage_completed)
+    //   18 stage_completed(completion_panel) -> fail here (before transition)
     let failing_journal = FailingJournalStore::new(18);
 
     let first_result = engine::execute_standard_run(
@@ -3939,21 +3941,22 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     assert!(failed_snapshot.active_run.is_none());
 
     let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
-    // completion_round_advanced should NOT be persisted (that's where the failure is).
-    assert!(
-        failed_events
-            .iter()
-            .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
-        "the targeted completion_round_advanced append should not persist"
-    );
-    // No stage_completed for completion_panel (comes after transition in new ordering).
+    // stage_completed for completion_panel should NOT be persisted (that's
+    // where the failure is, and aggregate records are cleaned up).
     let completion_completed = failed_events.iter().any(|event| {
         event.event_type == JournalEventType::StageCompleted
             && event.details.get("stage_id").and_then(|v| v.as_str()) == Some("completion_panel")
     });
     assert!(
         !completion_completed,
-        "stage_completed for completion_panel must not exist when transition failed"
+        "stage_completed for completion_panel must not exist when aggregate commit failed"
+    );
+    // No completion_round_advanced either (it comes AFTER aggregate in new ordering).
+    assert!(
+        failed_events
+            .iter()
+            .all(|event| event.event_type != JournalEventType::CompletionRoundAdvanced),
+        "completion_round_advanced must not exist when aggregate commit failed"
     );
 
     // Supporting records from the completion panel should be durable.
@@ -3991,10 +3994,10 @@ async fn resume_after_completion_round_advanced_append_failure_preserves_round()
     assert_eq!(snapshot.status, RunStatus::Completed);
 }
 
-// Panel dispatch: stage_completed append failure for completion panel.
-// With the new commit ordering, aggregate and stage_completed are written AFTER
-// the transition. If stage_completed fails, supporting records remain durable
-// but the run can resume from completion_panel.
+// Panel dispatch: stage_completed append failure for completion panel via
+// ScopedJournalAppendFailpoint. Aggregate + stage_completed are committed
+// BEFORE the transition. If stage_completed fails, supporting records remain
+// durable but no aggregate or stage_completed leaks.
 #[tokio::test]
 async fn completion_stage_completed_append_failure_leaves_supporting_records() {
     let tmp = tempdir().unwrap();
@@ -4011,14 +4014,12 @@ async fn completion_stage_completed_append_failure_leaves_supporting_records() {
         ));
     let config = EffectiveConfig::load(base_dir).unwrap();
 
-    // New ordering for ContinueWork path:
+    // Commit ordering: aggregate + stage_completed FIRST, then transition.
     //   17 stage_entered(completion_panel)
-    //   18 completion_round_advanced
-    //   [snapshot write - not a journal append]
-    //   19 stage_completed(completion_panel) -> fail here via failpoint
+    //   18 stage_completed(completion_panel) -> fail here via failpoint
     // ScopedJournalAppendFailpoint uses `current >= threshold` (0-indexed),
-    // so threshold=18 allows 18 appends (0-17) and fails the 19th (counter=18).
-    let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 18);
+    // so threshold=17 allows 17 appends (0-16) and fails the 18th (counter=17).
+    let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
 
     let result = engine::execute_standard_run(
         &agent_service,
@@ -4086,7 +4087,8 @@ async fn resume_after_completion_panel_failure_no_duplicate_supporting_records()
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     {
-        // Fail at completion_round_advanced (18th journal append during the run).
+        // Fail at stage_completed for completion_panel (18th journal append).
+        // With commit ordering, aggregate commit happens first.
         // ScopedJournalAppendFailpoint threshold=17 allows 17 appends and fails the 18th.
         let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
         let first_result = engine::execute_standard_run(
@@ -4133,8 +4135,9 @@ async fn resume_after_completion_panel_failure_no_duplicate_supporting_records()
     assert_eq!(snapshot.status, RunStatus::Completed);
 }
 
-// Panel dispatch: completion_round_advanced failure via failpoint. Verifies that
-// the run can be resumed after the failure and completes successfully.
+// Panel dispatch: completion_round_advanced failure via failpoint. With the
+// commit ordering (aggregate first), stage_completed IS written but
+// completion_round_advanced fails. Verifies that resume completes successfully.
 #[tokio::test]
 async fn resume_after_completion_round_advanced_failpoint_completes() {
     let tmp = tempdir().unwrap();
@@ -4154,10 +4157,10 @@ async fn resume_after_completion_round_advanced_failpoint_completes() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     {
-        // With new commit ordering: completion_round_advanced is the 18th
-        // journal append during the run. ScopedJournalAppendFailpoint threshold=17
-        // allows 17 appends and fails the 18th.
-        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 17);
+        // With commit ordering: stage_completed is the 18th journal append
+        // and completion_round_advanced is the 19th. ScopedJournalAppendFailpoint
+        // threshold=18 allows 18 appends and fails the 19th.
+        let _failpoint = ScopedJournalAppendFailpoint::for_project(&pid, 18);
         let first_result = engine::execute_standard_run(
             &agent_service,
             &FsRunSnapshotStore,
@@ -4183,6 +4186,15 @@ async fn resume_after_completion_round_advanced_failpoint_completes() {
     assert_eq!(failed_snapshot.status, RunStatus::Failed);
 
     let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    // stage_completed IS written (it comes before completion_round_advanced).
+    let completion_completed = failed_events.iter().any(|event| {
+        event.event_type == JournalEventType::StageCompleted
+            && event.details.get("stage_id").and_then(|v| v.as_str()) == Some("completion_panel")
+    });
+    assert!(
+        completion_completed,
+        "stage_completed for completion_panel should be persisted (aggregate committed first)"
+    );
     // No completion_round_advanced in journal (that's where we failed).
     assert!(
         failed_events
@@ -4191,7 +4203,8 @@ async fn resume_after_completion_round_advanced_failpoint_completes() {
         "completion_round_advanced should not be persisted on failpoint"
     );
 
-    // Resume completes successfully.
+    // Resume completes successfully. Resume sees StageCompleted for
+    // completion_panel and advances past it.
     let resume_result = engine::resume_standard_run(
         &agent_service,
         &FsRunSnapshotStore,
