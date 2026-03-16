@@ -1,6 +1,9 @@
+pub mod completion;
 pub mod contracts;
 pub mod engine;
+pub mod panel_contracts;
 pub mod payloads;
+pub mod prompt_review;
 pub mod renderers;
 pub mod retry_policy;
 

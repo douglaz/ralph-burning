@@ -180,6 +180,22 @@ pub enum AppError {
         trigger: String,
         rollback_details: String,
     },
+    #[error("insufficient panel members for '{panel}': resolved {resolved}, minimum {minimum}")]
+    InsufficientPanelMembers {
+        panel: String,
+        resolved: usize,
+        minimum: usize,
+    },
+    #[error("prompt review rejected: {details}")]
+    PromptReviewRejected { details: String },
+    #[error(
+        "resume drift failure for stage '{stage_id}': {details}"
+    )]
+    ResumeDriftFailure { stage_id: StageId, details: String },
+    #[error("stage resolution snapshot failed for stage '{stage_id}': {details}")]
+    SnapshotPersistFailed { stage_id: StageId, details: String },
+    #[error("prompt replacement failed: {details}")]
+    PromptReplacementFailed { details: String },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {
         file: String,

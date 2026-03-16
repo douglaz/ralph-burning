@@ -21,7 +21,8 @@ use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, JournalEventType, LogLevel,
-    PayloadRecord, QueuedAmendment, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
+    PayloadRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus,
+    RuntimeLogEntry, StageResolutionSnapshot,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
@@ -430,6 +431,7 @@ where
             run_id: run_id.as_str().to_owned(),
             stage_cursor: initial_cursor.clone(),
             started_at: now,
+            stage_resolution_snapshot: None,
         }),
         status: RunStatus::Running,
         cycle_history: snapshot.cycle_history.clone(),
@@ -753,6 +755,7 @@ where
         run_id: resume_state.run_id.as_str().to_owned(),
         stage_cursor: resume_state.cursor.clone(),
         started_at: resume_state.started_at,
+        stage_resolution_snapshot: None,
     });
     snapshot.completion_rounds = snapshot
         .completion_rounds
@@ -1248,6 +1251,7 @@ where
                         run_id: run_id.as_str().to_owned(),
                         stage_cursor: next_cursor.clone(),
                         started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
                     });
                     snapshot.status_summary = format!(
                         "running: completion round {} -> {}",
@@ -1421,6 +1425,7 @@ where
                         run_id: run_id.as_str().to_owned(),
                         stage_cursor: next_cursor.clone(),
                         started_at: snapshot_started_at(snapshot)?,
+                        stage_resolution_snapshot: None,
                     });
                     snapshot.status_summary = format!(
                         "running: remediation cycle {} -> {}",
@@ -1605,6 +1610,7 @@ where
             run_id: run_id.as_str().to_owned(),
             stage_cursor: cursor.clone(),
             started_at: snapshot_started_at(snapshot)?,
+            stage_resolution_snapshot: None,
         });
         snapshot.status_summary = format!(
             "running: completed {}, next {}",
@@ -1789,6 +1795,7 @@ where
             run_id: run_id.as_str().to_owned(),
             stage_cursor: cursor.clone(),
             started_at: snapshot_started_at(snapshot)?,
+            stage_resolution_snapshot: None,
         });
         snapshot.status_summary = format!("running: {}", stage_id.display_name());
         if let Err(error) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot) {
@@ -2069,6 +2076,9 @@ async fn persist_stage_success(
         attempt: cursor.attempt,
         created_at: stage_now,
         payload: serde_json::to_value(&bundle.payload)?,
+        record_kind: crate::contexts::workflow_composition::panel_contracts::RecordKind::StagePrimary,
+        producer: None,
+        completion_round: cursor.completion_round,
     };
     let artifact_record = ArtifactRecord {
         artifact_id: artifact_id.clone(),
@@ -2076,6 +2086,9 @@ async fn persist_stage_success(
         stage_id,
         created_at: stage_now,
         content: bundle.artifact.clone(),
+        record_kind: crate::contexts::workflow_composition::panel_contracts::RecordKind::StagePrimary,
+        producer: None,
+        completion_round: cursor.completion_round,
     };
 
     if let Err(error) = artifact_write.write_payload_artifact_pair(
@@ -3007,4 +3020,218 @@ fn project_root_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         .join(".ralph-burning")
         .join("projects")
         .join(project_id.as_str())
+}
+
+// ── Stage Resolution Snapshot ──────────────────────────────────────────────
+
+fn resolved_target_to_record(target: &ResolvedBackendTarget) -> ResolvedTargetRecord {
+    ResolvedTargetRecord {
+        backend_family: target.backend.family.to_string(),
+        model_id: target.model.model_id.clone(),
+    }
+}
+
+/// Build a stage resolution snapshot for a single-target stage.
+pub fn build_single_target_snapshot(
+    stage_id: StageId,
+    target: &ResolvedBackendTarget,
+) -> StageResolutionSnapshot {
+    StageResolutionSnapshot {
+        stage_id,
+        resolved_at: Utc::now(),
+        primary_target: Some(resolved_target_to_record(target)),
+        prompt_review_validators: Vec::new(),
+        prompt_review_refiner: None,
+        completion_completers: Vec::new(),
+    }
+}
+
+/// Build a stage resolution snapshot for the prompt-review panel.
+pub fn build_prompt_review_snapshot(
+    stage_id: StageId,
+    panel: &crate::contexts::agent_execution::policy::PromptReviewPanelResolution,
+) -> StageResolutionSnapshot {
+    StageResolutionSnapshot {
+        stage_id,
+        resolved_at: Utc::now(),
+        primary_target: None,
+        prompt_review_validators: panel
+            .validators
+            .iter()
+            .map(resolved_target_to_record)
+            .collect(),
+        prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
+        completion_completers: Vec::new(),
+    }
+}
+
+/// Build a stage resolution snapshot for the completion panel.
+pub fn build_completion_snapshot(
+    stage_id: StageId,
+    completers: &[ResolvedBackendTarget],
+) -> StageResolutionSnapshot {
+    StageResolutionSnapshot {
+        stage_id,
+        resolved_at: Utc::now(),
+        primary_target: None,
+        prompt_review_validators: Vec::new(),
+        prompt_review_refiner: None,
+        completion_completers: completers.iter().map(resolved_target_to_record).collect(),
+    }
+}
+
+/// Persist a stage resolution snapshot on the active run. If persistence
+/// fails, the stage must abort with no agent side effects.
+pub fn persist_stage_resolution_snapshot(
+    snapshot: &mut RunSnapshot,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    resolution: StageResolutionSnapshot,
+) -> AppResult<()> {
+    if let Some(ref mut active) = snapshot.active_run {
+        active.stage_resolution_snapshot = Some(resolution.clone());
+    }
+    run_snapshot_write
+        .write_run_snapshot(base_dir, project_id, snapshot)
+        .map_err(|e| AppError::SnapshotPersistFailed {
+            stage_id: resolution.stage_id,
+            details: format!("failed to persist stage resolution snapshot: {e}"),
+        })
+}
+
+// ── Resume Drift Detection ─────────────────────────────────────────────────
+
+/// Compare a new resolution against the persisted snapshot. Returns `true`
+/// if the resolution changed (drift detected).
+pub fn resolution_has_drifted(
+    old: &StageResolutionSnapshot,
+    new: &StageResolutionSnapshot,
+) -> bool {
+    old.primary_target != new.primary_target
+        || old.prompt_review_validators != new.prompt_review_validators
+        || old.prompt_review_refiner != new.prompt_review_refiner
+        || old.completion_completers != new.completion_completers
+}
+
+/// Check whether a drifted resolution still satisfies the required-backend
+/// and minimum-count constraints.
+pub fn drift_still_satisfies_requirements(
+    new_snapshot: &StageResolutionSnapshot,
+    stage_id: StageId,
+    effective_config: &EffectiveConfig,
+) -> AppResult<()> {
+    match stage_id {
+        StageId::PromptReview => {
+            let min = effective_config.prompt_review_policy().min_reviewers;
+            if new_snapshot.prompt_review_validators.len() < min {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: format!(
+                        "re-resolved prompt review validators ({}) < min_reviewers ({})",
+                        new_snapshot.prompt_review_validators.len(),
+                        min,
+                    ),
+                });
+            }
+        }
+        StageId::CompletionPanel => {
+            let min = effective_config.completion_policy().min_completers;
+            if new_snapshot.completion_completers.len() < min {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: format!(
+                        "re-resolved completion completers ({}) < min_completers ({})",
+                        new_snapshot.completion_completers.len(),
+                        min,
+                    ),
+                });
+            }
+        }
+        _ => {
+            // For single-target stages, check that a primary target still exists.
+            if new_snapshot.primary_target.is_none() {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: "re-resolved stage has no primary target".to_owned(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Emit a runtime warning and a durable journal warning for resume drift,
+/// then update the snapshot with the new resolution.
+#[allow(clippy::too_many_arguments)]
+pub fn emit_resume_drift_warning(
+    old: &StageResolutionSnapshot,
+    new: &StageResolutionSnapshot,
+    run_id: &RunId,
+    stage_id: StageId,
+    seq: &mut u64,
+    snapshot: &mut RunSnapshot,
+    journal_store: &dyn JournalStorePort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    let details = serde_json::json!({
+        "old_resolution": serde_json::to_value(old).unwrap_or_default(),
+        "new_resolution": serde_json::to_value(new).unwrap_or_default(),
+    });
+
+    // Runtime log (best-effort)
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Warn,
+            source: "engine".to_owned(),
+            message: format!(
+                "resume drift detected for stage {}: resolution changed",
+                stage_id.as_str()
+            ),
+        },
+    );
+
+    // Durable journal warning
+    *seq += 1;
+    let warning_event = journal::durable_warning_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        "resume_drift",
+        &format!(
+            "stage {} resolution changed between suspend and resume",
+            stage_id.as_str()
+        ),
+        details,
+    );
+    let line = journal::serialize_event(&warning_event)?;
+    if let Err(e) = journal_store.append_event(base_dir, project_id, &line) {
+        *seq -= 1;
+        // Non-fatal: log but continue
+        let _ = log_write.append_runtime_log(
+            base_dir,
+            project_id,
+            &RuntimeLogEntry {
+                timestamp: Utc::now(),
+                level: LogLevel::Error,
+                source: "engine".to_owned(),
+                message: format!("failed to persist resume drift warning: {e}"),
+            },
+        );
+    }
+
+    // Update the snapshot with the new resolution
+    if let Some(ref mut active) = snapshot.active_run {
+        active.stage_resolution_snapshot = Some(new.clone());
+    }
+    let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+
+    Ok(())
 }

@@ -135,6 +135,7 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
                         ralph_burning::shared::domain::StageId::Planning,
                     ),
                     started_at: test_timestamp(),
+                    stage_resolution_snapshot: None,
                 }),
                 status: RunStatus::Running,
                 cycle_history: Vec::new(),
@@ -475,6 +476,7 @@ fn run_snapshot_validates_paused_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            stage_resolution_snapshot: None,
         }),
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
@@ -497,6 +499,7 @@ fn run_snapshot_validates_not_started_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            stage_resolution_snapshot: None,
         }),
         status: RunStatus::NotStarted,
         cycle_history: Vec::new(),
@@ -547,6 +550,7 @@ fn run_snapshot_validates_failed_with_active_run_as_corrupt() {
                 ralph_burning::shared::domain::StageId::Planning,
             ),
             started_at: test_timestamp(),
+            stage_resolution_snapshot: None,
         }),
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
@@ -881,4 +885,143 @@ fn run_snapshot_failed_has_no_active_run() {
     };
     assert!(snapshot.validate_semantics().is_ok());
     assert!(!snapshot.has_active_run());
+}
+
+// ── StageResolutionSnapshot serialization ─────────────────────────────────
+
+#[test]
+fn stage_resolution_snapshot_single_target_round_trip() {
+    let snapshot = StageResolutionSnapshot {
+        stage_id: ralph_burning::shared::domain::StageId::Planning,
+        resolved_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        primary_target: Some(ResolvedTargetRecord {
+            backend_family: "claude".to_owned(),
+            model_id: "claude-3-sonnet".to_owned(),
+        }),
+        prompt_review_validators: Vec::new(),
+        prompt_review_refiner: None,
+        completion_completers: Vec::new(),
+    };
+
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let deserialized: StageResolutionSnapshot = serde_json::from_str(&json).unwrap();
+    assert_eq!(snapshot, deserialized);
+    // Verify empty vecs and None are omitted from serialization
+    assert!(!json.contains("prompt_review_validators"));
+    assert!(!json.contains("completion_completers"));
+}
+
+#[test]
+fn stage_resolution_snapshot_panel_target_round_trip() {
+    let snapshot = StageResolutionSnapshot {
+        stage_id: ralph_burning::shared::domain::StageId::CompletionPanel,
+        resolved_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        primary_target: None,
+        prompt_review_validators: Vec::new(),
+        prompt_review_refiner: None,
+        completion_completers: vec![
+            ResolvedTargetRecord {
+                backend_family: "claude".to_owned(),
+                model_id: "claude-3-opus".to_owned(),
+            },
+            ResolvedTargetRecord {
+                backend_family: "codex".to_owned(),
+                model_id: "gpt-4o".to_owned(),
+            },
+        ],
+    };
+
+    let json = serde_json::to_string(&snapshot).unwrap();
+    let deserialized: StageResolutionSnapshot = serde_json::from_str(&json).unwrap();
+    assert_eq!(snapshot, deserialized);
+    assert!(json.contains("completion_completers"));
+}
+
+#[test]
+fn active_run_with_snapshot_round_trip() {
+    let active = ActiveRun {
+        run_id: "run-001".to_owned(),
+        stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+            ralph_burning::shared::domain::StageId::Planning,
+        ),
+        started_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        stage_resolution_snapshot: Some(StageResolutionSnapshot {
+            stage_id: ralph_burning::shared::domain::StageId::Planning,
+            resolved_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+            primary_target: Some(ResolvedTargetRecord {
+                backend_family: "claude".to_owned(),
+                model_id: "sonnet".to_owned(),
+            }),
+            prompt_review_validators: Vec::new(),
+            prompt_review_refiner: None,
+            completion_completers: Vec::new(),
+        }),
+    };
+
+    let json = serde_json::to_string(&active).unwrap();
+    let deserialized: ActiveRun = serde_json::from_str(&json).unwrap();
+    assert_eq!(active, deserialized);
+}
+
+#[test]
+fn active_run_without_snapshot_omits_field() {
+    let active = ActiveRun {
+        run_id: "run-002".to_owned(),
+        stage_cursor: ralph_burning::shared::domain::StageCursor::initial(
+            ralph_burning::shared::domain::StageId::Planning,
+        ),
+        started_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        stage_resolution_snapshot: None,
+    };
+
+    let json = serde_json::to_string(&active).unwrap();
+    assert!(!json.contains("stage_resolution_snapshot"));
+    let deserialized: ActiveRun = serde_json::from_str(&json).unwrap();
+    assert_eq!(active, deserialized);
+}
+
+#[test]
+fn payload_record_with_record_kind_and_producer_round_trip() {
+    use ralph_burning::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
+
+    let record = PayloadRecord {
+        payload_id: "test-payload-1".to_owned(),
+        stage_id: ralph_burning::shared::domain::StageId::CompletionPanel,
+        cycle: 1,
+        attempt: 1,
+        created_at: Utc.with_ymd_and_hms(2025, 1, 1, 0, 0, 0).unwrap(),
+        payload: serde_json::json!({"vote_complete": true}),
+        record_kind: RecordKind::StageSupporting,
+        producer: Some(RecordProducer::Agent {
+            backend_family: "claude".to_owned(),
+            model_id: "sonnet".to_owned(),
+        }),
+        completion_round: 2,
+    };
+
+    let json = serde_json::to_string(&record).unwrap();
+    let deserialized: PayloadRecord = serde_json::from_str(&json).unwrap();
+    assert_eq!(record, deserialized);
+    assert!(json.contains("\"stage_supporting\""));
+    assert!(json.contains("\"completion_round\":2"));
+}
+
+#[test]
+fn payload_record_defaults_from_legacy_json() {
+    use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
+
+    // Simulate a legacy JSON record that lacks the new fields
+    let json = r#"{
+        "payload_id": "legacy-1",
+        "stage_id": "planning",
+        "cycle": 1,
+        "attempt": 1,
+        "created_at": "2025-01-01T00:00:00Z",
+        "payload": {}
+    }"#;
+
+    let record: PayloadRecord = serde_json::from_str(json).unwrap();
+    assert_eq!(record.record_kind, RecordKind::StagePrimary);
+    assert!(record.producer.is_none());
+    assert_eq!(record.completion_round, 1); // default_completion_round returns 1
 }

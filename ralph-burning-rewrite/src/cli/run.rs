@@ -332,9 +332,20 @@ async fn handle_history() -> AppResult<()> {
     if !history.payloads.is_empty() {
         println!("--- Payloads ---");
         for payload in &history.payloads {
+            let producer_str = payload
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} ({}, cycle {}, attempt {})",
-                payload.payload_id, payload.stage_id, payload.cycle, payload.attempt
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                payload.payload_id,
+                payload.stage_id,
+                payload.cycle,
+                payload.attempt,
+                payload.record_kind,
+                payload.completion_round,
+                producer_str,
             );
         }
     }
@@ -342,9 +353,18 @@ async fn handle_history() -> AppResult<()> {
     if !history.artifacts.is_empty() {
         println!("--- Artifacts ---");
         for artifact in &history.artifacts {
+            let producer_str = artifact
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} (payload: {}, stage: {})",
-                artifact.artifact_id, artifact.payload_id, artifact.stage_id
+                "  {} (payload: {}, stage: {}, kind={}{})",
+                artifact.artifact_id,
+                artifact.payload_id,
+                artifact.stage_id,
+                artifact.record_kind,
+                producer_str,
             );
         }
     }
@@ -389,9 +409,20 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
     if !tail.payloads.is_empty() {
         println!("--- Payloads ---");
         for payload in &tail.payloads {
+            let producer_str = payload
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} ({}, cycle {}, attempt {})",
-                payload.payload_id, payload.stage_id, payload.cycle, payload.attempt
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                payload.payload_id,
+                payload.stage_id,
+                payload.cycle,
+                payload.attempt,
+                payload.record_kind,
+                payload.completion_round,
+                producer_str,
             );
         }
     }
@@ -399,9 +430,18 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
     if !tail.artifacts.is_empty() {
         println!("--- Artifacts ---");
         for artifact in &tail.artifacts {
+            let producer_str = artifact
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} (payload: {}, stage: {})",
-                artifact.artifact_id, artifact.payload_id, artifact.stage_id
+                "  {} (payload: {}, stage: {}, kind={}{})",
+                artifact.artifact_id,
+                artifact.payload_id,
+                artifact.stage_id,
+                artifact.record_kind,
+                producer_str,
             );
         }
     }

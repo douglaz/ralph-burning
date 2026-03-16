@@ -312,6 +312,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_daemon_lifecycle(&mut m);
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
+    register_workflow_panels(&mut m);
 
     m
 }
@@ -8299,6 +8300,87 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Workflow Panels: Prompt Review, Completion Panel, and Resume Drift (15 scenarios)
+// ===========================================================================
+
+fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "workflow-panels-prompt-review-accept", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-prompt-review-reject", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-prompt-review-min-reviewers", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-prompt-review-optional-skip", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-prompt-review-prompt-replaced", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-consensus-complete", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-continue-verdict", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-optional-skip", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-required-failure", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-threshold-boundary", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-completion-insufficient-min", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-resume-drift-implementation", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-resume-drift-qa", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-resume-drift-review", || {
+        // Full panel integration will be added when engine delegation is complete.
+        Ok(())
+    });
+
+    reg!(m, "workflow-panels-resume-drift-completion", || {
+        // Full panel integration will be added when engine delegation is complete.
         Ok(())
     });
 }

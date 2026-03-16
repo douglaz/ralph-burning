@@ -186,6 +186,9 @@ impl StubBackendAdapter {
         match contract {
             InvocationContract::Stage(sc) => self.payload_for_stage(sc.stage_id),
             InvocationContract::Requirements { label } => self.payload_for_label(label),
+            InvocationContract::Panel { stage_id, .. } => {
+                self.payload_for_stage(*stage_id)
+            }
         }
     }
 }
@@ -208,8 +211,8 @@ impl AgentExecutionPort for StubBackendAdapter {
                     });
                 }
             }
-            InvocationContract::Requirements { .. } => {
-                // Requirements contracts are always supported by the stub.
+            InvocationContract::Requirements { .. } | InvocationContract::Panel { .. } => {
+                // Requirements and panel contracts are always supported by the stub.
             }
         }
 

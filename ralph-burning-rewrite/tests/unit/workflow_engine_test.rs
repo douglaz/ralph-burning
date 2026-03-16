@@ -22,6 +22,7 @@ use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
 };
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::project_run_record::service::{
     self, AmendmentQueuePort, CreateProjectInput, JournalStorePort, RunSnapshotPort,
     RunSnapshotWritePort, RuntimeLogWritePort,
@@ -1336,6 +1337,7 @@ async fn run_start_rejects_already_running() {
                     StageId::Planning,
                 ),
                 started_at: Utc::now(),
+                stage_resolution_snapshot: None,
             },
         ),
         status: RunStatus::Running,
@@ -3099,6 +3101,9 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
                         "stage": stage_id.as_str(),
                         "completion_round": u32::MAX,
                     }),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 0,
                 },
                 &ArtifactRecord {
                     artifact_id: artifact_id.clone(),
@@ -3106,6 +3111,9 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
                     stage_id,
                     created_at: started_at,
                     content: format!("artifact for {}", stage_id.as_str()),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 0,
                 },
             )
             .unwrap();

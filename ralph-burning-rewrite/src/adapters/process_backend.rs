@@ -567,7 +567,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         match (backend.backend.family, contract) {
             (
                 BackendFamily::Claude | BackendFamily::Codex,
-                InvocationContract::Stage(_) | InvocationContract::Requirements { .. },
+                InvocationContract::Stage(_) | InvocationContract::Requirements { .. } | InvocationContract::Panel { .. },
             ) => Ok(()),
             (BackendFamily::OpenRouter | BackendFamily::Stub, _) => {
                 Err(Self::capability_mismatch(

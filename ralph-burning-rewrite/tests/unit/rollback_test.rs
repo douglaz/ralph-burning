@@ -31,6 +31,7 @@ fn running_snapshot(stage: StageId) -> RunSnapshot {
             run_id: "run-1".to_owned(),
             stage_cursor: StageCursor::initial(stage),
             started_at: test_timestamp(),
+            stage_resolution_snapshot: None,
         }),
         status: RunStatus::Running,
         cycle_history: Vec::new(),

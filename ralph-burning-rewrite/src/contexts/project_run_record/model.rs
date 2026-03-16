@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 
 /// Immutable project metadata persisted in `project.toml`.
@@ -92,6 +93,38 @@ pub struct ActiveRun {
     pub run_id: String,
     pub stage_cursor: StageCursor,
     pub started_at: DateTime<Utc>,
+    /// Resolution snapshot persisted at stage start before any agent invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage_resolution_snapshot: Option<StageResolutionSnapshot>,
+}
+
+/// Records the exact resolved backend/model targets at stage start.
+///
+/// For single-target stages this contains one resolved target. For panel stages
+/// (prompt-review, completion) it records ordered panel members.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageResolutionSnapshot {
+    pub stage_id: StageId,
+    pub resolved_at: DateTime<Utc>,
+    /// The primary single-target resolution (for non-panel stages).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primary_target: Option<ResolvedTargetRecord>,
+    /// Ordered panel members for prompt-review validators.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prompt_review_validators: Vec<ResolvedTargetRecord>,
+    /// The prompt-review refiner target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_review_refiner: Option<ResolvedTargetRecord>,
+    /// Ordered panel members for completion completers.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub completion_completers: Vec<ResolvedTargetRecord>,
+}
+
+/// A serializable resolved target record for snapshot persistence.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResolvedTargetRecord {
+    pub backend_family: String,
+    pub model_id: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -190,6 +223,7 @@ pub enum JournalEventType {
     RollbackCreated,
     RollbackPerformed,
     AmendmentQueued,
+    DurableWarning,
 }
 
 /// A durable history payload record stored in `history/payloads/`.
@@ -201,6 +235,15 @@ pub struct PayloadRecord {
     pub attempt: u32,
     pub created_at: DateTime<Utc>,
     pub payload: serde_json::Value,
+    /// Discriminates primary, supporting, and aggregate records.
+    #[serde(default = "default_record_kind")]
+    pub record_kind: RecordKind,
+    /// Who produced this record (agent, local validation, or system).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<RecordProducer>,
+    /// The completion round during which this record was produced.
+    #[serde(default = "default_completion_round")]
+    pub completion_round: u32,
 }
 
 /// A durable history artifact record stored in `history/artifacts/`.
@@ -211,6 +254,23 @@ pub struct ArtifactRecord {
     pub stage_id: StageId,
     pub created_at: DateTime<Utc>,
     pub content: String,
+    /// Discriminates primary, supporting, and aggregate records.
+    #[serde(default = "default_record_kind")]
+    pub record_kind: RecordKind,
+    /// Who produced this record (agent, local validation, or system).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<RecordProducer>,
+    /// The completion round during which this record was produced.
+    #[serde(default = "default_completion_round")]
+    pub completion_round: u32,
+}
+
+fn default_record_kind() -> RecordKind {
+    RecordKind::StagePrimary
+}
+
+fn default_completion_round() -> u32 {
+    1
 }
 
 /// A runtime log entry stored in `runtime/logs/`.

@@ -66,3 +66,6 @@ mod conformance_spec_test;
 
 #[path = "unit/backend_policy_test.rs"]
 mod backend_policy_test;
+
+#[path = "unit/workflow_panels_test.rs"]
+mod workflow_panels_test;

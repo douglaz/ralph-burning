@@ -234,6 +234,73 @@ impl FileSystem {
         format!("{:016x}", hasher.finish())
     }
 
+    /// Atomically update `prompt.md`, write `prompt.original.md`, and recompute
+    /// the prompt hash in `project.toml`. If any step fails, previously written
+    /// files in this batch are best-effort cleaned up.
+    pub fn replace_prompt_atomically(
+        base_dir: &Path,
+        project_id: &ProjectId,
+        original_prompt: &str,
+        refined_prompt: &str,
+    ) -> AppResult<String> {
+        let project_root = Self::project_root(base_dir, project_id);
+        let prompt_path = project_root.join(PROMPT_FILE);
+        let original_path = project_root.join("prompt.original.md");
+        let project_toml_path = project_root.join(PROJECT_CONFIG_FILE);
+
+        // Step 1: Write prompt.original.md
+        Self::write_atomic(&original_path, original_prompt).map_err(|e| {
+            AppError::PromptReplacementFailed {
+                details: format!("failed to write prompt.original.md: {e}"),
+            }
+        })?;
+
+        // Step 2: Replace prompt.md
+        if let Err(e) = Self::write_atomic(&prompt_path, refined_prompt) {
+            let _ = fs::remove_file(&original_path);
+            return Err(AppError::PromptReplacementFailed {
+                details: format!("failed to write prompt.md: {e}"),
+            });
+        }
+
+        // Step 3: Recompute prompt hash and update project.toml
+        let new_hash = Self::prompt_hash(refined_prompt);
+        let project_toml_content = match fs::read_to_string(&project_toml_path) {
+            Ok(content) => content,
+            Err(e) => {
+                // Rollback: restore original prompt.md, remove prompt.original.md
+                let _ = Self::write_atomic(&prompt_path, original_prompt);
+                let _ = fs::remove_file(&original_path);
+                return Err(AppError::PromptReplacementFailed {
+                    details: format!("failed to read project.toml for hash update: {e}"),
+                });
+            }
+        };
+
+        // Parse and update prompt_hash
+        let mut project_record: crate::contexts::project_run_record::model::ProjectRecord =
+            toml::from_str(&project_toml_content).map_err(|e| {
+                AppError::PromptReplacementFailed {
+                    details: format!("failed to parse project.toml: {e}"),
+                }
+            })?;
+        project_record.prompt_hash = new_hash.clone();
+        let updated_toml = toml::to_string_pretty(&project_record).map_err(|e| {
+            AppError::PromptReplacementFailed {
+                details: format!("failed to serialize project.toml: {e}"),
+            }
+        })?;
+        if let Err(e) = Self::write_atomic(&project_toml_path, &updated_toml) {
+            let _ = Self::write_atomic(&prompt_path, original_prompt);
+            let _ = fs::remove_file(&original_path);
+            return Err(AppError::PromptReplacementFailed {
+                details: format!("failed to write project.toml: {e}"),
+            });
+        }
+
+        Ok(new_hash)
+    }
+
     // ── Helpers for project filesystem layout ──
 
     pub(crate) fn workspace_root_path(base_dir: &Path) -> PathBuf {
