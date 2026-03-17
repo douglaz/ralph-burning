@@ -173,6 +173,15 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Then the issue label is synced to "rb:failed"
     And no stale status labels remain at any transition
 
+  # daemon.labels.requirements_draft_label_failure_quarantine
+  Scenario: Label-sync failure on requirements-draft exit paths triggers repo quarantine
+    Given an active requirements-draft task for issue #99 in repo "acme/widgets"
+    When the task transitions to WaitingForRequirements and add_label fails
+    Then sync_label_for_task returns an error that the caller can propagate for quarantine
+    When the task transitions from Active to Pending and add_label fails
+    Then sync_label_for_task returns an error for the requeue path as well
+    And label-sync failure on terminal Failed state is still detectable but tolerable
+
   # daemon.github.port_covers_pr_operations
   Scenario: GithubPort trait exposes the full PR/branch API for slice-9 consumers
     Given an in-memory GitHub client behind dyn GithubPort

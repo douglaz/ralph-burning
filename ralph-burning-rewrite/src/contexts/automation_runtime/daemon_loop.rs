@@ -785,24 +785,33 @@ where
         Ok(true)
     }
 
-    /// Best-effort label sync after a task state mutation inside
-    /// `handle_requirements_draft`. On failure, marks the task `label_dirty`
-    /// so `reconcile` can repair, but does NOT propagate the error — the
-    /// durable state is already truthful, only the label is stale.
+    /// Label sync after a task state mutation inside `handle_requirements_draft`.
+    /// On failure, marks the task `label_dirty` so `reconcile` can repair, and
+    /// returns the error so the caller can decide whether to propagate it (for
+    /// repo quarantine) or swallow it (when the task is already terminal).
     async fn sync_label_after_mutation<G: GithubPort>(
         &self,
         github: &G,
         base_dir: &Path,
         task_id: &str,
-    ) {
-        if let Ok(t) = self.store.read_task(base_dir, task_id) {
-            if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
-                let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, task_id);
+    ) -> AppResult<()> {
+        let t = match self.store.read_task(base_dir, task_id) {
+            Ok(t) => t,
+            Err(e) => {
                 eprintln!(
-                    "daemon: label sync failed for requirements_draft task '{task_id}': {e}"
+                    "daemon: failed to read task '{task_id}' for label sync: {e}"
                 );
+                return Err(e);
             }
+        };
+        if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
+            let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, task_id);
+            eprintln!(
+                "daemon: label sync failed for requirements_draft task '{task_id}': {e}"
+            );
+            return Err(e);
         }
+        Ok(())
     }
 
     /// Poll external watchers and ingest new issue candidates as daemon tasks.
@@ -1350,7 +1359,7 @@ where
                     "requirements_draft_failed",
                     &format!("failed to build requirements service: {e}"),
                 );
-                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
         };
@@ -1364,7 +1373,7 @@ where
                     "requirements_draft_failed",
                     &e.to_string(),
                 );
-                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
         };
@@ -1410,7 +1419,7 @@ where
                     "requirements_linking_failed",
                     &e.to_string(),
                 );
-                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
 
@@ -1424,7 +1433,7 @@ where
                         "seed_handoff_failed",
                         &e.to_string(),
                     );
-                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                    let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                     return Err(e);
                 }
             };
@@ -1476,7 +1485,7 @@ where
                     "requirements_linking_failed",
                     &format!("post-link metadata update failed: {e}"),
                 );
-                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
 
@@ -1492,7 +1501,8 @@ where
             }
 
             // Sync label: Pending → rb:ready (requeued for workflow dispatch).
-            self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+            // Propagate failure to quarantine the repo for the rest of the cycle.
+            self.sync_label_after_mutation(github, base_dir, &task.task_id).await?;
 
             println!(
                 "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
@@ -1528,7 +1538,8 @@ where
                         );
                     }
                     // Sync label: WaitingForRequirements → rb:waiting-feedback.
-                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                    // Propagate failure to quarantine the repo for the rest of the cycle.
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await?;
 
                     println!(
                         "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
@@ -1544,7 +1555,7 @@ where
                         "requirements_linking_failed",
                         &e.to_string(),
                     );
-                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                    let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                     return Err(e);
                 }
             }

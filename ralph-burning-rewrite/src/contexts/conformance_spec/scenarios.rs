@@ -13658,4 +13658,128 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             rt.block_on(run_lifecycle(&gh, &mut task))
         }
     });
+
+    reg!(m, "daemon.labels.requirements_draft_label_failure_quarantine", || {
+        use crate::adapters::github::{
+            GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,
+        };
+        use crate::contexts::automation_runtime::github_intake;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+
+        let gh = InMemoryGithubClient::with_issues(vec![GithubIssue {
+            number: 99,
+            title: "Label failure quarantine test".to_owned(),
+            body: None,
+            labels: vec![GithubLabel { name: "rb:in-progress".to_owned() }],
+            user: GithubUser { login: "user".to_owned(), id: 1 },
+            html_url: "https://github.com/acme/widgets/issues/99".to_owned(),
+            pull_request: None,
+            updated_at: "2026-03-17T00:00:00Z".to_owned(),
+        }]);
+
+        let now = chrono::Utc::now();
+        let mut task = DaemonTask {
+            task_id: "gh-quarantine-99".to_owned(),
+            issue_ref: "acme/widgets#99".to_owned(),
+            project_id: String::new(),
+            project_name: None,
+            prompt: Some("Quarantine test".to_owned()),
+            routing_command: Some("/rb requirements".to_owned()),
+            routing_labels: vec![],
+            resolved_flow: None,
+            routing_source: Some(RoutingSource::Command),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(99),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+
+        async fn run_test(
+            gh: &InMemoryGithubClient,
+            task: &mut DaemonTask,
+        ) -> Result<(), String> {
+            // ── Test 1: Active → WaitingForRequirements label sync failure ──
+            // Simulate: task transitions to WaitingForRequirements, then
+            // add_label for rb:waiting-feedback fails.
+            task.status = TaskStatus::Active;
+            task.transition_to(TaskStatus::WaitingForRequirements, chrono::Utc::now())
+                .map_err(|e| e.to_string())?;
+
+            // Inject add_label failure for issue 99
+            gh.set_add_label_failure(99);
+
+            let result = github_intake::sync_label_for_task(gh, task).await;
+            if result.is_ok() {
+                return Err(
+                    "expected label sync to fail for WaitingForRequirements, but it succeeded"
+                        .to_owned(),
+                );
+            }
+
+            // Verify the error is propagatable (not swallowed)
+            let err_msg = result.unwrap_err().to_string();
+            if !err_msg.contains("simulated add_label failure") {
+                return Err(format!(
+                    "unexpected error message: {err_msg}"
+                ));
+            }
+
+            // Clear failure and verify sync works when not failing
+            gh.clear_add_label_failure(99);
+
+            // ── Test 2: Active → Pending label sync failure ──
+            // Reset task to Active, then transition to Pending
+            task.status = TaskStatus::Active;
+            task.transition_to(TaskStatus::Pending, chrono::Utc::now())
+                .map_err(|e| e.to_string())?;
+
+            // Inject failure again
+            gh.set_add_label_failure(99);
+
+            let result = github_intake::sync_label_for_task(gh, task).await;
+            if result.is_ok() {
+                return Err(
+                    "expected label sync to fail for Pending requeue, but it succeeded"
+                        .to_owned(),
+                );
+            }
+
+            // ── Test 3: Failure on terminal state (mark_failed) is tolerable ──
+            // When task is already Failed, label sync failure should still be
+            // detectable but callers may choose to swallow it.
+            gh.clear_add_label_failure(99);
+            task.status = TaskStatus::Failed;
+            task.failure_class = Some("test".to_owned());
+            github_intake::sync_label_for_task(gh, task)
+                .await
+                .map_err(|e| format!("sync on terminal Failed should succeed: {e}"))?;
+
+            Ok(())
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(run_test(&gh, &mut task)))
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(run_test(&gh, &mut task))
+        }
+    });
 }

@@ -1153,6 +1153,8 @@ pub struct InMemoryGithubClient {
     next_pr_number: std::sync::Mutex<u64>,
     /// Repos for which `ensure_labels` should fail (set of `owner/repo` keys).
     ensure_labels_failure_repos: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Issue numbers for which `add_label` should fail (for label-sync failure testing).
+    pub add_label_failure_issues: std::sync::Mutex<std::collections::HashSet<u64>>,
 }
 
 impl InMemoryGithubClient {
@@ -1177,6 +1179,22 @@ impl InMemoryGithubClient {
             .lock()
             .unwrap()
             .insert(format!("{owner}/{repo}"));
+    }
+
+    /// Configure `add_label` to fail for a specific issue number.
+    pub fn set_add_label_failure(&self, issue_number: u64) {
+        self.add_label_failure_issues
+            .lock()
+            .unwrap()
+            .insert(issue_number);
+    }
+
+    /// Clear the `add_label` failure for a specific issue number.
+    pub fn clear_add_label_failure(&self, issue_number: u64) {
+        self.add_label_failure_issues
+            .lock()
+            .unwrap()
+            .remove(&issue_number);
     }
 }
 
@@ -1233,6 +1251,12 @@ impl GithubPort for InMemoryGithubClient {
         issue_number: u64,
         label: &str,
     ) -> AppResult<()> {
+        if self.add_label_failure_issues.lock().unwrap().contains(&issue_number) {
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("simulated add_label failure for issue {issue_number}"),
+            });
+        }
         let mut issues = self.issues.lock().unwrap();
         if let Some(issue) = issues.iter_mut().find(|i| i.number == issue_number) {
             if !issue.labels.iter().any(|l| l.name == label) {
