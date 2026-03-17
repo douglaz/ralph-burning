@@ -13874,4 +13874,1084 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             rt.block_on(run_test(&gh, &mut task))
         }
     });
+
+    reg!(m, "daemon.pr_runtime.create_draft_when_branch_ahead", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::github::InMemoryGithubClient;
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        };
+        use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        struct PrWorktree;
+        impl crate::contexts::automation_runtime::WorktreePort for PrWorktree {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+                base_dir.join("worktrees").join(task_id)
+            }
+            fn branch_name(&self, task_id: &str) -> String {
+                format!("rb/{task_id}")
+            }
+            fn create_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn remove_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+            }
+            fn rebase_onto_default_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> {
+                Ok("main".to_owned())
+            }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let github = InMemoryGithubClient::new();
+        github
+            .branches_ahead
+            .lock()
+            .unwrap()
+            .insert("acme/widgets:main...rb/42-proj-42".to_owned());
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-runtime-42".to_owned(),
+            issue_ref: "acme/widgets#42".to_owned(),
+            project_id: "proj-42".to_owned(),
+            project_name: Some("Create PR".to_owned()),
+            prompt: Some("Draft PR runtime".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-42".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(42),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        let lease = WorktreeLease {
+            lease_id: "lease-42".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: task.project_id.clone(),
+            worktree_path: ws.path().join("worktrees/pr-runtime-42"),
+            branch_name: "rb/42-proj-42".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+
+        let service = PrRuntimeService::new(&store, &PrWorktree, &github);
+        let url = block_on_app_result(service.ensure_draft_pr(
+            ws.path(),
+            ws.path(),
+            &task.task_id,
+            &lease,
+            &CancellationToken::new(),
+        ))?
+        .ok_or("expected draft PR URL".to_owned())?;
+
+        if !url.ends_with("/pull/100") {
+            return Err(format!("unexpected PR URL: {url}"));
+        }
+        let persisted = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        if persisted.pr_url.as_deref() != Some(url.as_str()) {
+            return Err(format!("expected persisted pr_url, got {:?}", persisted.pr_url));
+        }
+        if github.pull_requests.lock().unwrap().len() != 1 {
+            return Err("expected exactly one PR to be created".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_runtime.push_before_create", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::github::{
+            GithubComment, GithubIssue, GithubPort, GithubPullRequest, GithubReview,
+        };
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        };
+        use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+        use crate::shared::error::AppResult;
+        use std::sync::{Arc, Mutex};
+
+        struct RecordingGithub {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+        impl GithubPort for RecordingGithub {
+            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> { Ok(()) }
+            async fn poll_candidate_issues(&self, _o: &str, _r: &str, _l: &str) -> AppResult<Vec<GithubIssue>> { Ok(vec![]) }
+            async fn read_issue_labels(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<String>> { Ok(vec![]) }
+            async fn add_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
+            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
+            async fn replace_labels(&self, _o: &str, _r: &str, _n: u64, _l: &[&str]) -> AppResult<()> { Ok(()) }
+            async fn fetch_issue_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
+            async fn post_idempotent_comment(&self, _o: &str, _r: &str, _n: u64, _m: &str, _b: &str) -> AppResult<()> { Ok(()) }
+            async fn fetch_pr_review_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
+            async fn fetch_pr_reviews(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubReview>> { Ok(vec![]) }
+            async fn create_draft_pr(&self, owner: &str, repo: &str, _t: &str, _b: &str, head: &str, _bs: &str) -> AppResult<GithubPullRequest> {
+                self.events.lock().unwrap().push("create".to_owned());
+                Ok(GithubPullRequest {
+                    number: 100,
+                    html_url: format!("https://github.com/{owner}/{repo}/pull/100"),
+                    state: "open".to_owned(),
+                    draft: Some(true),
+                    node_id: "PR_100".to_owned(),
+                    head: Some(crate::adapters::github::GithubPrRef { ref_name: head.to_owned(), sha: "000".to_owned() }),
+                    base: None,
+                })
+            }
+            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
+            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
+            async fn fetch_pr_state(&self, _o: &str, _r: &str, _n: u64) -> AppResult<GithubPullRequest> {
+                Ok(GithubPullRequest {
+                    number: 100,
+                    html_url: "https://github.com/acme/widgets/pull/100".to_owned(),
+                    state: "open".to_owned(),
+                    draft: Some(true),
+                    node_id: "PR_100".to_owned(),
+                    head: Some(crate::adapters::github::GithubPrRef { ref_name: "rb/77-proj".to_owned(), sha: "000".to_owned() }),
+                    base: None,
+                })
+            }
+            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> { Ok(()) }
+            async fn is_branch_ahead(&self, _o: &str, _r: &str, _b: &str, _h: &str) -> AppResult<bool> { Ok(true) }
+        }
+
+        struct RecordingWorktree {
+            events: Arc<Mutex<Vec<String>>>,
+        }
+        impl crate::contexts::automation_runtime::WorktreePort for RecordingWorktree {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+                base_dir.join("worktrees").join(task_id)
+            }
+            fn branch_name(&self, task_id: &str) -> String {
+                format!("rb/{task_id}")
+            }
+            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> AppResult<()> { Ok(()) }
+            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+            }
+            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> AppResult<()> { Ok(()) }
+            fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> { Ok("main".to_owned()) }
+            fn push_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> AppResult<()> {
+                self.events.lock().unwrap().push("push".to_owned());
+                Ok(())
+            }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let github = RecordingGithub { events: events.clone() };
+        let worktree = RecordingWorktree { events: events.clone() };
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-runtime-77".to_owned(),
+            issue_ref: "acme/widgets#77".to_owned(),
+            project_id: "proj-77".to_owned(),
+            project_name: Some("Push before create".to_owned()),
+            prompt: Some("Push before create".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-77".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(77),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        let lease = WorktreeLease {
+            lease_id: "lease-77".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: task.project_id.clone(),
+            worktree_path: ws.path().join("worktrees/pr-runtime-77"),
+            branch_name: "rb/77-proj".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+
+        let service = PrRuntimeService::new(&store, &worktree, &github);
+        let _ = block_on_app_result(service.ensure_draft_pr(
+            ws.path(),
+            ws.path(),
+            &task.task_id,
+            &lease,
+            &CancellationToken::new(),
+        ))?;
+
+        let recorded = events.lock().unwrap().clone();
+        if recorded != vec!["push".to_owned(), "create".to_owned()] {
+            return Err(format!("expected push then create, got {recorded:?}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_runtime.clean_shutdown_on_cancel", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::github::InMemoryGithubClient;
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        };
+        use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        struct CancelWorktree;
+        impl crate::contexts::automation_runtime::WorktreePort for CancelWorktree {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf { base_dir.join("worktrees").join(task_id) }
+            fn branch_name(&self, task_id: &str) -> String { format!("rb/{task_id}") }
+            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
+            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+            }
+            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
+            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> { Ok("main".to_owned()) }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let github = InMemoryGithubClient::new();
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-runtime-cancel".to_owned(),
+            issue_ref: "acme/widgets#80".to_owned(),
+            project_id: "proj-80".to_owned(),
+            project_name: Some("Cancelled".to_owned()),
+            prompt: Some("Cancelled".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-80".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(80),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        let lease = WorktreeLease {
+            lease_id: "lease-80".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: task.project_id.clone(),
+            worktree_path: ws.path().join("worktrees/pr-runtime-cancel"),
+            branch_name: "rb/80-proj".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+
+        let cancel = CancellationToken::new();
+        cancel.cancel();
+        let service = PrRuntimeService::new(&store, &CancelWorktree, &github);
+        let err = block_on_app_result(service.ensure_draft_pr(
+            ws.path(),
+            ws.path(),
+            &task.task_id,
+            &lease,
+            &cancel,
+        ))
+        .expect_err("expected cancellation");
+        if !err.contains("cancelled") {
+            return Err(format!("expected cancellation error, got {err}"));
+        }
+        if !github.pull_requests.lock().unwrap().is_empty() {
+            return Err("expected no PR to be created after cancellation".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_runtime.no_diff_close_or_skip", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::github::{GithubPort, GithubPullRequest, InMemoryGithubClient};
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+        };
+        use crate::contexts::automation_runtime::pr_runtime::{CompletionPrAction, PrRuntimeService};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::{EffectiveDaemonPrPolicy, FlowPreset, PrPolicy, ReviewWhitelistConfig};
+
+        struct NoDiffWorktree;
+        impl crate::contexts::automation_runtime::WorktreePort for NoDiffWorktree {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf { base_dir.join("worktrees").join(task_id) }
+            fn branch_name(&self, task_id: &str) -> String { format!("rb/{task_id}") }
+            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
+            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+            }
+            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
+            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> { Ok("main".to_owned()) }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let store = FsDaemonStore;
+        let github = InMemoryGithubClient::new();
+        github.pull_requests.lock().unwrap().push(GithubPullRequest {
+            number: 55,
+            html_url: "https://github.com/acme/widgets/pull/55".to_owned(),
+            state: "open".to_owned(),
+            draft: Some(true),
+            node_id: "PR_55".to_owned(),
+            head: None,
+            base: None,
+        });
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-runtime-nodiff".to_owned(),
+            issue_ref: "acme/widgets#55".to_owned(),
+            project_id: "proj-55".to_owned(),
+            project_name: Some("No diff".to_owned()),
+            prompt: Some("No diff".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: Some("lease-55".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(55),
+            pr_url: Some("https://github.com/acme/widgets/pull/55".to_owned()),
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        let lease = WorktreeLease {
+            lease_id: "lease-55".to_owned(),
+            task_id: task.task_id.clone(),
+            project_id: task.project_id.clone(),
+            worktree_path: ws.path().join("worktrees/pr-runtime-nodiff"),
+            branch_name: "rb/55-proj".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+
+        let service = PrRuntimeService::new(&store, &NoDiffWorktree, &github);
+        let closed = block_on_app_result(service.handle_completion_pr(
+            ws.path(),
+            ws.path(),
+            &task.task_id,
+            &lease,
+            &EffectiveDaemonPrPolicy {
+                no_diff_action: PrPolicy::CloseOnNoDiff,
+                review_whitelist: ReviewWhitelistConfig::default(),
+            },
+            &CancellationToken::new(),
+        ))?;
+        if !matches!(closed, CompletionPrAction::Closed { .. }) {
+            return Err(format!("expected close action, got {closed:?}"));
+        }
+        let pr_state = block_on_app_result(github.fetch_pr_state("acme", "widgets", 55))?;
+        if pr_state.state != "closed" {
+            return Err(format!("expected closed PR state, got {}", pr_state.state));
+        }
+
+        let skip_task = DaemonTask {
+            task_id: "pr-runtime-skip".to_owned(),
+            pr_url: None,
+            ..task.clone()
+        };
+        store.create_task(ws.path(), &skip_task).map_err(|e| e.to_string())?;
+        let skipped = block_on_app_result(service.handle_completion_pr(
+            ws.path(),
+            ws.path(),
+            &skip_task.task_id,
+            &lease,
+            &EffectiveDaemonPrPolicy {
+                no_diff_action: PrPolicy::SkipOnNoDiff,
+                review_whitelist: ReviewWhitelistConfig::default(),
+            },
+            &CancellationToken::new(),
+        ))?;
+        if !matches!(skipped, CompletionPrAction::Skipped) {
+            return Err(format!("expected skip action, got {skipped:?}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_review.whitelist_filters_comments", || {
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+            FsRunSnapshotWriteStore,
+        };
+        use crate::adapters::github::{
+            GithubComment, GithubIssue, GithubReview, GithubUser, InMemoryGithubClient,
+        };
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::contexts::project_run_record::service::AmendmentQueuePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "proj-review-1", "standard");
+        let store = FsDaemonStore;
+        let project_store = FsProjectStore;
+        let run_snapshot_read = FsRunSnapshotStore;
+        let run_snapshot_write = FsRunSnapshotWriteStore;
+        let amendment_queue = FsAmendmentQueueStore;
+        let github = InMemoryGithubClient::new();
+        github.pr_review_comments.lock().unwrap().push((
+            101,
+            GithubComment {
+                id: 12,
+                body: "inline fix this".to_owned(),
+                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                created_at: "2026-03-17T00:00:00Z".to_owned(),
+                updated_at: "2026-03-17T00:00:00Z".to_owned(),
+            },
+        ));
+        github.pr_reviews.lock().unwrap().push((
+            101,
+            GithubReview {
+                id: 14,
+                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                body: Some("summary fix".to_owned()),
+                state: "COMMENTED".to_owned(),
+                submitted_at: Some("2026-03-17T00:00:00Z".to_owned()),
+            },
+        ));
+        github.posted_comments.lock().unwrap().push((
+            101,
+            "seed".to_owned(),
+            "top-level keep this".to_owned(),
+        ));
+        github.posted_comments.lock().unwrap().push((
+            101,
+            "seed-2".to_owned(),
+            "ignore this".to_owned(),
+        ));
+        let mut issues = github.issues.lock().unwrap();
+        issues.push(GithubIssue {
+            number: 101,
+            title: "Whitelist".to_owned(),
+            body: None,
+            labels: vec![],
+            user: GithubUser { login: "alice".to_owned(), id: 1 },
+            html_url: "https://github.com/acme/widgets/issues/101".to_owned(),
+            pull_request: None,
+            updated_at: "2026-03-17T00:00:00Z".to_owned(),
+        });
+        drop(issues);
+
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-review-whitelist".to_owned(),
+            issue_ref: "acme/widgets#101".to_owned(),
+            project_id: "proj-review-1".to_owned(),
+            project_name: Some("Whitelist".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(101),
+            pr_url: Some("https://github.com/acme/widgets/pull/101".to_owned()),
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+
+        let service = PrReviewIngestionService::new(
+            &store,
+            &project_store,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &amendment_queue,
+            &github,
+        );
+        let whitelist = ReviewWhitelist {
+            allowed_usernames: vec!["alice".to_owned()],
+        };
+        let batch = block_on_app_result(service.ingest_reviews(
+            ws.path(),
+            &task.task_id,
+            &whitelist,
+            &CancellationToken::new(),
+        ))?;
+        if batch.staged_count < 2 {
+            return Err(format!("expected at least 2 staged amendments, got {}", batch.staged_count));
+        }
+        let amendments = amendment_queue
+            .list_pending_amendments(ws.path(), &crate::shared::domain::ProjectId::new("proj-review-1".to_owned()).map_err(|e| e.to_string())?)
+            .map_err(|e| e.to_string())?;
+        if amendments.iter().any(|amendment| amendment.body.contains("ignore this")) {
+            return Err("unexpected amendment from non-whitelisted author".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_review.dedup_across_restart", || {
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+            FsRunSnapshotWriteStore,
+        };
+        use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::contexts::project_run_record::service::AmendmentQueuePort;
+        use crate::shared::domain::{FlowPreset, ProjectId};
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "proj-review-2", "standard");
+        let store = FsDaemonStore;
+        let project_store = FsProjectStore;
+        let run_snapshot_read = FsRunSnapshotStore;
+        let run_snapshot_write = FsRunSnapshotWriteStore;
+        let amendment_queue = FsAmendmentQueueStore;
+        let github = InMemoryGithubClient::new();
+        github.pr_review_comments.lock().unwrap().push((
+            102,
+            GithubComment {
+                id: 21,
+                body: "dedup me".to_owned(),
+                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                created_at: "2026-03-17T00:00:00Z".to_owned(),
+                updated_at: "2026-03-17T00:00:00Z".to_owned(),
+            },
+        ));
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-review-dedup".to_owned(),
+            issue_ref: "acme/widgets#102".to_owned(),
+            project_id: "proj-review-2".to_owned(),
+            project_name: Some("Dedup".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(102),
+            pr_url: Some("https://github.com/acme/widgets/pull/102".to_owned()),
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+
+        let service = PrReviewIngestionService::new(
+            &store,
+            &project_store,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &amendment_queue,
+            &github,
+        );
+        let whitelist = ReviewWhitelist::default();
+        let _ = block_on_app_result(service.ingest_reviews(
+            ws.path(),
+            &task.task_id,
+            &whitelist,
+            &CancellationToken::new(),
+        ))?;
+        let project_id = ProjectId::new("proj-review-2".to_owned()).map_err(|e| e.to_string())?;
+        let first = amendment_queue
+            .list_pending_amendments(ws.path(), &project_id)
+            .map_err(|e| e.to_string())?;
+        if first.len() != 1 {
+            return Err(format!("expected one staged amendment, got {}", first.len()));
+        }
+
+        let mut reset_task = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        reset_task.last_seen_comment_id = None;
+        reset_task.last_seen_review_id = None;
+        store.write_task(ws.path(), &reset_task).map_err(|e| e.to_string())?;
+
+        let _ = block_on_app_result(service.ingest_reviews(
+            ws.path(),
+            &task.task_id,
+            &whitelist,
+            &CancellationToken::new(),
+        ))?;
+        let second = amendment_queue
+            .list_pending_amendments(ws.path(), &project_id)
+            .map_err(|e| e.to_string())?;
+        if second.len() != 1 {
+            return Err(format!("expected deduplicated amendment file set, got {}", second.len()));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_review.transient_error_preserves_staged", || {
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+        };
+        use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::contexts::project_run_record::service::AmendmentQueuePort;
+        use crate::shared::domain::{FlowPreset, ProjectId};
+        use crate::shared::error::{AppError, AppResult};
+
+        struct FailingSnapshotWrite;
+        impl crate::contexts::project_run_record::service::RunSnapshotWritePort for FailingSnapshotWrite {
+            fn write_run_snapshot(
+                &self,
+                _base_dir: &Path,
+                _project_id: &ProjectId,
+                _snapshot: &crate::contexts::project_run_record::model::RunSnapshot,
+            ) -> AppResult<()> {
+                Err(AppError::Io(std::io::Error::other("injected reopen failure")))
+            }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "proj-review-3", "standard");
+        std::fs::write(
+            ws.path().join(".ralph-burning/projects/proj-review-3/run.json"),
+            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        let store = FsDaemonStore;
+        let project_store = FsProjectStore;
+        let run_snapshot_read = FsRunSnapshotStore;
+        let amendment_queue = FsAmendmentQueueStore;
+        let github = InMemoryGithubClient::new();
+        github.pr_review_comments.lock().unwrap().push((
+            103,
+            GithubComment {
+                id: 31,
+                body: "persist me before failure".to_owned(),
+                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                created_at: "2026-03-17T00:00:00Z".to_owned(),
+                updated_at: "2026-03-17T00:00:00Z".to_owned(),
+            },
+        ));
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-review-failure".to_owned(),
+            issue_ref: "acme/widgets#103".to_owned(),
+            project_id: "proj-review-3".to_owned(),
+            project_name: Some("Failure".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(103),
+            pr_url: Some("https://github.com/acme/widgets/pull/103".to_owned()),
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+
+        let service = PrReviewIngestionService::new(
+            &store,
+            &project_store,
+            &run_snapshot_read,
+            &FailingSnapshotWrite,
+            &amendment_queue,
+            &github,
+        );
+        let err = block_on_app_result(service.ingest_reviews(
+            ws.path(),
+            &task.task_id,
+            &ReviewWhitelist::default(),
+            &CancellationToken::new(),
+        ))
+        .expect_err("expected reopen failure");
+        if !err.contains("injected reopen failure") {
+            return Err(format!("unexpected error: {err}"));
+        }
+        let project_id = ProjectId::new("proj-review-3".to_owned()).map_err(|e| e.to_string())?;
+        let amendments = amendment_queue
+            .list_pending_amendments(ws.path(), &project_id)
+            .map_err(|e| e.to_string())?;
+        if amendments.is_empty() {
+            return Err("expected staged amendments to remain on disk after failure".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.pr_review.completed_project_reopens_with_amendments", || {
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+            FsRunSnapshotWriteStore,
+        };
+        use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
+        use crate::contexts::agent_execution::model::CancellationToken;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::contexts::project_run_record::service::RunSnapshotPort;
+        use crate::shared::domain::{FlowPreset, ProjectId, StageId};
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "proj-review-4", "standard");
+        std::fs::write(
+            ws.path().join(".ralph-burning/projects/proj-review-4/run.json"),
+            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":2,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":2,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
+        )
+        .map_err(|e| e.to_string())?;
+        let store = FsDaemonStore;
+        let project_store = FsProjectStore;
+        let run_snapshot_read = FsRunSnapshotStore;
+        let run_snapshot_write = FsRunSnapshotWriteStore;
+        let amendment_queue = FsAmendmentQueueStore;
+        let github = InMemoryGithubClient::new();
+        github.pr_review_comments.lock().unwrap().push((
+            104,
+            GithubComment {
+                id: 41,
+                body: "reopen with this amendment".to_owned(),
+                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                created_at: "2026-03-17T00:00:00Z".to_owned(),
+                updated_at: "2026-03-17T00:00:00Z".to_owned(),
+            },
+        ));
+        let now = chrono::Utc::now();
+        let task = DaemonTask {
+            task_id: "pr-review-reopen".to_owned(),
+            issue_ref: "acme/widgets#104".to_owned(),
+            project_id: "proj-review-4".to_owned(),
+            project_name: Some("Reopen".to_owned()),
+            prompt: Some("Prompt".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(104),
+            pr_url: Some("https://github.com/acme/widgets/pull/104".to_owned()),
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+
+        let service = PrReviewIngestionService::new(
+            &store,
+            &project_store,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &amendment_queue,
+            &github,
+        );
+        let batch = block_on_app_result(service.ingest_reviews(
+            ws.path(),
+            &task.task_id,
+            &ReviewWhitelist::default(),
+            &CancellationToken::new(),
+        ))?;
+        if !batch.reopened_project {
+            return Err("expected completed project to be reopened".to_owned());
+        }
+        let reopened = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        if reopened.status != TaskStatus::Pending {
+            return Err(format!("expected pending task after reopen, got {}", reopened.status));
+        }
+        let snapshot = run_snapshot_read
+            .read_run_snapshot(
+                ws.path(),
+                &ProjectId::new("proj-review-4".to_owned()).map_err(|e| e.to_string())?,
+            )
+            .map_err(|e| e.to_string())?;
+        if snapshot.status != crate::contexts::project_run_record::model::RunStatus::Paused {
+            return Err(format!("expected paused snapshot, got {}", snapshot.status));
+        }
+        let interrupted = snapshot.interrupted_run.ok_or("expected interrupted_run after reopen")?;
+        if interrupted.stage_cursor.stage != StageId::Planning {
+            return Err(format!(
+                "expected planning restart cursor, got {}",
+                interrupted.stage_cursor.stage
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.rebase.agent_resolves_conflict", || {
+        use crate::adapters::worktree::WorktreeAdapter;
+        use crate::contexts::automation_runtime::WorktreePort;
+        use crate::shared::domain::EffectiveRebasePolicy;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        init_git_repo(&ws)?;
+        std::fs::write(ws.path().join("conflict.txt"), "base\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "add conflict file"])?;
+
+        let worktree = WorktreeAdapter;
+        let worktree_path = ws.path().join("worktrees/rebase-agent");
+        worktree
+            .create_worktree(ws.path(), &worktree_path, "rb/200-proj", "rebase-agent")
+            .map_err(|e| e.to_string())?;
+
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        run_git_in(&worktree_path, &["add", "conflict.txt"])?;
+        run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
+
+        std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "main change"])?;
+
+        let outcome = worktree
+            .rebase_with_agent_resolution(
+                ws.path(),
+                &worktree_path,
+                "rb/200-proj",
+                &EffectiveRebasePolicy {
+                    agent_resolution_enabled: true,
+                    agent_timeout: 30,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            outcome,
+            crate::contexts::automation_runtime::RebaseOutcome::AgentResolved { .. }
+        ) {
+            return Err(format!("expected agent-resolved rebase, got {outcome:?}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.rebase.disabled_agent_aborts_conflict", || {
+        use crate::adapters::worktree::WorktreeAdapter;
+        use crate::contexts::automation_runtime::WorktreePort;
+        use crate::shared::domain::EffectiveRebasePolicy;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        init_git_repo(&ws)?;
+        std::fs::write(ws.path().join("conflict.txt"), "base\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "add conflict file"])?;
+
+        let worktree = WorktreeAdapter;
+        let worktree_path = ws.path().join("worktrees/rebase-disabled");
+        worktree
+            .create_worktree(ws.path(), &worktree_path, "rb/201-proj", "rebase-disabled")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        run_git_in(&worktree_path, &["add", "conflict.txt"])?;
+        run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
+        std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "main change"])?;
+
+        let outcome = worktree
+            .rebase_with_agent_resolution(
+                ws.path(),
+                &worktree_path,
+                "rb/201-proj",
+                &EffectiveRebasePolicy {
+                    agent_resolution_enabled: false,
+                    agent_timeout: 30,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            outcome,
+            crate::contexts::automation_runtime::RebaseOutcome::Failed {
+                classification: crate::contexts::automation_runtime::RebaseFailureClassification::Conflict,
+                ..
+            }
+        ) {
+            return Err(format!("expected conflict failure, got {outcome:?}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.rebase.timeout_classification", || {
+        use crate::adapters::worktree::WorktreeAdapter;
+        use crate::contexts::automation_runtime::WorktreePort;
+        use crate::shared::domain::EffectiveRebasePolicy;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        init_git_repo(&ws)?;
+        std::fs::write(ws.path().join("conflict.txt"), "base\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "add conflict file"])?;
+
+        let worktree = WorktreeAdapter;
+        let worktree_path = ws.path().join("worktrees/rebase-timeout");
+        worktree
+            .create_worktree(ws.path(), &worktree_path, "rb/202-proj", "rebase-timeout")
+            .map_err(|e| e.to_string())?;
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        run_git_in(&worktree_path, &["add", "conflict.txt"])?;
+        run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
+        std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
+        run_git_in(ws.path(), &["add", "conflict.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "main change"])?;
+
+        let outcome = worktree
+            .rebase_with_agent_resolution(
+                ws.path(),
+                &worktree_path,
+                "rb/202-proj",
+                &EffectiveRebasePolicy {
+                    agent_resolution_enabled: true,
+                    agent_timeout: 0,
+                },
+            )
+            .map_err(|e| e.to_string())?;
+        if !matches!(
+            outcome,
+            crate::contexts::automation_runtime::RebaseOutcome::Failed {
+                classification: crate::contexts::automation_runtime::RebaseFailureClassification::Timeout,
+                ..
+            }
+        ) {
+            return Err(format!("expected timeout classification, got {outcome:?}"));
+        }
+
+        Ok(())
+    });
 }

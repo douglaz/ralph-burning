@@ -1,13 +1,15 @@
 use std::path::{Path, PathBuf};
 
 use crate::shared::domain::ProjectId;
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 
 pub mod cli_writer_lease;
 pub mod daemon_loop;
 pub mod github_intake;
 pub mod lease_service;
 pub mod model;
+pub mod pr_review;
+pub mod pr_runtime;
 pub mod repo_registry;
 pub mod routing;
 pub mod task_service;
@@ -22,9 +24,11 @@ pub use lease_service::{
 };
 pub use model::{
     CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
-    GithubTaskMeta, LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta,
-    WorktreeLease,
+    GithubTaskMeta, LeaseRecord, RebaseFailureClassification, RebaseOutcome, ReviewWhitelist,
+    RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
+pub use pr_review::{IngestedReviewBatch, PrReviewIngestionService};
+pub use pr_runtime::{CompletionPrAction, PrRuntimeService};
 pub use repo_registry::{DataDirLayout, RepoRegistration, RepoRegistryPort};
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
@@ -122,4 +126,31 @@ pub trait WorktreePort {
         worktree_path: &Path,
         branch_name: &str,
     ) -> AppResult<()>;
+    fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> {
+        Ok("main".to_owned())
+    }
+    fn push_branch(
+        &self,
+        _repo_root: &Path,
+        _worktree_path: &Path,
+        _branch_name: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    fn rebase_with_agent_resolution(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+        _policy: &crate::shared::domain::EffectiveRebasePolicy,
+    ) -> AppResult<RebaseOutcome> {
+        match self.rebase_onto_default_branch(repo_root, worktree_path, branch_name) {
+            Ok(()) => Ok(RebaseOutcome::Success),
+            Err(AppError::RebaseConflict { details, .. }) => Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Conflict,
+                details,
+            }),
+            Err(error) => Err(error),
+        }
+    }
 }

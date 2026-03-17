@@ -11,7 +11,11 @@ use crate::contexts::agent_execution::service::{AgentExecutionPort, RawOutputPor
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::automation_runtime::lease_service::LeaseService;
-use crate::contexts::automation_runtime::model::{DaemonTask, DispatchMode, TaskStatus};
+use crate::contexts::automation_runtime::model::{
+    DaemonTask, DispatchMode, RebaseFailureClassification, RebaseOutcome, TaskStatus,
+};
+use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
 use crate::contexts::automation_runtime::repo_registry::{
     parse_repo_slug, DataDirLayout, RepoRegistration,
 };
@@ -438,6 +442,20 @@ where
                 continue; // Quarantine repo for this cycle
             }
 
+            // Phase 2b: Ingest PR review feedback for active/completed tasks
+            // with PRs before collecting pending tasks. Reopened completed
+            // tasks become pending in time for the same cycle's dispatch.
+            if let Err(e) = self
+                .ingest_pr_feedback_for_repo(&daemon_dir, checkout, github, shutdown.clone())
+                .await
+            {
+                eprintln!(
+                    "daemon: PR review ingestion failed for {}: {e}",
+                    reg.repo_slug
+                );
+                continue;
+            }
+
             // Phase 3: Process pending tasks for this repo
             let pending_tasks: Vec<DaemonTask> =
                 match DaemonTaskService::list_tasks(self.store, &daemon_dir) {
@@ -558,19 +576,13 @@ where
             return Err(e);
         }
 
-        if let Err(error) = self.worktree.rebase_onto_default_branch(
+        if let Err(error) = self.rebase_task_worktree(
+            store_dir,
             repo_root,
-            &lease.worktree_path,
-            &lease.branch_name,
+            &claimed_task,
+            &lease,
+            &effective_config,
         ) {
-            let _ = self.fail_claimed_task(
-                store_dir,
-                repo_root,
-                &claimed_task.task_id,
-                &lease,
-                "rebase_conflict",
-                &error.to_string(),
-            );
             // Sync label: Failed → rb:failed. On failure, mark label_dirty and
             // quarantine this repo — no further mutations in this cycle.
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
@@ -674,7 +686,7 @@ where
                 &lease,
                 &effective_config,
                 config,
-                shutdown,
+                shutdown.clone(),
                 task_cancel,
             )
             .await;
@@ -698,6 +710,38 @@ where
 
         match outcome {
             Ok(()) => {
+                let pr_runtime = PrRuntimeService::new(self.store, self.worktree, github);
+                if let Err(error) = pr_runtime
+                    .handle_completion_pr(
+                        store_dir,
+                        repo_root,
+                        &active_task.task_id,
+                        &lease,
+                        effective_config.daemon_pr_policy(),
+                        &shutdown,
+                    )
+                    .await
+                {
+                    let failed_task = DaemonTaskService::mark_failed(
+                        self.store,
+                        store_dir,
+                        &active_task.task_id,
+                        "pr_runtime_failed",
+                        &error.to_string(),
+                    )?;
+                    if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
+                        let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                        eprintln!(
+                            "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
+                            active_task.task_id
+                        );
+                        return Err(e);
+                    }
+                    let _ =
+                        self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                    println!("failed task {}: {}", active_task.task_id, error);
+                    return Ok(());
+                }
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
                 // Sync label: Completed → rb:completed. On failure, mark label_dirty
@@ -1053,19 +1097,13 @@ where
 
         println!("claimed task {}", claimed_task.task_id);
 
-        if let Err(error) = self.worktree.rebase_onto_default_branch(
+        if let Err(error) = self.rebase_task_worktree(
+            base_dir,
             repo_root,
-            &lease.worktree_path,
-            &lease.branch_name,
+            &claimed_task,
+            &lease,
+            &effective_config,
         ) {
-            let _ = self.fail_claimed_task(
-                base_dir,
-                repo_root,
-                &claimed_task.task_id,
-                &lease,
-                "rebase_conflict",
-                &error.to_string(),
-            );
             println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
         }
@@ -1107,7 +1145,7 @@ where
                 &lease,
                 &effective_config,
                 config,
-                shutdown,
+                shutdown.clone(),
                 task_cancel,
             )
             .await;
@@ -1120,6 +1158,20 @@ where
 
         match outcome {
             Ok(()) => {
+                if task.repo_slug.is_some() {
+                    let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
+                    let pr_runtime = PrRuntimeService::new(self.store, self.worktree, &noop_gh);
+                    let _ = pr_runtime
+                        .handle_completion_pr(
+                            base_dir,
+                            repo_root,
+                            &active_task.task_id,
+                            &lease,
+                            effective_config.daemon_pr_policy(),
+                            &shutdown,
+                        )
+                        .await;
+                }
                 let _ =
                     DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
                 let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
@@ -1752,6 +1804,161 @@ where
         Ok(())
     }
 
+    async fn ingest_pr_feedback_for_repo<G: GithubPort>(
+        &self,
+        store_dir: &Path,
+        repo_root: &Path,
+        github: &G,
+        shutdown: CancellationToken,
+    ) -> AppResult<()> {
+        let whitelist = super::model::ReviewWhitelist::from_config(
+            &EffectiveConfig::load(repo_root)?
+                .daemon_pr_policy()
+                .review_whitelist,
+        );
+        let service = PrReviewIngestionService::new(
+            self.store,
+            self.project_store,
+            self.run_snapshot_read,
+            self.run_snapshot_write,
+            self.amendment_queue,
+            github,
+        );
+        let tasks = DaemonTaskService::list_tasks(self.store, store_dir)?;
+        for task in tasks.into_iter().filter(|task| {
+            matches!(task.status, TaskStatus::Active | TaskStatus::Completed)
+                && task.pr_url.is_some()
+        }) {
+            if shutdown.is_cancelled() {
+                return Ok(());
+            }
+            let batch = service
+                .ingest_reviews(store_dir, &task.task_id, &whitelist, &shutdown)
+                .await?;
+            if batch.reopened_project {
+                let reopened = self.store.read_task(store_dir, &task.task_id)?;
+                if reopened.repo_slug.is_some() && reopened.issue_number.is_some() {
+                    let _ = github_intake::sync_label_for_task(github, &reopened).await;
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn rebase_task_worktree(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        effective_config: &EffectiveConfig,
+    ) -> AppResult<()> {
+        DaemonTaskService::append_journal_event(
+            self.store,
+            base_dir,
+            super::model::DaemonJournalEventType::RebaseStarted,
+            json!({
+                "task_id": task.task_id,
+                "branch_name": lease.branch_name,
+            }),
+        )?;
+
+        let outcome = self.worktree.rebase_with_agent_resolution(
+            repo_root,
+            &lease.worktree_path,
+            &lease.branch_name,
+            effective_config.rebase_policy(),
+        )?;
+
+        match outcome {
+            RebaseOutcome::Success => {
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RebaseCompleted,
+                    json!({
+                        "task_id": task.task_id,
+                        "branch_name": lease.branch_name,
+                        "outcome": "success",
+                    }),
+                )?;
+                Ok(())
+            }
+            RebaseOutcome::AgentResolved {
+                resolved_files,
+                summary,
+            } => {
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RebaseConflict,
+                    json!({
+                        "task_id": task.task_id,
+                        "branch_name": lease.branch_name,
+                        "classification": "conflict",
+                    }),
+                )?;
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RebaseAgentResolution,
+                    json!({
+                        "task_id": task.task_id,
+                        "branch_name": lease.branch_name,
+                        "resolved_files": resolved_files,
+                        "summary": summary,
+                    }),
+                )?;
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RebaseCompleted,
+                    json!({
+                        "task_id": task.task_id,
+                        "branch_name": lease.branch_name,
+                        "outcome": "agent_resolved",
+                    }),
+                )?;
+                Ok(())
+            }
+            RebaseOutcome::Failed {
+                classification,
+                details,
+            } => {
+                DaemonTaskService::append_journal_event(
+                    self.store,
+                    base_dir,
+                    super::model::DaemonJournalEventType::RebaseConflict,
+                    json!({
+                        "task_id": task.task_id,
+                        "branch_name": lease.branch_name,
+                        "classification": match classification {
+                            RebaseFailureClassification::Conflict => "conflict",
+                            RebaseFailureClassification::Timeout => "timeout",
+                            RebaseFailureClassification::Unknown => "unknown",
+                        },
+                        "details": details,
+                    }),
+                )?;
+                self.fail_claimed_task_preserve_worktree(
+                    base_dir,
+                    &task.task_id,
+                    match classification {
+                        RebaseFailureClassification::Timeout => "rebase_timeout",
+                        RebaseFailureClassification::Conflict => "rebase_conflict",
+                        RebaseFailureClassification::Unknown => "rebase_failed",
+                    },
+                    &details,
+                )?;
+                Err(AppError::RebaseConflict {
+                    branch_name: lease.branch_name.clone(),
+                    details,
+                })
+            }
+        }
+    }
+
     fn handle_post_claim_failure(
         &self,
         base_dir: &Path,
@@ -1777,6 +1984,23 @@ where
             &failure_class,
             &error.to_string(),
         )
+    }
+
+    fn fail_claimed_task_preserve_worktree(
+        &self,
+        base_dir: &Path,
+        task_id: &str,
+        failure_class: &str,
+        failure_message: &str,
+    ) -> AppResult<()> {
+        DaemonTaskService::mark_failed(
+            self.store,
+            base_dir,
+            task_id,
+            failure_class,
+            failure_message,
+        )
+        .map(|_| ())
     }
 
     fn fail_claimed_task(

@@ -1,6 +1,7 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::OnceLock;
 
 use tempfile::tempdir;
 
@@ -10,8 +11,32 @@ use ralph_burning::contexts::workflow_composition::checkpoints::{
 };
 use ralph_burning::shared::domain::{ProjectId, RunId, StageId};
 
+fn git_binary() -> &'static Path {
+    static GIT_BINARY: OnceLock<PathBuf> = OnceLock::new();
+    GIT_BINARY
+        .get_or_init(|| {
+            let candidates = [
+                std::env::var_os("RALPH_BURNING_TEST_GIT").map(PathBuf::from),
+                Some(PathBuf::from("/run/current-system/sw/bin/git")),
+                Some(PathBuf::from("/usr/bin/git")),
+                Some(PathBuf::from("/usr/local/bin/git")),
+                Some(PathBuf::from("/opt/homebrew/bin/git")),
+            ];
+            candidates
+                .into_iter()
+                .flatten()
+                .find(|path| path.is_file())
+                .unwrap_or_else(|| PathBuf::from("git"))
+        })
+        .as_path()
+}
+
+fn git_command() -> Command {
+    Command::new(git_binary())
+}
+
 fn run_git(repo_root: &Path, args: &[&str]) -> String {
-    let output = Command::new("git")
+    let output = git_command()
         .args(args)
         .current_dir(repo_root)
         .env("GIT_AUTHOR_NAME", "test")
@@ -212,7 +237,7 @@ fn worktree_adapter_excludes_tracked_runtime_workspace_from_checkpoint_commits()
         "checkpoint commit should exclude tracked runtime workspace files, got:\n{tree}"
     );
 
-    let show_runtime = Command::new("git")
+    let show_runtime = git_command()
         .args([
             "show",
             &format!("{checkpoint_sha}:.ralph-burning/projects/demo/run.json"),

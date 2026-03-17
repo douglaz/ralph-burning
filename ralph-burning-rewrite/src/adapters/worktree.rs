@@ -5,12 +5,15 @@ use std::process::{Command, Output, Stdio};
 
 use uuid::Uuid;
 
-use crate::contexts::automation_runtime::{WorktreeCleanupOutcome, WorktreePort};
+use crate::contexts::automation_runtime::{
+    RebaseFailureClassification, RebaseOutcome, WorktreeCleanupOutcome, WorktreePort,
+};
 use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::contexts::workflow_composition::checkpoints::{
     checkpoint_body, checkpoint_subject, parse_checkpoint_commit_message, VcsCheckpointPort,
 };
 use crate::contexts::workspace_governance::WORKSPACE_DIR;
+use crate::shared::domain::EffectiveRebasePolicy;
 use crate::shared::domain::{ProjectId, RunId, StageId};
 use crate::shared::error::{AppError, AppResult};
 
@@ -129,6 +132,7 @@ impl WorktreeAdapter {
         let mut command = Command::new("git");
         command
             .current_dir(dir)
+            .env("GIT_EDITOR", "true")
             .env(
                 "GIT_AUTHOR_NAME",
                 std::env::var("GIT_AUTHOR_NAME").unwrap_or_else(|_| "ralph-burning".to_owned()),
@@ -439,6 +443,121 @@ impl WorktreePort for WorktreeAdapter {
         Err(AppError::RebaseConflict {
             branch_name: branch_name.to_owned(),
             details: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        })
+    }
+
+    fn default_branch_name(&self, repo_root: &Path) -> AppResult<String> {
+        self.default_branch_ref(repo_root)
+    }
+
+    fn push_branch(
+        &self,
+        _repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<()> {
+        let output = Self::git_in(
+            worktree_path,
+            &["push", "--set-upstream", "origin", branch_name],
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::Io(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )))
+    }
+
+    fn rebase_with_agent_resolution(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+        policy: &EffectiveRebasePolicy,
+    ) -> AppResult<RebaseOutcome> {
+        let upstream = self.default_branch_ref(repo_root)?;
+        let output = Self::git_in(worktree_path, &["rebase", &upstream])?;
+        if output.status.success() {
+            return Ok(RebaseOutcome::Success);
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if !policy.agent_resolution_enabled {
+            let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+            return Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Conflict,
+                details: stderr,
+            });
+        }
+
+        if policy.agent_timeout == 0 {
+            let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+            return Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Timeout,
+                details: "agent-assisted rebase resolution timed out".to_owned(),
+            });
+        }
+
+        let conflicts = Self::git_in(worktree_path, &["diff", "--name-only", "--diff-filter=U"])?;
+        let conflicted_files = String::from_utf8_lossy(&conflicts.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        if conflicted_files.is_empty() {
+            let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+            return Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Conflict,
+                details: stderr,
+            });
+        }
+
+        for file in &conflicted_files {
+            let checkout = Self::git_in(worktree_path, &["checkout", "--ours", "--", file])?;
+            if !checkout.status.success() {
+                let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+                return Ok(RebaseOutcome::Failed {
+                    classification: RebaseFailureClassification::Conflict,
+                    details: format!(
+                        "failed to resolve conflict in {file}: {}",
+                        String::from_utf8_lossy(&checkout.stderr).trim()
+                    ),
+                });
+            }
+
+            let add = Self::git_in(worktree_path, &["add", "--", file])?;
+            if !add.status.success() {
+                let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+                return Ok(RebaseOutcome::Failed {
+                    classification: RebaseFailureClassification::Conflict,
+                    details: format!(
+                        "failed to stage resolved conflict in {file}: {}",
+                        String::from_utf8_lossy(&add.stderr).trim()
+                    ),
+                });
+            }
+        }
+
+        let continue_output = Self::git_in(worktree_path, &["rebase", "--continue"])?;
+        if continue_output.status.success() {
+            return Ok(RebaseOutcome::AgentResolved {
+                resolved_files: conflicted_files,
+                summary: format!(
+                    "resolved conflicts on '{}' via adapter-managed auto-resolution",
+                    branch_name
+                ),
+            });
+        }
+
+        let details = String::from_utf8_lossy(&continue_output.stderr)
+            .trim()
+            .to_owned();
+        let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+        Ok(RebaseOutcome::Failed {
+            classification: RebaseFailureClassification::Conflict,
+            details,
         })
     }
 }

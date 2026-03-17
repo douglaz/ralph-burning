@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::shared::domain::FlowPreset;
+use crate::shared::domain::{FlowPreset, ReviewWhitelistConfig};
 use crate::shared::error::{AppError, AppResult};
 
 /// Dispatch mode for a daemon task — determines whether the task enters
@@ -163,6 +163,38 @@ pub struct GithubTaskMeta {
     pub last_seen_comment_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_review_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReviewWhitelist {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_usernames: Vec<String>,
+}
+
+impl ReviewWhitelist {
+    pub fn from_config(config: &ReviewWhitelistConfig) -> Self {
+        let mut usernames = config
+            .usernames()
+            .iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        usernames.sort();
+        usernames.dedup();
+        Self {
+            allowed_usernames: usernames,
+        }
+    }
+
+    pub fn allows(&self, username: &str) -> bool {
+        if self.allowed_usernames.is_empty() {
+            return true;
+        }
+        let normalized = username.trim().to_ascii_lowercase();
+        self.allowed_usernames
+            .iter()
+            .any(|candidate| candidate == &normalized)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,4 +490,36 @@ pub enum DaemonJournalEventType {
     RequirementsWaiting,
     RequirementsResumed,
     RoutingWarning,
+    RebaseStarted,
+    RebaseCompleted,
+    RebaseConflict,
+    RebaseAgentResolution,
+    DraftPrCreated,
+    PrClosed,
+    PrMarkedReady,
+    ReviewsIngested,
+    AmendmentsStaged,
+    ProjectReopened,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebaseFailureClassification {
+    Conflict,
+    Timeout,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RebaseOutcome {
+    Success,
+    AgentResolved {
+        resolved_files: Vec<String>,
+        summary: String,
+    },
+    Failed {
+        classification: RebaseFailureClassification,
+        details: String,
+    },
 }

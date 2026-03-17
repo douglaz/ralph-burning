@@ -7,9 +7,9 @@ use crate::adapters::fs::FileSystem;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
     BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
-    EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy, EffectiveRunPolicy,
-    EffectiveValidationPolicy, FlowPreset, PanelBackendSpec, ProjectConfig, ProjectId,
-    PromptChangeAction, WorkspaceConfig,
+    EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy,
+    EffectiveRebasePolicy, EffectiveRunPolicy, EffectiveValidationPolicy, FlowPreset,
+    PanelBackendSpec, PrPolicy, ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -27,6 +27,9 @@ pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 2;
 pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 10;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
+pub const DEFAULT_PR_NO_DIFF_ACTION: PrPolicy = PrPolicy::SkipOnNoDiff;
+pub const DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED: bool = false;
+pub const DEFAULT_REBASE_AGENT_TIMEOUT_SECS: u64 = 300;
 
 const DEFAULT_BASE_BACKEND: BackendFamily = BackendFamily::Claude;
 const UNSET_LITERALS: &[&str] = &["unset", "none", "null"];
@@ -136,6 +139,8 @@ pub struct EffectiveConfig {
     completion_policy: EffectiveCompletionPolicy,
     final_review_policy: EffectiveFinalReviewPolicy,
     validation_policy: EffectiveValidationPolicy,
+    daemon_pr_policy: EffectiveDaemonPrPolicy,
+    rebase_policy: EffectiveRebasePolicy,
     backend_policy: EffectiveBackendPolicy,
 }
 
@@ -312,6 +317,36 @@ impl EffectiveConfig {
             ),
         };
 
+        let daemon_pr_policy = EffectiveDaemonPrPolicy {
+            no_diff_action: resolve_scalar(
+                workspace_config.daemon.pr.no_diff_action,
+                project_config.daemon.pr.no_diff_action,
+                None,
+                DEFAULT_PR_NO_DIFF_ACTION,
+            ),
+            review_whitelist: resolve_optional(
+                workspace_config.daemon.pr.review_whitelist.clone(),
+                project_config.daemon.pr.review_whitelist.clone(),
+                None,
+            )
+            .unwrap_or_default(),
+        };
+
+        let rebase_policy = EffectiveRebasePolicy {
+            agent_resolution_enabled: resolve_scalar(
+                workspace_config.daemon.rebase.agent_resolution_enabled,
+                project_config.daemon.rebase.agent_resolution_enabled,
+                None,
+                DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED,
+            ),
+            agent_timeout: resolve_scalar(
+                workspace_config.daemon.rebase.agent_timeout,
+                project_config.daemon.rebase.agent_timeout,
+                None,
+                DEFAULT_REBASE_AGENT_TIMEOUT_SECS,
+            ),
+        };
+
         let base_backend_string = cli_overrides
             .backend
             .as_ref()
@@ -392,6 +427,8 @@ impl EffectiveConfig {
             completion_policy,
             final_review_policy,
             validation_policy,
+            daemon_pr_policy,
+            rebase_policy,
             backend_policy,
         })
     }
@@ -419,6 +456,14 @@ impl EffectiveConfig {
 
     pub fn validation_policy(&self) -> &EffectiveValidationPolicy {
         &self.validation_policy
+    }
+
+    pub fn daemon_pr_policy(&self) -> &EffectiveDaemonPrPolicy {
+        &self.daemon_pr_policy
+    }
+
+    pub fn rebase_policy(&self) -> &EffectiveRebasePolicy {
+        &self.rebase_policy
     }
 
     pub fn backend_policy(&self) -> &EffectiveBackendPolicy {
@@ -929,6 +974,58 @@ impl EffectiveConfig {
                     self.workspace_config.validation.pre_commit_fmt_auto_fix,
                     self.project_config.validation.pre_commit_fmt_auto_fix,
                     None::<bool>,
+                ),
+            ),
+            ["daemon", "pr", "no_diff_action"] => (
+                ConfigValue::String(Some(
+                    self.daemon_pr_policy.no_diff_action.as_str().to_owned(),
+                )),
+                source_for_option(
+                    self.workspace_config.daemon.pr.no_diff_action.map(|_| ()),
+                    self.project_config.daemon.pr.no_diff_action.map(|_| ()),
+                    None::<()>,
+                ),
+            ),
+            ["daemon", "pr", "review_whitelist"] => (
+                ConfigValue::StringList(self.daemon_pr_policy.review_whitelist.0.clone()),
+                source_for_option(
+                    self.workspace_config
+                        .daemon
+                        .pr
+                        .review_whitelist
+                        .clone()
+                        .map(|_| ()),
+                    self.project_config
+                        .daemon
+                        .pr
+                        .review_whitelist
+                        .clone()
+                        .map(|_| ()),
+                    None::<()>,
+                ),
+            ),
+            ["daemon", "rebase", "agent_resolution_enabled"] => (
+                ConfigValue::Bool(self.rebase_policy.agent_resolution_enabled),
+                source_for_option(
+                    self.workspace_config
+                        .daemon
+                        .rebase
+                        .agent_resolution_enabled
+                        .map(|_| ()),
+                    self.project_config
+                        .daemon
+                        .rebase
+                        .agent_resolution_enabled
+                        .map(|_| ()),
+                    None::<()>,
+                ),
+            ),
+            ["daemon", "rebase", "agent_timeout"] => (
+                ConfigValue::Integer(self.rebase_policy.agent_timeout),
+                source_for_option(
+                    self.workspace_config.daemon.rebase.agent_timeout.map(|_| ()),
+                    self.project_config.daemon.rebase.agent_timeout.map(|_| ()),
+                    None::<()>,
                 ),
             ),
             ["backends", backend_name, field] => {
@@ -1457,6 +1554,10 @@ fn known_config_keys() -> Vec<String> {
         "validation.pre_commit_clippy".to_owned(),
         "validation.pre_commit_nix_build".to_owned(),
         "validation.pre_commit_fmt_auto_fix".to_owned(),
+        "daemon.pr.no_diff_action".to_owned(),
+        "daemon.pr.review_whitelist".to_owned(),
+        "daemon.rebase.agent_resolution_enabled".to_owned(),
+        "daemon.rebase.agent_timeout".to_owned(),
     ];
 
     for backend_name in ["claude", "codex", "openrouter"] {
@@ -1602,6 +1703,29 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["validation", "pre_commit_fmt_auto_fix"] => apply_optional_bool(
             document,
             &["validation", "pre_commit_fmt_auto_fix"],
+            key,
+            raw_value,
+        )?,
+        ["daemon", "pr", "no_diff_action"] => {
+            if is_unset(raw_value) {
+                document["daemon"]["pr"]["no_diff_action"] = Item::None;
+            } else {
+                let parsed = raw_value.trim().parse::<PrPolicy>()?;
+                document["daemon"]["pr"]["no_diff_action"] = value(parsed.as_str());
+            }
+        }
+        ["daemon", "pr", "review_whitelist"] => {
+            apply_string_list(document, &["daemon", "pr", "review_whitelist"], raw_value)?
+        }
+        ["daemon", "rebase", "agent_resolution_enabled"] => apply_optional_bool(
+            document,
+            &["daemon", "rebase", "agent_resolution_enabled"],
+            key,
+            raw_value,
+        )?,
+        ["daemon", "rebase", "agent_timeout"] => apply_optional_u64(
+            document,
+            &["daemon", "rebase", "agent_timeout"],
             key,
             raw_value,
         )?,

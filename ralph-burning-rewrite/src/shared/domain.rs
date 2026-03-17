@@ -891,6 +891,44 @@ impl FromStr for PromptChangeAction {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrPolicy {
+    SkipOnNoDiff,
+    CloseOnNoDiff,
+}
+
+impl PrPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipOnNoDiff => "skip_on_no_diff",
+            Self::CloseOnNoDiff => "close_on_no_diff",
+        }
+    }
+}
+
+impl fmt::Display for PrPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PrPolicy {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "skip_on_no_diff" => Ok(Self::SkipOnNoDiff),
+            "close_on_no_diff" => Ok(Self::CloseOnNoDiff),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "daemon.pr.no_diff_action".to_owned(),
+                value: value.to_owned(),
+                reason: "expected one of skip_on_no_diff, close_on_no_diff".to_owned(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub version: u32,
@@ -907,6 +945,8 @@ pub struct WorkspaceConfig {
     pub final_review: FinalReviewSettings,
     #[serde(default, skip_serializing_if = "ValidationSettings::is_empty")]
     pub validation: ValidationSettings,
+    #[serde(default, skip_serializing_if = "DaemonSettings::is_empty")]
+    pub daemon: DaemonSettings,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub backends: BTreeMap<String, BackendRuntimeSettings>,
     #[serde(flatten)]
@@ -924,6 +964,7 @@ impl WorkspaceConfig {
             completion: CompletionSettings::default(),
             final_review: FinalReviewSettings::default(),
             validation: ValidationSettings::default(),
+            daemon: DaemonSettings::default(),
             backends: BTreeMap::new(),
             extra: Table::new(),
         }
@@ -944,6 +985,8 @@ pub struct ProjectConfig {
     pub final_review: FinalReviewSettings,
     #[serde(default, skip_serializing_if = "ValidationSettings::is_empty")]
     pub validation: ValidationSettings,
+    #[serde(default, skip_serializing_if = "DaemonSettings::is_empty")]
+    pub daemon: DaemonSettings,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub backends: BTreeMap<String, BackendRuntimeSettings>,
     #[serde(flatten)]
@@ -958,6 +1001,7 @@ impl ProjectConfig {
             && self.completion.is_empty()
             && self.final_review.is_empty()
             && self.validation.is_empty()
+            && self.daemon.is_empty()
             && self.backends.is_empty()
             && self.extra.is_empty()
     }
@@ -1121,6 +1165,70 @@ impl ValidationSettings {
             && self.pre_commit_clippy.is_none()
             && self.pre_commit_nix_build.is_none()
             && self.pre_commit_fmt_auto_fix.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DaemonSettings {
+    #[serde(default, skip_serializing_if = "DaemonPrSettings::is_empty")]
+    pub pr: DaemonPrSettings,
+    #[serde(default, skip_serializing_if = "RebasePolicy::is_empty")]
+    pub rebase: RebasePolicy,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl DaemonSettings {
+    pub fn is_empty(&self) -> bool {
+        self.pr.is_empty() && self.rebase.is_empty() && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DaemonPrSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_diff_action: Option<PrPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_whitelist: Option<ReviewWhitelistConfig>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl DaemonPrSettings {
+    pub fn is_empty(&self) -> bool {
+        self.no_diff_action.is_none() && self.review_whitelist.is_none() && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct ReviewWhitelistConfig(pub Vec<String>);
+
+impl ReviewWhitelistConfig {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn usernames(&self) -> &[String] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RebasePolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_resolution_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_timeout: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl RebasePolicy {
+    pub fn is_empty(&self) -> bool {
+        self.agent_resolution_enabled.is_none()
+            && self.agent_timeout.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1313,6 +1421,18 @@ pub struct EffectiveValidationPolicy {
     pub pre_commit_clippy: bool,
     pub pre_commit_nix_build: bool,
     pub pre_commit_fmt_auto_fix: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveDaemonPrPolicy {
+    pub no_diff_action: PrPolicy,
+    pub review_whitelist: ReviewWhitelistConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveRebasePolicy {
+    pub agent_resolution_enabled: bool,
+    pub agent_timeout: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
