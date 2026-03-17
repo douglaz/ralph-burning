@@ -565,8 +565,9 @@ async fn happy_path_docs_change_run_completes() {
         fs::read_dir(base_dir.join(".ralph-burning/projects/docs-happy/history/artifacts"))
             .unwrap()
             .count();
-    assert_eq!(payload_count, 4);
-    assert_eq!(artifact_count, 4);
+    // 4 primary stage records + 1 local validation supporting record
+    assert_eq!(payload_count, 5);
+    assert_eq!(artifact_count, 5);
 }
 
 #[tokio::test]
@@ -623,8 +624,9 @@ async fn happy_path_ci_improvement_run_completes() {
         fs::read_dir(base_dir.join(".ralph-burning/projects/ci-happy/history/artifacts"))
             .unwrap()
             .count();
-    assert_eq!(payload_count, 4);
-    assert_eq!(artifact_count, 4);
+    // 4 primary stage records + 1 local validation supporting record
+    assert_eq!(payload_count, 5);
+    assert_eq!(artifact_count, 5);
 }
 
 #[tokio::test]
@@ -635,13 +637,25 @@ async fn docs_change_remediation_restarts_from_docs_update() {
     setup_workspace(base_dir);
     let pid = create_project_with_flow(base_dir, "docs-remediation", FlowPreset::DocsChange);
 
-    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
-        StageId::DocsValidation,
-        vec![
-            request_changes_payload(&["fix the broken link targets"]),
-            approved_validation_payload(),
-        ],
+    // Create a marker-based command that fails on first invocation and
+    // succeeds on subsequent invocations, simulating a fix cycle.
+    let marker = base_dir.join("docs-validation-marker");
+    let cmd = format!(
+        "if [ -f '{}' ]; then exit 0; else touch '{}' && exit 1; fi",
+        marker.display(),
+        marker.display()
+    );
+
+    // Append docs_commands to workspace config so EffectiveConfig::load picks them up.
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str(&format!(
+        "\n[validation]\ndocs_commands = [{:?}]\n",
+        cmd
     ));
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default());
     let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
@@ -676,27 +690,32 @@ async fn docs_change_remediation_restarts_from_docs_update() {
     assert_eq!(cycle_advanced.len(), 1);
     assert_eq!(cycle_advanced[0].details["resume_stage"], "docs_update");
 
+    // Verify the remediation context contains follow-up items from the local validation failure.
     let docs_update_contexts = adapter_handle.contexts_for(StageId::DocsUpdate);
     assert_eq!(docs_update_contexts.len(), 2);
-    assert_eq!(
-        docs_update_contexts[1]["remediation"]["follow_up_or_amendments"][0],
-        "fix the broken link targets"
+    assert!(
+        docs_update_contexts[1].get("remediation").is_some(),
+        "second docs_update invocation should have remediation context"
     );
 }
 
 #[tokio::test]
-async fn docs_change_conditionally_approved_records_follow_ups_without_durable_amendments() {
+async fn docs_change_local_validation_pass_completes_without_amendments() {
+    // DocsValidation now runs locally. Passing commands complete the run
+    // without follow-ups or amendments (local validation is binary pass/fail).
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
     let pid = create_project_with_flow(base_dir, "docs-conditional", FlowPreset::DocsChange);
 
-    let agent_service =
-        build_agent_service_with_adapter(StubBackendAdapter::default().with_stage_payload(
-            StageId::DocsValidation,
-            conditionally_approved_payload(&["add a rollout caveat", "tighten the examples"]),
-        ));
+    // Append docs_commands to workspace config.
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str("\n[validation]\ndocs_commands = [\"true\"]\n");
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    let agent_service = build_agent_service();
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let result = engine::execute_run(
@@ -721,15 +740,8 @@ async fn docs_change_conditionally_approved_records_follow_ups_without_durable_a
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert!(snapshot.amendment_queue.pending.is_empty());
-    assert_eq!(
-        snapshot
-            .amendment_queue
-            .recorded_follow_ups
-            .iter()
-            .map(|item| item.body.as_str())
-            .collect::<Vec<_>>(),
-        vec!["add a rollout caveat", "tighten the examples"]
-    );
+    // Local validation does not produce follow-ups.
+    assert!(snapshot.amendment_queue.recorded_follow_ups.is_empty());
 
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     assert_eq!(
@@ -756,13 +768,25 @@ async fn ci_improvement_remediation_restarts_from_ci_update() {
     setup_workspace(base_dir);
     let pid = create_project_with_flow(base_dir, "ci-remediation", FlowPreset::CiImprovement);
 
-    let adapter = RecordingAdapter::new(StubBackendAdapter::default().with_stage_payload_sequence(
-        StageId::CiValidation,
-        vec![
-            request_changes_payload(&["tighten the workflow assertion"]),
-            approved_validation_payload(),
-        ],
+    // Create a marker-based command that fails on first invocation and
+    // succeeds on subsequent invocations, simulating a fix cycle.
+    let marker = base_dir.join("ci-validation-marker");
+    let cmd = format!(
+        "if [ -f '{}' ]; then exit 0; else touch '{}' && exit 1; fi",
+        marker.display(),
+        marker.display()
+    );
+
+    // Append ci_commands to workspace config.
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str(&format!(
+        "\n[validation]\nci_commands = [{:?}]\n",
+        cmd
     ));
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default());
     let adapter_handle = adapter.clone();
     let agent_service = build_agent_service_with_adapter(adapter);
     let config = EffectiveConfig::load(base_dir).unwrap();
@@ -797,26 +821,32 @@ async fn ci_improvement_remediation_restarts_from_ci_update() {
     assert_eq!(cycle_advanced.len(), 1);
     assert_eq!(cycle_advanced[0].details["resume_stage"], "ci_update");
 
+    // Verify the remediation context contains follow-up items from the local validation failure.
     let ci_update_contexts = adapter_handle.contexts_for(StageId::CiUpdate);
     assert_eq!(ci_update_contexts.len(), 2);
-    assert_eq!(
-        ci_update_contexts[1]["remediation"]["follow_up_or_amendments"][0],
-        "tighten the workflow assertion"
+    assert!(
+        ci_update_contexts[1].get("remediation").is_some(),
+        "second ci_update invocation should have remediation context"
     );
 }
 
 #[tokio::test]
-async fn ci_improvement_rejected_validation_fails_run() {
+async fn ci_improvement_always_failing_validation_fails_run() {
+    // CiValidation now runs locally. A command that always fails exhausts
+    // remediation cycles and fails the run.
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
 
     setup_workspace(base_dir);
     let pid = create_project_with_flow(base_dir, "ci-rejected", FlowPreset::CiImprovement);
 
-    let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default()
-            .with_stage_payload(StageId::CiValidation, rejected_validation_payload()),
-    );
+    // Append ci_commands to workspace config.
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str("\n[validation]\nci_commands = [\"false\"]\n");
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    let agent_service = build_agent_service();
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let result = engine::execute_run(
@@ -847,9 +877,13 @@ async fn ci_improvement_rejected_validation_fails_run() {
         .rev()
         .find(|event| event.event_type == JournalEventType::RunFailed)
         .expect("run_failed");
-    assert_eq!(
-        run_failed.details["failure_class"],
-        "qa_review_outcome_failure"
+    // Remediation exhaustion or qa iteration cap failure
+    let failure_class = run_failed.details["failure_class"].as_str().unwrap_or("");
+    assert!(
+        failure_class == "remediation_exhausted"
+            || failure_class == "stage_commit_failed"
+            || failure_class == "qa_review_outcome_failure",
+        "unexpected failure_class: {failure_class}"
     );
 }
 

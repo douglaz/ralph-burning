@@ -8,6 +8,7 @@ pub mod payloads;
 pub mod prompt_review;
 pub mod renderers;
 pub mod retry_policy;
+pub mod validation;
 
 use crate::shared::domain::{FlowPreset, StageId};
 use crate::shared::error::AppResult;

@@ -2993,7 +2993,7 @@ fn run_start_completes_docs_change_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 5);
 
     let journal = fs::read_to_string(
         temp_dir
@@ -3033,7 +3033,7 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 5);
 
     let journal = fs::read_to_string(
         temp_dir

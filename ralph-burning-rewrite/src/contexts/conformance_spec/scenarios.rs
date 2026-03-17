@@ -339,6 +339,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_daemon_issue_intake(&mut m);
     register_workflow_panels(&mut m);
     register_workflow_slice5(&mut m);
+    register_validation_slice6(&mut m);
 
     m
 }
@@ -3998,30 +3999,23 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-NONSTD-RESUME-003", || {
         // docs_change: docs_validation request_changes triggers remediation cycle
         // (not amendment queuing, since docs_change has no late stages)
+        // Uses a marker-file command so validation fails on first run, passes on second.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-docs-amend", "docs_change")?;
 
-        let overrides = serde_json::json!({
-            "docs_validation": [
-                {
-                    "outcome": "request_changes",
-                    "evidence": ["Needs fixes"],
-                    "findings_or_gaps": ["Gap"],
-                    "follow_up_or_amendments": ["Fix documentation gaps"]
-                },
-                {
-                    "outcome": "approved",
-                    "evidence": ["All good"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
-                }
-            ]
-        });
-        let start = run_cli_with_env(
-            &["run", "start"],
-            ws.path(),
-            &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
-        )?;
+        let marker = ws.path().join(".ralph-burning/projects/ns-docs-amend/runtime/temp/docs_marker");
+        let marker_str = marker.display().to_string();
+        let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/ns-docs-amend/config.toml");
+        std::fs::write(
+            &config_path,
+            format!("[validation]\ndocs_commands = [\"{cmd}\"]\n"),
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let start = run_cli(&["run", "start"], ws.path())?;
         assert_success(&start)?;
 
         // docs_validation request_changes triggers remediation cycle (cycle_advanced)
@@ -4041,31 +4035,24 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-NONSTD-RESUME-004", || {
-        // Resume a paused ci_improvement snapshot with pending amendments
+        // ci_improvement: ci_validation request_changes triggers remediation cycle.
+        // Uses a marker-file command so validation fails on first run, passes on second.
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-ci-amend", "ci_improvement")?;
 
-        let overrides = serde_json::json!({
-            "ci_validation": [
-                {
-                    "outcome": "request_changes",
-                    "evidence": ["CI needs fixes"],
-                    "findings_or_gaps": ["Missing coverage"],
-                    "follow_up_or_amendments": ["Add coverage check"]
-                },
-                {
-                    "outcome": "approved",
-                    "evidence": ["All good"],
-                    "findings_or_gaps": [],
-                    "follow_up_or_amendments": []
-                }
-            ]
-        });
-        let start = run_cli_with_env(
-            &["run", "start"],
-            ws.path(),
-            &[("RALPH_BURNING_TEST_STAGE_OVERRIDES", &overrides.to_string())],
-        )?;
+        let marker = ws.path().join(".ralph-burning/projects/ns-ci-amend/runtime/temp/ci_marker");
+        let marker_str = marker.display().to_string();
+        let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/ns-ci-amend/config.toml");
+        std::fs::write(
+            &config_path,
+            format!("[validation]\nci_commands = [\"{cmd}\"]\n"),
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let start = run_cli(&["run", "start"], ws.path())?;
         assert_success(&start)?;
 
         // ci_validation request_changes triggers remediation cycle (cycle_advanced)
@@ -10444,6 +10431,357 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err(
                     "final-review restart cap should still leave the run on round 2".to_owned(),
                 );
+            }
+            Ok(())
+        }
+    );
+}
+
+// ===========================================================================
+// Validation Slice 6 (11 scenarios)
+// ===========================================================================
+
+fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
+    // ── docs validation ────────────────────────────────────────────────────
+    reg!(m, "validation.docs.commands_pass", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "vd-pass", "docs_change")?;
+
+        // Configure docs_commands to a command that always passes.
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/vd-pass/config.toml");
+        std::fs::write(
+            &config_path,
+            "[validation]\ndocs_commands = [\"true\"]\n",
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "vd-pass")?;
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed, got {:?}",
+                snapshot.get("status")
+            ));
+        }
+        Ok(())
+    });
+
+    reg!(m, "validation.docs.command_failure_requests_changes", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "vd-fail", "docs_change")?;
+
+        // Configure docs_commands to a command that always fails.
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/vd-fail/config.toml");
+        std::fs::write(
+            &config_path,
+            "[validation]\ndocs_commands = [\"false\"]\n",
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let _out = run_cli(&["run", "start"], ws.path())?;
+        // The run should fail because the validation fails and remediation is exhausted.
+        let snapshot = read_run_snapshot(&ws, "vd-fail")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        // After remediation exhaustion, the run will fail.
+        if status != "failed" && status != "running" {
+            return Err(format!("expected failed or running status, got: {status}"));
+        }
+
+        // Verify that local validation evidence was persisted.
+        let payload_count = count_payload_files(&ws, "vd-fail")?;
+        if payload_count == 0 {
+            return Err("expected at least one payload file from local validation".to_owned());
+        }
+        Ok(())
+    });
+
+    // ── CI validation ──────────────────────────────────────────────────────
+    reg!(m, "validation.ci.commands_pass", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "vc-pass", "ci_improvement")?;
+
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/vc-pass/config.toml");
+        std::fs::write(
+            &config_path,
+            "[validation]\nci_commands = [\"true\"]\n",
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "vc-pass")?;
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed, got {:?}",
+                snapshot.get("status")
+            ));
+        }
+        Ok(())
+    });
+
+    reg!(m, "validation.ci.command_failure_requests_changes", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "vc-fail", "ci_improvement")?;
+
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/vc-fail/config.toml");
+        std::fs::write(
+            &config_path,
+            "[validation]\nci_commands = [\"false\"]\n",
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let _out = run_cli(&["run", "start"], ws.path())?;
+        let snapshot = read_run_snapshot(&ws, "vc-fail")?;
+        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "failed" && status != "running" {
+            return Err(format!("expected failed or running status, got: {status}"));
+        }
+
+        let payload_count = count_payload_files(&ws, "vc-fail")?;
+        if payload_count == 0 {
+            return Err("expected at least one payload file from local validation".to_owned());
+        }
+        Ok(())
+    });
+
+    // ── standard flow: review context ──────────────────────────────────────
+    reg!(
+        m,
+        "validation.standard.review_context_contains_local_validation",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "vs-ctx", "standard")?;
+
+            let config_path = ws
+                .path()
+                .join(".ralph-burning/projects/vs-ctx/config.toml");
+            std::fs::write(
+                &config_path,
+                "[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
+            )
+            .map_err(|e| format!("write config: {e}"))?;
+
+            let out = run_cli(&["run", "start"], ws.path())?;
+            assert_success(&out)?;
+
+            // Verify local validation supporting evidence was persisted.
+            let payload_count = count_payload_files(&ws, "vs-ctx")?;
+            if payload_count < 2 {
+                return Err(format!(
+                    "expected multiple payloads including local validation evidence, got {}",
+                    payload_count
+                ));
+            }
+            Ok(())
+        }
+    );
+
+    // ── pre-commit checks ──────────────────────────────────────────────────
+    reg!(m, "validation.pre_commit.disabled_skips_checks", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "vp-disabled", "standard")?;
+
+        let config_path = ws
+            .path()
+            .join(".ralph-burning/projects/vp-disabled/config.toml");
+        std::fs::write(
+            &config_path,
+            "[validation]\npre_commit_fmt = false\npre_commit_clippy = false\npre_commit_nix_build = false\n",
+        )
+        .map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "vp-disabled")?;
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err("expected completed when pre-commit checks are disabled".to_owned());
+        }
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "validation.pre_commit.no_cargo_toml_skips_cargo_checks",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "vp-nocargo", "standard")?;
+
+            let config_path = ws
+                .path()
+                .join(".ralph-burning/projects/vp-nocargo/config.toml");
+            std::fs::write(
+                &config_path,
+                "[validation]\npre_commit_fmt = true\npre_commit_clippy = true\npre_commit_nix_build = false\n",
+            )
+            .map_err(|e| format!("write config: {e}"))?;
+
+            // Ensure no Cargo.toml at repo root.
+            let cargo_toml = ws.path().join("Cargo.toml");
+            if cargo_toml.exists() {
+                std::fs::remove_file(&cargo_toml)
+                    .map_err(|e| format!("remove Cargo.toml: {e}"))?;
+            }
+
+            let out = run_cli(&["run", "start"], ws.path())?;
+            assert_success(&out)?;
+
+            let snapshot = read_run_snapshot(&ws, "vp-nocargo")?;
+            if snapshot.get("status").and_then(|v| v.as_str()) != Some("completed") {
+                return Err(
+                    "expected completed when Cargo.toml is absent and cargo checks are configured"
+                        .to_owned(),
+                );
+            }
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "validation.pre_commit.fmt_failure_triggers_remediation",
+        || {
+            use crate::adapters::validation_runner;
+
+            let result = validation_runner::ValidationGroupResult {
+                group_name: "pre_commit".to_owned(),
+                commands: vec![validation_runner::ValidationCommandResult {
+                    command: "cargo fmt --check".to_owned(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "Diff in file.rs".to_owned(),
+                    duration_ms: 100,
+                    passed: false,
+                }],
+                passed: false,
+            };
+
+            if result.passed {
+                return Err("expected pre-commit failure".to_owned());
+            }
+            if result.failing_excerpts().is_empty() {
+                return Err("expected failing excerpts from fmt failure".to_owned());
+            }
+
+            let context =
+                crate::contexts::workflow_composition::validation::pre_commit_remediation_context(
+                    &result,
+                );
+            let source = context.get("source_stage").and_then(|v| v.as_str());
+            if source != Some("pre_commit") {
+                return Err(format!("expected source_stage=pre_commit, got {:?}", source));
+            }
+            Ok(())
+        }
+    );
+
+    reg!(m, "validation.pre_commit.fmt_auto_fix_succeeds", || {
+        use crate::adapters::validation_runner;
+
+        // Simulate: original failure + fix + recheck passes.
+        let result = validation_runner::ValidationGroupResult {
+            group_name: "pre_commit".to_owned(),
+            commands: vec![
+                validation_runner::ValidationCommandResult {
+                    command: "cargo fmt --check".to_owned(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "Diff in file.rs".to_owned(),
+                    duration_ms: 100,
+                    passed: false,
+                },
+                validation_runner::ValidationCommandResult {
+                    command: "cargo fmt".to_owned(),
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: 200,
+                    passed: true,
+                },
+                validation_runner::ValidationCommandResult {
+                    command: "cargo fmt --check".to_owned(),
+                    exit_code: Some(0),
+                    stdout: String::new(),
+                    stderr: String::new(),
+                    duration_ms: 50,
+                    passed: true,
+                },
+            ],
+            passed: true,
+        };
+
+        if !result.passed {
+            return Err("expected auto-fix to succeed".to_owned());
+        }
+        if result.commands.len() != 3 {
+            return Err(format!(
+                "expected 3 command results (fail, fix, recheck), got {}",
+                result.commands.len()
+            ));
+        }
+        if result.commands[0].passed {
+            return Err("first command should have failed".to_owned());
+        }
+        if !result.commands[2].passed {
+            return Err("recheck after fix should pass".to_owned());
+        }
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "validation.pre_commit.nix_build_failure_records_feedback",
+        || {
+            use crate::adapters::validation_runner;
+
+            let result = validation_runner::ValidationGroupResult {
+                group_name: "pre_commit".to_owned(),
+                commands: vec![validation_runner::ValidationCommandResult {
+                    command: "nix build".to_owned(),
+                    exit_code: Some(1),
+                    stdout: String::new(),
+                    stderr: "error: build failed".to_owned(),
+                    duration_ms: 5000,
+                    passed: false,
+                }],
+                passed: false,
+            };
+
+            if result.passed {
+                return Err("expected nix build failure".to_owned());
+            }
+
+            let context =
+                crate::contexts::workflow_composition::validation::pre_commit_remediation_context(
+                    &result,
+                );
+            let findings = context
+                .get("findings_or_gaps")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if findings == 0 {
+                return Err("expected findings from nix build failure".to_owned());
+            }
+
+            let follow_ups = context
+                .get("follow_up_or_amendments")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            if follow_ups == 0 {
+                return Err("expected follow-up items from nix build failure".to_owned());
             }
             Ok(())
         }

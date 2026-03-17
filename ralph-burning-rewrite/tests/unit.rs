@@ -69,3 +69,6 @@ mod backend_policy_test;
 
 #[path = "unit/workflow_panels_test.rs"]
 mod workflow_panels_test;
+
+#[path = "unit/validation_runner_test.rs"]
+mod validation_runner_test;

@@ -3,6 +3,7 @@ pub mod issue_watcher;
 pub mod openrouter_backend;
 pub mod process_backend;
 pub mod stub_backend;
+pub mod validation_runner;
 pub mod worktree;
 
 use crate::contexts::agent_execution::model::{
