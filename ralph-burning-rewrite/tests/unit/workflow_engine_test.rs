@@ -1634,6 +1634,42 @@ impl JournalStorePort for FinalReviewRoundAdvanceFailingJournalStore {
     }
 }
 
+/// A journal store that fails specifically when completion_panel tries to
+/// commit a completion_round_advanced event. This lets tests inspect the
+/// persisted round-restart snapshot before the journal catches up.
+struct CompletionPanelRoundAdvanceFailingJournalStore;
+
+impl JournalStorePort for CompletionPanelRoundAdvanceFailingJournalStore {
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        FsJournalStore.read_journal(base_dir, project_id)
+    }
+
+    fn append_event(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        line: &str,
+    ) -> AppResult<()> {
+        let event = journal::deserialize_event(line)?;
+        if event.event_type == JournalEventType::CompletionRoundAdvanced
+            && event
+                .details
+                .get("source_stage")
+                .and_then(|value| value.as_str())
+                == Some(StageId::CompletionPanel.as_str())
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated completion-panel completion_round_advanced failure",
+            )));
+        }
+        FsJournalStore.append_event(base_dir, project_id, line)
+    }
+}
+
 /// A snapshot write store that delegates to `FsRunSnapshotWriteStore` but fails
 /// on the Nth write call (1-indexed).
 struct FailingSnapshotWriteStore {
@@ -3081,6 +3117,45 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
             .append_event(base_dir, &pid, &journal::serialize_event(&event).unwrap())
             .unwrap();
     }
+    for (stage_id, payload_id, artifact_id) in [
+        (
+            StageId::PromptReview,
+            "prompt-review-payload",
+            "prompt-review-artifact",
+        ),
+        (StageId::Planning, "planning-payload", "planning-artifact"),
+    ] {
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(
+                base_dir,
+                &pid,
+                &PayloadRecord {
+                    payload_id: payload_id.to_owned(),
+                    stage_id,
+                    cycle: 1,
+                    attempt: 1,
+                    created_at: started_at,
+                    payload: json!({
+                        "stage": stage_id.as_str(),
+                        "cycle": 1,
+                    }),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 1,
+                },
+                &ArtifactRecord {
+                    artifact_id: artifact_id.to_owned(),
+                    payload_id: payload_id.to_owned(),
+                    stage_id,
+                    created_at: started_at,
+                    content: format!("artifact for {}", stage_id.as_str()),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 1,
+                },
+            )
+            .unwrap();
+    }
 
     let first_changed_prompt = "# Test prompt\n\nFirst changed prompt.\n";
     fs::write(project_root.join("prompt.md"), first_changed_prompt).unwrap();
@@ -3167,6 +3242,230 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
     assert!(
         !resume_error.contains(&first_changed_hash),
         "resume error should not treat the continued prompt hash as the cycle baseline: {resume_error}"
+    );
+}
+
+#[tokio::test]
+async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_round_restart() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "resume-prompt-continue-round-baseline");
+    let project_root = base_dir
+        .join(".ralph-burning")
+        .join("projects")
+        .join(pid.as_str());
+    fs::write(
+        project_root.join("config.toml"),
+        "[workflow]\nprompt_change_action = \"continue\"\n",
+    )
+    .unwrap();
+    let continue_config =
+        EffectiveConfig::load_for_project(base_dir, Some(&pid), Default::default()).unwrap();
+
+    let original_cycle_hash = FsProjectStore
+        .read_project_record(base_dir, &pid)
+        .unwrap()
+        .prompt_hash;
+    let run_id = RunId::new("run-prompt-continue-round-baseline").unwrap();
+    let started_at = Utc::now();
+    let snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::new(
+                    StageId::Implementation,
+                    1,
+                    1,
+                    1,
+                )
+                .unwrap(),
+                started_at,
+                prompt_hash_at_cycle_start: original_cycle_hash.clone(),
+                prompt_hash_at_stage_start: original_cycle_hash.clone(),
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed at implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    for event in [
+        journal::run_started_event(2, started_at, &run_id, StageId::PromptReview),
+        journal::stage_completed_event(
+            3,
+            started_at,
+            &run_id,
+            StageId::PromptReview,
+            1,
+            1,
+            "prompt-review-payload",
+            "prompt-review-artifact",
+        ),
+        journal::stage_completed_event(
+            4,
+            started_at,
+            &run_id,
+            StageId::Planning,
+            1,
+            1,
+            "planning-payload",
+            "planning-artifact",
+        ),
+    ] {
+        FsJournalStore
+            .append_event(base_dir, &pid, &journal::serialize_event(&event).unwrap())
+            .unwrap();
+    }
+    for (stage_id, payload_id, artifact_id) in [
+        (
+            StageId::PromptReview,
+            "prompt-review-payload",
+            "prompt-review-artifact",
+        ),
+        (StageId::Planning, "planning-payload", "planning-artifact"),
+    ] {
+        FsPayloadArtifactWriteStore
+            .write_payload_artifact_pair(
+                base_dir,
+                &pid,
+                &PayloadRecord {
+                    payload_id: payload_id.to_owned(),
+                    stage_id,
+                    cycle: 1,
+                    attempt: 1,
+                    created_at: started_at,
+                    payload: json!({
+                        "stage": stage_id.as_str(),
+                        "cycle": 1,
+                    }),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 1,
+                },
+                &ArtifactRecord {
+                    artifact_id: artifact_id.to_owned(),
+                    payload_id: payload_id.to_owned(),
+                    stage_id,
+                    created_at: started_at,
+                    content: format!("artifact for {}", stage_id.as_str()),
+                    record_kind: RecordKind::StagePrimary,
+                    producer: None,
+                    completion_round: 1,
+                },
+            )
+            .unwrap();
+    }
+
+    let first_changed_prompt = "# Test prompt\n\nFirst changed prompt.\n";
+    fs::write(project_root.join("prompt.md"), first_changed_prompt).unwrap();
+    let first_changed_hash =
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(first_changed_prompt);
+    let failing_journal = CompletionPanelRoundAdvanceFailingJournalStore;
+
+    let first_resume_result = engine::resume_standard_run(
+        &build_agent_service_with_adapter(
+            StubBackendAdapter::default().with_stage_payload_sequence(
+                StageId::CompletionPanel,
+                vec![conditionally_approved_payload(&["restart from completion"])],
+            ),
+        ),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &continue_config,
+    )
+    .await;
+    assert!(
+        first_resume_result.is_err(),
+        "resume should fail after persisting the completion round restart snapshot"
+    );
+    let first_resume_error = first_resume_result.unwrap_err().to_string();
+
+    let after_continue_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    let interrupted_run = after_continue_snapshot
+        .interrupted_run
+        .as_ref()
+        .expect("failed round-two planning should preserve interrupted run metadata");
+    assert_eq!(
+        interrupted_run.stage_cursor.stage,
+        StageId::Planning,
+        "first resume failed before the completion round restart snapshot was preserved: {first_resume_error}"
+    );
+    assert_eq!(interrupted_run.stage_cursor.completion_round, 2);
+    assert_eq!(
+        interrupted_run.prompt_hash_at_cycle_start,
+        original_cycle_hash
+    );
+    assert_eq!(
+        interrupted_run.prompt_hash_at_stage_start,
+        first_changed_hash
+    );
+
+    fs::write(
+        project_root.join("config.toml"),
+        "[workflow]\nprompt_change_action = \"abort\"\n",
+    )
+    .unwrap();
+    let abort_config =
+        EffectiveConfig::load_for_project(base_dir, Some(&pid), Default::default()).unwrap();
+
+    let second_changed_prompt = "# Test prompt\n\nSecond changed prompt.\n";
+    fs::write(project_root.join("prompt.md"), second_changed_prompt).unwrap();
+    let second_changed_hash =
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(second_changed_prompt);
+
+    let second_resume_result = engine::resume_standard_run(
+        &build_agent_service(),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &abort_config,
+    )
+    .await;
+    assert!(
+        second_resume_result.is_err(),
+        "second resume should fail on prompt drift under abort"
+    );
+    let resume_error = second_resume_result.unwrap_err().to_string();
+    assert!(
+        resume_error.contains(&original_cycle_hash),
+        "resume error should keep the original cycle baseline after the completion round restart: {resume_error}"
+    );
+    assert!(
+        resume_error.contains(&second_changed_hash),
+        "resume error should reference the current prompt hash: {resume_error}"
+    );
+    assert!(
+        !resume_error.contains(&first_changed_hash),
+        "resume error should not treat the round-restart prompt hash as the cycle baseline: {resume_error}"
     );
 }
 

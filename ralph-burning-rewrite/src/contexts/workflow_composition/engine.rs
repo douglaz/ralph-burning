@@ -372,7 +372,7 @@ fn advance_completion_round_active_run(
         run_id,
         stage_cursor,
         current.started_at,
-        prompt_hash.clone(),
+        current.prompt_hash_at_cycle_start.clone(),
         prompt_hash,
         current.qa_iterations_current_cycle,
         current.review_iterations_current_cycle,
