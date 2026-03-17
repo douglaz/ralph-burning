@@ -13510,4 +13510,152 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             rt.block_on(exercise_pr_port(&client))
         }
     });
+
+    // ── Conformance: requirements-draft label lifecycle ──────────────────
+    // Proves that the issue label reflects truthful durable state at each
+    // transition during a requirements-draft run:
+    //   Pending (rb:ready) → Active (rb:in-progress) →
+    //     WaitingForRequirements (rb:waiting-feedback) or Failed (rb:failed)
+    reg!(m, "daemon.labels.requirements_draft_lifecycle", || {
+        use crate::adapters::github::{
+            GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,
+        };
+        use crate::contexts::automation_runtime::github_intake;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+
+        let gh = InMemoryGithubClient::with_issues(vec![GithubIssue {
+            number: 77,
+            title: "Draft lifecycle test".to_owned(),
+            body: None,
+            labels: vec![GithubLabel { name: "rb:ready".to_owned() }],
+            user: GithubUser { login: "user".to_owned(), id: 1 },
+            html_url: "https://github.com/acme/widgets/issues/77".to_owned(),
+            pull_request: None,
+            updated_at: "2026-03-17T00:00:00Z".to_owned(),
+        }]);
+
+        let now = chrono::Utc::now();
+        let mut task = DaemonTask {
+            task_id: "gh-draft-77".to_owned(),
+            issue_ref: "acme/widgets#77".to_owned(),
+            project_id: String::new(),
+            project_name: None,
+            prompt: Some("Draft test".to_owned()),
+            routing_command: Some("/rb requirements".to_owned()),
+            routing_labels: vec![],
+            resolved_flow: None,
+            routing_source: Some(RoutingSource::Command),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::RequirementsDraft,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(77),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+
+        // Helper: read current labels for issue #77 from the in-memory client
+        fn issue_labels(gh: &InMemoryGithubClient, n: u64) -> Vec<String> {
+            let issues = gh.issues.lock().unwrap();
+            issues
+                .iter()
+                .find(|i| i.number == n)
+                .map(|i| i.labels.iter().map(|l| l.name.clone()).collect())
+                .unwrap_or_default()
+        }
+
+        async fn run_lifecycle(
+            gh: &InMemoryGithubClient,
+            task: &mut DaemonTask,
+        ) -> Result<(), String> {
+            // ── Step 1: Pending → rb:ready ──────────────────────────────
+            github_intake::sync_label_for_task(gh, task)
+                .await
+                .map_err(|e| format!("sync pending: {e}"))?;
+            let labels = issue_labels(gh, 77);
+            if !labels.contains(&"rb:ready".to_owned()) {
+                return Err(format!("expected rb:ready for Pending, got {labels:?}"));
+            }
+
+            // ── Step 2: Claimed → Active → rb:in-progress ──────────────
+            let now = chrono::Utc::now();
+            task.transition_to(TaskStatus::Claimed, now)
+                .map_err(|e| e.to_string())?;
+            task.transition_to(TaskStatus::Active, now)
+                .map_err(|e| e.to_string())?;
+            github_intake::sync_label_for_task(gh, task)
+                .await
+                .map_err(|e| format!("sync active: {e}"))?;
+            let labels = issue_labels(gh, 77);
+            if !labels.contains(&"rb:in-progress".to_owned()) {
+                return Err(format!(
+                    "expected rb:in-progress for Active, got {labels:?}"
+                ));
+            }
+            if labels.contains(&"rb:ready".to_owned()) {
+                return Err(format!(
+                    "rb:ready should have been removed after Active, got {labels:?}"
+                ));
+            }
+
+            // ── Step 3: WaitingForRequirements → rb:waiting-feedback ────
+            task.transition_to(TaskStatus::WaitingForRequirements, now)
+                .map_err(|e| e.to_string())?;
+            github_intake::sync_label_for_task(gh, task)
+                .await
+                .map_err(|e| format!("sync waiting: {e}"))?;
+            let labels = issue_labels(gh, 77);
+            if !labels.contains(&"rb:waiting-feedback".to_owned()) {
+                return Err(format!(
+                    "expected rb:waiting-feedback for WaitingForRequirements, got {labels:?}"
+                ));
+            }
+            if labels.contains(&"rb:in-progress".to_owned()) {
+                return Err(format!(
+                    "rb:in-progress should have been removed after WaitingForRequirements, got {labels:?}"
+                ));
+            }
+
+            // ── Step 4: Failed → rb:failed ──────────────────────────────
+            // Simulate failure from WaitingForRequirements
+            task.status = TaskStatus::Failed;
+            task.failure_class = Some("test_failure".to_owned());
+            github_intake::sync_label_for_task(gh, task)
+                .await
+                .map_err(|e| format!("sync failed: {e}"))?;
+            let labels = issue_labels(gh, 77);
+            if !labels.contains(&"rb:failed".to_owned()) {
+                return Err(format!("expected rb:failed for Failed, got {labels:?}"));
+            }
+            if labels.contains(&"rb:waiting-feedback".to_owned()) {
+                return Err(format!(
+                    "rb:waiting-feedback should have been removed after Failed, got {labels:?}"
+                ));
+            }
+
+            Ok(())
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(run_lifecycle(&gh, &mut task)))
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(run_lifecycle(&gh, &mut task))
+        }
+    });
 }

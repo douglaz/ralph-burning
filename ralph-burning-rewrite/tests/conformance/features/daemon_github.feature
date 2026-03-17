@@ -161,6 +161,18 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Then the first task is claimed with label_dirty = true
     And the second task remains pending because the repo was quarantined
 
+  # daemon.labels.requirements_draft_lifecycle
+  Scenario: Issue label tracks truthful durable state throughout a requirements-draft run
+    Given a pending task dispatched as RequirementsDraft with repo_slug "acme/widgets" and issue #77
+    And the issue is labeled "rb:ready"
+    When the task transitions to Claimed then Active
+    Then the issue label is synced to "rb:in-progress" immediately
+    When the task transitions to WaitingForRequirements
+    Then the issue label is synced to "rb:waiting-feedback"
+    When the task transitions to Failed
+    Then the issue label is synced to "rb:failed"
+    And no stale status labels remain at any transition
+
   # daemon.github.port_covers_pr_operations
   Scenario: GithubPort trait exposes the full PR/branch API for slice-9 consumers
     Given an in-memory GitHub client behind dyn GithubPort

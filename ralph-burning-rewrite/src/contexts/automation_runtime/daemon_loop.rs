@@ -518,19 +518,9 @@ where
                     .await?;
             }
             DispatchMode::RequirementsDraft => {
-                let result = self
-                    .handle_requirements_draft(store_dir, repo_root, task, &effective_config)
+                return self
+                    .handle_requirements_draft(store_dir, repo_root, task, &effective_config, github)
                     .await;
-                // Sync label after requirements draft (may be WaitingForRequirements or Failed).
-                // Propagate label failure to quarantine this repo for the cycle,
-                // but mark label_dirty first so reconcile can repair.
-                if let Ok(updated_task) = self.store.read_task(store_dir, &task.task_id) {
-                    if let Err(e) = github_intake::sync_label_for_task(github, &updated_task).await {
-                        let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &task.task_id);
-                        return Err(e);
-                    }
-                }
-                return result;
             }
             DispatchMode::Workflow => {}
         }
@@ -795,6 +785,26 @@ where
         Ok(true)
     }
 
+    /// Best-effort label sync after a task state mutation inside
+    /// `handle_requirements_draft`. On failure, marks the task `label_dirty`
+    /// so `reconcile` can repair, but does NOT propagate the error — the
+    /// durable state is already truthful, only the label is stale.
+    async fn sync_label_after_mutation<G: GithubPort>(
+        &self,
+        github: &G,
+        base_dir: &Path,
+        task_id: &str,
+    ) {
+        if let Ok(t) = self.store.read_task(base_dir, task_id) {
+            if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
+                let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, task_id);
+                eprintln!(
+                    "daemon: label sync failed for requirements_draft task '{task_id}': {e}"
+                );
+            }
+        }
+    }
+
     /// Poll external watchers and ingest new issue candidates as daemon tasks.
     fn poll_watchers(&self, base_dir: &Path) -> AppResult<()> {
         let Some(watcher) = self.watcher else {
@@ -999,8 +1009,12 @@ where
                 // Fall through to standard claim/dispatch below.
             }
             DispatchMode::RequirementsDraft => {
+                // Single-repo path is test-only; file-watcher tasks have no
+                // repo_slug so sync_label_for_task will no-op. Use a no-op
+                // in-memory GitHub client to satisfy the generic bound.
+                let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
                 return self
-                    .handle_requirements_draft(base_dir, base_dir, task, &effective_config)
+                    .handle_requirements_draft(base_dir, base_dir, task, &effective_config, &noop_gh)
                     .await;
             }
             DispatchMode::Workflow => {
@@ -1283,12 +1297,13 @@ where
     /// transition to WaitingForRequirements (if questions need answers) or
     /// extract the seed and switch to Workflow mode (if the run completed
     /// directly with empty questions).
-    async fn handle_requirements_draft(
+    async fn handle_requirements_draft<G: GithubPort>(
         &self,
         base_dir: &Path,
         workspace_dir: &Path,
         task: &DaemonTask,
         effective_config: &EffectiveConfig,
+        github: &G,
     ) -> AppResult<()> {
         let req_store =
             self.requirements_store
@@ -1306,6 +1321,18 @@ where
             t.transition_to(TaskStatus::Claimed, now)?;
             t.transition_to(TaskStatus::Active, now)?;
             self.store.write_task(base_dir, &t)?;
+
+            // Sync label: Active → rb:in-progress immediately, so the issue
+            // reflects truthful durable state during the draft run rather than
+            // remaining on rb:ready until the draft completes.
+            if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
+                let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, &task.task_id);
+                eprintln!(
+                    "daemon: label sync failed for requirements_draft task '{}', quarantining repo: {e}",
+                    task.task_id
+                );
+                return Err(e);
+            }
         }
 
         let idea = task
@@ -1313,16 +1340,20 @@ where
             .clone()
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
-        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
-            let _ = DaemonTaskService::mark_failed(
-                self.store,
-                base_dir,
-                &task.task_id,
-                "requirements_draft_failed",
-                &format!("failed to build requirements service: {e}"),
-            );
-            e
-        })?;
+        let req_svc = match build_requirements_service_default(effective_config) {
+            Ok(svc) => svc,
+            Err(e) => {
+                let _ = DaemonTaskService::mark_failed(
+                    self.store,
+                    base_dir,
+                    &task.task_id,
+                    "requirements_draft_failed",
+                    &format!("failed to build requirements service: {e}"),
+                );
+                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                return Err(e);
+            }
+        };
         let run_id = match req_svc.draft(workspace_dir, &idea, Utc::now()).await {
             Ok(run_id) => run_id,
             Err(e) => {
@@ -1333,6 +1364,7 @@ where
                     "requirements_draft_failed",
                     &e.to_string(),
                 );
+                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
         };
@@ -1378,6 +1410,7 @@ where
                     "requirements_linking_failed",
                     &e.to_string(),
                 );
+                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
 
@@ -1391,6 +1424,7 @@ where
                         "seed_handoff_failed",
                         &e.to_string(),
                     );
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                     return Err(e);
                 }
             };
@@ -1442,6 +1476,7 @@ where
                     "requirements_linking_failed",
                     &format!("post-link metadata update failed: {e}"),
                 );
+                self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                 return Err(e);
             }
 
@@ -1455,6 +1490,9 @@ where
                 t.transition_to(TaskStatus::Pending, Utc::now())?;
                 self.store.write_task(base_dir, &t)?;
             }
+
+            // Sync label: Pending → rb:ready (requeued for workflow dispatch).
+            self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
 
             println!(
                 "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
@@ -1489,6 +1527,9 @@ where
                             task.task_id
                         );
                     }
+                    // Sync label: WaitingForRequirements → rb:waiting-feedback.
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+
                     println!(
                         "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
                         task.task_id, run_id
@@ -1503,6 +1544,7 @@ where
                         "requirements_linking_failed",
                         &e.to_string(),
                     );
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
                     return Err(e);
                 }
             }
