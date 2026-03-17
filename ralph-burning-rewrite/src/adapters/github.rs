@@ -544,12 +544,11 @@ impl GithubClient {
         repo: &str,
         pr_number: u64,
     ) -> AppResult<()> {
-        // GitHub REST API doesn't support this — requires GraphQL
-        // Use the GraphQL mutation updatePullRequest
+        // GitHub REST API doesn't support this — requires GraphQL.
         let url = self.api_url("/graphql");
+        let node_id = self.fetch_pr_node_id(owner, repo, pr_number).await?;
         let query = format!(
-            r#"mutation {{ markPullRequestReadyForReview(input: {{ pullRequestId: "{}" }}) {{ pullRequest {{ id }} }} }}"#,
-            self.fetch_pr_node_id(owner, repo, pr_number).await?
+            r#"mutation {{ markPullRequestReadyForReview(input: {{ pullRequestId: "{node_id}" }}) {{ pullRequest {{ id }} }} }}"#,
         );
         let payload = serde_json::json!({ "query": query });
         let resp = self
@@ -564,12 +563,53 @@ impl GithubClient {
                 details: e.to_string(),
             })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
+        let status = resp.status();
+        let body_text = resp.text().await.unwrap_or_default();
+
+        if !status.is_success() {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
-                details: format!("failed to mark PR ready: {status} {text}"),
+                details: format!("failed to mark PR ready: {status} {body_text}"),
+            });
+        }
+
+        // GitHub GraphQL can return HTTP 200 with application-level errors.
+        // Parse the response and verify the mutation actually succeeded.
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body_text).map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to parse GraphQL response: {e}"),
+            })?;
+
+        if let Some(errors) = parsed.get("errors") {
+            if let Some(arr) = errors.as_array() {
+                if !arr.is_empty() {
+                    let msgs: Vec<String> = arr
+                        .iter()
+                        .filter_map(|e| e.get("message").and_then(|m| m.as_str()))
+                        .map(String::from)
+                        .collect();
+                    return Err(AppError::BackendUnavailable {
+                        backend: "github".to_owned(),
+                        details: format!(
+                            "GraphQL errors marking PR ready: {}",
+                            msgs.join("; ")
+                        ),
+                    });
+                }
+            }
+        }
+
+        // Verify the expected data path is present.
+        if parsed
+            .pointer("/data/markPullRequestReadyForReview/pullRequest/id")
+            .is_none()
+        {
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!(
+                    "GraphQL response missing expected pullRequest.id: {body_text}"
+                ),
             });
         }
 
@@ -1102,6 +1142,10 @@ pub struct InMemoryGithubClient {
     pub pr_reviews: std::sync::Mutex<Vec<(u64, GithubReview)>>,
     /// Tracks which branches are ahead of base (key: `owner/repo:base...head`).
     pub branches_ahead: std::sync::Mutex<std::collections::HashSet<String>>,
+    /// Posted issue comments: `(issue_number, marker, body)`.
+    pub posted_comments: std::sync::Mutex<Vec<(u64, String, String)>>,
+    /// Updated PR bodies: `(pr_number, body)`.
+    pub updated_pr_bodies: std::sync::Mutex<Vec<(u64, String)>>,
     next_pr_number: std::sync::Mutex<u64>,
 }
 
@@ -1216,19 +1260,45 @@ impl GithubPort for InMemoryGithubClient {
         &self,
         _owner: &str,
         _repo: &str,
-        _issue_number: u64,
+        issue_number: u64,
     ) -> AppResult<Vec<GithubComment>> {
-        Ok(Vec::new())
+        let posted = self.posted_comments.lock().unwrap();
+        Ok(posted
+            .iter()
+            .filter(|(num, _, _)| *num == issue_number)
+            .map(|(_, marker, body)| {
+                GithubComment {
+                    id: 0,
+                    body: format!("<!-- {marker} -->\n{body}"),
+                    user: GithubUser {
+                        login: "ralph-burning-bot".to_owned(),
+                        id: 0,
+                    },
+                    created_at: String::new(),
+                    updated_at: String::new(),
+                }
+            })
+            .collect())
     }
 
     async fn post_idempotent_comment(
         &self,
         _owner: &str,
         _repo: &str,
-        _issue_number: u64,
-        _marker: &str,
-        _body: &str,
+        issue_number: u64,
+        marker: &str,
+        body: &str,
     ) -> AppResult<()> {
+        let mut posted = self.posted_comments.lock().unwrap();
+        // Idempotent: replace existing comment with same marker, or add new.
+        if let Some(existing) = posted
+            .iter_mut()
+            .find(|(num, m, _)| *num == issue_number && m == marker)
+        {
+            existing.2 = body.to_owned();
+        } else {
+            posted.push((issue_number, marker.to_owned(), body.to_owned()));
+        }
         Ok(())
     }
 
@@ -1348,10 +1418,12 @@ impl GithubPort for InMemoryGithubClient {
         _owner: &str,
         _repo: &str,
         pr_number: u64,
-        _body: &str,
+        body: &str,
     ) -> AppResult<()> {
         let prs = self.pull_requests.lock().unwrap();
         if prs.iter().any(|p| p.number == pr_number) {
+            let mut bodies = self.updated_pr_bodies.lock().unwrap();
+            bodies.push((pr_number, body.to_owned()));
             Ok(())
         } else {
             Err(AppError::BackendUnavailable {

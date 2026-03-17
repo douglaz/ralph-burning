@@ -293,20 +293,28 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
         }
     }
 
-    // Build clone URL, embedding GITHUB_TOKEN for private repo access.
-    let token = std::env::var("GITHUB_TOKEN").ok();
-    let clone_url = match token {
-        Some(ref t) if !t.is_empty() => {
-            format!("https://x-access-token:{t}@github.com/{owner}/{repo}.git")
-        }
-        _ => format!("https://github.com/{owner}/{repo}.git"),
-    };
+    // Clone URL is always credential-free so it persists cleanly in
+    // the cloned repo's remote config.
+    let clone_url = format!("https://github.com/{owner}/{repo}.git");
 
-    let output = std::process::Command::new("git")
-        .args(["clone", &clone_url, &checkout_path.to_string_lossy()])
+    // Pass GITHUB_TOKEN via http.extraHeader so the credential never
+    // appears in process arguments or the persisted remote URL.
+    let token = std::env::var("GITHUB_TOKEN").ok();
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["clone", &clone_url, &checkout_path.to_string_lossy()])
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .output();
+        .stderr(std::process::Stdio::piped());
+
+    if let Some(ref t) = token {
+        if !t.is_empty() {
+            cmd.args([
+                "-c",
+                &format!("http.extraHeader=Authorization: Bearer {t}"),
+            ]);
+        }
+    }
+
+    let output = cmd.output();
 
     match output {
         Ok(ref o) if o.status.success() => {
