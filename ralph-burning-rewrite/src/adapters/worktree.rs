@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -6,6 +7,7 @@ use std::process::{Command, Output, Stdio};
 use uuid::Uuid;
 
 use crate::contexts::automation_runtime::{
+    RebaseConflictFile, RebaseConflictRequest, RebaseConflictResolver,
     RebaseFailureClassification, RebaseOutcome, WorktreeCleanupOutcome, WorktreePort,
 };
 use crate::contexts::project_run_record::service::RepositoryResetPort;
@@ -182,6 +184,136 @@ impl WorktreeAdapter {
             .args(args)
             .output()
             .map_err(AppError::from)
+    }
+
+    fn conflicted_file_paths(worktree_path: &Path) -> AppResult<Vec<String>> {
+        let conflicts = Self::git_in(worktree_path, &["diff", "--name-only", "--diff-filter=U"])?;
+        if !conflicts.status.success() {
+            return Err(Self::git_error(&conflicts));
+        }
+
+        Ok(String::from_utf8_lossy(&conflicts.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToOwned::to_owned)
+            .collect())
+    }
+
+    fn worktree_relative_path(worktree_path: &Path, relative: &str) -> AppResult<PathBuf> {
+        let relative_path = Path::new(relative);
+        if relative_path.is_absolute()
+            || relative_path.components().any(|component| {
+                matches!(
+                    component,
+                    std::path::Component::ParentDir
+                        | std::path::Component::RootDir
+                        | std::path::Component::Prefix(_)
+                )
+            })
+        {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "invalid conflicted file path '{relative}'"
+            ))));
+        }
+
+        Ok(worktree_path.join(relative_path))
+    }
+
+    fn read_rebase_conflict_request(
+        worktree_path: &Path,
+        branch_name: &str,
+        upstream: &str,
+        failure_details: &str,
+    ) -> AppResult<RebaseConflictRequest> {
+        let conflicted_files = Self::conflicted_file_paths(worktree_path)?
+            .into_iter()
+            .map(|path| {
+                let file_path = Self::worktree_relative_path(worktree_path, &path)?;
+                let contents = fs::read_to_string(&file_path).map_err(|error| {
+                    AppError::Io(std::io::Error::other(format!(
+                        "failed to read conflicted file '{}': {error}",
+                        file_path.display()
+                    )))
+                })?;
+                Ok(RebaseConflictFile { path, contents })
+            })
+            .collect::<AppResult<Vec<_>>>()?;
+
+        Ok(RebaseConflictRequest {
+            branch_name: branch_name.to_owned(),
+            upstream: upstream.to_owned(),
+            failure_details: failure_details.to_owned(),
+            conflicted_files,
+        })
+    }
+
+    fn apply_rebase_resolution(
+        worktree_path: &Path,
+        request: &RebaseConflictRequest,
+        resolution: &crate::contexts::automation_runtime::RebaseConflictResolution,
+    ) -> AppResult<Vec<String>> {
+        let mut resolved_by_path = BTreeMap::new();
+        for file in &resolution.resolved_files {
+            if resolved_by_path
+                .insert(file.path.clone(), file.content.clone())
+                .is_some()
+            {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "agent returned duplicate resolution for '{}'",
+                    file.path
+                ))));
+            }
+        }
+
+        let expected = request
+            .conflicted_files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect::<Vec<_>>();
+        let missing = expected
+            .iter()
+            .filter(|path| !resolved_by_path.contains_key(*path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "agent omitted conflicted files: {}",
+                missing.join(", ")
+            ))));
+        }
+
+        let extras = resolved_by_path
+            .keys()
+            .filter(|path| !expected.iter().any(|expected_path| expected_path == *path))
+            .cloned()
+            .collect::<Vec<_>>();
+        if !extras.is_empty() {
+            return Err(AppError::Io(std::io::Error::other(format!(
+                "agent returned non-conflicted files: {}",
+                extras.join(", ")
+            ))));
+        }
+
+        for path in &expected {
+            let file_path = Self::worktree_relative_path(worktree_path, path)?;
+            let contents = resolved_by_path
+                .get(path)
+                .expect("validated resolved file must exist");
+            fs::write(&file_path, contents).map_err(|error| {
+                AppError::Io(std::io::Error::other(format!(
+                    "failed to write resolved file '{}': {error}",
+                    file_path.display()
+                )))
+            })?;
+
+            let add = Self::git_in(worktree_path, &["add", "--", path])?;
+            if !add.status.success() {
+                return Err(Self::git_error(&add));
+            }
+        }
+
+        Ok(expected)
     }
 
     fn default_branch_ref(&self, repo_root: &Path) -> AppResult<String> {
@@ -475,6 +607,7 @@ impl WorktreePort for WorktreeAdapter {
         worktree_path: &Path,
         branch_name: &str,
         policy: &EffectiveRebasePolicy,
+        resolver: Option<&dyn RebaseConflictResolver>,
     ) -> AppResult<RebaseOutcome> {
         let upstream = self.default_branch_ref(repo_root)?;
         let output = Self::git_in(worktree_path, &["rebase", &upstream])?;
@@ -499,14 +632,16 @@ impl WorktreePort for WorktreeAdapter {
             });
         }
 
-        let conflicts = Self::git_in(worktree_path, &["diff", "--name-only", "--diff-filter=U"])?;
-        let conflicted_files = String::from_utf8_lossy(&conflicts.stdout)
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .map(ToOwned::to_owned)
-            .collect::<Vec<_>>();
-        if conflicted_files.is_empty() {
+        let Some(resolver) = resolver else {
+            let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+            return Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Unknown,
+                details: "agent resolution is enabled but no resolver is configured".to_owned(),
+            });
+        };
+
+        let request = Self::read_rebase_conflict_request(worktree_path, branch_name, &upstream, &stderr)?;
+        if request.conflicted_files.is_empty() {
             let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
             return Ok(RebaseOutcome::Failed {
                 classification: RebaseFailureClassification::Conflict,
@@ -514,40 +649,40 @@ impl WorktreePort for WorktreeAdapter {
             });
         }
 
-        for file in &conflicted_files {
-            let checkout = Self::git_in(worktree_path, &["checkout", "--ours", "--", file])?;
-            if !checkout.status.success() {
+        let resolution = match resolver.resolve_conflicts(&request) {
+            Ok(resolution) => resolution,
+            Err(AppError::InvocationTimeout { .. }) => {
                 let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
                 return Ok(RebaseOutcome::Failed {
-                    classification: RebaseFailureClassification::Conflict,
-                    details: format!(
-                        "failed to resolve conflict in {file}: {}",
-                        String::from_utf8_lossy(&checkout.stderr).trim()
-                    ),
+                    classification: RebaseFailureClassification::Timeout,
+                    details: "agent-assisted rebase resolution timed out".to_owned(),
                 });
             }
+            Err(error) => {
+                let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+                return Ok(RebaseOutcome::Failed {
+                    classification: RebaseFailureClassification::Unknown,
+                    details: format!("agent-assisted rebase resolution failed: {error}"),
+                });
+            }
+        };
 
-            let add = Self::git_in(worktree_path, &["add", "--", file])?;
-            if !add.status.success() {
+        let resolved_files = match Self::apply_rebase_resolution(worktree_path, &request, &resolution) {
+            Ok(files) => files,
+            Err(error) => {
                 let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
                 return Ok(RebaseOutcome::Failed {
-                    classification: RebaseFailureClassification::Conflict,
-                    details: format!(
-                        "failed to stage resolved conflict in {file}: {}",
-                        String::from_utf8_lossy(&add.stderr).trim()
-                    ),
+                    classification: RebaseFailureClassification::Unknown,
+                    details: error.to_string(),
                 });
             }
-        }
+        };
 
         let continue_output = Self::git_in(worktree_path, &["rebase", "--continue"])?;
         if continue_output.status.success() {
             return Ok(RebaseOutcome::AgentResolved {
-                resolved_files: conflicted_files,
-                summary: format!(
-                    "resolved conflicts on '{}' via adapter-managed auto-resolution",
-                    branch_name
-                ),
+                resolved_files,
+                summary: resolution.summary,
             });
         }
 

@@ -14465,6 +14465,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         };
         let batch = block_on_app_result(service.ingest_reviews(
             ws.path(),
+            ws.path(),
             &task.task_id,
             &whitelist,
             &CancellationToken::new(),
@@ -14558,6 +14559,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let whitelist = ReviewWhitelist::default();
         let _ = block_on_app_result(service.ingest_reviews(
             ws.path(),
+            ws.path(),
             &task.task_id,
             &whitelist,
             &CancellationToken::new(),
@@ -14576,6 +14578,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         store.write_task(ws.path(), &reset_task).map_err(|e| e.to_string())?;
 
         let _ = block_on_app_result(service.ingest_reviews(
+            ws.path(),
             ws.path(),
             &task.task_id,
             &whitelist,
@@ -14682,6 +14685,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         );
         let err = block_on_app_result(service.ingest_reviews(
             ws.path(),
+            ws.path(),
             &task.task_id,
             &ReviewWhitelist::default(),
             &CancellationToken::new(),
@@ -14781,6 +14785,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         );
         let batch = block_on_app_result(service.ingest_reviews(
             ws.path(),
+            ws.path(),
             &task.task_id,
             &ReviewWhitelist::default(),
             &CancellationToken::new(),
@@ -14814,8 +14819,39 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "daemon.rebase.agent_resolves_conflict", || {
         use crate::adapters::worktree::WorktreeAdapter;
-        use crate::contexts::automation_runtime::WorktreePort;
+        use crate::contexts::automation_runtime::{
+            RebaseConflictRequest, RebaseConflictResolution, RebaseConflictResolver,
+            RebaseResolutionFile, WorktreePort,
+        };
         use crate::shared::domain::EffectiveRebasePolicy;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        struct RecordingResolver {
+            calls: Arc<AtomicUsize>,
+        }
+
+        impl RebaseConflictResolver for RecordingResolver {
+            fn resolve_conflicts(
+                &self,
+                request: &RebaseConflictRequest,
+            ) -> crate::shared::error::AppResult<RebaseConflictResolution> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Ok(RebaseConflictResolution {
+                    summary: "resolved via test agent".to_owned(),
+                    resolved_files: request
+                        .conflicted_files
+                        .iter()
+                        .map(|file| RebaseResolutionFile {
+                            path: file.path.clone(),
+                            content: "branch\nmain\n".to_owned(),
+                        })
+                        .collect(),
+                })
+            }
+        }
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
@@ -14837,6 +14873,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
         run_git_in(ws.path(), &["add", "conflict.txt"])?;
         run_git_in(ws.path(), &["commit", "-m", "main change"])?;
+        let resolver_calls = Arc::new(AtomicUsize::new(0));
+        let resolver = RecordingResolver {
+            calls: resolver_calls.clone(),
+        };
 
         let outcome = worktree
             .rebase_with_agent_resolution(
@@ -14847,6 +14887,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                     agent_resolution_enabled: true,
                     agent_timeout: 30,
                 },
+                Some(&resolver),
             )
             .map_err(|e| e.to_string())?;
         if !matches!(
@@ -14854,6 +14895,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             crate::contexts::automation_runtime::RebaseOutcome::AgentResolved { .. }
         ) {
             return Err(format!("expected agent-resolved rebase, got {outcome:?}"));
+        }
+        if resolver_calls.load(Ordering::SeqCst) != 1 {
+            return Err("expected rebase conflict resolver to be invoked once".to_owned());
         }
 
         Ok(())
@@ -14892,6 +14936,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                     agent_resolution_enabled: false,
                     agent_timeout: 30,
                 },
+                None,
             )
             .map_err(|e| e.to_string())?;
         if !matches!(
@@ -14909,8 +14954,26 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "daemon.rebase.timeout_classification", || {
         use crate::adapters::worktree::WorktreeAdapter;
-        use crate::contexts::automation_runtime::WorktreePort;
+        use crate::contexts::automation_runtime::{
+            RebaseConflictRequest, RebaseConflictResolution, RebaseConflictResolver, WorktreePort,
+        };
         use crate::shared::domain::EffectiveRebasePolicy;
+        use crate::shared::error::{AppError, AppResult};
+
+        struct TimeoutResolver;
+
+        impl RebaseConflictResolver for TimeoutResolver {
+            fn resolve_conflicts(
+                &self,
+                _request: &RebaseConflictRequest,
+            ) -> AppResult<RebaseConflictResolution> {
+                Err(AppError::InvocationTimeout {
+                    backend: "stub".to_owned(),
+                    contract_id: "daemon:rebase_resolution".to_owned(),
+                    timeout_ms: 30_000,
+                })
+            }
+        }
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
@@ -14930,6 +14993,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
         run_git_in(ws.path(), &["add", "conflict.txt"])?;
         run_git_in(ws.path(), &["commit", "-m", "main change"])?;
+        let resolver = TimeoutResolver;
 
         let outcome = worktree
             .rebase_with_agent_resolution(
@@ -14938,8 +15002,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 "rb/202-proj",
                 &EffectiveRebasePolicy {
                     agent_resolution_enabled: true,
-                    agent_timeout: 0,
+                    agent_timeout: 30,
                 },
+                Some(&resolver),
             )
             .map_err(|e| e.to_string())?;
         if !matches!(

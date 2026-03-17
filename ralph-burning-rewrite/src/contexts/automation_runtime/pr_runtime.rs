@@ -63,6 +63,10 @@ where
         };
         let (owner, repo) = parse_repo_slug(repo_slug)?;
         let base_branch = self.base_branch_name(repo_root)?;
+        self.ensure_not_cancelled(cancel)?;
+        self.worktree
+            .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+        self.ensure_not_cancelled(cancel)?;
         let ahead = self
             .github
             .is_branch_ahead(owner, repo, &base_branch, &lease.branch_name)
@@ -71,7 +75,7 @@ where
             return Ok(None);
         }
 
-        self.push_and_create_draft(base_dir, repo_root, &task, lease, &base_branch, cancel)
+        self.create_draft_after_push(base_dir, &task, lease, &base_branch, cancel)
             .await
             .map(Some)
     }
@@ -92,6 +96,12 @@ where
         };
         let (owner, repo) = parse_repo_slug(repo_slug)?;
         let base_branch = self.base_branch_name(repo_root)?;
+        if task.pr_url.is_none() {
+            self.ensure_not_cancelled(cancel)?;
+            self.worktree
+                .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+            self.ensure_not_cancelled(cancel)?;
+        }
         let ahead = self
             .github
             .is_branch_ahead(owner, repo, &base_branch, &lease.branch_name)
@@ -106,14 +116,7 @@ where
             Some(url) => url,
             None => {
                 return self
-                    .push_and_create_draft(
-                        base_dir,
-                        repo_root,
-                        &task,
-                        lease,
-                        &base_branch,
-                        cancel,
-                    )
+                    .create_draft_after_push(base_dir, &task, lease, &base_branch, cancel)
                     .await
                     .map(|url| CompletionPrAction::DraftCreated { url });
             }
@@ -153,6 +156,21 @@ where
         base_branch: &str,
         cancel: &CancellationToken,
     ) -> AppResult<String> {
+        self.ensure_not_cancelled(cancel)?;
+        self.worktree
+            .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+        self.create_draft_after_push(base_dir, task, lease, base_branch, cancel)
+            .await
+    }
+
+    async fn create_draft_after_push(
+        &self,
+        base_dir: &Path,
+        task: &DaemonTask,
+        lease: &WorktreeLease,
+        base_branch: &str,
+        cancel: &CancellationToken,
+    ) -> AppResult<String> {
         let Some(repo_slug) = task.repo_slug.as_deref() else {
             return Err(AppError::RoutingResolutionFailed {
                 input: task.task_id.clone(),
@@ -162,10 +180,6 @@ where
         let (owner, repo) = parse_repo_slug(repo_slug)?;
 
         self.ensure_not_cancelled(cancel)?;
-        self.worktree
-            .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
-        self.ensure_not_cancelled(cancel)?;
-
         let pr = self
             .github
             .create_draft_pr(

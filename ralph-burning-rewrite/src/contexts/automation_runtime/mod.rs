@@ -69,6 +69,39 @@ pub enum WriterLockReleaseOutcome {
     OwnerMismatch { actual_owner: String },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictFile {
+    pub path: String,
+    pub contents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictRequest {
+    pub branch_name: String,
+    pub upstream: String,
+    pub failure_details: String,
+    pub conflicted_files: Vec<RebaseConflictFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseResolutionFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictResolution {
+    pub summary: String,
+    pub resolved_files: Vec<RebaseResolutionFile>,
+}
+
+pub trait RebaseConflictResolver {
+    fn resolve_conflicts(
+        &self,
+        request: &RebaseConflictRequest,
+    ) -> AppResult<RebaseConflictResolution>;
+}
+
 pub trait DaemonStorePort {
     fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>>;
     fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask>;
@@ -143,6 +176,7 @@ pub trait WorktreePort {
         worktree_path: &Path,
         branch_name: &str,
         _policy: &crate::shared::domain::EffectiveRebasePolicy,
+        _resolver: Option<&dyn RebaseConflictResolver>,
     ) -> AppResult<RebaseOutcome> {
         match self.rebase_onto_default_branch(repo_root, worktree_path, branch_name) {
             Ok(()) => Ok(RebaseOutcome::Success),

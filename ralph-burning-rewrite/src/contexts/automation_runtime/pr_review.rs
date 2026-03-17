@@ -92,13 +92,14 @@ where
 {
     pub async fn ingest_reviews(
         &self,
-        base_dir: &Path,
+        daemon_dir: &Path,
+        workspace_dir: &Path,
         task_id: &str,
         whitelist: &ReviewWhitelist,
         cancel: &CancellationToken,
     ) -> AppResult<IngestedReviewBatch> {
         self.ensure_not_cancelled(cancel)?;
-        let mut task = self.store.read_task(base_dir, task_id)?;
+        let mut task = self.store.read_task(daemon_dir, task_id)?;
         let Some(repo_slug) = task.repo_slug.as_deref() else {
             return Ok(IngestedReviewBatch::default());
         };
@@ -142,25 +143,25 @@ where
             .into_iter()
             .collect::<Vec<_>>();
         let accepted = self.filter_by_whitelist(items, whitelist);
-        let amendments = self.convert_to_amendments(base_dir, &task, &accepted)?;
+        let amendments = self.convert_to_amendments(workspace_dir, &task, &accepted)?;
         if !amendments.is_empty() {
-            self.stage_amendments(base_dir, &task, &amendments)?;
+            self.stage_amendments(workspace_dir, &task, &amendments)?;
         }
 
         let mut reopened_project = false;
         if task.status == TaskStatus::Completed && !amendments.is_empty() {
-            self.reopen_completed_project(base_dir, &mut task)?;
+            self.reopen_completed_project(workspace_dir, &mut task)?;
             reopened_project = true;
         }
 
         task.last_seen_comment_id = next_comment_cursor;
         task.last_seen_review_id = next_review_cursor;
         task.updated_at = Utc::now();
-        self.store.write_task(base_dir, &task)?;
+        self.store.write_task(daemon_dir, &task)?;
 
         DaemonTaskService::append_journal_event(
             self.store,
-            base_dir,
+            daemon_dir,
             super::model::DaemonJournalEventType::ReviewsIngested,
             json!({
                 "task_id": task.task_id,
@@ -174,7 +175,7 @@ where
         if !amendments.is_empty() {
             DaemonTaskService::append_journal_event(
                 self.store,
-                base_dir,
+                daemon_dir,
                 super::model::DaemonJournalEventType::AmendmentsStaged,
                 json!({
                     "task_id": task.task_id,
@@ -186,7 +187,7 @@ where
         if reopened_project {
             DaemonTaskService::append_journal_event(
                 self.store,
-                base_dir,
+                daemon_dir,
                 super::model::DaemonJournalEventType::ProjectReopened,
                 json!({
                     "task_id": task.task_id,

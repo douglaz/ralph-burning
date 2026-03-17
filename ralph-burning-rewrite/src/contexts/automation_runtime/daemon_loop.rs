@@ -1,4 +1,5 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::thread;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -6,7 +7,10 @@ use serde_json::json;
 
 use crate::adapters::fs::FileSystem;
 use crate::adapters::github::GithubPort;
-use crate::contexts::agent_execution::model::CancellationToken;
+use crate::contexts::agent_execution::model::{
+    CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+};
+use crate::contexts::agent_execution::policy::BackendPolicyService;
 use crate::contexts::agent_execution::service::{AgentExecutionPort, RawOutputPort};
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
@@ -22,7 +26,10 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::routing::RoutingEngine;
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::watcher::{self, IssueWatcherPort};
-use crate::contexts::automation_runtime::{github_intake, DaemonStorePort, WorktreePort};
+use crate::contexts::automation_runtime::{
+    github_intake, DaemonStorePort, RebaseConflictRequest, RebaseConflictResolution,
+    RebaseConflictResolver, WorktreePort,
+};
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{
     create_project, AmendmentQueuePort, ArtifactStorePort, JournalStorePort,
@@ -33,8 +40,11 @@ use crate::contexts::project_run_record::CreateProjectInput;
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
+use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::{FlowPreset, ProjectId};
+use crate::shared::domain::{
+    BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, SessionPolicy,
+};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,9 +151,9 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
 
 impl<A, R, S> DaemonLoop<'_, A, R, S>
 where
-    A: AgentExecutionPort,
-    R: RawOutputPort,
-    S: SessionStorePort,
+    A: AgentExecutionPort + Sync,
+    R: RawOutputPort + Sync,
+    S: SessionStorePort + Sync,
 {
     pub async fn run(&self, base_dir: &Path, config: &DaemonLoopConfig) -> AppResult<()> {
         let shutdown = CancellationToken::new();
@@ -679,7 +689,7 @@ where
 
         let task_cancel = CancellationToken::new();
         let outcome = self
-            .drive_dispatch(
+            .drive_dispatch_multi_repo(
                 store_dir,
                 repo_root,
                 &active_task,
@@ -688,6 +698,7 @@ where
                 config,
                 shutdown.clone(),
                 task_cancel,
+                github,
             )
             .await;
 
@@ -1616,6 +1627,75 @@ where
         }
     }
 
+    async fn drive_dispatch_multi_repo<G: GithubPort>(
+        &self,
+        base_dir: &Path,
+        workspace_dir: &Path,
+        task: &DaemonTask,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        effective_config: &EffectiveConfig,
+        config: &DaemonLoopConfig,
+        shutdown: CancellationToken,
+        task_cancel: CancellationToken,
+        github: &G,
+    ) -> AppResult<()> {
+        let project_id = ProjectId::new(task.project_id.clone())?;
+        let flow = task
+            .resolved_flow
+            .ok_or_else(|| AppError::RoutingResolutionFailed {
+                input: task.task_id.clone(),
+                details: "task has no resolved flow".to_owned(),
+            })?;
+
+        let run_snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(workspace_dir, &project_id)?;
+        let dispatch_future = self.dispatch_in_worktree(
+            workspace_dir,
+            &project_id,
+            flow,
+            run_snapshot.status,
+            effective_config,
+            &lease.worktree_path,
+            task_cancel.clone(),
+        );
+        tokio::pin!(dispatch_future);
+
+        let heartbeat_interval = config.heartbeat_interval.max(Duration::from_secs(1));
+        let mut heartbeat = tokio::time::interval(heartbeat_interval);
+        let mut abort_poll = tokio::time::interval(Duration::from_millis(250));
+        let mut draft_pr_poll = tokio::time::interval(heartbeat_interval.min(Duration::from_secs(5)));
+        let pr_runtime = PrRuntimeService::new(self.store, self.worktree, github);
+
+        loop {
+            tokio::select! {
+                result = &mut dispatch_future => break result,
+                _ = heartbeat.tick() => {
+                    let _ = LeaseService::heartbeat(self.store, base_dir, &lease.lease_id);
+                }
+                _ = draft_pr_poll.tick() => {
+                    match pr_runtime
+                        .ensure_draft_pr(base_dir, workspace_dir, &task.task_id, lease, &task_cancel)
+                        .await
+                    {
+                        Ok(_) | Err(AppError::InvocationCancelled { .. }) => {}
+                        Err(error) => break Err(error),
+                    }
+                }
+                _ = abort_poll.tick() => {
+                    let current = self.store.read_task(base_dir, &task.task_id)?;
+                    if current.status == TaskStatus::Aborted {
+                        task_cancel.cancel();
+                    }
+                }
+                _ = shutdown.cancelled() => {
+                    let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &task.task_id);
+                    task_cancel.cancel();
+                }
+            }
+        }
+    }
+
     async fn drive_dispatch(
         &self,
         base_dir: &Path,
@@ -1833,7 +1913,7 @@ where
                 return Ok(());
             }
             let batch = service
-                .ingest_reviews(store_dir, &task.task_id, &whitelist, &shutdown)
+                .ingest_reviews(store_dir, repo_root, &task.task_id, &whitelist, &shutdown)
                 .await?;
             if batch.reopened_project {
                 let reopened = self.store.read_task(store_dir, &task.task_id)?;
@@ -1864,11 +1944,24 @@ where
             }),
         )?;
 
+        let resolver = if effective_config.rebase_policy().agent_resolution_enabled {
+            Some(self.build_rebase_conflict_resolver(
+                repo_root,
+                &lease.worktree_path,
+                task,
+                effective_config,
+            )?)
+        } else {
+            None
+        };
         let outcome = self.worktree.rebase_with_agent_resolution(
             repo_root,
             &lease.worktree_path,
             &lease.branch_name,
             effective_config.rebase_policy(),
+            resolver
+                .as_ref()
+                .map(|resolver| resolver as &dyn RebaseConflictResolver),
         )?;
 
         match outcome {
@@ -1957,6 +2050,38 @@ where
                 })
             }
         }
+    }
+
+    fn build_rebase_conflict_resolver(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        task: &DaemonTask,
+        effective_config: &EffectiveConfig,
+    ) -> AppResult<DaemonRebaseConflictResolver<'_, A, R, S>> {
+        let project_id = ProjectId::new(task.project_id.clone())?;
+        let cycle = self
+            .run_snapshot_read
+            .read_run_snapshot(repo_root, &project_id)
+            .ok()
+            .and_then(rebase_cycle_from_snapshot)
+            .unwrap_or(1)
+            .max(1);
+        let policy = BackendPolicyService::new(effective_config);
+        let target = policy.resolve_role_target(BackendPolicyRole::Implementer, cycle)?;
+
+        Ok(DaemonRebaseConflictResolver {
+            agent_service: self.agent_service,
+            project_root: repo_root
+                .join(WORKSPACE_DIR)
+                .join("runtime")
+                .join("rebase-agent")
+                .join(&task.task_id),
+            working_dir: worktree_path.to_path_buf(),
+            target,
+            timeout: Duration::from_secs(effective_config.rebase_policy().agent_timeout),
+            task_id: task.task_id.clone(),
+        })
     }
 
     fn handle_post_claim_failure(
@@ -2061,6 +2186,116 @@ where
             Err(error) => Err(error),
         }
     }
+}
+
+struct DaemonRebaseConflictResolver<'a, A, R, S> {
+    agent_service: &'a AgentExecutionService<A, R, S>,
+    project_root: PathBuf,
+    working_dir: PathBuf,
+    target: ResolvedBackendTarget,
+    timeout: Duration,
+    task_id: String,
+}
+
+impl<A, R, S> RebaseConflictResolver for DaemonRebaseConflictResolver<'_, A, R, S>
+where
+    A: AgentExecutionPort + Sync,
+    R: RawOutputPort + Sync,
+    S: SessionStorePort + Sync,
+{
+    fn resolve_conflicts(
+        &self,
+        request: &RebaseConflictRequest,
+    ) -> AppResult<RebaseConflictResolution> {
+        let context = json!({
+            "branch_name": request.branch_name,
+            "upstream": request.upstream,
+            "failure_details": request.failure_details,
+            "conflicted_files": request.conflicted_files,
+        });
+        let schema = json!({
+            "type": "object",
+            "required": ["summary", "resolved_files"],
+            "properties": {
+                "summary": { "type": "string" },
+                "resolved_files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "required": ["path", "content"],
+                        "properties": {
+                            "path": { "type": "string" },
+                            "content": { "type": "string" }
+                        }
+                    }
+                }
+            }
+        });
+        let prompt = format!(
+            "# Rebase Conflict Resolution\n\n\
+Resolve the Git rebase conflicts described in the context JSON.\n\
+Return full resolved file contents for every conflicted file.\n\
+Do not omit any conflicted file and do not include extra files.\n\n\
+## Output Schema\n\n```json\n{}\n```",
+            serde_json::to_string_pretty(&schema)?
+        );
+        let request = InvocationRequest {
+            invocation_id: format!("rebase-{}-{}", self.task_id, Utc::now().timestamp_millis()),
+            project_root: self.project_root.clone(),
+            working_dir: self.working_dir.clone(),
+            contract: InvocationContract::Requirements {
+                label: "daemon:rebase_resolution".to_owned(),
+            },
+            role: BackendRole::Implementer,
+            resolved_target: self.target.clone(),
+            payload: InvocationPayload { prompt, context },
+            timeout: self.timeout,
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        };
+
+        let envelope = thread::scope(|scope| {
+            let agent_service = self.agent_service;
+            scope
+                .spawn(move || {
+                    let runtime = tokio::runtime::Builder::new_current_thread()
+                        .enable_all()
+                        .build()
+                        .map_err(|error| {
+                            AppError::Io(std::io::Error::other(format!(
+                                "build rebase agent runtime: {error}"
+                            )))
+                        })?;
+                    runtime.block_on(agent_service.invoke(request))
+                })
+                .join()
+                .map_err(|_| {
+                    AppError::Io(std::io::Error::other(
+                        "rebase agent resolution thread panicked",
+                    ))
+                })?
+        })?;
+
+        serde_json::from_value(envelope.parsed_payload).map_err(|error| AppError::InvocationFailed {
+            backend: self.target.backend.family.to_string(),
+            contract_id: "daemon:rebase_resolution".to_owned(),
+            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+            details: format!("invalid rebase agent response: {error}"),
+        })
+    }
+}
+
+fn rebase_cycle_from_snapshot(
+    snapshot: crate::contexts::project_run_record::model::RunSnapshot,
+) -> Option<u32> {
+    snapshot
+        .active_run
+        .as_ref()
+        .or(snapshot.interrupted_run.as_ref())
+        .map(|run| run.stage_cursor.cycle)
+        .or_else(|| snapshot.cycle_history.last().map(|entry| entry.cycle))
 }
 
 /// Build a requirements service for production daemon use via the shared builder.
