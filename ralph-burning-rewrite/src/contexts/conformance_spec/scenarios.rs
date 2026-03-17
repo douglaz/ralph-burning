@@ -14863,6 +14863,15 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         if pr_state.state != "closed" {
             return Err(format!("expected closed PR state, got {}", pr_state.state));
         }
+        let closed_task = store
+            .read_task(ws.path(), &task.task_id)
+            .map_err(|e| e.to_string())?;
+        if closed_task.pr_url.is_some() {
+            return Err(format!(
+                "expected closed task pr_url to be cleared, got {:?}",
+                closed_task.pr_url
+            ));
+        }
 
         let skip_task = DaemonTask {
             task_id: "pr-runtime-skip".to_owned(),
@@ -14885,6 +14894,31 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         ))?;
         if !matches!(skipped, CompletionPrAction::Skipped) {
             return Err(format!("expected skip action, got {skipped:?}"));
+        }
+        github
+            .branches_ahead
+            .lock()
+            .unwrap()
+            .insert("acme/widgets:main...rb/55-proj".to_owned());
+        let recreated = block_on_app_result(service.ensure_draft_pr(
+            ws.path(),
+            ws.path(),
+            &task.task_id,
+            &lease,
+            &CancellationToken::new(),
+        ))?
+        .ok_or("expected recreated draft PR URL".to_owned())?;
+        if !recreated.ends_with("/pull/100") {
+            return Err(format!("expected fresh draft PR URL, got {recreated}"));
+        }
+        let recreated_task = store
+            .read_task(ws.path(), &task.task_id)
+            .map_err(|e| e.to_string())?;
+        if recreated_task.pr_url.as_deref() != Some(recreated.as_str()) {
+            return Err(format!(
+                "expected recreated task pr_url, got {:?}",
+                recreated_task.pr_url
+            ));
         }
 
         Ok(())

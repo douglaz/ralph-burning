@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::Utc;
 use serde_json::json;
 
 use crate::adapters::github::GithubPort;
@@ -53,15 +54,16 @@ where
         cancel: &CancellationToken,
     ) -> AppResult<Option<String>> {
         self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
-        let task = self.store.read_task(base_dir, task_id)?;
+        let mut task = self.store.read_task(base_dir, task_id)?;
+        let Some(repo_slug) = task.repo_slug.clone() else {
+            return Ok(None);
+        };
+        let (owner, repo) = parse_repo_slug(&repo_slug)?;
+        self.refresh_closed_pr_reference(base_dir, &mut task, owner, repo, cancel)
+            .await?;
         if let Some(url) = task.pr_url.clone() {
             return Ok(Some(url));
         }
-
-        let Some(repo_slug) = task.repo_slug.as_deref() else {
-            return Ok(None);
-        };
-        let (owner, repo) = parse_repo_slug(repo_slug)?;
         let base_branch = self.base_branch_name(repo_root)?;
         self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         self.worktree
@@ -90,11 +92,13 @@ where
         cancel: &CancellationToken,
     ) -> AppResult<CompletionPrAction> {
         self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
-        let task = self.store.read_task(base_dir, task_id)?;
-        let Some(repo_slug) = task.repo_slug.as_deref() else {
+        let mut task = self.store.read_task(base_dir, task_id)?;
+        let Some(repo_slug) = task.repo_slug.clone() else {
             return Ok(CompletionPrAction::Skipped);
         };
-        let (owner, repo) = parse_repo_slug(repo_slug)?;
+        let (owner, repo) = parse_repo_slug(&repo_slug)?;
+        self.refresh_closed_pr_reference(base_dir, &mut task, owner, repo, cancel)
+            .await?;
         let base_branch = self.base_branch_name(repo_root)?;
         if task.pr_url.is_none() {
             self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
@@ -236,9 +240,11 @@ where
                 let state = self.github.fetch_pr_state(owner, repo, pr_number).await?;
                 self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
                 if state.state.eq_ignore_ascii_case("closed") {
+                    self.clear_task_pr_url(base_dir, &task.task_id)?;
                     return Ok(CompletionPrAction::Skipped);
                 }
                 self.github.close_pr(owner, repo, pr_number).await?;
+                self.clear_task_pr_url(base_dir, &task.task_id)?;
                 DaemonTaskService::append_journal_event(
                     self.store,
                     base_dir,
@@ -281,6 +287,41 @@ where
             });
         }
         Ok(())
+    }
+
+    async fn refresh_closed_pr_reference(
+        &self,
+        base_dir: &Path,
+        task: &mut DaemonTask,
+        owner: &str,
+        repo: &str,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        let Some(pr_url) = task.pr_url.clone() else {
+            return Ok(());
+        };
+        let Some(pr_number) = parse_pr_number(&pr_url) else {
+            return Ok(());
+        };
+        self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
+        if let Ok(state) = self.github.fetch_pr_state(owner, repo, pr_number).await {
+            self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
+            if state.state.eq_ignore_ascii_case("closed") {
+                self.clear_task_pr_url(base_dir, &task.task_id)?;
+                task.pr_url = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn clear_task_pr_url(&self, base_dir: &Path, task_id: &str) -> AppResult<()> {
+        let mut updated = self.store.read_task(base_dir, task_id)?;
+        if updated.pr_url.is_none() {
+            return Ok(());
+        }
+        updated.pr_url = None;
+        updated.updated_at = Utc::now();
+        self.store.write_task(base_dir, &updated)
     }
 
     fn base_branch_name(&self, repo_root: &Path) -> AppResult<String> {
