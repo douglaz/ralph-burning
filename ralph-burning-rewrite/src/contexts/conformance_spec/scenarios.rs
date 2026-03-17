@@ -8159,10 +8159,14 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("expected error for unknown requirements subcommand".to_owned());
         }
 
-        // Malformed: missing subcommand
-        let result2 = watcher::parse_requirements_command("/rb requirements");
-        if result2.is_ok() {
-            return Err("expected error for bare '/rb requirements'".to_owned());
+        // Bare `/rb requirements` defaults to RequirementsDraft (not an error)
+        let result2 = watcher::parse_requirements_command("/rb requirements")
+            .map_err(|e| e.to_string())?;
+        if result2 != Some(crate::contexts::automation_runtime::model::DispatchMode::RequirementsDraft) {
+            return Err(format!(
+                "expected RequirementsDraft for bare '/rb requirements', got {:?}",
+                result2
+            ));
         }
 
         // Malformed: extra tokens

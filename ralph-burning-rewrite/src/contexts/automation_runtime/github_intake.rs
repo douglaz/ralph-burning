@@ -42,7 +42,8 @@ fn find_rb_command(text: &str) -> Option<String> {
                 "flow" if tokens.len() >= 3 => {
                     return Some(trimmed.to_owned());
                 }
-                "requirements" if tokens.len() >= 3 => {
+                // Accept both `/rb requirements` (bare) and `/rb requirements draft|quick`
+                "requirements" => {
                     return Some(trimmed.to_owned());
                 }
                 "run" | "retry" | "abort" => {
@@ -90,8 +91,9 @@ pub fn build_github_meta(
 /// Poll a single registered repo for candidate issues and ingest them as
 /// daemon tasks. Returns the number of newly created tasks.
 ///
-/// Failure during polling or label operations for this repo does not propagate
-/// to callers — it returns `Ok(0)` after logging the error.
+/// A GitHub API failure (polling, comments, labels) for this repo propagates
+/// as an `Err` so the caller can skip further mutations for this repo in the
+/// current cycle (multi-repo failure isolation).
 pub async fn poll_and_ingest_repo<G: GithubPort>(
     github: &G,
     store: &dyn DaemonStorePort,
@@ -103,30 +105,29 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
     let (owner, repo) = super::repo_registry::parse_repo_slug(&registration.repo_slug)?;
 
     // Poll for issues labeled `rb:ready`
-    let issues = match github.poll_candidate_issues(owner, repo, "rb:ready").await {
-        Ok(issues) => issues,
-        Err(e) => {
+    let issues = github.poll_candidate_issues(owner, repo, "rb:ready").await
+        .map_err(|e| {
             eprintln!(
                 "github-intake: failed to poll {}: {e}",
                 registration.repo_slug
             );
-            return Ok(0);
-        }
-    };
+            e
+        })?;
 
     let mut created = 0u32;
     for issue in &issues {
-        // 1. Fetch comments for this issue
-        let comments = match github.fetch_issue_comments(owner, repo, issue.number).await {
-            Ok(c) => c.into_iter().map(|c| c.body).collect::<Vec<_>>(),
-            Err(e) => {
+        // 1. Fetch comments for this issue — failure stops this repo for the cycle
+        let comments = github.fetch_issue_comments(owner, repo, issue.number).await
+            .map_err(|e| {
                 eprintln!(
                     "github-intake: failed to fetch comments for {}#{}: {e}",
                     registration.repo_slug, issue.number
                 );
-                vec![]
-            }
-        };
+                e
+            })?
+            .into_iter()
+            .map(|c| c.body)
+            .collect::<Vec<_>>();
 
         // 2. Extract command from body + comments
         let routing_command = extract_command(
@@ -297,6 +298,22 @@ mod tests {
         assert_eq!(
             extract_command("issue body", &comments),
             Some("/rb retry".to_owned())
+        );
+    }
+
+    #[test]
+    fn extract_bare_requirements_command() {
+        assert_eq!(
+            extract_command("/rb requirements", &[]),
+            Some("/rb requirements".to_owned())
+        );
+    }
+
+    #[test]
+    fn extract_requirements_with_subcommand() {
+        assert_eq!(
+            extract_command("/rb requirements draft", &[]),
+            Some("/rb requirements draft".to_owned())
         );
     }
 

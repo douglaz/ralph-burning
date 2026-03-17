@@ -18,19 +18,24 @@ pub trait IssueWatcherPort {
 /// Parse a requirements command from issue body or routing command.
 ///
 /// Accepts:
+/// - `/rb requirements` (defaults to `RequirementsDraft`)
 /// - `/rb requirements draft`
 /// - `/rb requirements quick`
 ///
 /// Returns `None` if the text does not contain a requirements command,
 /// allowing the caller to default to `DispatchMode::Workflow`.
 ///
-/// Returns `Err` for malformed requirements commands (e.g. `/rb requirements`
-/// without a subcommand, unknown subcommands, or extra tokens).
+/// Returns `Err` for malformed requirements commands (unknown subcommands
+/// or extra tokens).
 pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>> {
     for line in text.lines() {
         let trimmed = line.trim();
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         if tokens.len() >= 2 && matches!(tokens[0], "/rb" | "rb") && tokens[1] == "requirements" {
+            if tokens.len() == 2 {
+                // Bare `/rb requirements` defaults to draft
+                return Ok(Some(DispatchMode::RequirementsDraft));
+            }
             if tokens.len() == 3 {
                 return match tokens[2] {
                     "draft" => Ok(Some(DispatchMode::RequirementsDraft)),
@@ -44,10 +49,10 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
                     }),
                 };
             }
-            // Malformed: missing subcommand or extra tokens
+            // Extra tokens are malformed
             return Err(AppError::WatcherIngestionFailed {
                 issue_ref: trimmed.to_owned(),
-                details: "malformed requirements command; expected '/rb requirements draft' or '/rb requirements quick'".to_owned(),
+                details: "malformed requirements command; expected '/rb requirements [draft|quick]'".to_owned(),
             });
         }
     }

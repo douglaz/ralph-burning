@@ -726,10 +726,14 @@ fn parse_requirements_command_multiline_body() {
 }
 
 #[test]
-fn parse_requirements_command_bare_requirements_fails() {
-    // "/rb requirements" without a subcommand is malformed
-    let result = parse_requirements_command("/rb requirements");
-    assert!(result.is_err(), "bare '/rb requirements' should fail");
+fn parse_requirements_command_bare_requirements_defaults_to_draft() {
+    // "/rb requirements" without a subcommand defaults to RequirementsDraft
+    let result = parse_requirements_command("/rb requirements").unwrap();
+    assert_eq!(
+        Some(DispatchMode::RequirementsDraft),
+        result,
+        "bare '/rb requirements' should default to RequirementsDraft"
+    );
 }
 
 #[test]

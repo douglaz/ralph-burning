@@ -322,6 +322,7 @@ where
                         shutdown.clone(),
                         worktree_path_override,
                         branch_name_override,
+                        github,
                     )
                     .await
                 {
@@ -339,7 +340,7 @@ where
 
     /// Process a single task in multi-repo mode with separate store_dir and
     /// repo_root paths, and data-dir-aware worktree overrides.
-    async fn process_task_multi_repo(
+    async fn process_task_multi_repo<G: GithubPort>(
         &self,
         store_dir: &Path,
         repo_root: &Path,
@@ -348,6 +349,7 @@ where
         shutdown: CancellationToken,
         worktree_path_override: Option<std::path::PathBuf>,
         branch_name_override: Option<String>,
+        github: &G,
     ) -> AppResult<()> {
         let effective_config = EffectiveConfig::load(repo_root)?;
         let default_flow = effective_config.default_flow();
@@ -359,9 +361,14 @@ where
                     .await?;
             }
             DispatchMode::RequirementsDraft => {
-                return self
+                let result = self
                     .handle_requirements_draft(store_dir, task, &effective_config)
                     .await;
+                // Sync label after requirements draft (may be WaitingForRequirements or Failed)
+                if let Ok(updated_task) = self.store.read_task(store_dir, &task.task_id) {
+                    let _ = github_intake::sync_label_for_task(github, &updated_task).await;
+                }
+                return result;
             }
             DispatchMode::Workflow => {}
         }
@@ -386,6 +393,8 @@ where
         };
 
         println!("claimed task {}", claimed_task.task_id);
+        // Sync label: Claimed → rb:in-progress
+        let _ = github_intake::sync_label_for_task(github, &claimed_task).await;
 
         if let Err(error) = self.worktree.rebase_onto_default_branch(
             repo_root,
@@ -400,17 +409,28 @@ where
                 "rebase_conflict",
                 &error.to_string(),
             );
+            // Sync label: Failed → rb:failed
+            let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+            if let Some(ref ft) = failed_task {
+                let _ = github_intake::sync_label_for_task(github, ft).await;
+            }
             println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
         }
 
         if let Err(error) = self.ensure_project(store_dir, &claimed_task) {
             self.handle_post_claim_failure(store_dir, repo_root, &claimed_task, &lease, &error)?;
+            let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+            if let Some(ref ft) = failed_task {
+                let _ = github_intake::sync_label_for_task(github, ft).await;
+            }
             println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
         }
         let task_on_disk = self.store.read_task(store_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
+            // Sync label: Aborted → rb:failed
+            let _ = github_intake::sync_label_for_task(github, &task_on_disk).await;
             let _ = self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease);
             return Ok(());
         }
@@ -426,11 +446,17 @@ where
                         &lease,
                         &error,
                     )?;
+                    let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+                    if let Some(ref ft) = failed_task {
+                        let _ = github_intake::sync_label_for_task(github, ft).await;
+                    }
                     println!("failed task {}: {}", claimed_task.task_id, error);
                     return Ok(());
                 }
             };
         println!("active task {}", active_task.task_id);
+        // Sync label: Active → rb:in-progress (same label as Claimed, but confirms state)
+        let _ = github_intake::sync_label_for_task(github, &active_task).await;
 
         let task_cancel = CancellationToken::new();
         let outcome = self
@@ -447,14 +473,18 @@ where
 
         let latest_task = self.store.read_task(store_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
+            // Sync label: Aborted → rb:failed
+            let _ = github_intake::sync_label_for_task(github, &latest_task).await;
             let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
             return Ok(());
         }
 
         match outcome {
             Ok(()) => {
-                let _ =
+                let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
+                // Sync label: Completed → rb:completed
+                let _ = github_intake::sync_label_for_task(github, &completed_task).await;
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("completed task {}", active_task.task_id);
@@ -464,13 +494,15 @@ where
                     .failure_class()
                     .map(|class| class.as_str().to_owned())
                     .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
-                let _ = DaemonTaskService::mark_failed(
+                let failed_task = DaemonTaskService::mark_failed(
                     self.store,
                     store_dir,
                     &active_task.task_id,
                     &failure_class,
                     &error.to_string(),
                 )?;
+                // Sync label: Failed → rb:failed
+                let _ = github_intake::sync_label_for_task(github, &failed_task).await;
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);

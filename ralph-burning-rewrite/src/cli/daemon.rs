@@ -6,7 +6,6 @@ use crate::adapters::fs::{
     FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
 use crate::adapters::github::{GithubClient, GithubClientConfig};
-use crate::adapters::issue_watcher::FileIssueWatcher;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
@@ -15,7 +14,6 @@ use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, Re
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::workspace_governance;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
 
 use crate::composition::agent_execution_builder::build_agent_execution_service;
@@ -29,8 +27,8 @@ pub struct DaemonCommand {
 #[derive(Debug, Subcommand)]
 pub enum DaemonSubcommand {
     /// Start the daemon loop. When --data-dir and --repo are provided, runs
-    /// in multi-repo GitHub mode. Otherwise falls back to single-repo
-    /// current-directory mode (file-watcher intake).
+    /// in multi-repo GitHub mode (production). Without --data-dir, runs in
+    /// single-repo file-watcher mode (test-only; will be removed in a future release).
     Start {
         #[arg(long, default_value_t = 10)]
         poll_seconds: u64,
@@ -46,7 +44,8 @@ pub enum DaemonSubcommand {
         #[arg(long)]
         verbose: bool,
     },
-    /// Show status of daemon tasks.
+    /// Show status of daemon tasks. When --data-dir is provided, queries
+    /// multi-repo state. Otherwise uses current-directory single-repo state.
     Status {
         /// Root directory for multi-repo daemon state.
         #[arg(long)]
@@ -106,6 +105,11 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                 )
                 .await
             } else {
+                // Legacy file-watcher mode — test-only. Production must use --data-dir.
+                eprintln!(
+                    "warning: running daemon without --data-dir uses file-watcher intake \
+                     (test-only; use --data-dir and --repo for production GitHub intake)"
+                );
                 handle_start_legacy(poll_seconds, single_iteration).await
             }
         }
@@ -498,10 +502,14 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
 }
 
 // ===========================================================================
-// Legacy (current-dir) handlers
+// Legacy (current-dir) handlers — retained for test-only use.
+// Production daemon always requires --data-dir and GitHub intake.
 // ===========================================================================
 
 async fn handle_start_legacy(poll_seconds: u64, single_iteration: bool) -> AppResult<()> {
+    use crate::adapters::issue_watcher::FileIssueWatcher;
+    use crate::contexts::workspace_governance::config::EffectiveConfig;
+
     let current_dir = std::env::current_dir()?;
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
