@@ -450,6 +450,50 @@ impl DaemonTaskService {
         Ok(task)
     }
 
+    /// Recovery-only: revert a non-terminal task (Claimed/Active) back to
+    /// Pending so it can be re-processed by the daemon in the next cycle.
+    /// This is used by Phase 0 label repair to recover tasks that were
+    /// quarantined mid-processing due to a GitHub label-sync failure.
+    /// The associated lease is released and the task's lease reference cleared.
+    pub fn revert_to_pending_for_recovery(
+        store: &dyn DaemonStorePort,
+        worktree: &dyn WorktreePort,
+        base_dir: &Path,
+        repo_root: &Path,
+        task_id: &str,
+    ) -> AppResult<DaemonTask> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        if task.is_terminal() {
+            return Err(AppError::TaskStateTransitionInvalid {
+                task_id: task.task_id.clone(),
+                from: task.status.as_str().to_owned(),
+                to: "revert_to_pending".to_owned(),
+            });
+        }
+
+        // Release the lease if present before reverting to Pending.
+        if let Some(ref lid) = task.lease_id {
+            if let Ok(lease) = store.read_lease(base_dir, lid) {
+                let _ = LeaseService::release(
+                    store,
+                    worktree,
+                    base_dir,
+                    repo_root,
+                    &lease,
+                    ReleaseMode::Idempotent,
+                );
+            }
+        }
+
+        // Directly set status to Pending (bypasses transition_to validation
+        // since Claimed → Pending is a recovery-only transition).
+        task.status = TaskStatus::Pending;
+        task.updated_at = Utc::now();
+        task.clear_lease();
+        store.write_task(base_dir, &task)?;
+        Ok(task)
+    }
+
     /// Find a task by repo_slug + issue_number. Returns the first non-terminal
     /// match, or the most recent terminal match if no non-terminal exists.
     pub fn find_task_by_issue(

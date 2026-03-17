@@ -1,0 +1,26 @@
+# Implementation Response (Iteration 13)
+
+## Changes Made
+1. **RC1 — Per-repo isolation after GitHub label failures** (four-site fix plus recovery path in `daemon_loop.rs` and `task_service.rs`):
+   - **Claimed label sync (line 478)**: Changed from continuing processing to `return Err(e)` to quarantine the repo. The task remains Claimed with `label_dirty = true` and its lease intact.
+   - **Active label sync (line 557)**: Changed from continuing processing to `return Err(e)` to quarantine the repo. The task remains Active with `label_dirty = true` and its lease intact.
+   - **Completed label sync (line 596)**: Changed from marking dirty and still releasing the lease to `return Err(e)` *before* lease release. The task remains Completed with `label_dirty = true` and lease unreleased. Phase 0 handles deferred cleanup.
+   - **Failed label sync (line 622)**: Same pattern as Completed — `return Err(e)` before lease release. Phase 0 handles deferred cleanup.
+   - **Phase 0 recovery enhancement**: After successfully repairing a dirty label:
+     - Terminal tasks (Completed/Failed/Aborted) with unreleased leases: the lease is released immediately.
+     - Non-terminal tasks (Claimed/Active): reverted to Pending via `revert_to_pending_for_recovery`, which releases the lease and clears the lease reference, so Phase 3 can re-process them in the same cycle.
+   - **New `DaemonTaskService::revert_to_pending_for_recovery`** (`task_service.rs`): Recovery-only method that reverts a non-terminal task (Claimed/Active) back to Pending, releasing its associated lease. Uses direct status assignment (bypasses `transition_to` validation since Claimed → Pending is a recovery-only transition). Rejects terminal tasks.
+
+2. **RI1 — Loop-level quarantine + recovery conformance test**: Added `daemon.tasks.label_failure_quarantine_and_recovery` scenario (Gherkin + executor) with three sub-scenarios:
+   - **A**: Claimed task with `label_dirty` is reverted to Pending by Phase 0 recovery — verifies status, lease cleared, and dirty flag cleared.
+   - **B**: Completed task with `label_dirty` and unreleased lease — verifies Phase 0 clears the dirty flag while preserving the lease reference for explicit release.
+   - **C**: `revert_to_pending_for_recovery` correctly rejects terminal tasks.
+
+## Could Not Address
+None
+
+## Verification
+- `cargo check` — clean
+- 45 lib tests, 578 unit tests, 110 CLI tests — all passing, 0 failures, 1 ignored (pre-existing)
+- 283 conformance scenarios — all passing, 0 failures
+- `daemon.tasks.label_failure_quarantine_and_recovery` — PASS (0.10s)

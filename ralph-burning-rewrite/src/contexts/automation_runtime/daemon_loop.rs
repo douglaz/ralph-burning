@@ -274,6 +274,12 @@ where
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
             // A GitHub label failure during repair quarantines this repo for the
             // rest of the cycle, consistent with multi-repo failure isolation.
+            //
+            // After successful label repair:
+            // - Terminal tasks with unreleased leases get their leases released
+            //   (deferred from the previous cycle's quarantine).
+            // - Non-terminal tasks (Claimed/Active) are reverted to Pending so
+            //   Phase 3 can re-process them in this cycle.
             let mut phase0_quarantined = false;
             if let Ok(tasks) = DaemonTaskService::list_tasks(self.store, &daemon_dir) {
                 for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
@@ -284,6 +290,32 @@ where
                                 &daemon_dir,
                                 &dirty_task.task_id,
                             );
+                            // Terminal tasks: release deferred lease from quarantined cycle.
+                            if dirty_task.is_terminal() {
+                                if let Some(ref lid) = dirty_task.lease_id {
+                                    if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
+                                        let _ = self.release_task_lease(
+                                            &daemon_dir, checkout, &dirty_task.task_id, &lease,
+                                        );
+                                    }
+                                }
+                            }
+                            // Non-terminal tasks (Claimed/Active): revert to Pending
+                            // so Phase 3 can re-process them in this cycle.
+                            if !dirty_task.is_terminal() {
+                                if let Ok(reverted) = DaemonTaskService::revert_to_pending_for_recovery(
+                                    self.store,
+                                    self.worktree,
+                                    &daemon_dir,
+                                    checkout,
+                                    &dirty_task.task_id,
+                                ) {
+                                    eprintln!(
+                                        "daemon: reverted interrupted task '{}' to pending in {}",
+                                        reverted.task_id, reg.repo_slug
+                                    );
+                                }
+                            }
                         }
                         Err(e) => {
                             eprintln!(
@@ -472,15 +504,16 @@ where
 
         println!("claimed task {}", claimed_task.task_id);
         // Sync label: Claimed → rb:in-progress. On failure, mark label_dirty and
-        // continue processing — the durable state is correct and Phase 0 will
-        // repair the label on the next cycle. Returning Err here would strand
-        // the Claimed task (Phase 3 only processes Pending tasks).
+        // quarantine this repo — no further task/lease/worktree mutations in this
+        // cycle. The task remains Claimed with its lease; Phase 0 will repair
+        // the label and revert the task to Pending for the next cycle.
         if let Err(e) = github_intake::sync_label_for_task(github, &claimed_task).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
             eprintln!(
-                "daemon: label sync failed for claimed task '{}', continuing with dirty label: {e}",
+                "daemon: label sync failed for claimed task '{}', quarantining repo: {e}",
                 claimed_task.task_id
             );
+            return Err(e);
         }
 
         if let Err(error) = self.worktree.rebase_onto_default_branch(
@@ -551,15 +584,16 @@ where
             };
         println!("active task {}", active_task.task_id);
         // Sync label: Active → rb:in-progress. On failure, mark label_dirty and
-        // continue processing — the durable state is correct and Phase 0 will
-        // repair the label on the next cycle. Returning Err here would strand
-        // the Active task (Phase 3 only processes Pending tasks).
+        // quarantine this repo — no further task/lease/worktree mutations in this
+        // cycle. The task remains Active with its lease; Phase 0 will repair
+        // the label and revert the task to Pending for the next cycle.
         if let Err(e) = github_intake::sync_label_for_task(github, &active_task).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
             eprintln!(
-                "daemon: label sync failed for active task '{}', continuing with dirty label: {e}",
+                "daemon: label sync failed for active task '{}', quarantining repo: {e}",
                 active_task.task_id
             );
+            return Err(e);
         }
 
         let task_cancel = CancellationToken::new();
@@ -591,14 +625,16 @@ where
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
                 // Sync label: Completed → rb:completed. On failure, mark label_dirty
-                // but still release the lease — the task is terminal and must not
-                // retain lease/worktree ownership. Phase 0 will repair the label.
+                // and quarantine — do NOT release the lease in this cycle so no
+                // further mutations occur. Phase 0 will repair the label and
+                // release the lease in the next cycle.
                 if let Err(e) = github_intake::sync_label_for_task(github, &completed_task).await {
                     let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
                     eprintln!(
-                        "daemon: label sync failed for completed task '{}', releasing lease with dirty label: {e}",
+                        "daemon: label sync failed for completed task '{}', quarantining repo: {e}",
                         active_task.task_id
                     );
+                    return Err(e);
                 }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
@@ -617,14 +653,16 @@ where
                     &error.to_string(),
                 )?;
                 // Sync label: Failed → rb:failed. On failure, mark label_dirty
-                // but still release the lease — the task is terminal and must not
-                // retain lease/worktree ownership. Phase 0 will repair the label.
+                // and quarantine — do NOT release the lease in this cycle so no
+                // further mutations occur. Phase 0 will repair the label and
+                // release the lease in the next cycle.
                 if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
                     let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
                     eprintln!(
-                        "daemon: label sync failed for failed task '{}', releasing lease with dirty label: {e}",
+                        "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                         active_task.task_id
                     );
+                    return Err(e);
                 }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
