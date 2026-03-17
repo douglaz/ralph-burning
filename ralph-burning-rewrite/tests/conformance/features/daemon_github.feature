@@ -50,6 +50,18 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Then the task transitions to "pending"
     And the attempt count is incremented
 
+  # daemon.tasks.retry_aborted_issue
+  Scenario: Retry resolves an aborted task by repo slug and issue number
+    Given an aborted daemon task with repo_slug "acme/widgets" and issue_number 101
+    When the user runs "ralph-burning daemon retry 101 --data-dir <dir> --repo acme/widgets"
+    Then the task transitions to "pending"
+    And the attempt count is incremented
+
+  # daemon.tasks.start_requires_data_dir
+  Scenario: daemon start without --data-dir returns an error
+    When the user runs "ralph-burning daemon start"
+    Then the command fails with an error requiring --data-dir
+
   # daemon.tasks.reconcile_stale_leases
   Scenario: Reconcile cleans up stale leases across all repos under data-dir
     Given stale leases exist under multiple repos in the data-dir

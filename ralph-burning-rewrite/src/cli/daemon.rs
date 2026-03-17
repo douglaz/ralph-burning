@@ -103,10 +103,14 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                     verbose,
                 )
                 .await
-            } else if single_iteration {
-                // Legacy single-repo mode: processes pre-seeded tasks only.
-                // No intake (neither FileIssueWatcher nor GitHub); used for
-                // tests that pre-populate daemon/tasks/ and run one cycle.
+            } else if std::env::var("RALPH_BURNING_TEST_LEGACY_DAEMON").ok().as_deref()
+                == Some("1")
+                && single_iteration
+            {
+                // Test-only legacy single-repo mode: processes pre-seeded tasks
+                // without any intake (no FileIssueWatcher, no GitHub). Only
+                // reachable when RALPH_BURNING_TEST_LEGACY_DAEMON=1 and
+                // --single-iteration are both set.
                 handle_start_legacy_no_intake(poll_seconds).await
             } else {
                 Err(AppError::InvalidConfigValue {
@@ -538,10 +542,9 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
 // Production daemon start always requires --data-dir and GitHub intake.
 // ===========================================================================
 
-/// Test-only single-repo start for `--single-iteration` without `--data-dir`.
-/// Uses `FileIssueWatcher` for test intake (watched issue files). This path
-/// is NOT reachable from production (`daemon start` without `--data-dir` and
-/// without `--single-iteration` returns an error).
+/// Test-only single-repo start. Uses FileIssueWatcher for test intake and
+/// processes pre-seeded tasks. Gated behind RALPH_BURNING_TEST_LEGACY_DAEMON=1
+/// and --single-iteration. Not reachable from normal CLI usage.
 async fn handle_start_legacy_no_intake(poll_seconds: u64) -> AppResult<()> {
     use crate::adapters::issue_watcher::FileIssueWatcher;
     use crate::contexts::workspace_governance::config::EffectiveConfig;

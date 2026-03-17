@@ -702,6 +702,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
     let output = Command::new(binary())
         .args(["daemon", "start", "--single-iteration"])
         .env("RALPH_BURNING_BACKEND", "stub")
+        .env("RALPH_BURNING_TEST_LEGACY_DAEMON", "1")
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon start");
@@ -780,6 +781,7 @@ fn daemon_start_single_iteration_processes_pending_task() {
     let output = Command::new(binary())
         .args(["daemon", "start", "--single-iteration"])
         .env("RALPH_BURNING_BACKEND", "stub")
+        .env("RALPH_BURNING_TEST_LEGACY_DAEMON", "1")
         .current_dir(temp_dir.path())
         .output()
         .expect("run daemon start");

@@ -433,7 +433,7 @@ impl DaemonTaskService {
         task_id: &str,
     ) -> AppResult<DaemonTask> {
         let mut task = store.read_task(base_dir, task_id)?;
-        if task.status != TaskStatus::Failed {
+        if task.status != TaskStatus::Failed && task.status != TaskStatus::Aborted {
             return Err(AppError::TaskStateTransitionInvalid {
                 task_id: task.task_id.clone(),
                 from: task.status.as_str().to_owned(),

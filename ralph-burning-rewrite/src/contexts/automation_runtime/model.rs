@@ -210,7 +210,7 @@ impl TaskStatus {
                 | Self::WaitingForRequirements,
             ) => true,
             (Self::WaitingForRequirements, Self::Pending | Self::Failed | Self::Aborted) => true,
-            (Self::Failed, Self::Pending) => true,
+            (Self::Failed | Self::Aborted, Self::Pending) => true,
             _ if self == next => true,
             _ => false,
         }
