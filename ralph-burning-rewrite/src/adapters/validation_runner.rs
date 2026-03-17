@@ -161,37 +161,34 @@ async fn run_single_command(
         }
     };
 
-    let result = tokio::time::timeout(timeout, async {
-        let mut stdout_buf = Vec::new();
-        let mut stderr_buf = Vec::new();
+    // Take stdout/stderr handles before the timeout so that read tasks survive
+    // a timeout and we can preserve any partial output captured before the
+    // child is killed.
+    let stdout_handle = child.stdout.take();
+    let stderr_handle = child.stderr.take();
 
-        let stdout_handle = child.stdout.take();
-        let stderr_handle = child.stderr.take();
+    let stdout_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut stdout) = stdout_handle {
+            let _ = stdout.read_to_end(&mut buf).await;
+        }
+        buf
+    });
+    let stderr_task = tokio::spawn(async move {
+        let mut buf = Vec::new();
+        if let Some(mut stderr) = stderr_handle {
+            let _ = stderr.read_to_end(&mut buf).await;
+        }
+        buf
+    });
 
-        let (stdout_result, stderr_result) = tokio::join!(
-            async {
-                if let Some(mut stdout) = stdout_handle {
-                    let _ = stdout.read_to_end(&mut stdout_buf).await;
-                }
-            },
-            async {
-                if let Some(mut stderr) = stderr_handle {
-                    let _ = stderr.read_to_end(&mut stderr_buf).await;
-                }
-            }
-        );
-        let _ = stdout_result;
-        let _ = stderr_result;
-
-        let status = child.wait().await;
-        (stdout_buf, stderr_buf, status)
-    })
-    .await;
-
+    let wait_result = tokio::time::timeout(timeout, child.wait()).await;
     let duration_ms = start.elapsed().as_millis() as u64;
 
-    match result {
-        Ok((stdout_buf, stderr_buf, Ok(status))) => {
+    match wait_result {
+        Ok(Ok(status)) => {
+            let stdout_buf = stdout_task.await.unwrap_or_default();
+            let stderr_buf = stderr_task.await.unwrap_or_default();
             let exit_code = status.code();
             let passed = status.success();
             ValidationCommandResult {
@@ -203,28 +200,38 @@ async fn run_single_command(
                 passed,
             }
         }
-        Ok((stdout_buf, stderr_buf, Err(error))) => ValidationCommandResult {
-            command: command.to_owned(),
-            exit_code: None,
-            stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
-            stderr: format!(
-                "{}\nwait error: {error}",
-                String::from_utf8_lossy(&stderr_buf)
-            ),
-            duration_ms,
-            passed: false,
-        },
-        Err(_timeout) => {
-            // Kill the child on timeout.
-            let _ = child.kill().await;
+        Ok(Err(error)) => {
+            let stdout_buf = stdout_task.await.unwrap_or_default();
+            let stderr_buf = stderr_task.await.unwrap_or_default();
             ValidationCommandResult {
                 command: command.to_owned(),
                 exit_code: None,
-                stdout: String::new(),
+                stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
                 stderr: format!(
-                    "command timed out after {}s",
-                    timeout.as_secs()
+                    "{}\nwait error: {error}",
+                    String::from_utf8_lossy(&stderr_buf)
                 ),
+                duration_ms,
+                passed: false,
+            }
+        }
+        Err(_timeout) => {
+            // Kill the child on timeout; this closes pipes so the read tasks
+            // complete with whatever was captured so far.
+            let _ = child.kill().await;
+            let stdout_buf = stdout_task.await.unwrap_or_default();
+            let stderr_buf = stderr_task.await.unwrap_or_default();
+            let partial_stderr = String::from_utf8_lossy(&stderr_buf).to_string();
+            let timeout_msg = format!("command timed out after {}s", timeout.as_secs());
+            ValidationCommandResult {
+                command: command.to_owned(),
+                exit_code: None,
+                stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
+                stderr: if partial_stderr.trim().is_empty() {
+                    timeout_msg
+                } else {
+                    format!("{}\n{}", partial_stderr.trim(), timeout_msg)
+                },
                 duration_ms,
                 passed: false,
             }

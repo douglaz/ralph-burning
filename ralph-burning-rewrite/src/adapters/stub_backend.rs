@@ -30,6 +30,9 @@ pub struct StubBackendAdapter {
     fail_invoke_stages: HashSet<StageId>,
     transient_failure_limits: HashMap<StageId, u32>,
     transient_failure_counters: HashMap<StageId, Arc<AtomicU32>>,
+    /// Stages that succeed the first N invocations, then fail.
+    delayed_failure_limits: HashMap<StageId, u32>,
+    delayed_failure_counters: HashMap<StageId, Arc<AtomicU32>>,
     stage_payload_overrides: Arc<Mutex<HashMap<StageId, Vec<Value>>>>,
     stage_payload_counters: HashMap<StageId, Arc<AtomicU32>>,
     /// Contract-label-keyed payload overrides for non-stage contracts.
@@ -51,6 +54,8 @@ impl Default for StubBackendAdapter {
             fail_invoke_stages: HashSet::new(),
             transient_failure_limits: HashMap::new(),
             transient_failure_counters: HashMap::new(),
+            delayed_failure_limits: HashMap::new(),
+            delayed_failure_counters: HashMap::new(),
             stage_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
             stage_payload_counters: HashMap::new(),
             label_payload_overrides: Arc::new(Mutex::new(HashMap::new())),
@@ -81,6 +86,14 @@ impl StubBackendAdapter {
     /// Configure a stage to pass preflight but fail during invocation.
     pub fn with_invoke_failure(mut self, stage_id: StageId) -> Self {
         self.fail_invoke_stages.insert(stage_id);
+        self
+    }
+
+    /// Configure a stage to succeed the first N invocations, then fail.
+    pub fn with_delayed_failure(mut self, stage_id: StageId, succeed_count: u32) -> Self {
+        self.delayed_failure_limits.insert(stage_id, succeed_count);
+        self.delayed_failure_counters
+            .insert(stage_id, Arc::new(AtomicU32::new(0)));
         self
     }
 
@@ -357,6 +370,25 @@ impl AgentExecutionPort for StubBackendAdapter {
                         failure_class: FailureClass::TransportFailure,
                         details: format!(
                             "stub adapter configured to fail invocation {attempt}/{limit} for this stage"
+                        ),
+                    });
+                }
+            }
+
+            // Delayed failure: succeed the first N invocations, then fail.
+            if let Some(limit) = self.delayed_failure_limits.get(&stage_id) {
+                let counter = self
+                    .delayed_failure_counters
+                    .get(&stage_id)
+                    .expect("delayed failure counter missing");
+                let attempt = counter.fetch_add(1, Ordering::SeqCst) + 1;
+                if attempt > *limit {
+                    return Err(AppError::InvocationFailed {
+                        backend: request.resolved_target.backend.family.to_string(),
+                        contract_id: contract_label,
+                        failure_class: FailureClass::TransportFailure,
+                        details: format!(
+                            "stub adapter configured to fail after {limit} successful invocations (attempt {attempt})"
                         ),
                     });
                 }

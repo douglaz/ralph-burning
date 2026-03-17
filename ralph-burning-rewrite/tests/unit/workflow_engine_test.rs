@@ -12,6 +12,7 @@ use ralph_burning::adapters::fs::{
     FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
     FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
+use ralph_burning::contexts::project_run_record::ArtifactStorePort;
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
     CancellationToken, InvocationEnvelope, InvocationRequest,
@@ -5733,5 +5734,134 @@ async fn standard_flow_review_invocation_context_contains_local_validation() {
     assert!(
         review_ctx.get("remediation").is_none(),
         "local_validation evidence should not be nested under remediation"
+    );
+}
+
+/// Regression test: pre-commit failure triggers remediation, the run is
+/// interrupted during that remediation, and resume reconstructs the
+/// pre-commit remediation context from durable supporting evidence.
+#[tokio::test]
+async fn pre_commit_failure_remediation_survives_resume() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "precommit-resume");
+
+    // Enable pre_commit_fmt (and disable others) in workspace config.
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str(
+        "\n[validation]\npre_commit_fmt = true\npre_commit_clippy = false\npre_commit_nix_build = false\n",
+    );
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    // Create a minimal Cargo project in the project root with intentionally
+    // bad formatting so `cargo fmt --check` fails.
+    let project_root = base_dir
+        .join(".ralph-burning/projects")
+        .join(pid.as_str());
+    fs::write(
+        project_root.join("Cargo.toml"),
+        "[package]\nname = \"test-fmt\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(project_root.join("src")).unwrap();
+    // Intentionally bad formatting: no spaces, single line.
+    fs::write(
+        project_root.join("src/main.rs"),
+        "fn main(){println!(\"hello\");let x=1;let y=2;let z=x+y;println!(\"{z}\");}",
+    )
+    .unwrap();
+
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    // Use an adapter that succeeds the first Implementation invocation
+    // (cycle 1) but fails the second (remediation cycle 2 after pre-commit
+    // failure), simulating an interrupted remediation.
+    let failing_adapter =
+        StubBackendAdapter::default().with_delayed_failure(StageId::Implementation, 1);
+    let failing_agent_service = build_agent_service_with_adapter(failing_adapter);
+
+    let first_result = engine::execute_run(
+        &failing_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        &config,
+    )
+    .await;
+    // The run should fail because the second Implementation invocation fails.
+    assert!(
+        first_result.is_err(),
+        "expected run to fail during remediation cycle, got: {first_result:?}"
+    );
+
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(
+        snapshot.status,
+        RunStatus::Failed,
+        "run should be in Failed status after interrupted remediation"
+    );
+
+    // Verify pre-commit evidence was persisted (supporting record).
+    let payloads = FsArtifactStore.list_payloads(base_dir, &pid).unwrap();
+    let pre_commit_evidence = payloads.iter().find(|record| {
+        record.record_kind == RecordKind::StageSupporting
+            && matches!(
+                &record.producer,
+                Some(ralph_burning::contexts::workflow_composition::panel_contracts::RecordProducer::LocalValidation { command })
+                    if command == "pre_commit"
+            )
+    });
+    assert!(
+        pre_commit_evidence.is_some(),
+        "durable pre-commit evidence must exist for resume to work"
+    );
+
+    // Now resume. Fix the formatting so pre-commit passes on the next attempt.
+    fs::write(
+        project_root.join("src/main.rs"),
+        "fn main() {\n    println!(\"hello\");\n    let x = 1;\n    let y = 2;\n    let z = x + y;\n    println!(\"{z}\");\n}\n",
+    )
+    .unwrap();
+
+    let resume_agent_service = build_agent_service();
+    let resume_config = EffectiveConfig::load(base_dir).unwrap();
+    let resume_result = engine::resume_run(
+        &resume_agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        &resume_config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume after pre-commit failure should succeed: {resume_result:?}"
+    );
+
+    let final_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(
+        final_snapshot.status,
+        RunStatus::Completed,
+        "run should complete after successful resume"
     );
 }

@@ -111,6 +111,42 @@ fn command_timeout() {
 }
 
 #[test]
+fn command_timeout_preserves_partial_output() {
+    let rt = rt();
+    // Emit output before sleeping so partial capture is possible.
+    let commands = vec![
+        "echo partial-stdout && echo partial-stderr >&2 && sleep 60".to_owned(),
+    ];
+    let result = rt.block_on(run_command_group(
+        "test",
+        &commands,
+        Path::new("/tmp"),
+        Duration::from_millis(500),
+    ));
+    assert!(!result.passed);
+    let cmd = &result.commands[0];
+    assert!(!cmd.passed);
+    assert!(cmd.exit_code.is_none());
+    // Partial stdout captured before timeout.
+    assert!(
+        cmd.stdout.contains("partial-stdout"),
+        "expected partial stdout to be preserved, got: {:?}",
+        cmd.stdout
+    );
+    // Partial stderr captured before timeout, plus the timeout message.
+    assert!(
+        cmd.stderr.contains("partial-stderr"),
+        "expected partial stderr to be preserved, got: {:?}",
+        cmd.stderr
+    );
+    assert!(
+        cmd.stderr.contains("timed out"),
+        "expected timeout message in stderr, got: {:?}",
+        cmd.stderr
+    );
+}
+
+#[test]
 fn command_records_duration() {
     let rt = rt();
     let commands = vec!["true".to_owned()];

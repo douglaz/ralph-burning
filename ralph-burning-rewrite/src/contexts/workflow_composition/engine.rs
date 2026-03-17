@@ -51,6 +51,7 @@ use super::prompt_review;
 use super::retry_policy::RetryPolicy;
 use super::validation;
 use super::{flow_semantics, stage_plan_for_flow, FlowSemantics};
+use crate::adapters::validation_runner::ValidationGroupResult;
 
 /// Compatibility wrapper for the legacy standard-flow helper.
 pub fn standard_stage_plan(prompt_review_enabled: bool) -> Vec<StageId> {
@@ -5117,7 +5118,7 @@ fn derive_resume_execution_context(
             ),
         })?;
     let payload_record = payloads
-        .into_iter()
+        .iter()
         .find(|record| record.payload_id == payload_id)
         .ok_or_else(|| AppError::ResumeFailed {
             reason: format!(
@@ -5126,7 +5127,7 @@ fn derive_resume_execution_context(
             ),
         })?;
     let payload: StagePayload =
-        serde_json::from_value(payload_record.payload).map_err(|error| AppError::ResumeFailed {
+        serde_json::from_value(payload_record.payload.clone()).map_err(|error| AppError::ResumeFailed {
             reason: format!(
                 "failed to parse remediation payload '{}' during resume: {}",
                 payload_id, error
@@ -5143,6 +5144,21 @@ fn derive_resume_execution_context(
                 &validation,
             )))
         }
+        StagePayload::Validation(validation)
+            if validation.outcome == ReviewOutcome::Approved =>
+        {
+            // Review approved but a pre-commit failure triggered remediation.
+            // Derive the remediation context from the durable supporting
+            // pre-commit evidence record instead of the primary payload.
+            derive_remediation_from_pre_commit_evidence(
+                &payloads,
+                stage_id,
+                prior_cycle,
+                cursor,
+                execution_label,
+                &payload_id,
+            )
+        }
         StagePayload::Validation(validation) => Err(AppError::ResumeFailed {
             reason: format!(
                 "failed to reconstruct remediation context for {} cycle {}; payload '{}' recorded outcome '{}' instead of 'Request Changes'",
@@ -5156,6 +5172,64 @@ fn derive_resume_execution_context(
             ),
         }),
     }
+}
+
+/// Derive remediation context from durable supporting pre-commit evidence.
+///
+/// Called when the primary review payload has `Approved` outcome but a
+/// pre-commit failure triggered a cycle advance into remediation. The
+/// supporting evidence was persisted by `persist_pre_commit_evidence()` with
+/// `RecordKind::StageSupporting` and `RecordProducer::LocalValidation`.
+fn derive_remediation_from_pre_commit_evidence(
+    payloads: &[PayloadRecord],
+    stage_id: StageId,
+    prior_cycle: u32,
+    cursor: &StageCursor,
+    execution_label: &str,
+    primary_payload_id: &str,
+) -> AppResult<Option<Value>> {
+    // Find the supporting pre-commit evidence payload from the same
+    // stage and cycle as the approved review.
+    let pre_commit_record = payloads.iter().find(|record| {
+        record.stage_id == stage_id
+            && record.cycle == prior_cycle
+            && record.record_kind == RecordKind::StageSupporting
+            && matches!(
+                &record.producer,
+                Some(RecordProducer::LocalValidation { command })
+                    if command == "pre_commit"
+            )
+    });
+
+    let Some(record) = pre_commit_record else {
+        return Err(AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for {} cycle {}; primary payload '{}' has Approved outcome but no supporting pre-commit evidence was found for cycle {}",
+                execution_label, cursor.cycle, primary_payload_id, prior_cycle
+            ),
+        });
+    };
+
+    let group_result: ValidationGroupResult =
+        serde_json::from_value(record.payload.clone()).map_err(|error| AppError::ResumeFailed {
+            reason: format!(
+                "failed to parse pre-commit evidence payload '{}' during resume: {}",
+                record.payload_id, error
+            ),
+        })?;
+
+    if group_result.passed {
+        return Err(AppError::ResumeFailed {
+            reason: format!(
+                "failed to reconstruct remediation context for {} cycle {}; pre-commit evidence '{}' shows passed, but cycle advanced to remediation",
+                execution_label, cursor.cycle, record.payload_id
+            ),
+        });
+    }
+
+    Ok(Some(validation::pre_commit_remediation_context(
+        &group_result,
+    )))
 }
 
 fn stage_plan_for_resume(
