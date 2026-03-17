@@ -11235,6 +11235,62 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("bootstrap did not create .ralph-burning workspace".into());
             }
 
+            // Verify workspace.toml was created (usable workspace, not just a dir)
+            let ws_config = workspace_dir.join("workspace.toml");
+            if !ws_config.is_file() {
+                return Err("bootstrap did not create workspace.toml".into());
+            }
+            // Verify the config is valid TOML that can be loaded
+            let config_raw = std::fs::read_to_string(&ws_config)
+                .map_err(|e| format!("cannot read workspace.toml: {e}"))?;
+            let _: toml::Table = toml::from_str(&config_raw)
+                .map_err(|e| format!("workspace.toml is not valid TOML: {e}"))?;
+
+            // Verify required workspace subdirectories exist
+            for subdir in &["projects", "requirements", "daemon/tasks", "daemon/leases"] {
+                if !workspace_dir.join(subdir).is_dir() {
+                    return Err(format!(
+                        "bootstrap did not create required subdirectory: {subdir}"
+                    ));
+                }
+            }
+
+            // Verify no auth token leaked into the git config of the checkout.
+            // Since this is a `git init` (not a clone), there's no remote, but
+            // we verify the general contract: .git/config must not contain any
+            // Authorization or extraheader lines.
+            let git_config_path = checkout.join(".git/config");
+            if git_config_path.is_file() {
+                let git_config = std::fs::read_to_string(&git_config_path)
+                    .map_err(|e| format!("cannot read .git/config: {e}"))?;
+                let lower = git_config.to_lowercase();
+                if lower.contains("authorization") || lower.contains("extraheader") {
+                    return Err(
+                        "git config contains leaked auth credentials after bootstrap".into(),
+                    );
+                }
+            }
+
+            // Verify validate_repo_checkout passes on a fully bootstrapped repo
+            repo_registry::validate_repo_checkout(&checkout)
+                .map_err(|e| format!("validate_repo_checkout failed on bootstrapped repo: {e}"))?;
+
+            // Verify validate_repo_checkout REJECTS a checkout that has
+            // .ralph-burning/ but no workspace.toml
+            let checkout2 = data_dir.join("repos/test-org/test-repo2/repo");
+            std::fs::create_dir_all(&checkout2).map_err(|e| e.to_string())?;
+            std::process::Command::new("git")
+                .args(["init", &checkout2.to_string_lossy()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(checkout2.join(".ralph-burning"))
+                .map_err(|e| e.to_string())?;
+            if repo_registry::validate_repo_checkout(&checkout2).is_ok() {
+                return Err(
+                    "validate_repo_checkout should reject checkout without workspace.toml".into(),
+                );
+            }
+
             Ok(())
         }
     );

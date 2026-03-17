@@ -222,6 +222,22 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
             reason: "checkout is missing .ralph-burning workspace directory".to_owned(),
         });
     }
+
+    // Require workspace.toml so the daemon doesn't accept a checkout that
+    // will fail later on first config load. A bootstrapped checkout always
+    // has this file; a manually cloned one must be initialized first.
+    let workspace_config = workspace_dir.join(
+        crate::contexts::workspace_governance::WORKSPACE_CONFIG_FILE,
+    );
+    if !workspace_config.is_file() {
+        return Err(AppError::InvalidConfigValue {
+            key: "repo".to_owned(),
+            value: checkout_path.display().to_string(),
+            reason: "checkout has .ralph-burning/ but is missing workspace.toml — \
+                     run bootstrap or initialize the workspace first"
+                .to_owned(),
+        });
+    }
     Ok(())
 }
 
@@ -247,12 +263,14 @@ pub fn register_repo(
 /// Bootstrap a repo checkout under the data-dir shard if not already present.
 ///
 /// If the checkout directory already contains a `.git` marker, bootstrap is a
-/// no-op (just ensures the `.ralph-burning` workspace dir exists). Otherwise,
-/// clones the repo from GitHub using `GITHUB_TOKEN` for authentication when
-/// available, then creates the workspace directory.
+/// no-op (just ensures the `.ralph-burning` workspace with `workspace.toml` and
+/// required subdirectories exists). Otherwise, clones the repo from GitHub
+/// using `GITHUB_TOKEN` for authentication via a transient `git -c` flag that
+/// does NOT persist into the cloned repo's `.git/config`, then initializes the
+/// workspace.
 ///
-/// Returns `Err` if cloning fails so `daemon start` can fail early and
-/// explicitly rather than silently skipping the repo.
+/// Returns `Err` if cloning or workspace initialization fails so `daemon start`
+/// can fail early and explicitly rather than silently skipping the repo.
 pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()> {
     let (owner, repo) = parse_repo_slug(repo_slug)?;
     let checkout_path = DataDirLayout::checkout_path(data_dir, owner, repo);
@@ -260,11 +278,8 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
     // If .git already exists, the checkout is already bootstrapped.
     let git_marker = checkout_path.join(".git");
     if git_marker.exists() {
-        // Ensure workspace dir exists (may be missing if manually cloned)
-        let workspace_dir = checkout_path.join(".ralph-burning");
-        if !workspace_dir.is_dir() {
-            std::fs::create_dir_all(&workspace_dir)?;
-        }
+        // Ensure a usable workspace exists (may be missing if manually cloned)
+        ensure_workspace_initialized(&checkout_path)?;
         return Ok(());
     }
 
@@ -297,13 +312,12 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
     // the cloned repo's remote config.
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
 
-    // Pass GITHUB_TOKEN via http.extraHeader so the credential never
-    // appears in process arguments or the persisted remote URL.
+    // Pass GITHUB_TOKEN via a top-level `git -c` flag (before the `clone`
+    // subcommand) so the credential is transient and never written into the
+    // cloned repo's `.git/config`. This is distinct from `git clone -c`,
+    // which persists config keys into the new repo.
     let token = std::env::var("GITHUB_TOKEN").ok();
     let mut cmd = std::process::Command::new("git");
-    cmd.args(["clone", &clone_url, &checkout_path.to_string_lossy()])
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
 
     if let Some(ref t) = token {
         if !t.is_empty() {
@@ -314,13 +328,16 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
         }
     }
 
+    cmd.args(["clone", &clone_url, &checkout_path.to_string_lossy()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
     let output = cmd.output();
 
     match output {
         Ok(ref o) if o.status.success() => {
-            // Clone succeeded — ensure workspace dir exists
-            let workspace_dir = checkout_path.join(".ralph-burning");
-            std::fs::create_dir_all(&workspace_dir)?;
+            // Clone succeeded — initialize a usable workspace
+            ensure_workspace_initialized(&checkout_path)?;
             Ok(())
         }
         Ok(ref o) => {
@@ -341,6 +358,35 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
             reason: format!("failed to execute git clone: {e}"),
         }),
     }
+}
+
+/// Ensure the `.ralph-burning` workspace inside a checkout is fully
+/// initialized with `workspace.toml` and the required subdirectories.
+///
+/// If `workspace.toml` already exists this is a no-op (besides ensuring
+/// subdirectories). If only the directory exists without the config file,
+/// we create a fresh workspace config.
+fn ensure_workspace_initialized(checkout_path: &Path) -> AppResult<()> {
+    use crate::adapters::fs::FileSystem;
+    use crate::contexts::workspace_governance::{REQUIRED_WORKSPACE_DIRECTORIES, WORKSPACE_CONFIG_FILE};
+    use crate::shared::domain::WorkspaceConfig;
+
+    let workspace_dir = checkout_path.join(".ralph-burning");
+    let config_path = workspace_dir.join(WORKSPACE_CONFIG_FILE);
+
+    if config_path.exists() {
+        // Config already present — just ensure required subdirectories
+        for dir in REQUIRED_WORKSPACE_DIRECTORIES {
+            std::fs::create_dir_all(workspace_dir.join(dir))?;
+        }
+        return Ok(());
+    }
+
+    // Create a fresh workspace config and required directory structure
+    let config = WorkspaceConfig::new(chrono::Utc::now());
+    let rendered = FileSystem::render_workspace_config(&config)?;
+    FileSystem::create_workspace(&workspace_dir, &rendered, REQUIRED_WORKSPACE_DIRECTORIES)?;
+    Ok(())
 }
 
 #[cfg(test)]
