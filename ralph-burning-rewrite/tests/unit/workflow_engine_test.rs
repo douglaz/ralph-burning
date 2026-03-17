@@ -5666,3 +5666,72 @@ async fn completion_panel_commit_failure_retains_resolution_snapshot() {
         "retained snapshot must include completion panel members"
     );
 }
+
+#[tokio::test]
+async fn standard_flow_review_invocation_context_contains_local_validation() {
+    // When standard_commands are configured, the Review stage's invocation
+    // context must contain a top-level "local_validation" key with evidence
+    // from the validation runner.
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "review-ctx-validation");
+
+    let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
+    let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
+    ws_config.push_str(
+        "\n[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
+    );
+    fs::write(&ws_config_path, ws_config).unwrap();
+
+    let adapter = RecordingAdapter::new(StubBackendAdapter::default());
+    let adapter_handle = adapter.clone();
+    let agent_service = build_agent_service_with_adapter(adapter);
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::Standard,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    // The Review stage invocation context must contain local_validation at the
+    // top level (not nested under "remediation").
+    let review_contexts = adapter_handle.contexts_for(StageId::Review);
+    assert!(
+        !review_contexts.is_empty(),
+        "review stage should have been invoked"
+    );
+    let review_ctx = &review_contexts[0];
+    assert!(
+        review_ctx.get("local_validation").is_some(),
+        "review invocation context must contain top-level local_validation key, got: {review_ctx}"
+    );
+    let local_val = &review_ctx["local_validation"];
+    assert_eq!(
+        local_val.get("group").and_then(|v| v.as_str()),
+        Some("standard_validation"),
+        "local_validation.group must be standard_validation"
+    );
+    assert!(
+        local_val.get("passed").is_some(),
+        "local_validation must include passed field"
+    );
+    // It must NOT be under "remediation".
+    assert!(
+        review_ctx.get("remediation").is_none(),
+        "local_validation evidence should not be nested under remediation"
+    );
+}

@@ -666,6 +666,12 @@ impl StageId {
             Self::CiValidation => "ci_validation",
         }
     }
+
+    /// Returns `true` for stages that run local validation commands and do not
+    /// require a backend agent (docs_validation, ci_validation).
+    pub fn is_local_validation(self) -> bool {
+        matches!(self, Self::DocsValidation | Self::CiValidation)
+    }
 }
 
 impl fmt::Display for StageId {

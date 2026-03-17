@@ -193,7 +193,14 @@ fn resolve_stage_plan_for_cycle(
     for &stage_id in stages {
         let role = role_for_stage(stage_id);
         let contract = contracts::contract_for_stage(stage_id);
-        let target = policy.resolve_stage_target(stage_id, cycle)?;
+        // Local-validation stages (docs_validation, ci_validation) run commands
+        // locally and never invoke a backend agent, so they use a placeholder
+        // target and skip backend resolution entirely.
+        let target = if stage_id.is_local_validation() {
+            ResolvedBackendTarget::new(BackendFamily::Claude, "local-validation-stub")
+        } else {
+            policy.resolve_stage_target(stage_id, cycle)?
+        };
         plan.push(StagePlan {
             stage_id,
             role,
@@ -205,11 +212,15 @@ fn resolve_stage_plan_for_cycle(
 }
 
 /// Preflight: check capability and availability for every stage target.
+/// Local-validation stages are skipped since they run commands locally.
 pub async fn preflight_check<A: AgentExecutionPort>(
     adapter: &A,
     plan: &[StagePlan],
 ) -> AppResult<()> {
     for entry in plan {
+        if entry.stage_id.is_local_validation() {
+            continue;
+        }
         adapter
             .check_capability(
                 &entry.target,
@@ -2871,7 +2882,7 @@ where
                     &cursor,
                     snapshot.rollback_point_meta.rollback_count,
                 );
-                let _ = validation::persist_local_validation_evidence(
+                if let Err(error) = validation::persist_local_validation_evidence(
                     artifact_write,
                     base_dir,
                     project_id,
@@ -2879,7 +2890,28 @@ where
                     &cursor,
                     &group_result,
                     &record_base,
-                );
+                ) {
+                    return fail_run_result(
+                        &AppError::StageCommitFailed {
+                            stage_id,
+                            details: format!(
+                                "failed to persist local validation evidence for {}: {}",
+                                stage_id.as_str(),
+                                error,
+                            ),
+                        },
+                        stage_id,
+                        run_id,
+                        seq,
+                        snapshot,
+                        journal_store,
+                        run_snapshot_write,
+                        base_dir,
+                        project_id,
+                        origin,
+                    )
+                    .await;
+                }
                 // Merge local validation context into the execution context.
                 let local_ctx = validation::build_local_validation_context(&group_result);
                 execution_context = Some(match execution_context.take() {
@@ -2928,7 +2960,11 @@ where
             origin,
             execution_context
                 .as_ref()
-                .filter(|_| stage_id == semantics.execution_stage),
+                .filter(|_| {
+                    stage_id == semantics.execution_stage
+                        || stage_id == StageId::Review
+                        || stage_id == StageId::Qa
+                }),
             planning_amendments
                 .as_deref()
                 .filter(|_| stage_id == semantics.planning_stage),
@@ -3044,7 +3080,9 @@ where
                             snapshot.rollback_point_meta.rollback_count,
                         );
                         // Persist pre-commit evidence regardless of pass/fail outcome.
-                        let _ = validation::persist_pre_commit_evidence(
+                        // Failure invariant: if persistence fails, the run must not
+                        // advance past the pre-transition stage boundary.
+                        if let Err(error) = validation::persist_pre_commit_evidence(
                             artifact_write,
                             log_write,
                             base_dir,
@@ -3053,7 +3091,28 @@ where
                             &cursor,
                             &pre_commit_result,
                             &record_base,
-                        );
+                        ) {
+                            return fail_run_result(
+                                &AppError::StageCommitFailed {
+                                    stage_id,
+                                    details: format!(
+                                        "failed to persist pre-commit evidence for {}: {}",
+                                        stage_id.as_str(),
+                                        error,
+                                    ),
+                                },
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
 
                         if !pre_commit_result.passed {
                             // Pre-commit failure: invalidate reviewer approval,
@@ -4828,7 +4887,17 @@ fn invocation_context(
     });
 
     if let Some(execution_context) = execution_context {
-        context["remediation"] = execution_context.clone();
+        // Local validation evidence (from standard_commands for Review/Qa stages)
+        // is surfaced at top level; remediation context is nested under "remediation".
+        if execution_context.get("local_validation").is_some() {
+            if let Some(obj) = execution_context.as_object() {
+                for (k, v) in obj {
+                    context[k] = v.clone();
+                }
+            }
+        } else {
+            context["remediation"] = execution_context.clone();
+        }
     }
 
     if let Some(amendments) = pending_amendments {
