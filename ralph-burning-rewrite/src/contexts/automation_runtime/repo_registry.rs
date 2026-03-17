@@ -108,12 +108,7 @@ impl DataDirLayout {
     }
 
     /// Path to a specific task worktree.
-    pub fn task_worktree_path(
-        data_dir: &Path,
-        owner: &str,
-        repo: &str,
-        task_id: &str,
-    ) -> PathBuf {
+    pub fn task_worktree_path(data_dir: &Path, owner: &str, repo: &str, task_id: &str) -> PathBuf {
         Self::worktrees_dir(data_dir, owner, repo).join(task_id)
     }
 
@@ -161,11 +156,8 @@ impl DataDirLayout {
 pub trait RepoRegistryPort {
     fn list_registrations(&self, data_dir: &Path) -> AppResult<Vec<RepoRegistration>>;
     fn read_registration(&self, data_dir: &Path, repo_slug: &str) -> AppResult<RepoRegistration>;
-    fn write_registration(
-        &self,
-        data_dir: &Path,
-        registration: &RepoRegistration,
-    ) -> AppResult<()>;
+    fn write_registration(&self, data_dir: &Path, registration: &RepoRegistration)
+        -> AppResult<()>;
 }
 
 /// Validate that the data-dir exists and is usable.
@@ -244,9 +236,8 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
     // Require workspace.toml so the daemon doesn't accept a checkout that
     // will fail later on first config load. A bootstrapped checkout always
     // has this file; a manually cloned one must be initialized first.
-    let workspace_config = workspace_dir.join(
-        crate::contexts::workspace_governance::WORKSPACE_CONFIG_FILE,
-    );
+    let workspace_config =
+        workspace_dir.join(crate::contexts::workspace_governance::WORKSPACE_CONFIG_FILE);
     if !workspace_config.is_file() {
         return Err(AppError::InvalidConfigValue {
             key: "repo".to_owned(),
@@ -266,9 +257,7 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
             return Err(AppError::InvalidConfigValue {
                 key: "repo".to_owned(),
                 value: checkout_path.display().to_string(),
-                reason: format!(
-                    "workspace.toml exists but is not a valid workspace config: {e}"
-                ),
+                reason: format!("workspace.toml exists but is not a valid workspace config: {e}"),
             });
         }
     }
@@ -278,10 +267,7 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
 
 /// Build a `RepoRegistration` from a validated checkout, creating the data-dir
 /// structure if needed.
-pub fn register_repo(
-    data_dir: &Path,
-    repo_slug: &str,
-) -> AppResult<RepoRegistration> {
+pub fn register_repo(data_dir: &Path, repo_slug: &str) -> AppResult<RepoRegistration> {
     let (owner, repo) = parse_repo_slug(repo_slug)?;
     let checkout_path = DataDirLayout::checkout_path(data_dir, owner, repo);
     DataDirLayout::ensure_repo_dirs(data_dir, owner, repo)?;
@@ -363,10 +349,7 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
         if !t.is_empty() {
             cmd.env("GIT_CONFIG_COUNT", "1")
                 .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-                .env(
-                    "GIT_CONFIG_VALUE_0",
-                    format!("Authorization: Bearer {t}"),
-                );
+                .env("GIT_CONFIG_VALUE_0", format!("Authorization: Bearer {t}"));
         }
     }
 
@@ -410,7 +393,9 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
 /// we create a fresh workspace config.
 fn ensure_workspace_initialized(checkout_path: &Path) -> AppResult<()> {
     use crate::adapters::fs::FileSystem;
-    use crate::contexts::workspace_governance::{REQUIRED_WORKSPACE_DIRECTORIES, WORKSPACE_CONFIG_FILE};
+    use crate::contexts::workspace_governance::{
+        REQUIRED_WORKSPACE_DIRECTORIES, WORKSPACE_CONFIG_FILE,
+    };
     use crate::shared::domain::WorkspaceConfig;
 
     let workspace_dir = checkout_path.join(".ralph-burning");
@@ -489,13 +474,22 @@ mod tests {
     fn label_for_status_mapping() {
         use super::super::model::TaskStatus;
         assert_eq!(label_for_status(&TaskStatus::Pending), Some("rb:ready"));
-        assert_eq!(label_for_status(&TaskStatus::Claimed), Some("rb:in-progress"));
-        assert_eq!(label_for_status(&TaskStatus::Active), Some("rb:in-progress"));
+        assert_eq!(
+            label_for_status(&TaskStatus::Claimed),
+            Some("rb:in-progress")
+        );
+        assert_eq!(
+            label_for_status(&TaskStatus::Active),
+            Some("rb:in-progress")
+        );
         assert_eq!(
             label_for_status(&TaskStatus::WaitingForRequirements),
             Some("rb:waiting-feedback")
         );
-        assert_eq!(label_for_status(&TaskStatus::Completed), Some("rb:completed"));
+        assert_eq!(
+            label_for_status(&TaskStatus::Completed),
+            Some("rb:completed")
+        );
         assert_eq!(label_for_status(&TaskStatus::Failed), Some("rb:failed"));
         assert_eq!(label_for_status(&TaskStatus::Aborted), Some("rb:failed"));
     }

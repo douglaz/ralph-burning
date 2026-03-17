@@ -28,8 +28,8 @@ impl GithubClientConfig {
             value: String::new(),
             reason: "GITHUB_TOKEN environment variable is not set".to_owned(),
         })?;
-        let api_base_url = std::env::var("GITHUB_API_URL")
-            .unwrap_or_else(|_| "https://api.github.com".to_owned());
+        let api_base_url =
+            std::env::var("GITHUB_API_URL").unwrap_or_else(|_| "https://api.github.com".to_owned());
         Ok(Self {
             token,
             api_base_url,
@@ -64,12 +64,7 @@ impl GithubClient {
     // ── Labels ────────────────────────────────────────────────────────
 
     /// Ensure a label exists on the repo, creating it if absent.
-    pub async fn ensure_label(
-        &self,
-        owner: &str,
-        repo: &str,
-        label_name: &str,
-    ) -> AppResult<()> {
+    pub async fn ensure_label(&self, owner: &str, repo: &str, label_name: &str) -> AppResult<()> {
         let url = self.api_url(&format!("/repos/{owner}/{repo}/labels/{label_name}"));
         let resp = self
             .http
@@ -120,12 +115,7 @@ impl GithubClient {
     }
 
     /// Ensure all labels in the vocabulary exist on the repo.
-    pub async fn ensure_labels(
-        &self,
-        owner: &str,
-        repo: &str,
-        labels: &[&str],
-    ) -> AppResult<()> {
+    pub async fn ensure_labels(&self, owner: &str, repo: &str, labels: &[&str]) -> AppResult<()> {
         for label in labels {
             self.ensure_label(owner, repo, label).await?;
         }
@@ -165,10 +155,13 @@ impl GithubClient {
             });
         }
 
-        let issues: Vec<GithubIssue> = resp.json().await.map_err(|e| AppError::BackendUnavailable {
-            backend: "github".to_owned(),
-            details: format!("failed to parse issues response: {e}"),
-        })?;
+        let issues: Vec<GithubIssue> =
+            resp.json()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse issues response: {e}"),
+                })?;
 
         // Filter out pull requests (GitHub API returns PRs as issues too)
         Ok(issues
@@ -211,10 +204,12 @@ impl GithubClient {
         }
 
         let labels: Vec<GithubLabel> =
-            resp.json().await.map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to parse labels: {e}"),
-            })?;
+            resp.json()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse labels: {e}"),
+                })?;
 
         Ok(labels.into_iter().map(|l| l.name).collect())
     }
@@ -426,9 +421,7 @@ impl GithubClient {
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Vec<GithubComment>> {
-        let url = self.api_url(&format!(
-            "/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-        ));
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}/comments"));
         let resp = self
             .http
             .get(&url)
@@ -463,9 +456,7 @@ impl GithubClient {
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Vec<GithubReview>> {
-        let url = self.api_url(&format!(
-            "/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
-        ));
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}/reviews"));
         let resp = self
             .http
             .get(&url)
@@ -533,21 +524,14 @@ impl GithubClient {
             });
         }
 
-        resp.json()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to parse PR response: {e}"),
-            })
+        resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse PR response: {e}"),
+        })
     }
 
     /// Mark a draft PR as ready for review.
-    pub async fn mark_pr_ready(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    pub async fn mark_pr_ready(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
         // GitHub REST API doesn't support this — requires GraphQL.
         let url = self.api_url("/graphql");
         let node_id = self.fetch_pr_node_id(owner, repo, pr_number).await?;
@@ -595,10 +579,7 @@ impl GithubClient {
                         .collect();
                     return Err(AppError::BackendUnavailable {
                         backend: "github".to_owned(),
-                        details: format!(
-                            "GraphQL errors marking PR ready: {}",
-                            msgs.join("; ")
-                        ),
+                        details: format!("GraphQL errors marking PR ready: {}", msgs.join("; ")),
                     });
                 }
             }
@@ -611,9 +592,7 @@ impl GithubClient {
         {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
-                details: format!(
-                    "GraphQL response missing expected pullRequest.id: {body_text}"
-                ),
+                details: format!("GraphQL response missing expected pullRequest.id: {body_text}"),
             });
         }
 
@@ -621,12 +600,7 @@ impl GithubClient {
     }
 
     /// Close a pull request.
-    pub async fn close_pr(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    pub async fn close_pr(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
         let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}"));
         let payload = serde_json::json!({ "state": "closed" });
         let resp = self
@@ -683,12 +657,10 @@ impl GithubClient {
             });
         }
 
-        resp.json()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to parse PR state: {e}"),
-            })
+        resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse PR state: {e}"),
+        })
     }
 
     /// Update PR body.
@@ -766,22 +738,19 @@ impl GithubClient {
         }
 
         let comparison: GithubComparison =
-            resp.json().await.map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to parse comparison: {e}"),
-            })?;
+            resp.json()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse comparison: {e}"),
+                })?;
 
         Ok(comparison.ahead_by > 0)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
 
-    async fn fetch_pr_node_id(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<String> {
+    async fn fetch_pr_node_id(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<String> {
         let pr = self.fetch_pr_state(owner, repo, pr_number).await?;
         Ok(pr.node_id)
     }
@@ -945,19 +914,9 @@ pub trait GithubPort: Send + Sync {
         base: &str,
     ) -> AppResult<GithubPullRequest>;
 
-    async fn mark_pr_ready(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()>;
+    async fn mark_pr_ready(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()>;
 
-    async fn close_pr(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()>;
+    async fn close_pr(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()>;
 
     async fn fetch_pr_state(
         &self,
@@ -1088,21 +1047,11 @@ impl GithubPort for GithubClient {
             .await
     }
 
-    async fn mark_pr_ready(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    async fn mark_pr_ready(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
         self.mark_pr_ready(owner, repo, pr_number).await
     }
 
-    async fn close_pr(
-        &self,
-        owner: &str,
-        repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    async fn close_pr(&self, owner: &str, repo: &str, pr_number: u64) -> AppResult<()> {
         self.close_pr(owner, repo, pr_number).await
     }
 
@@ -1201,7 +1150,12 @@ impl InMemoryGithubClient {
 impl GithubPort for InMemoryGithubClient {
     async fn ensure_labels(&self, owner: &str, repo: &str, labels: &[&str]) -> AppResult<()> {
         let key = format!("{owner}/{repo}");
-        if self.ensure_labels_failure_repos.lock().unwrap().contains(&key) {
+        if self
+            .ensure_labels_failure_repos
+            .lock()
+            .unwrap()
+            .contains(&key)
+        {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("simulated ensure_labels failure for {key}"),
@@ -1251,7 +1205,12 @@ impl GithubPort for InMemoryGithubClient {
         issue_number: u64,
         label: &str,
     ) -> AppResult<()> {
-        if self.add_label_failure_issues.lock().unwrap().contains(&issue_number) {
+        if self
+            .add_label_failure_issues
+            .lock()
+            .unwrap()
+            .contains(&issue_number)
+        {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("simulated add_label failure for issue {issue_number}"),
@@ -1311,17 +1270,15 @@ impl GithubPort for InMemoryGithubClient {
         Ok(posted
             .iter()
             .filter(|(num, _, _)| *num == issue_number)
-            .map(|(_, marker, body)| {
-                GithubComment {
+            .map(|(_, marker, body)| GithubComment {
+                id: 0,
+                body: format!("<!-- {marker} -->\n{body}"),
+                user: GithubUser {
+                    login: "ralph-burning-bot".to_owned(),
                     id: 0,
-                    body: format!("<!-- {marker} -->\n{body}"),
-                    user: GithubUser {
-                        login: "ralph-burning-bot".to_owned(),
-                        id: 0,
-                    },
-                    created_at: String::new(),
-                    updated_at: String::new(),
-                }
+                },
+                created_at: String::new(),
+                updated_at: String::new(),
             })
             .collect())
     }
@@ -1406,12 +1363,7 @@ impl GithubPort for InMemoryGithubClient {
         Ok(pr)
     }
 
-    async fn mark_pr_ready(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    async fn mark_pr_ready(&self, _owner: &str, _repo: &str, pr_number: u64) -> AppResult<()> {
         let mut prs = self.pull_requests.lock().unwrap();
         if let Some(pr) = prs.iter_mut().find(|p| p.number == pr_number) {
             pr.draft = Some(false);
@@ -1424,12 +1376,7 @@ impl GithubPort for InMemoryGithubClient {
         }
     }
 
-    async fn close_pr(
-        &self,
-        _owner: &str,
-        _repo: &str,
-        pr_number: u64,
-    ) -> AppResult<()> {
+    async fn close_pr(&self, _owner: &str, _repo: &str, pr_number: u64) -> AppResult<()> {
         let mut prs = self.pull_requests.lock().unwrap();
         if let Some(pr) = prs.iter_mut().find(|p| p.number == pr_number) {
             pr.state = "closed".to_owned();

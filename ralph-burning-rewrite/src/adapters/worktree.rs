@@ -7,8 +7,8 @@ use std::process::{Command, Output, Stdio};
 use uuid::Uuid;
 
 use crate::contexts::automation_runtime::{
-    RebaseConflictFile, RebaseConflictRequest, RebaseConflictResolver,
-    RebaseFailureClassification, RebaseOutcome, WorktreeCleanupOutcome, WorktreePort,
+    RebaseConflictFile, RebaseConflictRequest, RebaseConflictResolver, RebaseFailureClassification,
+    RebaseOutcome, WorktreeCleanupOutcome, WorktreePort,
 };
 use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::contexts::workflow_composition::checkpoints::{
@@ -640,7 +640,8 @@ impl WorktreePort for WorktreeAdapter {
             });
         };
 
-        let request = Self::read_rebase_conflict_request(worktree_path, branch_name, &upstream, &stderr)?;
+        let request =
+            Self::read_rebase_conflict_request(worktree_path, branch_name, &upstream, &stderr)?;
         if request.conflicted_files.is_empty() {
             let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
             return Ok(RebaseOutcome::Failed {
@@ -667,16 +668,17 @@ impl WorktreePort for WorktreeAdapter {
             }
         };
 
-        let resolved_files = match Self::apply_rebase_resolution(worktree_path, &request, &resolution) {
-            Ok(files) => files,
-            Err(error) => {
-                let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
-                return Ok(RebaseOutcome::Failed {
-                    classification: RebaseFailureClassification::Unknown,
-                    details: error.to_string(),
-                });
-            }
-        };
+        let resolved_files =
+            match Self::apply_rebase_resolution(worktree_path, &request, &resolution) {
+                Ok(files) => files,
+                Err(error) => {
+                    let _ = Self::git_in(worktree_path, &["rebase", "--abort"]);
+                    return Ok(RebaseOutcome::Failed {
+                        classification: RebaseFailureClassification::Unknown,
+                        details: error.to_string(),
+                    });
+                }
+            };
 
         let continue_output = Self::git_in(worktree_path, &["rebase", "--continue"])?;
         if continue_output.status.success() {

@@ -134,7 +134,8 @@ impl LeaseService {
         let lease_id = format!("lease-{task_id}");
         store.acquire_writer_lock(base_dir, project_id, &lease_id)?;
 
-        let worktree_path = worktree_path_override.unwrap_or_else(|| worktree.worktree_path(base_dir, task_id));
+        let worktree_path =
+            worktree_path_override.unwrap_or_else(|| worktree.worktree_path(base_dir, task_id));
         let branch_name = branch_name_override.unwrap_or_else(|| worktree.branch_name(task_id));
         if let Err(error) =
             worktree.create_worktree(repo_root, &worktree_path, &branch_name, task_id)

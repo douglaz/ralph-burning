@@ -6,7 +6,7 @@ use crate::adapters::github::GithubPort;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::repo_registry::parse_repo_slug;
 use crate::contexts::automation_runtime::{
-    DaemonStorePort, DaemonTask, DaemonTaskService, WorktreeLease, WorktreePort,
+    DaemonStorePort, DaemonTask, DaemonTaskService, TaskStatus, WorktreeLease, WorktreePort,
 };
 use crate::shared::domain::{EffectiveDaemonPrPolicy, PrPolicy};
 use crate::shared::error::{AppError, AppResult};
@@ -52,7 +52,7 @@ where
         lease: &WorktreeLease,
         cancel: &CancellationToken,
     ) -> AppResult<Option<String>> {
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         let task = self.store.read_task(base_dir, task_id)?;
         if let Some(url) = task.pr_url.clone() {
             return Ok(Some(url));
@@ -63,10 +63,10 @@ where
         };
         let (owner, repo) = parse_repo_slug(repo_slug)?;
         let base_branch = self.base_branch_name(repo_root)?;
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         self.worktree
             .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         let ahead = self
             .github
             .is_branch_ahead(owner, repo, &base_branch, &lease.branch_name)
@@ -89,7 +89,7 @@ where
         policy: &EffectiveDaemonPrPolicy,
         cancel: &CancellationToken,
     ) -> AppResult<CompletionPrAction> {
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         let task = self.store.read_task(base_dir, task_id)?;
         let Some(repo_slug) = task.repo_slug.as_deref() else {
             return Ok(CompletionPrAction::Skipped);
@@ -97,10 +97,10 @@ where
         let (owner, repo) = parse_repo_slug(repo_slug)?;
         let base_branch = self.base_branch_name(repo_root)?;
         if task.pr_url.is_none() {
-            self.ensure_not_cancelled(cancel)?;
+            self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
             self.worktree
                 .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
-            self.ensure_not_cancelled(cancel)?;
+            self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         }
         let ahead = self
             .github
@@ -122,12 +122,17 @@ where
             }
         };
 
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         if let Some(pr_number) = parse_pr_number(&pr_url) {
             if let Ok(pr_state) = self.github.fetch_pr_state(owner, repo, pr_number).await {
+                self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
                 if pr_state.state.eq_ignore_ascii_case("open")
                     && pr_state.draft.unwrap_or(false)
-                    && self.github.mark_pr_ready(owner, repo, pr_number).await.is_ok()
+                    && self
+                        .github
+                        .mark_pr_ready(owner, repo, pr_number)
+                        .await
+                        .is_ok()
                 {
                     DaemonTaskService::append_journal_event(
                         self.store,
@@ -156,7 +161,7 @@ where
         base_branch: &str,
         cancel: &CancellationToken,
     ) -> AppResult<String> {
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
         self.worktree
             .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
         self.create_draft_after_push(base_dir, task, lease, base_branch, cancel)
@@ -179,7 +184,7 @@ where
         };
         let (owner, repo) = parse_repo_slug(repo_slug)?;
 
-        self.ensure_not_cancelled(cancel)?;
+        self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
         let pr = self
             .github
             .create_draft_pr(
@@ -224,11 +229,12 @@ where
         match (policy.no_diff_action, task.pr_url.as_deref()) {
             (PrPolicy::SkipOnNoDiff, _) | (_, None) => Ok(CompletionPrAction::Skipped),
             (PrPolicy::CloseOnNoDiff, Some(pr_url)) => {
-                self.ensure_not_cancelled(cancel)?;
+                self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
                 let Some(pr_number) = parse_pr_number(pr_url) else {
                     return Ok(CompletionPrAction::Skipped);
                 };
                 let state = self.github.fetch_pr_state(owner, repo, pr_number).await?;
+                self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
                 if state.state.eq_ignore_ascii_case("closed") {
                     return Ok(CompletionPrAction::Skipped);
                 }
@@ -253,6 +259,22 @@ where
 
     fn ensure_not_cancelled(&self, cancel: &CancellationToken) -> AppResult<()> {
         if cancel.is_cancelled() {
+            return Err(AppError::InvocationCancelled {
+                backend: "github".to_owned(),
+                contract_id: "daemon.pr_runtime".to_owned(),
+            });
+        }
+        Ok(())
+    }
+
+    fn ensure_task_not_cancelled(
+        &self,
+        base_dir: &Path,
+        task_id: &str,
+        cancel: &CancellationToken,
+    ) -> AppResult<()> {
+        self.ensure_not_cancelled(cancel)?;
+        if self.store.read_task(base_dir, task_id)?.status == TaskStatus::Aborted {
             return Err(AppError::InvocationCancelled {
                 backend: "github".to_owned(),
                 contract_id: "daemon.pr_runtime".to_owned(),
@@ -291,10 +313,6 @@ fn build_pr_body(task: &DaemonTask) -> String {
 }
 
 fn parse_pr_number(pr_url: &str) -> Option<u64> {
-    let candidate = pr_url
-        .trim()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()?;
+    let candidate = pr_url.trim().trim_end_matches('/').rsplit('/').next()?;
     candidate.parse::<u64>().ok()
 }

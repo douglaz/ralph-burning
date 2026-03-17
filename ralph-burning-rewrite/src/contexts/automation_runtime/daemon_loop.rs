@@ -40,8 +40,8 @@ use crate::contexts::project_run_record::CreateProjectInput;
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
-use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{
     BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, SessionPolicy,
 };
@@ -199,11 +199,14 @@ where
         config: &DaemonLoopConfig,
         github: &G,
     ) -> AppResult<()> {
-        let data_dir = self.data_dir.as_deref().ok_or_else(|| AppError::InvalidConfigValue {
-            key: "data-dir".to_owned(),
-            value: String::new(),
-            reason: "data-dir is required for multi-repo mode".to_owned(),
-        })?;
+        let data_dir = self
+            .data_dir
+            .as_deref()
+            .ok_or_else(|| AppError::InvalidConfigValue {
+                key: "data-dir".to_owned(),
+                value: String::new(),
+                reason: "data-dir is required for multi-repo mode".to_owned(),
+            })?;
 
         let shutdown = CancellationToken::new();
         let shutdown_watcher = shutdown.clone();
@@ -254,7 +257,11 @@ where
             }
 
             self.process_cycle_multi_repo(
-                data_dir, config, github, shutdown.clone(), &active_registrations,
+                data_dir,
+                config,
+                github,
+                shutdown.clone(),
+                &active_registrations,
             )
             .await?;
             if config.single_iteration {
@@ -324,11 +331,16 @@ where
                                 if let Some(ref lid) = dirty_task.lease_id {
                                     if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
                                         match self.release_task_lease(
-                                            &daemon_dir, checkout, &dirty_task.task_id, &lease,
+                                            &daemon_dir,
+                                            checkout,
+                                            &dirty_task.task_id,
+                                            &lease,
                                         ) {
                                             Ok(()) => {
                                                 let _ = DaemonTaskService::clear_label_dirty(
-                                                    self.store, &daemon_dir, &dirty_task.task_id,
+                                                    self.store,
+                                                    &daemon_dir,
+                                                    &dirty_task.task_id,
                                                 );
                                             }
                                             Err(e) => {
@@ -343,13 +355,17 @@ where
                                     } else {
                                         // Lease file not found — nothing to release.
                                         let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store, &daemon_dir, &dirty_task.task_id,
+                                            self.store,
+                                            &daemon_dir,
+                                            &dirty_task.task_id,
                                         );
                                     }
                                 } else {
                                     // No lease reference — nothing to release.
                                     let _ = DaemonTaskService::clear_label_dirty(
-                                        self.store, &daemon_dir, &dirty_task.task_id,
+                                        self.store,
+                                        &daemon_dir,
+                                        &dirty_task.task_id,
                                     );
                                 }
                             } else {
@@ -364,7 +380,9 @@ where
                                 ) {
                                     Ok(reverted) => {
                                         let _ = DaemonTaskService::clear_label_dirty(
-                                            self.store, &daemon_dir, &reverted.task_id,
+                                            self.store,
+                                            &daemon_dir,
+                                            &reverted.task_id,
                                         );
                                         eprintln!(
                                             "daemon: reverted interrupted task '{}' to pending in {}",
@@ -437,12 +455,14 @@ where
             let mut label_sync_failed = false;
             for task_id in &resumed_task_ids {
                 if let Ok(resumed_task) = self.store.read_task(&daemon_dir, task_id) {
-                    if let Err(e) = github_intake::sync_label_for_task(github, &resumed_task).await {
+                    if let Err(e) = github_intake::sync_label_for_task(github, &resumed_task).await
+                    {
                         eprintln!(
                             "daemon: failed to sync label for resumed task '{}' in {}: {e}",
                             task_id, reg.repo_slug
                         );
-                        let _ = DaemonTaskService::mark_label_dirty(self.store, &daemon_dir, task_id);
+                        let _ =
+                            DaemonTaskService::mark_label_dirty(self.store, &daemon_dir, task_id);
                         label_sync_failed = true;
                         break;
                     }
@@ -474,10 +494,7 @@ where
                         .filter(|t| t.status == TaskStatus::Pending)
                         .collect(),
                     Err(e) => {
-                        eprintln!(
-                            "daemon: list_tasks failed for {}: {e}",
-                            reg.repo_slug
-                        );
+                        eprintln!("daemon: list_tasks failed for {}: {e}", reg.repo_slug);
                         continue;
                     }
                 };
@@ -488,12 +505,15 @@ where
                 }
 
                 // Compute data-dir-aware worktree path and branch name
-                let worktree_path_override = Some(
-                    DataDirLayout::task_worktree_path(data_dir, owner, repo, &task.task_id),
-                );
-                let branch_name_override = task.issue_number.map(|issue_num| {
-                    DataDirLayout::branch_name(issue_num, &task.project_id)
-                });
+                let worktree_path_override = Some(DataDirLayout::task_worktree_path(
+                    data_dir,
+                    owner,
+                    repo,
+                    &task.task_id,
+                ));
+                let branch_name_override = task
+                    .issue_number
+                    .map(|issue_num| DataDirLayout::branch_name(issue_num, &task.project_id));
 
                 if let Err(error) = self
                     .process_task_multi_repo(
@@ -536,7 +556,7 @@ where
         branch_name_override: Option<String>,
         github: &G,
     ) -> AppResult<()> {
-        let effective_config = EffectiveConfig::load(repo_root)?;
+        let effective_config = self.load_effective_config_for_task(repo_root, task)?;
         let default_flow = effective_config.default_flow();
 
         // Requirements dispatch before claiming lease/worktree
@@ -547,7 +567,13 @@ where
             }
             DispatchMode::RequirementsDraft => {
                 return self
-                    .handle_requirements_draft(store_dir, repo_root, task, &effective_config, github)
+                    .handle_requirements_draft(
+                        store_dir,
+                        repo_root,
+                        task,
+                        &effective_config,
+                        github,
+                    )
                     .await;
             }
             DispatchMode::Workflow => {}
@@ -578,7 +604,8 @@ where
         // cycle. The task remains Claimed with its lease; Phase 0 will repair
         // the label and revert the task to Pending for the next cycle.
         if let Err(e) = github_intake::sync_label_for_task(github, &claimed_task).await {
-            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+            let _ =
+                DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
             eprintln!(
                 "daemon: label sync failed for claimed task '{}', quarantining repo: {e}",
                 claimed_task.task_id
@@ -598,7 +625,11 @@ where
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
             if let Some(ref ft) = failed_task {
                 if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
-                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+                    let _ = DaemonTaskService::mark_label_dirty(
+                        self.store,
+                        store_dir,
+                        &claimed_task.task_id,
+                    );
                     eprintln!(
                         "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                         claimed_task.task_id
@@ -617,7 +648,11 @@ where
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
             if let Some(ref ft) = failed_task {
                 if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
-                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+                    let _ = DaemonTaskService::mark_label_dirty(
+                        self.store,
+                        store_dir,
+                        &claimed_task.task_id,
+                    );
                     eprintln!(
                         "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                         claimed_task.task_id
@@ -634,7 +669,11 @@ where
             // quarantine — do NOT release the lease in this cycle so no further
             // mutations occur. Phase 0 will repair the label and release the lease.
             if let Err(e) = github_intake::sync_label_for_task(github, &task_on_disk).await {
-                let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &task_on_disk.task_id);
+                let _ = DaemonTaskService::mark_label_dirty(
+                    self.store,
+                    store_dir,
+                    &task_on_disk.task_id,
+                );
                 eprintln!(
                     "daemon: label sync failed for aborted task '{}', quarantining repo: {e}",
                     task_on_disk.task_id
@@ -645,41 +684,49 @@ where
             return Ok(());
         }
 
-        let active_task =
-            match DaemonTaskService::mark_active(self.store, store_dir, &claimed_task.task_id) {
-                Ok(task) => task,
-                Err(error) => {
-                    self.handle_post_claim_failure(
-                        store_dir,
-                        repo_root,
-                        &claimed_task,
-                        &lease,
-                        &error,
-                    )?;
-                    // Sync label: Failed → rb:failed. On failure, mark label_dirty
-                    // and quarantine this repo for the rest of the cycle.
-                    let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
-                    if let Some(ref ft) = failed_task {
-                        if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
-                            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
-                            eprintln!(
+        let active_task = match DaemonTaskService::mark_active(
+            self.store,
+            store_dir,
+            &claimed_task.task_id,
+        ) {
+            Ok(task) => task,
+            Err(error) => {
+                self.handle_post_claim_failure(
+                    store_dir,
+                    repo_root,
+                    &claimed_task,
+                    &lease,
+                    &error,
+                )?;
+                // Sync label: Failed → rb:failed. On failure, mark label_dirty
+                // and quarantine this repo for the rest of the cycle.
+                let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
+                if let Some(ref ft) = failed_task {
+                    if let Err(e) = github_intake::sync_label_for_task(github, ft).await {
+                        let _ = DaemonTaskService::mark_label_dirty(
+                            self.store,
+                            store_dir,
+                            &claimed_task.task_id,
+                        );
+                        eprintln!(
                                 "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                                 claimed_task.task_id
                             );
-                            return Err(e);
-                        }
+                        return Err(e);
                     }
-                    println!("failed task {}: {}", claimed_task.task_id, error);
-                    return Ok(());
                 }
-            };
+                println!("failed task {}: {}", claimed_task.task_id, error);
+                return Ok(());
+            }
+        };
         println!("active task {}", active_task.task_id);
         // Sync label: Active → rb:in-progress. On failure, mark label_dirty and
         // quarantine this repo — no further task/lease/worktree mutations in this
         // cycle. The task remains Active with its lease; Phase 0 will repair
         // the label and revert the task to Pending for the next cycle.
         if let Err(e) = github_intake::sync_label_for_task(github, &active_task).await {
-            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+            let _ =
+                DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
             eprintln!(
                 "daemon: label sync failed for active task '{}', quarantining repo: {e}",
                 active_task.task_id
@@ -697,7 +744,7 @@ where
                 &effective_config,
                 config,
                 shutdown.clone(),
-                task_cancel,
+                task_cancel.clone(),
                 github,
             )
             .await;
@@ -708,7 +755,11 @@ where
             // quarantine — do NOT release the lease in this cycle so no further
             // mutations occur. Phase 0 will repair the label and release the lease.
             if let Err(e) = github_intake::sync_label_for_task(github, &latest_task).await {
-                let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                let _ = DaemonTaskService::mark_label_dirty(
+                    self.store,
+                    store_dir,
+                    &active_task.task_id,
+                );
                 eprintln!(
                     "daemon: label sync failed for aborted task '{}', quarantining repo: {e}",
                     active_task.task_id
@@ -721,37 +772,75 @@ where
 
         match outcome {
             Ok(()) => {
-                let pr_runtime = PrRuntimeService::new(self.store, self.worktree, github);
-                if let Err(error) = pr_runtime
-                    .handle_completion_pr(
+                match self
+                    .handle_completion_pr_with_cancellation(
                         store_dir,
                         repo_root,
-                        &active_task.task_id,
+                        &active_task,
                         &lease,
-                        effective_config.daemon_pr_policy(),
-                        &shutdown,
+                        &effective_config,
+                        shutdown.clone(),
+                        task_cancel,
+                        github,
                     )
                     .await
                 {
-                    let failed_task = DaemonTaskService::mark_failed(
-                        self.store,
-                        store_dir,
-                        &active_task.task_id,
-                        "pr_runtime_failed",
-                        &error.to_string(),
-                    )?;
-                    if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
-                        let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
-                        eprintln!(
-                            "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
-                            active_task.task_id
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        let aborted_task = self.store.read_task(store_dir, &active_task.task_id)?;
+                        if let Err(e) =
+                            github_intake::sync_label_for_task(github, &aborted_task).await
+                        {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                store_dir,
+                                &active_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: label sync failed for aborted task '{}', quarantining repo: {e}",
+                                active_task.task_id
+                            );
+                            return Err(e);
+                        }
+                        let _ = self.release_task_lease(
+                            store_dir,
+                            repo_root,
+                            &active_task.task_id,
+                            &lease,
                         );
-                        return Err(e);
+                        return Ok(());
                     }
-                    let _ =
-                        self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
-                    println!("failed task {}: {}", active_task.task_id, error);
-                    return Ok(());
+                    Err(error) => {
+                        let failed_task = DaemonTaskService::mark_failed(
+                            self.store,
+                            store_dir,
+                            &active_task.task_id,
+                            "pr_runtime_failed",
+                            &error.to_string(),
+                        )?;
+                        if let Err(e) =
+                            github_intake::sync_label_for_task(github, &failed_task).await
+                        {
+                            let _ = DaemonTaskService::mark_label_dirty(
+                                self.store,
+                                store_dir,
+                                &active_task.task_id,
+                            );
+                            eprintln!(
+                                "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
+                                active_task.task_id
+                            );
+                            return Err(e);
+                        }
+                        let _ = self.release_task_lease(
+                            store_dir,
+                            repo_root,
+                            &active_task.task_id,
+                            &lease,
+                        );
+                        println!("failed task {}: {}", active_task.task_id, error);
+                        return Ok(());
+                    }
                 }
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
@@ -760,15 +849,18 @@ where
                 // further mutations occur. Phase 0 will repair the label and
                 // release the lease in the next cycle.
                 if let Err(e) = github_intake::sync_label_for_task(github, &completed_task).await {
-                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                    let _ = DaemonTaskService::mark_label_dirty(
+                        self.store,
+                        store_dir,
+                        &active_task.task_id,
+                    );
                     eprintln!(
                         "daemon: label sync failed for completed task '{}', quarantining repo: {e}",
                         active_task.task_id
                     );
                     return Err(e);
                 }
-                let _ =
-                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("completed task {}", active_task.task_id);
             }
             Err(error) => {
@@ -788,15 +880,18 @@ where
                 // further mutations occur. Phase 0 will repair the label and
                 // release the lease in the next cycle.
                 if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
-                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                    let _ = DaemonTaskService::mark_label_dirty(
+                        self.store,
+                        store_dir,
+                        &active_task.task_id,
+                    );
                     eprintln!(
                         "daemon: label sync failed for failed task '{}', quarantining repo: {e}",
                         active_task.task_id
                     );
                     return Err(e);
                 }
-                let _ =
-                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
         }
@@ -853,17 +948,13 @@ where
         let t = match self.store.read_task(base_dir, task_id) {
             Ok(t) => t,
             Err(e) => {
-                eprintln!(
-                    "daemon: failed to read task '{task_id}' for label sync: {e}"
-                );
+                eprintln!("daemon: failed to read task '{task_id}' for label sync: {e}");
                 return Err(e);
             }
         };
         if let Err(e) = github_intake::sync_label_for_task(github, &t).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, base_dir, task_id);
-            eprintln!(
-                "daemon: label sync failed for requirements_draft task '{task_id}': {e}"
-            );
+            eprintln!("daemon: label sync failed for requirements_draft task '{task_id}': {e}");
             return Err(e);
         }
         Ok(())
@@ -1056,9 +1147,9 @@ where
         config: &DaemonLoopConfig,
         shutdown: CancellationToken,
     ) -> AppResult<()> {
-        let effective_config = EffectiveConfig::load(base_dir)?;
-        let default_flow = effective_config.default_flow();
         let repo_root = base_dir;
+        let effective_config = self.load_effective_config_for_task(base_dir, task)?;
+        let default_flow = effective_config.default_flow();
 
         // For requirements dispatch modes, handle before claiming lease/worktree.
         // requirements_quick completes the requirements run, derives the seed,
@@ -1078,7 +1169,13 @@ where
                 // in-memory GitHub client to satisfy the generic bound.
                 let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
                 return self
-                    .handle_requirements_draft(base_dir, base_dir, task, &effective_config, &noop_gh)
+                    .handle_requirements_draft(
+                        base_dir,
+                        base_dir,
+                        task,
+                        &effective_config,
+                        &noop_gh,
+                    )
                     .await;
             }
             DispatchMode::Workflow => {
@@ -1157,7 +1254,7 @@ where
                 &effective_config,
                 config,
                 shutdown.clone(),
-                task_cancel,
+                task_cancel.clone(),
             )
             .await;
 
@@ -1171,17 +1268,28 @@ where
             Ok(()) => {
                 if task.repo_slug.is_some() {
                     let noop_gh = crate::adapters::github::InMemoryGithubClient::new();
-                    let pr_runtime = PrRuntimeService::new(self.store, self.worktree, &noop_gh);
-                    let _ = pr_runtime
-                        .handle_completion_pr(
+                    if self
+                        .handle_completion_pr_with_cancellation(
+                            base_dir,
+                            repo_root,
+                            &active_task,
+                            &lease,
+                            &effective_config,
+                            shutdown.clone(),
+                            task_cancel,
+                            &noop_gh,
+                        )
+                        .await?
+                        .is_none()
+                    {
+                        let _ = self.release_task_lease(
                             base_dir,
                             repo_root,
                             &active_task.task_id,
                             &lease,
-                            effective_config.daemon_pr_policy(),
-                            &shutdown,
-                        )
-                        .await;
+                        );
+                        return Ok(());
+                    }
                 }
                 let _ =
                     DaemonTaskService::mark_completed(self.store, base_dir, &active_task.task_id)?;
@@ -1422,7 +1530,9 @@ where
                     "requirements_draft_failed",
                     &format!("failed to build requirements service: {e}"),
                 );
-                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self
+                    .sync_label_after_mutation(github, base_dir, &task.task_id)
+                    .await;
                 return Err(e);
             }
         };
@@ -1436,7 +1546,9 @@ where
                     "requirements_draft_failed",
                     &e.to_string(),
                 );
-                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self
+                    .sync_label_after_mutation(github, base_dir, &task.task_id)
+                    .await;
                 return Err(e);
             }
         };
@@ -1445,7 +1557,8 @@ where
         // If the question set was empty, the run completes directly (no user
         // answers needed). Only enter WaitingForRequirements when answers are
         // actually pending.
-        let run_complete = req_service::is_requirements_run_complete(req_store, workspace_dir, &run_id)?;
+        let run_complete =
+            req_service::is_requirements_run_complete(req_store, workspace_dir, &run_id)?;
 
         if run_complete {
             // Empty-question draft: run already completed. Extract seed and
@@ -1482,11 +1595,14 @@ where
                     "requirements_linking_failed",
                     &e.to_string(),
                 );
-                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self
+                    .sync_label_after_mutation(github, base_dir, &task.task_id)
+                    .await;
                 return Err(e);
             }
 
-            let handoff = match req_service::extract_seed_handoff(req_store, workspace_dir, &run_id) {
+            let handoff = match req_service::extract_seed_handoff(req_store, workspace_dir, &run_id)
+            {
                 Ok(h) => h,
                 Err(e) => {
                     let _ = DaemonTaskService::mark_failed(
@@ -1496,7 +1612,9 @@ where
                         "seed_handoff_failed",
                         &e.to_string(),
                     );
-                    let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                    let _ = self
+                        .sync_label_after_mutation(github, base_dir, &task.task_id)
+                        .await;
                     return Err(e);
                 }
             };
@@ -1548,7 +1666,9 @@ where
                     "requirements_linking_failed",
                     &format!("post-link metadata update failed: {e}"),
                 );
-                let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                let _ = self
+                    .sync_label_after_mutation(github, base_dir, &task.task_id)
+                    .await;
                 return Err(e);
             }
 
@@ -1565,7 +1685,8 @@ where
 
             // Sync label: Pending → rb:ready (requeued for workflow dispatch).
             // Propagate failure to quarantine the repo for the rest of the cycle.
-            self.sync_label_after_mutation(github, base_dir, &task.task_id).await?;
+            self.sync_label_after_mutation(github, base_dir, &task.task_id)
+                .await?;
 
             println!(
                 "daemon: requirements_draft completed directly (empty questions) for task '{}', run_id='{}', requeued for workflow",
@@ -1602,7 +1723,8 @@ where
                     }
                     // Sync label: WaitingForRequirements → rb:waiting-feedback.
                     // Propagate failure to quarantine the repo for the rest of the cycle.
-                    self.sync_label_after_mutation(github, base_dir, &task.task_id).await?;
+                    self.sync_label_after_mutation(github, base_dir, &task.task_id)
+                        .await?;
 
                     println!(
                         "daemon: requirements_draft started for task '{}', waiting for answers (run_id='{}')",
@@ -1618,7 +1740,9 @@ where
                         "requirements_linking_failed",
                         &e.to_string(),
                     );
-                    let _ = self.sync_label_after_mutation(github, base_dir, &task.task_id).await;
+                    let _ = self
+                        .sync_label_after_mutation(github, base_dir, &task.task_id)
+                        .await;
                     return Err(e);
                 }
             }
@@ -1664,7 +1788,8 @@ where
         let heartbeat_interval = config.heartbeat_interval.max(Duration::from_secs(1));
         let mut heartbeat = tokio::time::interval(heartbeat_interval);
         let mut abort_poll = tokio::time::interval(Duration::from_millis(250));
-        let mut draft_pr_poll = tokio::time::interval(heartbeat_interval.min(Duration::from_secs(5)));
+        let mut draft_pr_poll =
+            tokio::time::interval(heartbeat_interval.min(Duration::from_secs(5)));
         let pr_runtime = PrRuntimeService::new(self.store, self.worktree, github);
 
         loop {
@@ -1891,11 +2016,6 @@ where
         github: &G,
         shutdown: CancellationToken,
     ) -> AppResult<()> {
-        let whitelist = super::model::ReviewWhitelist::from_config(
-            &EffectiveConfig::load(repo_root)?
-                .daemon_pr_policy()
-                .review_whitelist,
-        );
         let service = PrReviewIngestionService::new(
             self.store,
             self.project_store,
@@ -1912,6 +2032,10 @@ where
             if shutdown.is_cancelled() {
                 return Ok(());
             }
+            let effective_config = self.load_effective_config_for_task(repo_root, &task)?;
+            let whitelist = super::model::ReviewWhitelist::from_config(
+                &effective_config.daemon_pr_policy().review_whitelist,
+            );
             let batch = service
                 .ingest_reviews(store_dir, repo_root, &task.task_id, &whitelist, &shutdown)
                 .await?;
@@ -2049,6 +2173,67 @@ where
                     details,
                 })
             }
+        }
+    }
+
+    fn load_effective_config_for_task(
+        &self,
+        repo_root: &Path,
+        task: &DaemonTask,
+    ) -> AppResult<EffectiveConfig> {
+        let project_id = ProjectId::new(task.project_id.clone())?;
+        EffectiveConfig::load_for_project(repo_root, Some(&project_id), Default::default())
+    }
+
+    async fn handle_completion_pr_with_cancellation<G: GithubPort>(
+        &self,
+        base_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+        effective_config: &EffectiveConfig,
+        shutdown: CancellationToken,
+        task_cancel: CancellationToken,
+        github: &G,
+    ) -> AppResult<Option<crate::contexts::automation_runtime::CompletionPrAction>> {
+        let pr_runtime = PrRuntimeService::new(self.store, self.worktree, github);
+        let completion_future = pr_runtime.handle_completion_pr(
+            base_dir,
+            repo_root,
+            &task.task_id,
+            lease,
+            effective_config.daemon_pr_policy(),
+            &task_cancel,
+        );
+        tokio::pin!(completion_future);
+
+        let mut abort_poll = tokio::time::interval(Duration::from_millis(250));
+        let result = loop {
+            tokio::select! {
+                result = &mut completion_future => break result,
+                _ = abort_poll.tick() => {
+                    let current = self.store.read_task(base_dir, &task.task_id)?;
+                    if current.status == TaskStatus::Aborted {
+                        task_cancel.cancel();
+                    }
+                }
+                _ = shutdown.cancelled() => {
+                    let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &task.task_id);
+                    task_cancel.cancel();
+                }
+            }
+        };
+
+        match result {
+            Ok(action) => Ok(Some(action)),
+            Err(AppError::InvocationCancelled { .. }) => {
+                let current = self.store.read_task(base_dir, &task.task_id)?;
+                if current.status != TaskStatus::Aborted {
+                    let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &task.task_id);
+                }
+                Ok(None)
+            }
+            Err(error) => Err(error),
         }
     }
 
@@ -2278,11 +2463,13 @@ Do not omit any conflicted file and do not include extra files.\n\n\
                 })?
         })?;
 
-        serde_json::from_value(envelope.parsed_payload).map_err(|error| AppError::InvocationFailed {
-            backend: self.target.backend.family.to_string(),
-            contract_id: "daemon:rebase_resolution".to_owned(),
-            failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-            details: format!("invalid rebase agent response: {error}"),
+        serde_json::from_value(envelope.parsed_payload).map_err(|error| {
+            AppError::InvocationFailed {
+                backend: self.target.backend.family.to_string(),
+                contract_id: "daemon:rebase_resolution".to_owned(),
+                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                details: format!("invalid rebase agent response: {error}"),
+            }
         })
     }
 }

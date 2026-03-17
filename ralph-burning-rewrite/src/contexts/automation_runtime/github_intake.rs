@@ -145,23 +145,32 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                     );
                     e
                 })?;
-            let comment_bodies: Vec<String> =
-                raw_comments.iter().map(|c| c.body.clone()).collect();
+            let comment_bodies: Vec<String> = raw_comments.iter().map(|c| c.body.clone()).collect();
 
-            let routing_command = extract_command(
-                issue.body.as_deref().unwrap_or(""),
-                &comment_bodies,
-            );
+            let routing_command =
+                extract_command(issue.body.as_deref().unwrap_or(""), &comment_bodies);
 
             // Update dedup cursor on the existing task regardless of command
             let max_comment_id = raw_comments.iter().map(|c| c.id).max();
-            update_task_cursor(store, base_dir, &registration.repo_slug, issue.number, max_comment_id);
+            update_task_cursor(
+                store,
+                base_dir,
+                &registration.repo_slug,
+                issue.number,
+                max_comment_id,
+            );
 
             if let Some(ref cmd) = routing_command {
                 let cmd_trimmed = cmd.trim();
                 if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
                     handle_explicit_command(
-                        github, store, worktree, base_dir, registration, issue, cmd_trimmed,
+                        github,
+                        store,
+                        worktree,
+                        base_dir,
+                        registration,
+                        issue,
+                        cmd_trimmed,
                     )
                     .await?;
                 }
@@ -170,7 +179,9 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
     }
 
     // Phase B: Poll for new issues labeled `rb:ready` — standard intake path.
-    let issues = github.poll_candidate_issues(owner, repo, "rb:ready").await
+    let issues = github
+        .poll_candidate_issues(owner, repo, "rb:ready")
+        .await
         .map_err(|e| {
             eprintln!(
                 "github-intake: failed to poll {}: {e}",
@@ -183,7 +194,9 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
     for issue in &issues {
         // 1. Fetch comments for this issue — failure stops this repo for the cycle.
         //    Keep the full GithubComment objects so we can extract dedup cursors.
-        let raw_comments = github.fetch_issue_comments(owner, repo, issue.number).await
+        let raw_comments = github
+            .fetch_issue_comments(owner, repo, issue.number)
+            .await
             .map_err(|e| {
                 eprintln!(
                     "github-intake: failed to fetch comments for {}#{}: {e}",
@@ -194,17 +207,20 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
         let comment_bodies: Vec<String> = raw_comments.iter().map(|c| c.body.clone()).collect();
 
         // 2. Extract command from body + comments
-        let routing_command = extract_command(
-            issue.body.as_deref().unwrap_or(""),
-            &comment_bodies,
-        );
+        let routing_command = extract_command(issue.body.as_deref().unwrap_or(""), &comment_bodies);
 
         // 3. Handle daemon commands (/rb retry, /rb abort) on rb:ready issues too
         if let Some(ref cmd) = routing_command {
             let cmd_trimmed = cmd.trim();
             if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
                 handle_explicit_command(
-                    github, store, worktree, base_dir, registration, issue, cmd_trimmed,
+                    github,
+                    store,
+                    worktree,
+                    base_dir,
+                    registration,
+                    issue,
+                    cmd_trimmed,
                 )
                 .await?;
                 continue; // Don't create a new task
@@ -299,29 +315,32 @@ async fn handle_explicit_command<G: GithubPort>(
     let issue_number = issue.number;
     let repo_slug = &registration.repo_slug;
 
-    let task = match DaemonTaskService::find_task_by_issue(
-        store, base_dir, repo_slug, issue_number,
-    )? {
-        Some(t) => t,
-        None => return Ok(()), // No matching task — ignore
-    };
+    let task =
+        match DaemonTaskService::find_task_by_issue(store, base_dir, repo_slug, issue_number)? {
+            Some(t) => t,
+            None => return Ok(()), // No matching task — ignore
+        };
 
     if cmd == "/rb retry" {
-        if task.status == TaskStatus::Failed
-            || task.status == TaskStatus::Aborted
-        {
+        if task.status == TaskStatus::Failed || task.status == TaskStatus::Aborted {
             // If the task retains a lease from partial cleanup, attempt
             // cleanup before retry so retry_task() doesn't reject it.
             if let Some(ref lid) = task.lease_id {
                 if let Ok(lease) = store.read_lease(base_dir, lid) {
                     let result = LeaseService::release(
-                        store, worktree, base_dir, &registration.repo_root,
-                        &lease, ReleaseMode::Idempotent,
+                        store,
+                        worktree,
+                        base_dir,
+                        &registration.repo_root,
+                        &lease,
+                        ReleaseMode::Idempotent,
                     );
                     if let Ok(ref r) = result {
                         if r.resources_released {
                             let _ = DaemonTaskService::clear_lease_reference(
-                                store, base_dir, &task.task_id,
+                                store,
+                                base_dir,
+                                &task.task_id,
                             );
                         }
                     }
@@ -348,13 +367,19 @@ async fn handle_explicit_command<G: GithubPort>(
                 if let Some(ref lid) = task.lease_id {
                     if let Ok(lease) = store.read_lease(base_dir, lid) {
                         let result = LeaseService::release(
-                            store, worktree, base_dir, &registration.repo_root,
-                            &lease, ReleaseMode::Idempotent,
+                            store,
+                            worktree,
+                            base_dir,
+                            &registration.repo_root,
+                            &lease,
+                            ReleaseMode::Idempotent,
                         );
                         match result {
                             Ok(ref r) if r.resources_released => {
                                 let _ = DaemonTaskService::clear_lease_reference(
-                                    store, base_dir, &task.task_id,
+                                    store,
+                                    base_dir,
+                                    &task.task_id,
                                 );
                             }
                             _ => {
@@ -407,10 +432,7 @@ fn update_task_cursor(
 }
 
 /// Update the GitHub label on an issue to match the task's durable status.
-pub async fn sync_label_for_task<G: GithubPort>(
-    github: &G,
-    task: &DaemonTask,
-) -> AppResult<()> {
+pub async fn sync_label_for_task<G: GithubPort>(github: &G, task: &DaemonTask) -> AppResult<()> {
     let Some(ref repo_slug) = task.repo_slug else {
         return Ok(());
     };
@@ -427,7 +449,13 @@ pub async fn sync_label_for_task<G: GithubPort>(
     // label plus possibly an extra stale one (benign).  If the add fails,
     // the old label(s) are still present and the issue remains visible to
     // polling.
-    let status_labels = ["rb:ready", "rb:in-progress", "rb:failed", "rb:completed", "rb:waiting-feedback"];
+    let status_labels = [
+        "rb:ready",
+        "rb:in-progress",
+        "rb:failed",
+        "rb:completed",
+        "rb:waiting-feedback",
+    ];
     if let Some(label) = target_label {
         github.add_label(owner, repo, issue_number, label).await?;
     }
@@ -459,17 +487,15 @@ pub async fn ensure_labels_on_repos<G: GithubPort>(
     let mut valid = Vec::new();
     for reg in registrations {
         match super::repo_registry::parse_repo_slug(&reg.repo_slug) {
-            Ok((owner, repo)) => {
-                match github.ensure_labels(owner, repo, LABEL_VOCABULARY).await {
-                    Ok(()) => valid.push(reg.clone()),
-                    Err(e) => {
-                        eprintln!(
-                            "daemon: quarantining repo '{}': failed to ensure labels: {e}",
-                            reg.repo_slug
-                        );
-                    }
+            Ok((owner, repo)) => match github.ensure_labels(owner, repo, LABEL_VOCABULARY).await {
+                Ok(()) => valid.push(reg.clone()),
+                Err(e) => {
+                    eprintln!(
+                        "daemon: quarantining repo '{}': failed to ensure labels: {e}",
+                        reg.repo_slug
+                    );
                 }
-            }
+            },
             Err(e) => {
                 eprintln!(
                     "daemon: quarantining repo '{}': invalid slug: {e}",

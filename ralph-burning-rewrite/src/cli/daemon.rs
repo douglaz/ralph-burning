@@ -93,14 +93,7 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
             verbose,
         } => {
             if let Some(ref dd) = data_dir {
-                handle_start_multi_repo(
-                    dd,
-                    &repos,
-                    poll_seconds,
-                    single_iteration,
-                    verbose,
-                )
-                .await
+                handle_start_multi_repo(dd, &repos, poll_seconds, single_iteration, verbose).await
             } else {
                 Err(AppError::InvalidConfigValue {
                     key: "data-dir".to_owned(),
@@ -109,29 +102,24 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                 })
             }
         }
-        DaemonSubcommand::Status { ref data_dir, ref repos } => {
-            handle_status_multi_repo(data_dir, repos).await
-        }
+        DaemonSubcommand::Status {
+            ref data_dir,
+            ref repos,
+        } => handle_status_multi_repo(data_dir, repos).await,
         DaemonSubcommand::Abort {
             ref identifier,
             ref data_dir,
             ref repo,
-        } => {
-            handle_abort_by_issue(data_dir, repo, identifier).await
-        }
+        } => handle_abort_by_issue(data_dir, repo, identifier).await,
         DaemonSubcommand::Retry {
             ref identifier,
             ref data_dir,
             ref repo,
-        } => {
-            handle_retry_by_issue(data_dir, repo, identifier).await
-        }
+        } => handle_retry_by_issue(data_dir, repo, identifier).await,
         DaemonSubcommand::Reconcile {
             ref data_dir,
             ttl_seconds,
-        } => {
-            handle_reconcile_multi_repo(data_dir, ttl_seconds).await
-        }
+        } => handle_reconcile_multi_repo(data_dir, ttl_seconds).await,
     }
 }
 
@@ -188,8 +176,7 @@ async fn handle_start_multi_repo(
     if verbose {
         println!(
             "daemon: starting with data-dir={} repos={:?}",
-            data_dir,
-            repos
+            data_dir, repos
         );
     }
 
@@ -240,7 +227,9 @@ async fn handle_start_multi_repo(
         ..DaemonLoopConfig::default()
     };
 
-    daemon_loop.run_multi_repo(&loop_config, &github_client).await
+    daemon_loop
+        .run_multi_repo(&loop_config, &github_client)
+        .await
 }
 
 async fn handle_status_multi_repo(data_dir: &str, repos: &[String]) -> AppResult<()> {
@@ -286,11 +275,7 @@ fn print_multi_repo_status(
             let repo_label = task.repo_slug.as_deref().unwrap_or(slug);
             println!(
                 "{}  {}  {}  dispatch={}  issue={}",
-                repo_label,
-                task.task_id,
-                task.status,
-                task.dispatch_mode,
-                task.issue_ref,
+                repo_label, task.task_id, task.status, task.dispatch_mode, task.issue_ref,
             );
         }
     }
@@ -302,11 +287,7 @@ fn print_multi_repo_status(
     Ok(())
 }
 
-async fn handle_abort_by_issue(
-    data_dir: &str,
-    repo_slug: &str,
-    identifier: &str,
-) -> AppResult<()> {
+async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
     let store = FsDataDirDaemonStore;
@@ -314,19 +295,20 @@ async fn handle_abort_by_issue(
     let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
     let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
 
-    let issue_number: u64 = identifier.parse().map_err(|_| AppError::InvalidConfigValue {
-        key: "issue-number".to_owned(),
-        value: identifier.to_owned(),
-        reason: "expected a numeric issue number".to_owned(),
-    })?;
+    let issue_number: u64 = identifier
+        .parse()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: "expected a numeric issue number".to_owned(),
+        })?;
 
-    let task =
-        DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
-            .ok_or_else(|| AppError::InvalidConfigValue {
-                key: "issue-number".to_owned(),
-                value: identifier.to_owned(),
-                reason: format!("no task found for {repo_slug}#{issue_number}"),
-            })?;
+    let task = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+        .ok_or_else(|| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: format!("no task found for {repo_slug}#{issue_number}"),
+        })?;
 
     if task.status.is_terminal() {
         return Err(AppError::TaskStateTransitionInvalid {
@@ -341,7 +323,15 @@ async fn handle_abort_by_issue(
     DaemonTaskService::mark_aborted(&store, &daemon_dir, &task_id)?;
 
     if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &daemon_dir, &checkout, &task_id, original_status).await?;
+        cleanup_aborted_task(
+            &store,
+            &worktree,
+            &daemon_dir,
+            &checkout,
+            &task_id,
+            original_status,
+        )
+        .await?;
     }
 
     // Sync GitHub label: Aborted → rb:failed
@@ -360,7 +350,9 @@ async fn handle_abort_by_issue(
             }
         }
         Err(_) => {
-            eprintln!("warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile");
+            eprintln!(
+                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+            );
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
         }
     }
@@ -369,29 +361,26 @@ async fn handle_abort_by_issue(
     Ok(())
 }
 
-async fn handle_retry_by_issue(
-    data_dir: &str,
-    repo_slug: &str,
-    identifier: &str,
-) -> AppResult<()> {
+async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
     let store = FsDataDirDaemonStore;
     let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
 
-    let issue_number: u64 = identifier.parse().map_err(|_| AppError::InvalidConfigValue {
-        key: "issue-number".to_owned(),
-        value: identifier.to_owned(),
-        reason: "expected a numeric issue number".to_owned(),
-    })?;
+    let issue_number: u64 = identifier
+        .parse()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: "expected a numeric issue number".to_owned(),
+        })?;
 
-    let task =
-        DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
-            .ok_or_else(|| AppError::InvalidConfigValue {
-                key: "issue-number".to_owned(),
-                value: identifier.to_owned(),
-                reason: format!("no task found for {repo_slug}#{issue_number}"),
-            })?;
+    let task = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+        .ok_or_else(|| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: format!("no task found for {repo_slug}#{issue_number}"),
+        })?;
 
     // If the task retains a lease from partial cleanup, attempt cleanup
     // before retry so retry_task() doesn't reject it.
@@ -400,13 +389,19 @@ async fn handle_retry_by_issue(
         let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
         if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
             let result = LeaseService::release(
-                &store, &worktree, &daemon_dir, &checkout,
-                &lease, ReleaseMode::Idempotent,
+                &store,
+                &worktree,
+                &daemon_dir,
+                &checkout,
+                &lease,
+                ReleaseMode::Idempotent,
             );
             if let Ok(ref r) = result {
                 if r.resources_released {
                     let _ = DaemonTaskService::clear_lease_reference(
-                        &store, &daemon_dir, &task.task_id,
+                        &store,
+                        &daemon_dir,
+                        &task.task_id,
                     );
                 }
             }
@@ -421,17 +416,18 @@ async fn handle_retry_by_issue(
     match GithubClientConfig::from_env() {
         Ok(gh_config) => {
             let gh = GithubClient::new(gh_config);
-            if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
-                &gh, &task,
-            )
-            .await
+            if let Err(e) =
+                crate::contexts::automation_runtime::github_intake::sync_label_for_task(&gh, &task)
+                    .await
             {
                 eprintln!("warning: failed to sync GitHub label after retry: {e}");
                 let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
             }
         }
         Err(_) => {
-            eprintln!("warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile");
+            eprintln!(
+                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+            );
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
         }
     }
@@ -472,8 +468,7 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
                             if !repo_entry.path().is_dir() {
                                 continue;
                             }
-                            let repo_name =
-                                repo_entry.file_name().to_string_lossy().to_string();
+                            let repo_name = repo_entry.file_name().to_string_lossy().to_string();
                             found.push(format!("{owner}/{repo_name}"));
                         }
                     }
@@ -577,9 +572,7 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
         "reconciled stale_leases={total_stale} failed_tasks={total_failed} released_leases={total_released}"
     );
     if total_label_repaired > 0 || total_label_repair_failed > 0 {
-        println!(
-            "label_repair repaired={total_label_repaired} failed={total_label_repair_failed}"
-        );
+        println!("label_repair repaired={total_label_repaired} failed={total_label_repair_failed}");
     }
 
     if any_cleanup_failure {

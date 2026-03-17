@@ -1023,7 +1023,11 @@ impl EffectiveConfig {
             ["daemon", "rebase", "agent_timeout"] => (
                 ConfigValue::Integer(self.rebase_policy.agent_timeout),
                 source_for_option(
-                    self.workspace_config.daemon.rebase.agent_timeout.map(|_| ()),
+                    self.workspace_config
+                        .daemon
+                        .rebase
+                        .agent_timeout
+                        .map(|_| ()),
                     self.project_config.daemon.rebase.agent_timeout.map(|_| ()),
                     None::<()>,
                 ),

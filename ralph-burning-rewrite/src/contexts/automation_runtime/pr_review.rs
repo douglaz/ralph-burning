@@ -15,9 +15,9 @@ use crate::contexts::project_run_record::model::{ActiveRun, QueuedAmendment, Run
 use crate::contexts::project_run_record::service::{
     AmendmentQueuePort, ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort,
 };
+use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
-use crate::contexts::workspace_governance::WORKSPACE_DIR;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct IngestedReviewBatch {
@@ -112,7 +112,10 @@ where
         let (owner, repo) = parse_repo_slug(repo_slug)?;
 
         self.ensure_not_cancelled(cancel)?;
-        let issue_comments = self.github.fetch_issue_comments(owner, repo, pr_number).await?;
+        let issue_comments = self
+            .github
+            .fetch_issue_comments(owner, repo, pr_number)
+            .await?;
         self.ensure_not_cancelled(cancel)?;
         let pull_comments = self
             .github
@@ -129,8 +132,10 @@ where
                 .chain(pull_comments.iter().map(|comment| comment.id))
                 .max(),
         );
-        let next_review_cursor =
-            combine_max_id(task.last_seen_review_id, reviews.iter().map(|review| review.id).max());
+        let next_review_cursor = combine_max_id(
+            task.last_seen_review_id,
+            reviews.iter().map(|review| review.id).max(),
+        );
 
         let items = self
             .deduplicate_comments(
@@ -210,7 +215,8 @@ where
         items: Vec<ReviewItem>,
         whitelist: &ReviewWhitelist,
     ) -> Vec<ReviewItem> {
-        items.into_iter()
+        items
+            .into_iter()
             .filter(|item| whitelist.allows(item.author()))
             .filter(|item| !item.body().trim().is_empty())
             .collect()
@@ -269,8 +275,14 @@ where
         }
 
         let project_id = ProjectId::new(task.project_id.clone())?;
-        let snapshot = self.run_snapshot_read.read_run_snapshot(base_dir, &project_id)?;
-        let source_cycle = snapshot.cycle_history.last().map(|entry| entry.cycle).unwrap_or(1);
+        let snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(base_dir, &project_id)?;
+        let source_cycle = snapshot
+            .cycle_history
+            .last()
+            .map(|entry| entry.cycle)
+            .unwrap_or(1);
         let source_completion_round = snapshot.completion_rounds.max(1);
         let created_at = Utc::now();
 
@@ -303,29 +315,33 @@ where
         Ok(())
     }
 
-    fn reopen_completed_project(
-        &self,
-        base_dir: &Path,
-        task: &mut DaemonTask,
-    ) -> AppResult<()> {
+    fn reopen_completed_project(&self, base_dir: &Path, task: &mut DaemonTask) -> AppResult<()> {
         let project_id = ProjectId::new(task.project_id.clone())?;
-        let project_record = self.project_store.read_project_record(base_dir, &project_id)?;
-        let mut snapshot = self.run_snapshot_read.read_run_snapshot(base_dir, &project_id)?;
+        let project_record = self
+            .project_store
+            .read_project_record(base_dir, &project_id)?;
+        let mut snapshot = self
+            .run_snapshot_read
+            .read_run_snapshot(base_dir, &project_id)?;
         if snapshot.status == RunStatus::Completed {
             let prompt_path = base_dir
                 .join(WORKSPACE_DIR)
                 .join("projects")
                 .join(project_id.as_str())
                 .join(&project_record.prompt_reference);
-            let prompt_contents = std::fs::read_to_string(&prompt_path).map_err(|error| {
-                AppError::CorruptRecord {
+            let prompt_contents =
+                std::fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
                     file: prompt_path.display().to_string(),
                     details: format!("failed to read prompt for project reopen: {error}"),
-                }
-            })?;
+                })?;
             let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
-            let planning_stage = planning_stage_for_flow(task.resolved_flow.unwrap_or(project_record.flow));
-            let current_cycle = snapshot.cycle_history.last().map(|entry| entry.cycle).unwrap_or(1);
+            let planning_stage =
+                planning_stage_for_flow(task.resolved_flow.unwrap_or(project_record.flow));
+            let current_cycle = snapshot
+                .cycle_history
+                .last()
+                .map(|entry| entry.cycle)
+                .unwrap_or(1);
             let completion_round = snapshot.completion_rounds.max(1);
 
             snapshot.interrupted_run = Some(ActiveRun {
@@ -383,10 +399,6 @@ fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
 }
 
 fn parse_pr_number(pr_url: &str) -> Option<u64> {
-    let candidate = pr_url
-        .trim()
-        .trim_end_matches('/')
-        .rsplit('/')
-        .next()?;
+    let candidate = pr_url.trim().trim_end_matches('/').rsplit('/').next()?;
     candidate.parse::<u64>().ok()
 }

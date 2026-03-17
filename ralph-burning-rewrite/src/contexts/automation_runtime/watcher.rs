@@ -52,7 +52,9 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
             // Extra tokens are malformed
             return Err(AppError::WatcherIngestionFailed {
                 issue_ref: trimmed.to_owned(),
-                details: "malformed requirements command; expected '/rb requirements [draft|quick]'".to_owned(),
+                details:
+                    "malformed requirements command; expected '/rb requirements [draft|quick]'"
+                        .to_owned(),
             });
         }
     }

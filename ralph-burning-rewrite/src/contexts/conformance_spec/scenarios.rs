@@ -125,15 +125,15 @@ fn run_daemon_iteration_with_backend(
 ) -> Result<(), String> {
     use crate::adapters::fs::{
         FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-        FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore,
-        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
+        FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
     };
+    use crate::adapters::fs::{FsRawOutputStore, FsSessionStore};
     use crate::adapters::issue_watcher::FileIssueWatcher;
     use crate::adapters::stub_backend::StubBackendAdapter;
     use crate::adapters::worktree::WorktreeAdapter;
     use crate::adapters::BackendAdapter;
     use crate::contexts::agent_execution::service::AgentExecutionService;
-    use crate::adapters::fs::{FsRawOutputStore, FsSessionStore};
     use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 
     // The daemon loop internally builds a RequirementsService via
@@ -7486,7 +7486,17 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         // Daemon status with no repos should succeed
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7495,7 +7505,17 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7505,7 +7525,18 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
         // Abort with a non-numeric identifier fails
-        let out = run_cli(&["daemon", "abort", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "abort",
+                "999",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7514,7 +7545,18 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "retry", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "retry",
+                "999",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7523,7 +7565,18 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "abort", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "abort",
+                "999",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7556,7 +7609,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "issue_number": 42
         });
         let task_path = daemon_dir.join("tasks/cleanup-fail-task.json");
-        std::fs::create_dir_all(task_path.parent().unwrap()).map_err(|e| format!("mkdir tasks: {e}"))?;
+        std::fs::create_dir_all(task_path.parent().unwrap())
+            .map_err(|e| format!("mkdir tasks: {e}"))?;
         std::fs::write(
             &task_path,
             serde_json::to_string_pretty(&task_json).unwrap(),
@@ -7574,7 +7628,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "last_heartbeat": one_hour_ago.to_rfc3339()
         });
         let lease_path = daemon_dir.join("leases/lease-cleanup-fail-task.json");
-        std::fs::create_dir_all(lease_path.parent().unwrap()).map_err(|e| format!("mkdir leases: {e}"))?;
+        std::fs::create_dir_all(lease_path.parent().unwrap())
+            .map_err(|e| format!("mkdir leases: {e}"))?;
         std::fs::write(
             &lease_path,
             serde_json::to_string_pretty(&lease_json).unwrap(),
@@ -7586,7 +7641,17 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&lock_path, "lease-cleanup-fail-task")
             .map_err(|e| format!("write lock: {e}"))?;
 
-        let out = run_cli(&["daemon", "reconcile", "--data-dir", data_dir, "--ttl-seconds", "0"], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "reconcile",
+                "--data-dir",
+                data_dir,
+                "--ttl-seconds",
+                "0",
+            ],
+            ws.path(),
+        )?;
         assert_failure(&out)?;
         assert_contains(&out.stdout, "Cleanup Failures", "stdout")?;
         assert_contains(&out.stdout, "cleanup-fail-task", "stdout")?;
@@ -7781,7 +7846,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             .unwrap_or("pending");
         if task_status == "pending" {
             return Err(
-                "task was never dispatched (still pending after successful daemon cycle)".to_owned(),
+                "task was never dispatched (still pending after successful daemon cycle)"
+                    .to_owned(),
             );
         }
         Ok(())
@@ -7797,7 +7863,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7806,7 +7882,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7815,7 +7901,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7824,7 +7920,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7833,7 +7939,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7842,7 +7958,17 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         Ok(())
     });
@@ -8112,7 +8238,10 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         });
 
         // Run one daemon cycle with the label override
-        std::env::set_var("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string());
+        std::env::set_var(
+            "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+            &label_overrides.to_string(),
+        );
         run_daemon_iteration_in_process(ws.path())?;
         std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
 
@@ -8312,9 +8441,11 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Bare `/rb requirements` defaults to RequirementsDraft (not an error)
-        let result2 = watcher::parse_requirements_command("/rb requirements")
-            .map_err(|e| e.to_string())?;
-        if result2 != Some(crate::contexts::automation_runtime::model::DispatchMode::RequirementsDraft) {
+        let result2 =
+            watcher::parse_requirements_command("/rb requirements").map_err(|e| e.to_string())?;
+        if result2
+            != Some(crate::contexts::automation_runtime::model::DispatchMode::RequirementsDraft)
+        {
             return Err(format!(
                 "expected RequirementsDraft for bare '/rb requirements', got {:?}",
                 result2
@@ -8422,7 +8553,17 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_task(&daemon_dir, &task)
             .map_err(|e| e.to_string())?;
 
-        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
+        let out = run_cli(
+            &[
+                "daemon",
+                "status",
+                "--data-dir",
+                data_dir,
+                "--repo",
+                CONFORMANCE_TEST_REPO_SLUG,
+            ],
+            ws.path(),
+        )?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "waiting_for_requirements", "status output")?;
         Ok(())
@@ -8470,7 +8611,10 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         });
 
         // First daemon cycle: task enters waiting_for_requirements
-        std::env::set_var("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string());
+        std::env::set_var(
+            "RALPH_BURNING_TEST_LABEL_OVERRIDES",
+            &label_overrides.to_string(),
+        );
         run_daemon_iteration_in_process(ws.path())?;
         std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
 
@@ -11184,8 +11328,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             repo_registry::validate_data_dir(&data_dir).map_err(|e| e.to_string())?;
 
             // Valid repo slug parsing
-            let (owner, repo) = repo_registry::parse_repo_slug("acme/widgets")
-                .map_err(|e| e.to_string())?;
+            let (owner, repo) =
+                repo_registry::parse_repo_slug("acme/widgets").map_err(|e| e.to_string())?;
             assert_eq!(owner, "acme");
             assert_eq!(repo, "widgets");
 
@@ -11220,9 +11364,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             let bootstrap_result =
                 repo_registry::bootstrap_repo_checkout(&data_dir, "acme/widgets");
             if bootstrap_result.is_ok() {
-                return Err(
-                    "expected bootstrap to fail (git clone without real GitHub)".into(),
-                );
+                return Err("expected bootstrap to fail (git clone without real GitHub)".into());
             }
 
             // Bootstrap on an already-valid checkout should succeed (no-op).
@@ -11288,8 +11430,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 .args(["init", &checkout2.to_string_lossy()])
                 .output()
                 .map_err(|e| e.to_string())?;
-            std::fs::create_dir_all(checkout2.join(".ralph-burning"))
-                .map_err(|e| e.to_string())?;
+            std::fs::create_dir_all(checkout2.join(".ralph-burning")).map_err(|e| e.to_string())?;
             if repo_registry::validate_repo_checkout(&checkout2).is_ok() {
                 return Err(
                     "validate_repo_checkout should reject checkout without workspace.toml".into(),
@@ -11456,8 +11597,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.routing.command_beats_label", || {
-        use crate::contexts::automation_runtime::routing::RoutingEngine;
         use crate::contexts::automation_runtime::model::RoutingSource;
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
         use crate::shared::domain::FlowPreset;
 
         let engine = RoutingEngine::new();
@@ -11483,8 +11624,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.routing.label_used_when_no_command", || {
-        use crate::contexts::automation_runtime::routing::RoutingEngine;
         use crate::contexts::automation_runtime::model::RoutingSource;
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
         use crate::shared::domain::FlowPreset;
 
         let engine = RoutingEngine::new();
@@ -11511,10 +11652,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "daemon.labels.ensure_on_startup", || {
         use crate::adapters::github::InMemoryGithubClient;
+        use crate::contexts::automation_runtime::github_intake;
         use crate::contexts::automation_runtime::repo_registry::{
             RepoRegistration, LABEL_VOCABULARY,
         };
-        use crate::contexts::automation_runtime::github_intake;
         use std::path::PathBuf;
 
         // Verify the label vocabulary is complete
@@ -11588,9 +11729,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         // the daemon start path should detect partial success and fail.
         // (The actual daemon start code checks active < requested and errors.)
         if active.len() >= registrations.len() {
-            return Err(
-                "ensure_labels_on_repos should have filtered the failing repo".into(),
-            );
+            return Err("ensure_labels_on_repos should have filtered the failing repo".into());
         }
 
         Ok(())
@@ -11608,8 +11747,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -11648,13 +11786,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Find by issue number
-        let found = DaemonTaskService::find_task_by_issue(
-            &store,
-            &daemon_dir,
-            "acme/widgets",
-            42,
-        )
-        .map_err(|e| e.to_string())?;
+        let found = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, "acme/widgets", 42)
+            .map_err(|e| e.to_string())?;
 
         let found = found.ok_or("task not found by issue number")?;
         if found.task_id != "gh-abort-42" {
@@ -11687,8 +11820,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -11727,14 +11859,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Retry by task_id (found via issue number)
-        let found = DaemonTaskService::find_task_by_issue(
-            &store,
-            &daemon_dir,
-            "acme/widgets",
-            99,
-        )
-        .map_err(|e| e.to_string())?
-        .ok_or("task not found by issue number")?;
+        let found = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, "acme/widgets", 99)
+            .map_err(|e| e.to_string())?
+            .ok_or("task not found by issue number")?;
 
         let retried = DaemonTaskService::retry_task(&store, &daemon_dir, &found.task_id)
             .map_err(|e| e.to_string())?;
@@ -11760,8 +11887,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let data_dir = ws.path().join("daemon-data");
 
         // Set up a repo with data-dir layout
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
 
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
         let checkout = DataDirLayout::checkout_path(&data_dir, "acme", "widgets");
@@ -11801,8 +11927,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -11841,14 +11966,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Retry the aborted task by issue number
-        let found = DaemonTaskService::find_task_by_issue(
-            &store,
-            &daemon_dir,
-            "acme/widgets",
-            101,
-        )
-        .map_err(|e| e.to_string())?
-        .ok_or("task not found by issue number")?;
+        let found = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, "acme/widgets", 101)
+            .map_err(|e| e.to_string())?
+            .ok_or("task not found by issue number")?;
 
         if found.status != TaskStatus::Aborted {
             return Err(format!("expected aborted, got {}", found.status));
@@ -11883,9 +12003,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("failed to run CLI: {e}"))?;
 
         if output.status.success() {
-            return Err(
-                "daemon start without --data-dir should fail but succeeded".to_owned(),
-            );
+            return Err("daemon start without --data-dir should fail but succeeded".to_owned());
         }
 
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -11905,8 +12023,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let data_dir = Path::new("/tmp/test-data-dir");
 
         // Verify worktree path format
-        let wt_path =
-            DataDirLayout::task_worktree_path(data_dir, "acme", "widgets", "task-42");
+        let wt_path = DataDirLayout::task_worktree_path(data_dir, "acme", "widgets", "task-42");
         let expected = data_dir.join("repos/acme/widgets/worktrees/task-42");
         if wt_path != expected {
             return Err(format!(
@@ -11926,9 +12043,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.dedup_cursor_persisted", || {
-        use crate::adapters::github::{
-            GithubComment, GithubIssue, GithubUser,
-        };
+        use crate::adapters::github::{GithubComment, GithubIssue, GithubUser};
         use crate::contexts::automation_runtime::github_intake;
 
         // Verify build_github_meta computes the maximum comment ID as cursor.
@@ -11936,21 +12051,30 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             GithubComment {
                 id: 100,
                 body: "first comment".to_owned(),
-                user: GithubUser { login: "u".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "u".to_owned(),
+                    id: 1,
+                },
                 created_at: "2026-03-17T01:00:00Z".to_owned(),
                 updated_at: "2026-03-17T01:00:00Z".to_owned(),
             },
             GithubComment {
                 id: 250,
                 body: "second comment".to_owned(),
-                user: GithubUser { login: "u".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "u".to_owned(),
+                    id: 1,
+                },
                 created_at: "2026-03-17T02:00:00Z".to_owned(),
                 updated_at: "2026-03-17T02:00:00Z".to_owned(),
             },
             GithubComment {
                 id: 150,
                 body: "middle comment".to_owned(),
-                user: GithubUser { login: "u".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "u".to_owned(),
+                    id: 1,
+                },
                 created_at: "2026-03-17T01:30:00Z".to_owned(),
                 updated_at: "2026-03-17T01:30:00Z".to_owned(),
             },
@@ -11961,7 +12085,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             title: "Fix bug".to_owned(),
             body: Some("Fix the bug".to_owned()),
             labels: vec![],
-            user: GithubUser { login: "user".to_owned(), id: 1 },
+            user: GithubUser {
+                login: "user".to_owned(),
+                id: 1,
+            },
             html_url: "https://github.com/acme/widgets/issues/10".to_owned(),
             pull_request: None,
             updated_at: "2026-03-17T00:00:00Z".to_owned(),
@@ -11999,9 +12126,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         // on the initial persisted task record (no second write needed).
         {
             use crate::adapters::fs::FsDaemonStore;
-            use crate::contexts::automation_runtime::model::{
-                DispatchMode, WatchedIssueMeta,
-            };
+            use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
             use crate::contexts::automation_runtime::routing::RoutingEngine;
             use crate::contexts::automation_runtime::task_service::DaemonTaskService;
             use crate::contexts::automation_runtime::DaemonStorePort;
@@ -12054,9 +12179,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             }
 
             // Re-read from store to confirm persistence (not just in-memory)
-            let tasks = store.list_tasks(ws2.path())
-                .map_err(|e| e.to_string())?;
-            let persisted = tasks.iter().find(|t| t.task_id == task.task_id)
+            let tasks = store.list_tasks(ws2.path()).map_err(|e| e.to_string())?;
+            let persisted = tasks
+                .iter()
+                .find(|t| t.task_id == task.task_id)
                 .ok_or("task not found in store after creation")?;
             if persisted.repo_slug.as_deref() != Some("acme/widgets") {
                 return Err(format!(
@@ -12080,15 +12206,16 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::repo_registry::{
+            self, label_for_status, DataDirLayout,
+        };
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -12135,17 +12262,15 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Abort the waiting task (simulating what handle_explicit_command does
         // when /rb abort is found on an rb:waiting-feedback issue)
-        let found = DaemonTaskService::find_task_by_issue(
-            &store,
-            &daemon_dir,
-            "acme/widgets",
-            77,
-        )
-        .map_err(|e| e.to_string())?
-        .ok_or("task not found by issue number")?;
+        let found = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, "acme/widgets", 77)
+            .map_err(|e| e.to_string())?
+            .ok_or("task not found by issue number")?;
 
         if found.status != TaskStatus::WaitingForRequirements {
-            return Err(format!("expected waiting_for_requirements, got {}", found.status));
+            return Err(format!(
+                "expected waiting_for_requirements, got {}",
+                found.status
+            ));
         }
 
         // mark_aborted accepts WaitingForRequirements (it's non-terminal)
@@ -12162,7 +12287,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify the label that should be synced after abort
         let aborted_label = label_for_status(&TaskStatus::Aborted);
         if aborted_label != Some("rb:failed") {
-            return Err(format!("expected rb:failed for aborted, got {:?}", aborted_label));
+            return Err(format!(
+                "expected rb:failed for aborted, got {:?}",
+                aborted_label
+            ));
         }
 
         Ok(())
@@ -12173,15 +12301,16 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::repo_registry::{
+            self, label_for_status, DataDirLayout,
+        };
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -12228,12 +12357,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Resume the task (simulating what check_waiting_tasks does
         // when the requirements run completes)
-        let resumed = DaemonTaskService::resume_from_waiting(
-            &store,
-            &daemon_dir,
-            "gh-resume-88",
-        )
-        .map_err(|e| e.to_string())?;
+        let resumed = DaemonTaskService::resume_from_waiting(&store, &daemon_dir, "gh-resume-88")
+            .map_err(|e| e.to_string())?;
 
         if resumed.status != TaskStatus::Pending {
             return Err(format!("expected pending, got {}", resumed.status));
@@ -12242,7 +12367,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify the label that should be synced after resume is rb:ready
         let post_label = label_for_status(&resumed.status);
         if post_label != Some("rb:ready") {
-            return Err(format!("expected rb:ready for pending, got {:?}", post_label));
+            return Err(format!(
+                "expected rb:ready for pending, got {:?}",
+                post_label
+            ));
         }
 
         Ok(())
@@ -12253,15 +12381,16 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::repo_registry::{
+            self, label_for_status, DataDirLayout,
+        };
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
         let store = FsDataDirDaemonStore;
@@ -12302,7 +12431,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Verify the task was created with label_dirty = true
-        let loaded = store.read_task(&daemon_dir, "gh-dirty-99")
+        let loaded = store
+            .read_task(&daemon_dir, "gh-dirty-99")
             .map_err(|e| e.to_string())?;
         if !loaded.label_dirty {
             return Err("expected label_dirty=true after creation".to_owned());
@@ -12323,7 +12453,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Verify label_dirty is now false
-        let repaired = store.read_task(&daemon_dir, "gh-dirty-99")
+        let repaired = store
+            .read_task(&daemon_dir, "gh-dirty-99")
             .map_err(|e| e.to_string())?;
         if repaired.label_dirty {
             return Err("expected label_dirty=false after repair".to_owned());
@@ -12358,10 +12489,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let data_dir = ws.path().join("daemon-data");
 
         // Register two repos: one with a dirty task, one clean.
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
-        repo_registry::register_repo(&data_dir, "acme/gadgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/gadgets").map_err(|e| e.to_string())?;
 
         let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
@@ -12435,13 +12564,15 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| e.to_string())?;
 
         // Verify preconditions: dirty task exists and pending task is pending
-        let loaded_dirty = store.read_task(&widgets_dir, "gh-quarantine-1")
+        let loaded_dirty = store
+            .read_task(&widgets_dir, "gh-quarantine-1")
             .map_err(|e| e.to_string())?;
         if !loaded_dirty.label_dirty {
             return Err("expected label_dirty=true".to_owned());
         }
 
-        let loaded_pending = store.read_task(&widgets_dir, "gh-quarantine-2")
+        let loaded_pending = store
+            .read_task(&widgets_dir, "gh-quarantine-2")
             .map_err(|e| e.to_string())?;
         if loaded_pending.status != TaskStatus::Pending {
             return Err("expected pending status for second task".to_owned());
@@ -12460,7 +12591,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Confirm the pending task is still untouched (would be Claimed
         // or Active if the loop proceeded past Phase 0).
-        let still_pending = store.read_task(&widgets_dir, "gh-quarantine-2")
+        let still_pending = store
+            .read_task(&widgets_dir, "gh-quarantine-2")
             .map_err(|e| e.to_string())?;
         if still_pending.status != TaskStatus::Pending {
             return Err(format!(
@@ -12480,135 +12612,137 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     // Verifies that abort/retry persist label_dirty when GitHub credentials
     // are unavailable, so reconcile can repair the label mismatch later.
     // -----------------------------------------------------------------------
-    reg!(m, "daemon.tasks.abort_retry_label_dirty_without_token", || {
-        use crate::adapters::fs::FsDataDirDaemonStore;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
-        };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::FlowPreset;
+    reg!(
+        m,
+        "daemon.tasks.abort_retry_label_dirty_without_token",
+        || {
+            use crate::adapters::fs::FsDataDirDaemonStore;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+            };
+            use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+            use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::shared::domain::FlowPreset;
 
-        let ws = TempWorkspace::new()?;
-        let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
-        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+            let ws = TempWorkspace::new()?;
+            let data_dir = ws.path().join("daemon-data");
+            repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
+            let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
-        let store = FsDataDirDaemonStore;
-        let now = chrono::Utc::now();
+            let store = FsDataDirDaemonStore;
+            let now = chrono::Utc::now();
 
-        // --- Test abort path ---
-        // Create a Claimed task (non-terminal, abortable)
-        let abort_task = DaemonTask {
-            task_id: "gh-abort-notoken-55".to_owned(),
-            issue_ref: "acme/widgets#55".to_owned(),
-            project_id: "proj-55".to_owned(),
-            project_name: Some("Abort without token test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Claimed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-55".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(55),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store
-            .create_task(&daemon_dir, &abort_task)
-            .map_err(|e| e.to_string())?;
+            // --- Test abort path ---
+            // Create a Claimed task (non-terminal, abortable)
+            let abort_task = DaemonTask {
+                task_id: "gh-abort-notoken-55".to_owned(),
+                issue_ref: "acme/widgets#55".to_owned(),
+                project_id: "proj-55".to_owned(),
+                project_name: Some("Abort without token test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Claimed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-55".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(55),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(&daemon_dir, &abort_task)
+                .map_err(|e| e.to_string())?;
 
-        // Simulate: abort changes durable state to Aborted
-        DaemonTaskService::mark_aborted(&store, &daemon_dir, "gh-abort-notoken-55")
-            .map_err(|e| e.to_string())?;
+            // Simulate: abort changes durable state to Aborted
+            DaemonTaskService::mark_aborted(&store, &daemon_dir, "gh-abort-notoken-55")
+                .map_err(|e| e.to_string())?;
 
-        // When GITHUB_TOKEN is unavailable, the CLI marks label_dirty
-        DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-abort-notoken-55")
-            .map_err(|e| e.to_string())?;
+            // When GITHUB_TOKEN is unavailable, the CLI marks label_dirty
+            DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-abort-notoken-55")
+                .map_err(|e| e.to_string())?;
 
-        let aborted = store.read_task(&daemon_dir, "gh-abort-notoken-55")
-            .map_err(|e| e.to_string())?;
-        if aborted.status != TaskStatus::Aborted {
-            return Err(format!(
-                "expected aborted status, got {}",
-                aborted.status
-            ));
+            let aborted = store
+                .read_task(&daemon_dir, "gh-abort-notoken-55")
+                .map_err(|e| e.to_string())?;
+            if aborted.status != TaskStatus::Aborted {
+                return Err(format!("expected aborted status, got {}", aborted.status));
+            }
+            if !aborted.label_dirty {
+                return Err("expected label_dirty=true after abort without token".to_owned());
+            }
+
+            // --- Test retry path ---
+            // Create a Failed task (retryable)
+            let retry_task = DaemonTask {
+                task_id: "gh-retry-notoken-56".to_owned(),
+                issue_ref: "acme/widgets#56".to_owned(),
+                project_id: "proj-56".to_owned(),
+                project_name: Some("Retry without token test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: None,
+                failure_class: Some("test".to_owned()),
+                failure_message: Some("test failure".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(56),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(&daemon_dir, &retry_task)
+                .map_err(|e| e.to_string())?;
+
+            // Simulate: retry changes durable state to Pending
+            DaemonTaskService::retry_task(&store, &daemon_dir, "gh-retry-notoken-56")
+                .map_err(|e| e.to_string())?;
+
+            // When GITHUB_TOKEN is unavailable, the CLI marks label_dirty
+            DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-retry-notoken-56")
+                .map_err(|e| e.to_string())?;
+
+            let retried = store
+                .read_task(&daemon_dir, "gh-retry-notoken-56")
+                .map_err(|e| e.to_string())?;
+            if retried.status != TaskStatus::Pending {
+                return Err(format!(
+                    "expected pending status after retry, got {}",
+                    retried.status
+                ));
+            }
+            if !retried.label_dirty {
+                return Err("expected label_dirty=true after retry without token".to_owned());
+            }
+
+            Ok(())
         }
-        if !aborted.label_dirty {
-            return Err("expected label_dirty=true after abort without token".to_owned());
-        }
-
-        // --- Test retry path ---
-        // Create a Failed task (retryable)
-        let retry_task = DaemonTask {
-            task_id: "gh-retry-notoken-56".to_owned(),
-            issue_ref: "acme/widgets#56".to_owned(),
-            project_id: "proj-56".to_owned(),
-            project_name: Some("Retry without token test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Failed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: None,
-            failure_class: Some("test".to_owned()),
-            failure_message: Some("test failure".to_owned()),
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(56),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store
-            .create_task(&daemon_dir, &retry_task)
-            .map_err(|e| e.to_string())?;
-
-        // Simulate: retry changes durable state to Pending
-        DaemonTaskService::retry_task(&store, &daemon_dir, "gh-retry-notoken-56")
-            .map_err(|e| e.to_string())?;
-
-        // When GITHUB_TOKEN is unavailable, the CLI marks label_dirty
-        DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-retry-notoken-56")
-            .map_err(|e| e.to_string())?;
-
-        let retried = store.read_task(&daemon_dir, "gh-retry-notoken-56")
-            .map_err(|e| e.to_string())?;
-        if retried.status != TaskStatus::Pending {
-            return Err(format!(
-                "expected pending status after retry, got {}",
-                retried.status
-            ));
-        }
-        if !retried.label_dirty {
-            return Err("expected label_dirty=true after retry without token".to_owned());
-        }
-
-        Ok(())
-    });
+    );
 
     // -----------------------------------------------------------------------
     // daemon.tasks.label_sync_recovery_after_state_transition
@@ -12616,158 +12750,173 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     // (Claimed/Active) does not strand the task, and that a label-sync failure
     // after a terminal transition (Completed/Failed) still releases the lease.
     // -----------------------------------------------------------------------
-    reg!(m, "daemon.tasks.label_sync_recovery_after_state_transition", || {
-        use crate::adapters::fs::FsDataDirDaemonStore;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
-        };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::FlowPreset;
+    reg!(
+        m,
+        "daemon.tasks.label_sync_recovery_after_state_transition",
+        || {
+            use crate::adapters::fs::FsDataDirDaemonStore;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+            };
+            use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+            use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::shared::domain::FlowPreset;
 
-        let ws = TempWorkspace::new()?;
-        let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
-        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+            let ws = TempWorkspace::new()?;
+            let data_dir = ws.path().join("daemon-data");
+            repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
+            let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
-        let store = FsDataDirDaemonStore;
-        let now = chrono::Utc::now();
+            let store = FsDataDirDaemonStore;
+            let now = chrono::Utc::now();
 
-        // --- Non-terminal case: Claimed task with label_dirty ---
-        // Simulates a label-sync failure right after claim. The task must
-        // remain Claimed (not rolled back) and retain label_dirty so Phase 0
-        // can repair the label, while the state machine continues processing.
-        let claimed_task = DaemonTask {
-            task_id: "gh-claimed-dirty-200".to_owned(),
-            issue_ref: "acme/widgets#200".to_owned(),
-            project_id: "proj-200".to_owned(),
-            project_name: Some("Claimed label-sync failure".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Claimed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-200".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(200),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store
-            .create_task(&daemon_dir, &claimed_task)
-            .map_err(|e| e.to_string())?;
+            // --- Non-terminal case: Claimed task with label_dirty ---
+            // Simulates a label-sync failure right after claim. The task must
+            // remain Claimed (not rolled back) and retain label_dirty so Phase 0
+            // can repair the label, while the state machine continues processing.
+            let claimed_task = DaemonTask {
+                task_id: "gh-claimed-dirty-200".to_owned(),
+                issue_ref: "acme/widgets#200".to_owned(),
+                project_id: "proj-200".to_owned(),
+                project_name: Some("Claimed label-sync failure".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Claimed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-200".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(200),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(&daemon_dir, &claimed_task)
+                .map_err(|e| e.to_string())?;
 
-        // Simulate label-sync failure: mark dirty
-        DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-claimed-dirty-200")
-            .map_err(|e| e.to_string())?;
+            // Simulate label-sync failure: mark dirty
+            DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-claimed-dirty-200")
+                .map_err(|e| e.to_string())?;
 
-        // The task must still be Claimed (not rolled back to Pending), so the
-        // state machine can continue. It must also be label_dirty for Phase 0 repair.
-        let loaded_claimed = store.read_task(&daemon_dir, "gh-claimed-dirty-200")
-            .map_err(|e| e.to_string())?;
-        if loaded_claimed.status != TaskStatus::Claimed {
-            return Err(format!(
-                "expected claimed task to remain claimed, got {}",
-                loaded_claimed.status
-            ));
+            // The task must still be Claimed (not rolled back to Pending), so the
+            // state machine can continue. It must also be label_dirty for Phase 0 repair.
+            let loaded_claimed = store
+                .read_task(&daemon_dir, "gh-claimed-dirty-200")
+                .map_err(|e| e.to_string())?;
+            if loaded_claimed.status != TaskStatus::Claimed {
+                return Err(format!(
+                    "expected claimed task to remain claimed, got {}",
+                    loaded_claimed.status
+                ));
+            }
+            if !loaded_claimed.label_dirty {
+                return Err(
+                    "expected label_dirty=true for claimed task after label-sync failure"
+                        .to_owned(),
+                );
+            }
+
+            // Now the state machine continues: mark Active (simulating normal progression)
+            let active =
+                DaemonTaskService::mark_active(&store, &daemon_dir, "gh-claimed-dirty-200")
+                    .map_err(|e| e.to_string())?;
+            if active.status != TaskStatus::Active {
+                return Err(format!(
+                    "expected active after mark_active, got {}",
+                    active.status
+                ));
+            }
+
+            // And eventually completes
+            let completed =
+                DaemonTaskService::mark_completed(&store, &daemon_dir, "gh-claimed-dirty-200")
+                    .map_err(|e| e.to_string())?;
+            if completed.status != TaskStatus::Completed {
+                return Err(format!("expected completed, got {}", completed.status));
+            }
+
+            // label_dirty should still be true (was never cleared by a successful sync)
+            if !completed.label_dirty {
+                return Err("expected label_dirty to persist through state transitions".to_owned());
+            }
+
+            // --- Terminal case: Completed task with label_dirty must release lease ---
+            // Simulates a label-sync failure after marking Completed. The task
+            // must still be terminal AND its lease must be releasable.
+            let terminal_task = DaemonTask {
+                task_id: "gh-completed-dirty-201".to_owned(),
+                issue_ref: "acme/widgets#201".to_owned(),
+                project_id: "proj-201".to_owned(),
+                project_name: Some("Completed label-sync failure".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Completed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-201".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(201),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: true,
+            };
+            store
+                .create_task(&daemon_dir, &terminal_task)
+                .map_err(|e| e.to_string())?;
+
+            // Verify terminal status
+            let loaded_terminal = store
+                .read_task(&daemon_dir, "gh-completed-dirty-201")
+                .map_err(|e| e.to_string())?;
+            if !loaded_terminal.is_terminal() {
+                return Err("expected terminal status".to_owned());
+            }
+
+            // The runtime contract: even with label_dirty=true, the lease must
+            // be clearable so the terminal task does not retain ownership.
+            let mut cleared = loaded_terminal.clone();
+            cleared.clear_lease();
+            if cleared.lease_id.is_some() {
+                return Err(
+                    "expected lease to be clearable on terminal task with dirty label".to_owned(),
+                );
+            }
+
+            // Verify the task is still terminal and label_dirty after lease release
+            if !cleared.is_terminal() {
+                return Err("task should remain terminal after lease release".to_owned());
+            }
+            if !cleared.label_dirty {
+                return Err("label_dirty should persist after lease release".to_owned());
+            }
+
+            Ok(())
         }
-        if !loaded_claimed.label_dirty {
-            return Err("expected label_dirty=true for claimed task after label-sync failure".to_owned());
-        }
-
-        // Now the state machine continues: mark Active (simulating normal progression)
-        let active = DaemonTaskService::mark_active(&store, &daemon_dir, "gh-claimed-dirty-200")
-            .map_err(|e| e.to_string())?;
-        if active.status != TaskStatus::Active {
-            return Err(format!("expected active after mark_active, got {}", active.status));
-        }
-
-        // And eventually completes
-        let completed = DaemonTaskService::mark_completed(&store, &daemon_dir, "gh-claimed-dirty-200")
-            .map_err(|e| e.to_string())?;
-        if completed.status != TaskStatus::Completed {
-            return Err(format!("expected completed, got {}", completed.status));
-        }
-
-        // label_dirty should still be true (was never cleared by a successful sync)
-        if !completed.label_dirty {
-            return Err("expected label_dirty to persist through state transitions".to_owned());
-        }
-
-        // --- Terminal case: Completed task with label_dirty must release lease ---
-        // Simulates a label-sync failure after marking Completed. The task
-        // must still be terminal AND its lease must be releasable.
-        let terminal_task = DaemonTask {
-            task_id: "gh-completed-dirty-201".to_owned(),
-            issue_ref: "acme/widgets#201".to_owned(),
-            project_id: "proj-201".to_owned(),
-            project_name: Some("Completed label-sync failure".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Completed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-201".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(201),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: true,
-        };
-        store
-            .create_task(&daemon_dir, &terminal_task)
-            .map_err(|e| e.to_string())?;
-
-        // Verify terminal status
-        let loaded_terminal = store.read_task(&daemon_dir, "gh-completed-dirty-201")
-            .map_err(|e| e.to_string())?;
-        if !loaded_terminal.is_terminal() {
-            return Err("expected terminal status".to_owned());
-        }
-
-        // The runtime contract: even with label_dirty=true, the lease must
-        // be clearable so the terminal task does not retain ownership.
-        let mut cleared = loaded_terminal.clone();
-        cleared.clear_lease();
-        if cleared.lease_id.is_some() {
-            return Err("expected lease to be clearable on terminal task with dirty label".to_owned());
-        }
-
-        // Verify the task is still terminal and label_dirty after lease release
-        if !cleared.is_terminal() {
-            return Err("task should remain terminal after lease release".to_owned());
-        }
-        if !cleared.label_dirty {
-            return Err("label_dirty should persist after lease release".to_owned());
-        }
-
-        Ok(())
-    });
+    );
 
     // -----------------------------------------------------------------------
     // daemon.tasks.label_failure_quarantine_and_recovery
@@ -12778,376 +12927,441 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     // when lease cleanup positively succeeds. If cleanup is partial, the
     // task must stay in its current state with lease ownership preserved.
     // -----------------------------------------------------------------------
-    reg!(m, "daemon.tasks.label_failure_quarantine_and_recovery", || {
-        use crate::adapters::fs::FsDataDirDaemonStore;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
-        };
-        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
-        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::{FlowPreset, ProjectId};
+    reg!(
+        m,
+        "daemon.tasks.label_failure_quarantine_and_recovery",
+        || {
+            use crate::adapters::fs::FsDataDirDaemonStore;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+            };
+            use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+            use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::shared::domain::{FlowPreset, ProjectId};
 
-        let ws = TempWorkspace::new()?;
-        let data_dir = ws.path().join("daemon-data");
+            let ws = TempWorkspace::new()?;
+            let data_dir = ws.path().join("daemon-data");
 
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
-        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
-        let store = FsDataDirDaemonStore;
-        let now = chrono::Utc::now();
+            repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
+            let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+            let store = FsDataDirDaemonStore;
+            let now = chrono::Utc::now();
 
-        // --- Scenario A: Claimed task with label_dirty where cleanup succeeds.
-        // The stub returns Removed (positive cleanup), the writer lock exists
-        // and is released, so resources_released = true and the revert proceeds. ---
-        let claimed_task = DaemonTask {
-            task_id: "gh-quarantine-claimed-300".to_owned(),
-            issue_ref: "acme/widgets#300".to_owned(),
-            project_id: "proj-300".to_owned(),
-            project_name: Some("Quarantine claimed test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Claimed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-300".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(300),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: true,
-        };
-        store
-            .create_task(&daemon_dir, &claimed_task)
-            .map_err(|e| e.to_string())?;
+            // --- Scenario A: Claimed task with label_dirty where cleanup succeeds.
+            // The stub returns Removed (positive cleanup), the writer lock exists
+            // and is released, so resources_released = true and the revert proceeds. ---
+            let claimed_task = DaemonTask {
+                task_id: "gh-quarantine-claimed-300".to_owned(),
+                issue_ref: "acme/widgets#300".to_owned(),
+                project_id: "proj-300".to_owned(),
+                project_name: Some("Quarantine claimed test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Claimed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-300".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(300),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: true,
+            };
+            store
+                .create_task(&daemon_dir, &claimed_task)
+                .map_err(|e| e.to_string())?;
 
-        // Verify precondition: task is Claimed with dirty label
-        let loaded = store.read_task(&daemon_dir, "gh-quarantine-claimed-300")
-            .map_err(|e| e.to_string())?;
-        if loaded.status != TaskStatus::Claimed {
-            return Err(format!("expected claimed, got {}", loaded.status));
-        }
-        if !loaded.label_dirty {
-            return Err("expected label_dirty=true".to_owned());
-        }
-
-        DaemonTaskService::clear_label_dirty(&store, &daemon_dir, "gh-quarantine-claimed-300")
-            .map_err(|e| e.to_string())?;
-
-        // Stub worktree adapter that returns Removed (positive cleanup)
-        struct SuccessWorktree;
-        impl crate::contexts::automation_runtime::WorktreePort for SuccessWorktree {
-            fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
-                base_dir.join("worktrees").join(task_id)
+            // Verify precondition: task is Claimed with dirty label
+            let loaded = store
+                .read_task(&daemon_dir, "gh-quarantine-claimed-300")
+                .map_err(|e| e.to_string())?;
+            if loaded.status != TaskStatus::Claimed {
+                return Err(format!("expected claimed, got {}", loaded.status));
             }
-            fn branch_name(&self, task_id: &str) -> String {
-                format!("rb/{task_id}")
+            if !loaded.label_dirty {
+                return Err("expected label_dirty=true".to_owned());
             }
-            fn create_worktree(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _branch_name: &str, _task_id: &str,
-            ) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn remove_worktree(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _task_id: &str,
-            ) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
-                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::Removed)
+
+            DaemonTaskService::clear_label_dirty(&store, &daemon_dir, "gh-quarantine-claimed-300")
+                .map_err(|e| e.to_string())?;
+
+            // Stub worktree adapter that returns Removed (positive cleanup)
+            struct SuccessWorktree;
+            impl crate::contexts::automation_runtime::WorktreePort for SuccessWorktree {
+                fn worktree_path(
+                    &self,
+                    base_dir: &std::path::Path,
+                    task_id: &str,
+                ) -> std::path::PathBuf {
+                    base_dir.join("worktrees").join(task_id)
+                }
+                fn branch_name(&self, task_id: &str) -> String {
+                    format!("rb/{task_id}")
+                }
+                fn create_worktree(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _branch_name: &str,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
+                fn remove_worktree(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<
+                    crate::contexts::automation_runtime::WorktreeCleanupOutcome,
+                > {
+                    Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::Removed)
+                }
+                fn rebase_onto_default_branch(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _branch_name: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
             }
-            fn rebase_onto_default_branch(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _branch_name: &str,
-            ) -> crate::shared::error::AppResult<()> { Ok(()) }
-        }
-        let success_wt = SuccessWorktree;
+            let success_wt = SuccessWorktree;
 
-        // Create lease file and writer lock so all release sub-steps succeed
-        let lease = WorktreeLease {
-            lease_id: "lease-300".to_owned(),
-            task_id: "gh-quarantine-claimed-300".to_owned(),
-            project_id: "proj-300".to_owned(),
-            worktree_path: ws.path().join("worktrees/task-300"),
-            branch_name: "rb/300-proj-300".to_owned(),
-            acquired_at: now,
-            ttl_seconds: 300,
-            last_heartbeat: now,
-        };
-        store.write_lease(&daemon_dir, &lease)
-            .map_err(|e| e.to_string())?;
-        let proj_300 = ProjectId::new("proj-300".to_owned())
-            .map_err(|e| e.to_string())?;
-        store.acquire_writer_lock(&daemon_dir, &proj_300, "lease-300")
-            .map_err(|e| e.to_string())?;
+            // Create lease file and writer lock so all release sub-steps succeed
+            let lease = WorktreeLease {
+                lease_id: "lease-300".to_owned(),
+                task_id: "gh-quarantine-claimed-300".to_owned(),
+                project_id: "proj-300".to_owned(),
+                worktree_path: ws.path().join("worktrees/task-300"),
+                branch_name: "rb/300-proj-300".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 300,
+                last_heartbeat: now,
+            };
+            store
+                .write_lease(&daemon_dir, &lease)
+                .map_err(|e| e.to_string())?;
+            let proj_300 = ProjectId::new("proj-300".to_owned()).map_err(|e| e.to_string())?;
+            store
+                .acquire_writer_lock(&daemon_dir, &proj_300, "lease-300")
+                .map_err(|e| e.to_string())?;
 
-        let reverted = DaemonTaskService::revert_to_pending_for_recovery(
-            &store, &success_wt, &daemon_dir, ws.path(), "gh-quarantine-claimed-300",
-        ).map_err(|e| e.to_string())?;
-
-        if reverted.status != TaskStatus::Pending {
-            return Err(format!(
-                "expected reverted task to be pending, got {}",
-                reverted.status
-            ));
-        }
-        if reverted.lease_id.is_some() {
-            return Err("expected lease_id cleared after successful revert".to_owned());
-        }
-        if reverted.label_dirty {
-            return Err("expected label_dirty=false after revert (cleared before revert)".to_owned());
-        }
-
-        // --- Scenario A2: Claimed task with label_dirty where cleanup is
-        // partial (stub returns AlreadyAbsent). revert_to_pending_for_recovery
-        // must preserve the task state and lease ownership. ---
-        let claimed_task_partial = DaemonTask {
-            task_id: "gh-quarantine-claimed-302".to_owned(),
-            issue_ref: "acme/widgets#302".to_owned(),
-            project_id: "proj-302".to_owned(),
-            project_name: Some("Quarantine partial cleanup test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Claimed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-302".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(302),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: true,
-        };
-        store
-            .create_task(&daemon_dir, &claimed_task_partial)
+            let reverted = DaemonTaskService::revert_to_pending_for_recovery(
+                &store,
+                &success_wt,
+                &daemon_dir,
+                ws.path(),
+                "gh-quarantine-claimed-300",
+            )
             .map_err(|e| e.to_string())?;
 
-        let lease_302 = WorktreeLease {
-            lease_id: "lease-302".to_owned(),
-            task_id: "gh-quarantine-claimed-302".to_owned(),
-            project_id: "proj-302".to_owned(),
-            worktree_path: ws.path().join("worktrees/task-302"),
-            branch_name: "rb/302-proj-302".to_owned(),
-            acquired_at: now,
-            ttl_seconds: 300,
-            last_heartbeat: now,
-        };
-        store.write_lease(&daemon_dir, &lease_302)
-            .map_err(|e| e.to_string())?;
+            if reverted.status != TaskStatus::Pending {
+                return Err(format!(
+                    "expected reverted task to be pending, got {}",
+                    reverted.status
+                ));
+            }
+            if reverted.lease_id.is_some() {
+                return Err("expected lease_id cleared after successful revert".to_owned());
+            }
+            if reverted.label_dirty {
+                return Err(
+                    "expected label_dirty=false after revert (cleared before revert)".to_owned(),
+                );
+            }
 
-        // Stub that returns AlreadyAbsent — simulates partial cleanup
-        struct PartialWorktree;
-        impl crate::contexts::automation_runtime::WorktreePort for PartialWorktree {
-            fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
-                base_dir.join("worktrees").join(task_id)
-            }
-            fn branch_name(&self, task_id: &str) -> String {
-                format!("rb/{task_id}")
-            }
-            fn create_worktree(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _branch_name: &str, _task_id: &str,
-            ) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn remove_worktree(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _task_id: &str,
-            ) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
-                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
-            }
-            fn rebase_onto_default_branch(
-                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
-                _branch_name: &str,
-            ) -> crate::shared::error::AppResult<()> { Ok(()) }
-        }
-        let partial_wt = PartialWorktree;
+            // --- Scenario A2: Claimed task with label_dirty where cleanup is
+            // partial (stub returns AlreadyAbsent). revert_to_pending_for_recovery
+            // must preserve the task state and lease ownership. ---
+            let claimed_task_partial = DaemonTask {
+                task_id: "gh-quarantine-claimed-302".to_owned(),
+                issue_ref: "acme/widgets#302".to_owned(),
+                project_id: "proj-302".to_owned(),
+                project_name: Some("Quarantine partial cleanup test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Claimed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-302".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(302),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: true,
+            };
+            store
+                .create_task(&daemon_dir, &claimed_task_partial)
+                .map_err(|e| e.to_string())?;
 
-        let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
-            &store, &partial_wt, &daemon_dir, ws.path(), "gh-quarantine-claimed-302",
-        );
-        if revert_result.is_ok() {
-            return Err(
-                "revert_to_pending_for_recovery should fail when cleanup is partial".to_owned(),
+            let lease_302 = WorktreeLease {
+                lease_id: "lease-302".to_owned(),
+                task_id: "gh-quarantine-claimed-302".to_owned(),
+                project_id: "proj-302".to_owned(),
+                worktree_path: ws.path().join("worktrees/task-302"),
+                branch_name: "rb/302-proj-302".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 300,
+                last_heartbeat: now,
+            };
+            store
+                .write_lease(&daemon_dir, &lease_302)
+                .map_err(|e| e.to_string())?;
+
+            // Stub that returns AlreadyAbsent — simulates partial cleanup
+            struct PartialWorktree;
+            impl crate::contexts::automation_runtime::WorktreePort for PartialWorktree {
+                fn worktree_path(
+                    &self,
+                    base_dir: &std::path::Path,
+                    task_id: &str,
+                ) -> std::path::PathBuf {
+                    base_dir.join("worktrees").join(task_id)
+                }
+                fn branch_name(&self, task_id: &str) -> String {
+                    format!("rb/{task_id}")
+                }
+                fn create_worktree(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _branch_name: &str,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
+                fn remove_worktree(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<
+                    crate::contexts::automation_runtime::WorktreeCleanupOutcome,
+                > {
+                    Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+                }
+                fn rebase_onto_default_branch(
+                    &self,
+                    _repo_root: &std::path::Path,
+                    _worktree_path: &std::path::Path,
+                    _branch_name: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
+            }
+            let partial_wt = PartialWorktree;
+
+            let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
+                &store,
+                &partial_wt,
+                &daemon_dir,
+                ws.path(),
+                "gh-quarantine-claimed-302",
             );
-        }
-        // Verify task preserved its state and lease
-        let preserved = store.read_task(&daemon_dir, "gh-quarantine-claimed-302")
-            .map_err(|e| e.to_string())?;
-        if preserved.status != TaskStatus::Claimed {
-            return Err(format!(
-                "expected claimed preserved after partial cleanup, got {}",
-                preserved.status
-            ));
-        }
-        if preserved.lease_id.as_deref() != Some("lease-302") {
-            return Err("expected lease_id preserved after partial cleanup".to_owned());
-        }
+            if revert_result.is_ok() {
+                return Err(
+                    "revert_to_pending_for_recovery should fail when cleanup is partial".to_owned(),
+                );
+            }
+            // Verify task preserved its state and lease
+            let preserved = store
+                .read_task(&daemon_dir, "gh-quarantine-claimed-302")
+                .map_err(|e| e.to_string())?;
+            if preserved.status != TaskStatus::Claimed {
+                return Err(format!(
+                    "expected claimed preserved after partial cleanup, got {}",
+                    preserved.status
+                ));
+            }
+            if preserved.lease_id.as_deref() != Some("lease-302") {
+                return Err("expected lease_id preserved after partial cleanup".to_owned());
+            }
 
-        // --- Scenario B: Completed task with label_dirty and unreleased lease
-        // (simulates terminal label-sync failure that quarantined before
-        // lease release). Phase 0 should attempt release — and the lease
-        // reference must be preserved until explicit release succeeds. ---
-        let completed_task = DaemonTask {
-            task_id: "gh-quarantine-completed-301".to_owned(),
-            issue_ref: "acme/widgets#301".to_owned(),
-            project_id: "proj-301".to_owned(),
-            project_name: Some("Quarantine completed test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Completed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-301".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(301),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: true,
-        };
-        store
-            .create_task(&daemon_dir, &completed_task)
-            .map_err(|e| e.to_string())?;
+            // --- Scenario B: Completed task with label_dirty and unreleased lease
+            // (simulates terminal label-sync failure that quarantined before
+            // lease release). Phase 0 should attempt release — and the lease
+            // reference must be preserved until explicit release succeeds. ---
+            let completed_task = DaemonTask {
+                task_id: "gh-quarantine-completed-301".to_owned(),
+                issue_ref: "acme/widgets#301".to_owned(),
+                project_id: "proj-301".to_owned(),
+                project_name: Some("Quarantine completed test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Completed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-301".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(301),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: true,
+            };
+            store
+                .create_task(&daemon_dir, &completed_task)
+                .map_err(|e| e.to_string())?;
 
-        // Create its lease
-        let terminal_lease = WorktreeLease {
-            lease_id: "lease-301".to_owned(),
-            task_id: "gh-quarantine-completed-301".to_owned(),
-            project_id: "proj-301".to_owned(),
-            worktree_path: ws.path().join("worktrees/task-301"),
-            branch_name: "rb/301-proj-301".to_owned(),
-            acquired_at: now,
-            ttl_seconds: 300,
-            last_heartbeat: now,
-        };
-        store.write_lease(&daemon_dir, &terminal_lease)
-            .map_err(|e| e.to_string())?;
+            // Create its lease
+            let terminal_lease = WorktreeLease {
+                lease_id: "lease-301".to_owned(),
+                task_id: "gh-quarantine-completed-301".to_owned(),
+                project_id: "proj-301".to_owned(),
+                worktree_path: ws.path().join("worktrees/task-301"),
+                branch_name: "rb/301-proj-301".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 300,
+                last_heartbeat: now,
+            };
+            store
+                .write_lease(&daemon_dir, &terminal_lease)
+                .map_err(|e| e.to_string())?;
 
-        // Verify: terminal task with lease and dirty label
-        let loaded_terminal = store.read_task(&daemon_dir, "gh-quarantine-completed-301")
-            .map_err(|e| e.to_string())?;
-        if !loaded_terminal.is_terminal() {
-            return Err("expected terminal status".to_owned());
-        }
-        if !loaded_terminal.label_dirty {
-            return Err("expected label_dirty=true".to_owned());
-        }
-        if loaded_terminal.lease_id.is_none() {
-            return Err("expected lease_id present".to_owned());
-        }
+            // Verify: terminal task with lease and dirty label
+            let loaded_terminal = store
+                .read_task(&daemon_dir, "gh-quarantine-completed-301")
+                .map_err(|e| e.to_string())?;
+            if !loaded_terminal.is_terminal() {
+                return Err("expected terminal status".to_owned());
+            }
+            if !loaded_terminal.label_dirty {
+                return Err("expected label_dirty=true".to_owned());
+            }
+            if loaded_terminal.lease_id.is_none() {
+                return Err("expected lease_id present".to_owned());
+            }
 
-        // Simulate Phase 0: clear dirty flag and verify the lease is still
-        // present (Phase 0 in production would call release_task_lease).
-        DaemonTaskService::clear_label_dirty(&store, &daemon_dir, "gh-quarantine-completed-301")
-            .map_err(|e| e.to_string())?;
-
-        let after_clear = store.read_task(&daemon_dir, "gh-quarantine-completed-301")
-            .map_err(|e| e.to_string())?;
-        if after_clear.label_dirty {
-            return Err("expected label_dirty=false after clear".to_owned());
-        }
-        // Task is still terminal and the lease reference is still present
-        // (in production, release_task_lease would then clear it).
-        if !after_clear.is_terminal() {
-            return Err("task should remain terminal".to_owned());
-        }
-        if after_clear.lease_id.is_none() {
-            return Err("lease_id should still be present until explicit release".to_owned());
-        }
-
-        // --- Scenario C: revert_to_pending_for_recovery must reject terminal tasks ---
-        let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
-            &store, &partial_wt, &daemon_dir, ws.path(), "gh-quarantine-completed-301",
-        );
-        if revert_result.is_ok() {
-            return Err("revert_to_pending_for_recovery should reject terminal tasks".to_owned());
-        }
-
-        // --- Scenario D: retry_task must reject tasks that still hold a lease
-        // reference (from partial cleanup / quarantined failure). ---
-        let failed_with_lease = DaemonTask {
-            task_id: "gh-retry-retained-303".to_owned(),
-            issue_ref: "acme/widgets#303".to_owned(),
-            project_id: "proj-303".to_owned(),
-            project_name: Some("Retry retained lease test".to_owned()),
-            prompt: None,
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Failed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 1,
-            lease_id: Some("lease-303".to_owned()),
-            failure_class: Some("test".to_owned()),
-            failure_message: Some("simulated failure".to_owned()),
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(303),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store
-            .create_task(&daemon_dir, &failed_with_lease)
+            // Simulate Phase 0: clear dirty flag and verify the lease is still
+            // present (Phase 0 in production would call release_task_lease).
+            DaemonTaskService::clear_label_dirty(
+                &store,
+                &daemon_dir,
+                "gh-quarantine-completed-301",
+            )
             .map_err(|e| e.to_string())?;
 
-        let retry_result = DaemonTaskService::retry_task(
-            &store, &daemon_dir, "gh-retry-retained-303",
-        );
-        if retry_result.is_ok() {
-            return Err(
-                "retry_task should reject tasks that still hold a lease reference".to_owned(),
+            let after_clear = store
+                .read_task(&daemon_dir, "gh-quarantine-completed-301")
+                .map_err(|e| e.to_string())?;
+            if after_clear.label_dirty {
+                return Err("expected label_dirty=false after clear".to_owned());
+            }
+            // Task is still terminal and the lease reference is still present
+            // (in production, release_task_lease would then clear it).
+            if !after_clear.is_terminal() {
+                return Err("task should remain terminal".to_owned());
+            }
+            if after_clear.lease_id.is_none() {
+                return Err("lease_id should still be present until explicit release".to_owned());
+            }
+
+            // --- Scenario C: revert_to_pending_for_recovery must reject terminal tasks ---
+            let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
+                &store,
+                &partial_wt,
+                &daemon_dir,
+                ws.path(),
+                "gh-quarantine-completed-301",
             );
-        }
-        // Verify task preserved its failed state
-        let still_failed = store.read_task(&daemon_dir, "gh-retry-retained-303")
-            .map_err(|e| e.to_string())?;
-        if still_failed.status != TaskStatus::Failed {
-            return Err(format!(
-                "expected task to remain failed after rejected retry, got {}",
-                still_failed.status
-            ));
-        }
-        if still_failed.lease_id.as_deref() != Some("lease-303") {
-            return Err("expected lease_id preserved after rejected retry".to_owned());
-        }
+            if revert_result.is_ok() {
+                return Err(
+                    "revert_to_pending_for_recovery should reject terminal tasks".to_owned(),
+                );
+            }
 
-        Ok(())
-    });
+            // --- Scenario D: retry_task must reject tasks that still hold a lease
+            // reference (from partial cleanup / quarantined failure). ---
+            let failed_with_lease = DaemonTask {
+                task_id: "gh-retry-retained-303".to_owned(),
+                issue_ref: "acme/widgets#303".to_owned(),
+                project_id: "proj-303".to_owned(),
+                project_name: Some("Retry retained lease test".to_owned()),
+                prompt: None,
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Failed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 1,
+                lease_id: Some("lease-303".to_owned()),
+                failure_class: Some("test".to_owned()),
+                failure_message: Some("simulated failure".to_owned()),
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(303),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(&daemon_dir, &failed_with_lease)
+                .map_err(|e| e.to_string())?;
+
+            let retry_result =
+                DaemonTaskService::retry_task(&store, &daemon_dir, "gh-retry-retained-303");
+            if retry_result.is_ok() {
+                return Err(
+                    "retry_task should reject tasks that still hold a lease reference".to_owned(),
+                );
+            }
+            // Verify task preserved its failed state
+            let still_failed = store
+                .read_task(&daemon_dir, "gh-retry-retained-303")
+                .map_err(|e| e.to_string())?;
+            if still_failed.status != TaskStatus::Failed {
+                return Err(format!(
+                    "expected task to remain failed after rejected retry, got {}",
+                    still_failed.status
+                ));
+            }
+            if still_failed.lease_id.as_deref() != Some("lease-303") {
+                return Err("expected lease_id preserved after rejected retry".to_owned());
+            }
+
+            Ok(())
+        }
+    );
 
     // -----------------------------------------------------------------------
     // daemon.tasks.label_failure_quarantines_repo
@@ -13159,18 +13373,17 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     // -----------------------------------------------------------------------
     reg!(m, "daemon.tasks.label_failure_quarantines_repo", || {
         use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore,
+            FsProjectStore, FsRawOutputStore, FsRequirementsStore, FsRunSnapshotStore,
+            FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+        };
         use crate::adapters::github::{
             GithubComment, GithubIssue, GithubPort, GithubPullRequest, GithubReview,
         };
         use crate::adapters::stub_backend::StubBackendAdapter;
         use crate::adapters::BackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionService;
-        use crate::adapters::fs::{
-            FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
-            FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore,
-            FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
-            FsRawOutputStore, FsSessionStore,
-        };
         use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
@@ -13183,28 +13396,120 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         // --- A GitHub adapter that always fails on add_label ---
         struct FailLabelGithub;
         impl GithubPort for FailLabelGithub {
-            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> { Ok(()) }
-            async fn poll_candidate_issues(&self, _o: &str, _r: &str, _l: &str) -> AppResult<Vec<GithubIssue>> { Ok(vec![]) }
-            async fn read_issue_labels(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<String>> { Ok(vec![]) }
+            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> {
+                Ok(())
+            }
+            async fn poll_candidate_issues(
+                &self,
+                _o: &str,
+                _r: &str,
+                _l: &str,
+            ) -> AppResult<Vec<GithubIssue>> {
+                Ok(vec![])
+            }
+            async fn read_issue_labels(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<String>> {
+                Ok(vec![])
+            }
             async fn add_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
-                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "simulated label failure".to_owned() })
+                Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: "simulated label failure".to_owned(),
+                })
             }
-            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
-            async fn replace_labels(&self, _o: &str, _r: &str, _n: u64, _l: &[&str]) -> AppResult<()> { Ok(()) }
-            async fn fetch_issue_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
-            async fn post_idempotent_comment(&self, _o: &str, _r: &str, _n: u64, _m: &str, _b: &str) -> AppResult<()> { Ok(()) }
-            async fn fetch_pr_review_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
-            async fn fetch_pr_reviews(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubReview>> { Ok(vec![]) }
-            async fn create_draft_pr(&self, _o: &str, _r: &str, _t: &str, _b: &str, _h: &str, _bs: &str) -> AppResult<GithubPullRequest> {
-                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "not implemented".to_owned() })
+            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
+                Ok(())
             }
-            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
-            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
-            async fn fetch_pr_state(&self, _o: &str, _r: &str, _n: u64) -> AppResult<GithubPullRequest> {
-                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "not implemented".to_owned() })
+            async fn replace_labels(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+                _l: &[&str],
+            ) -> AppResult<()> {
+                Ok(())
             }
-            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> { Ok(()) }
-            async fn is_branch_ahead(&self, _o: &str, _r: &str, _b: &str, _h: &str) -> AppResult<bool> { Ok(false) }
+            async fn fetch_issue_comments(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubComment>> {
+                Ok(vec![])
+            }
+            async fn post_idempotent_comment(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+                _m: &str,
+                _b: &str,
+            ) -> AppResult<()> {
+                Ok(())
+            }
+            async fn fetch_pr_review_comments(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubComment>> {
+                Ok(vec![])
+            }
+            async fn fetch_pr_reviews(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubReview>> {
+                Ok(vec![])
+            }
+            async fn create_draft_pr(
+                &self,
+                _o: &str,
+                _r: &str,
+                _t: &str,
+                _b: &str,
+                _h: &str,
+                _bs: &str,
+            ) -> AppResult<GithubPullRequest> {
+                Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: "not implemented".to_owned(),
+                })
+            }
+            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> {
+                Ok(())
+            }
+            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> {
+                Ok(())
+            }
+            async fn fetch_pr_state(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<GithubPullRequest> {
+                Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: "not implemented".to_owned(),
+                })
+            }
+            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> {
+                Ok(())
+            }
+            async fn is_branch_ahead(
+                &self,
+                _o: &str,
+                _r: &str,
+                _b: &str,
+                _h: &str,
+            ) -> AppResult<bool> {
+                Ok(false)
+            }
         }
 
         let ws = TempWorkspace::new()?;
@@ -13212,8 +13517,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         init_git_repo(&ws)?;
 
         let data_dir = ws.path().join("daemon-data");
-        repo_registry::register_repo(&data_dir, "acme/widgets")
-            .map_err(|e| e.to_string())?;
+        repo_registry::register_repo(&data_dir, "acme/widgets").map_err(|e| e.to_string())?;
         let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
         let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
@@ -13277,8 +13581,12 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(&daemon_dir, &task1).map_err(|e| e.to_string())?;
-        store.create_task(&daemon_dir, &task2).map_err(|e| e.to_string())?;
+        store
+            .create_task(&daemon_dir, &task1)
+            .map_err(|e| e.to_string())?;
+        store
+            .create_task(&daemon_dir, &task2)
+            .map_err(|e| e.to_string())?;
 
         // Build a DaemonLoop with the failing GitHub adapter and run one cycle
         let reg = repo_registry::RepoRegistration {
@@ -13330,7 +13638,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         block_on_app_result(daemon_loop.run_multi_repo(&loop_config, &github))?;
 
         // Verify: task 1 was claimed and label_dirty is set
-        let t1 = store.read_task(&daemon_dir, "qr-task-1").map_err(|e| e.to_string())?;
+        let t1 = store
+            .read_task(&daemon_dir, "qr-task-1")
+            .map_err(|e| e.to_string())?;
         if t1.status == TaskStatus::Pending {
             return Err("task 1 should have been claimed (not still pending)".to_owned());
         }
@@ -13339,7 +13649,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify: task 2 was NOT processed (still pending) — proves quarantine
-        let t2 = store.read_task(&daemon_dir, "qr-task-2").map_err(|e| e.to_string())?;
+        let t2 = store
+            .read_task(&daemon_dir, "qr-task-2")
+            .map_err(|e| e.to_string())?;
         if t2.status != TaskStatus::Pending {
             return Err(format!(
                 "task 2 should still be pending (quarantine failed), got {}",
@@ -13517,9 +13829,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     //   Pending (rb:ready) → Active (rb:in-progress) →
     //     WaitingForRequirements (rb:waiting-feedback) or Failed (rb:failed)
     reg!(m, "daemon.labels.requirements_draft_lifecycle", || {
-        use crate::adapters::github::{
-            GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,
-        };
+        use crate::adapters::github::{GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient};
         use crate::contexts::automation_runtime::github_intake;
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
@@ -13529,8 +13839,13 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             number: 77,
             title: "Draft lifecycle test".to_owned(),
             body: None,
-            labels: vec![GithubLabel { name: "rb:ready".to_owned() }],
-            user: GithubUser { login: "user".to_owned(), id: 1 },
+            labels: vec![GithubLabel {
+                name: "rb:ready".to_owned(),
+            }],
+            user: GithubUser {
+                login: "user".to_owned(),
+                id: 1,
+            },
             html_url: "https://github.com/acme/widgets/issues/77".to_owned(),
             pull_request: None,
             updated_at: "2026-03-17T00:00:00Z".to_owned(),
@@ -13726,8 +14041,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             labels: vec![],
             routing_command: None, // /rb run is a daemon command, filtered out
         };
-        let body_mode = watcher::resolve_dispatch_mode(&meta)
-            .map_err(|e| e.to_string())?;
+        let body_mode = watcher::resolve_dispatch_mode(&meta).map_err(|e| e.to_string())?;
         if body_mode != DispatchMode::RequirementsDraft {
             return Err(format!(
                 "expected body scan to produce RequirementsDraft, got {:?}",
@@ -13751,252 +14065,275 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
-    reg!(m, "daemon.labels.requirements_draft_label_failure_quarantine", || {
-        use crate::adapters::github::{
-            GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,
-        };
-        use crate::contexts::automation_runtime::github_intake;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
-        };
+    reg!(
+        m,
+        "daemon.labels.requirements_draft_label_failure_quarantine",
+        || {
+            use crate::adapters::github::{
+                GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,
+            };
+            use crate::contexts::automation_runtime::github_intake;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+            };
 
-        let gh = InMemoryGithubClient::with_issues(vec![GithubIssue {
-            number: 99,
-            title: "Label failure quarantine test".to_owned(),
-            body: None,
-            labels: vec![GithubLabel { name: "rb:in-progress".to_owned() }],
-            user: GithubUser { login: "user".to_owned(), id: 1 },
-            html_url: "https://github.com/acme/widgets/issues/99".to_owned(),
-            pull_request: None,
-            updated_at: "2026-03-17T00:00:00Z".to_owned(),
-        }]);
+            let gh = InMemoryGithubClient::with_issues(vec![GithubIssue {
+                number: 99,
+                title: "Label failure quarantine test".to_owned(),
+                body: None,
+                labels: vec![GithubLabel {
+                    name: "rb:in-progress".to_owned(),
+                }],
+                user: GithubUser {
+                    login: "user".to_owned(),
+                    id: 1,
+                },
+                html_url: "https://github.com/acme/widgets/issues/99".to_owned(),
+                pull_request: None,
+                updated_at: "2026-03-17T00:00:00Z".to_owned(),
+            }]);
 
-        let now = chrono::Utc::now();
-        let mut task = DaemonTask {
-            task_id: "gh-quarantine-99".to_owned(),
-            issue_ref: "acme/widgets#99".to_owned(),
-            project_id: String::new(),
-            project_name: None,
-            prompt: Some("Quarantine test".to_owned()),
-            routing_command: Some("/rb requirements".to_owned()),
-            routing_labels: vec![],
-            resolved_flow: None,
-            routing_source: Some(RoutingSource::Command),
-            routing_warnings: vec![],
-            status: TaskStatus::Active,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 0,
-            lease_id: None,
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::RequirementsDraft,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(99),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
+            let now = chrono::Utc::now();
+            let mut task = DaemonTask {
+                task_id: "gh-quarantine-99".to_owned(),
+                issue_ref: "acme/widgets#99".to_owned(),
+                project_id: String::new(),
+                project_name: None,
+                prompt: Some("Quarantine test".to_owned()),
+                routing_command: Some("/rb requirements".to_owned()),
+                routing_labels: vec![],
+                resolved_flow: None,
+                routing_source: Some(RoutingSource::Command),
+                routing_warnings: vec![],
+                status: TaskStatus::Active,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: None,
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::RequirementsDraft,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(99),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
 
-        async fn run_test(
-            gh: &InMemoryGithubClient,
-            task: &mut DaemonTask,
-        ) -> Result<(), String> {
-            // ── Test 1: Active → WaitingForRequirements label sync failure ──
-            // Simulate: task transitions to WaitingForRequirements, then
-            // add_label for rb:waiting-feedback fails.
-            task.status = TaskStatus::Active;
-            task.transition_to(TaskStatus::WaitingForRequirements, chrono::Utc::now())
-                .map_err(|e| e.to_string())?;
+            async fn run_test(
+                gh: &InMemoryGithubClient,
+                task: &mut DaemonTask,
+            ) -> Result<(), String> {
+                // ── Test 1: Active → WaitingForRequirements label sync failure ──
+                // Simulate: task transitions to WaitingForRequirements, then
+                // add_label for rb:waiting-feedback fails.
+                task.status = TaskStatus::Active;
+                task.transition_to(TaskStatus::WaitingForRequirements, chrono::Utc::now())
+                    .map_err(|e| e.to_string())?;
 
-            // Inject add_label failure for issue 99
-            gh.set_add_label_failure(99);
+                // Inject add_label failure for issue 99
+                gh.set_add_label_failure(99);
 
-            let result = github_intake::sync_label_for_task(gh, task).await;
-            if result.is_ok() {
-                return Err(
-                    "expected label sync to fail for WaitingForRequirements, but it succeeded"
-                        .to_owned(),
-                );
+                let result = github_intake::sync_label_for_task(gh, task).await;
+                if result.is_ok() {
+                    return Err(
+                        "expected label sync to fail for WaitingForRequirements, but it succeeded"
+                            .to_owned(),
+                    );
+                }
+
+                // Verify the error is propagatable (not swallowed)
+                let err_msg = result.unwrap_err().to_string();
+                if !err_msg.contains("simulated add_label failure") {
+                    return Err(format!("unexpected error message: {err_msg}"));
+                }
+
+                // Clear failure and verify sync works when not failing
+                gh.clear_add_label_failure(99);
+
+                // ── Test 2: Active → Pending label sync failure ──
+                // Reset task to Active, then transition to Pending
+                task.status = TaskStatus::Active;
+                task.transition_to(TaskStatus::Pending, chrono::Utc::now())
+                    .map_err(|e| e.to_string())?;
+
+                // Inject failure again
+                gh.set_add_label_failure(99);
+
+                let result = github_intake::sync_label_for_task(gh, task).await;
+                if result.is_ok() {
+                    return Err(
+                        "expected label sync to fail for Pending requeue, but it succeeded"
+                            .to_owned(),
+                    );
+                }
+
+                // ── Test 3: Failure on terminal state (mark_failed) is tolerable ──
+                // When task is already Failed, label sync failure should still be
+                // detectable but callers may choose to swallow it.
+                gh.clear_add_label_failure(99);
+                task.status = TaskStatus::Failed;
+                task.failure_class = Some("test".to_owned());
+                github_intake::sync_label_for_task(gh, task)
+                    .await
+                    .map_err(|e| format!("sync on terminal Failed should succeed: {e}"))?;
+
+                Ok(())
             }
 
-            // Verify the error is propagatable (not swallowed)
-            let err_msg = result.unwrap_err().to_string();
-            if !err_msg.contains("simulated add_label failure") {
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                tokio::task::block_in_place(|| handle.block_on(run_test(&gh, &mut task)))
+            } else {
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| e.to_string())?;
+                rt.block_on(run_test(&gh, &mut task))
+            }
+        }
+    );
+
+    reg!(
+        m,
+        "daemon.pr_runtime.create_draft_when_branch_ahead",
+        || {
+            use crate::adapters::fs::FsDaemonStore;
+            use crate::adapters::github::InMemoryGithubClient;
+            use crate::contexts::agent_execution::model::CancellationToken;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
+            };
+            use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::shared::domain::FlowPreset;
+
+            struct PrWorktree;
+            impl crate::contexts::automation_runtime::WorktreePort for PrWorktree {
+                fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+                    base_dir.join("worktrees").join(task_id)
+                }
+                fn branch_name(&self, task_id: &str) -> String {
+                    format!("rb/{task_id}")
+                }
+                fn create_worktree(
+                    &self,
+                    _repo_root: &Path,
+                    _worktree_path: &Path,
+                    _branch_name: &str,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
+                fn remove_worktree(
+                    &self,
+                    _repo_root: &Path,
+                    _worktree_path: &Path,
+                    _task_id: &str,
+                ) -> crate::shared::error::AppResult<
+                    crate::contexts::automation_runtime::WorktreeCleanupOutcome,
+                > {
+                    Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
+                }
+                fn rebase_onto_default_branch(
+                    &self,
+                    _repo_root: &Path,
+                    _worktree_path: &Path,
+                    _branch_name: &str,
+                ) -> crate::shared::error::AppResult<()> {
+                    Ok(())
+                }
+                fn default_branch_name(
+                    &self,
+                    _repo_root: &Path,
+                ) -> crate::shared::error::AppResult<String> {
+                    Ok("main".to_owned())
+                }
+            }
+
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+            let store = FsDaemonStore;
+            let github = InMemoryGithubClient::new();
+            github
+                .branches_ahead
+                .lock()
+                .unwrap()
+                .insert("acme/widgets:main...rb/42-proj-42".to_owned());
+            let now = chrono::Utc::now();
+            let task = DaemonTask {
+                task_id: "pr-runtime-42".to_owned(),
+                issue_ref: "acme/widgets#42".to_owned(),
+                project_id: "proj-42".to_owned(),
+                project_name: Some("Create PR".to_owned()),
+                prompt: Some("Draft PR runtime".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Active,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: Some("lease-42".to_owned()),
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(42),
+                pr_url: None,
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(ws.path(), &task)
+                .map_err(|e| e.to_string())?;
+            let lease = WorktreeLease {
+                lease_id: "lease-42".to_owned(),
+                task_id: task.task_id.clone(),
+                project_id: task.project_id.clone(),
+                worktree_path: ws.path().join("worktrees/pr-runtime-42"),
+                branch_name: "rb/42-proj-42".to_owned(),
+                acquired_at: now,
+                ttl_seconds: 300,
+                last_heartbeat: now,
+            };
+
+            let service = PrRuntimeService::new(&store, &PrWorktree, &github);
+            let url = block_on_app_result(service.ensure_draft_pr(
+                ws.path(),
+                ws.path(),
+                &task.task_id,
+                &lease,
+                &CancellationToken::new(),
+            ))?
+            .ok_or("expected draft PR URL".to_owned())?;
+
+            if !url.ends_with("/pull/100") {
+                return Err(format!("unexpected PR URL: {url}"));
+            }
+            let persisted = store
+                .read_task(ws.path(), &task.task_id)
+                .map_err(|e| e.to_string())?;
+            if persisted.pr_url.as_deref() != Some(url.as_str()) {
                 return Err(format!(
-                    "unexpected error message: {err_msg}"
+                    "expected persisted pr_url, got {:?}",
+                    persisted.pr_url
                 ));
             }
-
-            // Clear failure and verify sync works when not failing
-            gh.clear_add_label_failure(99);
-
-            // ── Test 2: Active → Pending label sync failure ──
-            // Reset task to Active, then transition to Pending
-            task.status = TaskStatus::Active;
-            task.transition_to(TaskStatus::Pending, chrono::Utc::now())
-                .map_err(|e| e.to_string())?;
-
-            // Inject failure again
-            gh.set_add_label_failure(99);
-
-            let result = github_intake::sync_label_for_task(gh, task).await;
-            if result.is_ok() {
-                return Err(
-                    "expected label sync to fail for Pending requeue, but it succeeded"
-                        .to_owned(),
-                );
+            if github.pull_requests.lock().unwrap().len() != 1 {
+                return Err("expected exactly one PR to be created".to_owned());
             }
-
-            // ── Test 3: Failure on terminal state (mark_failed) is tolerable ──
-            // When task is already Failed, label sync failure should still be
-            // detectable but callers may choose to swallow it.
-            gh.clear_add_label_failure(99);
-            task.status = TaskStatus::Failed;
-            task.failure_class = Some("test".to_owned());
-            github_intake::sync_label_for_task(gh, task)
-                .await
-                .map_err(|e| format!("sync on terminal Failed should succeed: {e}"))?;
 
             Ok(())
         }
-
-        if let Ok(handle) = tokio::runtime::Handle::try_current() {
-            tokio::task::block_in_place(|| handle.block_on(run_test(&gh, &mut task)))
-        } else {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| e.to_string())?;
-            rt.block_on(run_test(&gh, &mut task))
-        }
-    });
-
-    reg!(m, "daemon.pr_runtime.create_draft_when_branch_ahead", || {
-        use crate::adapters::fs::FsDaemonStore;
-        use crate::adapters::github::InMemoryGithubClient;
-        use crate::contexts::agent_execution::model::CancellationToken;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
-        };
-        use crate::contexts::automation_runtime::pr_runtime::PrRuntimeService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::FlowPreset;
-
-        struct PrWorktree;
-        impl crate::contexts::automation_runtime::WorktreePort for PrWorktree {
-            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
-                base_dir.join("worktrees").join(task_id)
-            }
-            fn branch_name(&self, task_id: &str) -> String {
-                format!("rb/{task_id}")
-            }
-            fn create_worktree(
-                &self,
-                _repo_root: &Path,
-                _worktree_path: &Path,
-                _branch_name: &str,
-                _task_id: &str,
-            ) -> crate::shared::error::AppResult<()> {
-                Ok(())
-            }
-            fn remove_worktree(
-                &self,
-                _repo_root: &Path,
-                _worktree_path: &Path,
-                _task_id: &str,
-            ) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
-                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
-            }
-            fn rebase_onto_default_branch(
-                &self,
-                _repo_root: &Path,
-                _worktree_path: &Path,
-                _branch_name: &str,
-            ) -> crate::shared::error::AppResult<()> {
-                Ok(())
-            }
-            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> {
-                Ok("main".to_owned())
-            }
-        }
-
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-        let store = FsDaemonStore;
-        let github = InMemoryGithubClient::new();
-        github
-            .branches_ahead
-            .lock()
-            .unwrap()
-            .insert("acme/widgets:main...rb/42-proj-42".to_owned());
-        let now = chrono::Utc::now();
-        let task = DaemonTask {
-            task_id: "pr-runtime-42".to_owned(),
-            issue_ref: "acme/widgets#42".to_owned(),
-            project_id: "proj-42".to_owned(),
-            project_name: Some("Create PR".to_owned()),
-            prompt: Some("Draft PR runtime".to_owned()),
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Active,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 0,
-            lease_id: Some("lease-42".to_owned()),
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(42),
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
-        let lease = WorktreeLease {
-            lease_id: "lease-42".to_owned(),
-            task_id: task.task_id.clone(),
-            project_id: task.project_id.clone(),
-            worktree_path: ws.path().join("worktrees/pr-runtime-42"),
-            branch_name: "rb/42-proj-42".to_owned(),
-            acquired_at: now,
-            ttl_seconds: 300,
-            last_heartbeat: now,
-        };
-
-        let service = PrRuntimeService::new(&store, &PrWorktree, &github);
-        let url = block_on_app_result(service.ensure_draft_pr(
-            ws.path(),
-            ws.path(),
-            &task.task_id,
-            &lease,
-            &CancellationToken::new(),
-        ))?
-        .ok_or("expected draft PR URL".to_owned())?;
-
-        if !url.ends_with("/pull/100") {
-            return Err(format!("unexpected PR URL: {url}"));
-        }
-        let persisted = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
-        if persisted.pr_url.as_deref() != Some(url.as_str()) {
-            return Err(format!("expected persisted pr_url, got {:?}", persisted.pr_url));
-        }
-        if github.pull_requests.lock().unwrap().len() != 1 {
-            return Err("expected exactly one PR to be created".to_owned());
-        }
-
-        Ok(())
-    });
+    );
 
     reg!(m, "daemon.pr_runtime.push_before_create", || {
         use crate::adapters::fs::FsDaemonStore;
@@ -14017,17 +14354,83 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             events: Arc<Mutex<Vec<String>>>,
         }
         impl GithubPort for RecordingGithub {
-            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> { Ok(()) }
-            async fn poll_candidate_issues(&self, _o: &str, _r: &str, _l: &str) -> AppResult<Vec<GithubIssue>> { Ok(vec![]) }
-            async fn read_issue_labels(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<String>> { Ok(vec![]) }
-            async fn add_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
-            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
-            async fn replace_labels(&self, _o: &str, _r: &str, _n: u64, _l: &[&str]) -> AppResult<()> { Ok(()) }
-            async fn fetch_issue_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
-            async fn post_idempotent_comment(&self, _o: &str, _r: &str, _n: u64, _m: &str, _b: &str) -> AppResult<()> { Ok(()) }
-            async fn fetch_pr_review_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
-            async fn fetch_pr_reviews(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubReview>> { Ok(vec![]) }
-            async fn create_draft_pr(&self, owner: &str, repo: &str, _t: &str, _b: &str, head: &str, _bs: &str) -> AppResult<GithubPullRequest> {
+            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> {
+                Ok(())
+            }
+            async fn poll_candidate_issues(
+                &self,
+                _o: &str,
+                _r: &str,
+                _l: &str,
+            ) -> AppResult<Vec<GithubIssue>> {
+                Ok(vec![])
+            }
+            async fn read_issue_labels(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<String>> {
+                Ok(vec![])
+            }
+            async fn add_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
+                Ok(())
+            }
+            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
+                Ok(())
+            }
+            async fn replace_labels(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+                _l: &[&str],
+            ) -> AppResult<()> {
+                Ok(())
+            }
+            async fn fetch_issue_comments(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubComment>> {
+                Ok(vec![])
+            }
+            async fn post_idempotent_comment(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+                _m: &str,
+                _b: &str,
+            ) -> AppResult<()> {
+                Ok(())
+            }
+            async fn fetch_pr_review_comments(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubComment>> {
+                Ok(vec![])
+            }
+            async fn fetch_pr_reviews(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<Vec<GithubReview>> {
+                Ok(vec![])
+            }
+            async fn create_draft_pr(
+                &self,
+                owner: &str,
+                repo: &str,
+                _t: &str,
+                _b: &str,
+                head: &str,
+                _bs: &str,
+            ) -> AppResult<GithubPullRequest> {
                 self.events.lock().unwrap().push("create".to_owned());
                 Ok(GithubPullRequest {
                     number: 100,
@@ -14035,25 +14438,50 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                     state: "open".to_owned(),
                     draft: Some(true),
                     node_id: "PR_100".to_owned(),
-                    head: Some(crate::adapters::github::GithubPrRef { ref_name: head.to_owned(), sha: "000".to_owned() }),
+                    head: Some(crate::adapters::github::GithubPrRef {
+                        ref_name: head.to_owned(),
+                        sha: "000".to_owned(),
+                    }),
                     base: None,
                 })
             }
-            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
-            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
-            async fn fetch_pr_state(&self, _o: &str, _r: &str, _n: u64) -> AppResult<GithubPullRequest> {
+            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> {
+                Ok(())
+            }
+            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> {
+                Ok(())
+            }
+            async fn fetch_pr_state(
+                &self,
+                _o: &str,
+                _r: &str,
+                _n: u64,
+            ) -> AppResult<GithubPullRequest> {
                 Ok(GithubPullRequest {
                     number: 100,
                     html_url: "https://github.com/acme/widgets/pull/100".to_owned(),
                     state: "open".to_owned(),
                     draft: Some(true),
                     node_id: "PR_100".to_owned(),
-                    head: Some(crate::adapters::github::GithubPrRef { ref_name: "rb/77-proj".to_owned(), sha: "000".to_owned() }),
+                    head: Some(crate::adapters::github::GithubPrRef {
+                        ref_name: "rb/77-proj".to_owned(),
+                        sha: "000".to_owned(),
+                    }),
                     base: None,
                 })
             }
-            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> { Ok(()) }
-            async fn is_branch_ahead(&self, _o: &str, _r: &str, _b: &str, _h: &str) -> AppResult<bool> { Ok(true) }
+            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> {
+                Ok(())
+            }
+            async fn is_branch_ahead(
+                &self,
+                _o: &str,
+                _r: &str,
+                _b: &str,
+                _h: &str,
+            ) -> AppResult<bool> {
+                Ok(true)
+            }
         }
 
         struct RecordingWorktree {
@@ -14066,13 +14494,41 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             fn branch_name(&self, task_id: &str) -> String {
                 format!("rb/{task_id}")
             }
-            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> AppResult<()> { Ok(()) }
-            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+            fn create_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+                _task_id: &str,
+            ) -> AppResult<()> {
+                Ok(())
+            }
+            fn remove_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _task_id: &str,
+            ) -> AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome>
+            {
                 Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
             }
-            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> AppResult<()> { Ok(()) }
-            fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> { Ok("main".to_owned()) }
-            fn push_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> AppResult<()> {
+            fn rebase_onto_default_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> AppResult<()> {
+                Ok(())
+            }
+            fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> {
+                Ok("main".to_owned())
+            }
+            fn push_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> AppResult<()> {
                 self.events.lock().unwrap().push("push".to_owned());
                 Ok(())
             }
@@ -14082,8 +14538,12 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         init_workspace(&ws)?;
         let store = FsDaemonStore;
         let events = Arc::new(Mutex::new(Vec::new()));
-        let github = RecordingGithub { events: events.clone() };
-        let worktree = RecordingWorktree { events: events.clone() };
+        let github = RecordingGithub {
+            events: events.clone(),
+        };
+        let worktree = RecordingWorktree {
+            events: events.clone(),
+        };
         let now = chrono::Utc::now();
         let task = DaemonTask {
             task_id: "pr-runtime-77".to_owned(),
@@ -14113,7 +14573,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
         let lease = WorktreeLease {
             lease_id: "lease-77".to_owned(),
             task_id: task.task_id.clone(),
@@ -14155,14 +14617,45 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         struct CancelWorktree;
         impl crate::contexts::automation_runtime::WorktreePort for CancelWorktree {
-            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf { base_dir.join("worktrees").join(task_id) }
-            fn branch_name(&self, task_id: &str) -> String { format!("rb/{task_id}") }
-            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+                base_dir.join("worktrees").join(task_id)
+            }
+            fn branch_name(&self, task_id: &str) -> String {
+                format!("rb/{task_id}")
+            }
+            fn create_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn remove_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<
+                crate::contexts::automation_runtime::WorktreeCleanupOutcome,
+            > {
                 Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
             }
-            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> { Ok("main".to_owned()) }
+            fn rebase_onto_default_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn default_branch_name(
+                &self,
+                _repo_root: &Path,
+            ) -> crate::shared::error::AppResult<String> {
+                Ok("main".to_owned())
+            }
         }
 
         let ws = TempWorkspace::new()?;
@@ -14198,7 +14691,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
         let lease = WorktreeLease {
             lease_id: "lease-80".to_owned(),
             task_id: task.task_id.clone(),
@@ -14238,35 +14733,74 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus, WorktreeLease,
         };
-        use crate::contexts::automation_runtime::pr_runtime::{CompletionPrAction, PrRuntimeService};
+        use crate::contexts::automation_runtime::pr_runtime::{
+            CompletionPrAction, PrRuntimeService,
+        };
         use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::{EffectiveDaemonPrPolicy, FlowPreset, PrPolicy, ReviewWhitelistConfig};
+        use crate::shared::domain::{
+            EffectiveDaemonPrPolicy, FlowPreset, PrPolicy, ReviewWhitelistConfig,
+        };
 
         struct NoDiffWorktree;
         impl crate::contexts::automation_runtime::WorktreePort for NoDiffWorktree {
-            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf { base_dir.join("worktrees").join(task_id) }
-            fn branch_name(&self, task_id: &str) -> String { format!("rb/{task_id}") }
-            fn create_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str, _task_id: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn remove_worktree(&self, _repo_root: &Path, _worktree_path: &Path, _task_id: &str) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+            fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
+                base_dir.join("worktrees").join(task_id)
+            }
+            fn branch_name(&self, task_id: &str) -> String {
+                format!("rb/{task_id}")
+            }
+            fn create_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn remove_worktree(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<
+                crate::contexts::automation_runtime::WorktreeCleanupOutcome,
+            > {
                 Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::AlreadyAbsent)
             }
-            fn rebase_onto_default_branch(&self, _repo_root: &Path, _worktree_path: &Path, _branch_name: &str) -> crate::shared::error::AppResult<()> { Ok(()) }
-            fn default_branch_name(&self, _repo_root: &Path) -> crate::shared::error::AppResult<String> { Ok("main".to_owned()) }
+            fn rebase_onto_default_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> crate::shared::error::AppResult<()> {
+                Ok(())
+            }
+            fn default_branch_name(
+                &self,
+                _repo_root: &Path,
+            ) -> crate::shared::error::AppResult<String> {
+                Ok("main".to_owned())
+            }
         }
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let store = FsDaemonStore;
         let github = InMemoryGithubClient::new();
-        github.pull_requests.lock().unwrap().push(GithubPullRequest {
-            number: 55,
-            html_url: "https://github.com/acme/widgets/pull/55".to_owned(),
-            state: "open".to_owned(),
-            draft: Some(true),
-            node_id: "PR_55".to_owned(),
-            head: None,
-            base: None,
-        });
+        github
+            .pull_requests
+            .lock()
+            .unwrap()
+            .push(GithubPullRequest {
+                number: 55,
+                html_url: "https://github.com/acme/widgets/pull/55".to_owned(),
+                state: "open".to_owned(),
+                draft: Some(true),
+                node_id: "PR_55".to_owned(),
+                head: None,
+                base: None,
+            });
         let now = chrono::Utc::now();
         let task = DaemonTask {
             task_id: "pr-runtime-nodiff".to_owned(),
@@ -14296,7 +14830,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
         let lease = WorktreeLease {
             lease_id: "lease-55".to_owned(),
             task_id: task.task_id.clone(),
@@ -14333,7 +14869,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             ..task.clone()
         };
-        store.create_task(ws.path(), &skip_task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &skip_task)
+            .map_err(|e| e.to_string())?;
         let skipped = block_on_app_result(service.handle_completion_pr(
             ws.path(),
             ws.path(),
@@ -14383,7 +14921,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             GithubComment {
                 id: 12,
                 body: "inline fix this".to_owned(),
-                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "alice".to_owned(),
+                    id: 1,
+                },
                 created_at: "2026-03-17T00:00:00Z".to_owned(),
                 updated_at: "2026-03-17T00:00:00Z".to_owned(),
             },
@@ -14392,7 +14933,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             101,
             GithubReview {
                 id: 14,
-                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "alice".to_owned(),
+                    id: 1,
+                },
                 body: Some("summary fix".to_owned()),
                 state: "COMMENTED".to_owned(),
                 submitted_at: Some("2026-03-17T00:00:00Z".to_owned()),
@@ -14414,7 +14958,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             title: "Whitelist".to_owned(),
             body: None,
             labels: vec![],
-            user: GithubUser { login: "alice".to_owned(), id: 1 },
+            user: GithubUser {
+                login: "alice".to_owned(),
+                id: 1,
+            },
             html_url: "https://github.com/acme/widgets/issues/101".to_owned(),
             pull_request: None,
             updated_at: "2026-03-17T00:00:00Z".to_owned(),
@@ -14450,7 +14997,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
 
         let service = PrReviewIngestionService::new(
             &store,
@@ -14471,12 +15020,22 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             &CancellationToken::new(),
         ))?;
         if batch.staged_count < 2 {
-            return Err(format!("expected at least 2 staged amendments, got {}", batch.staged_count));
+            return Err(format!(
+                "expected at least 2 staged amendments, got {}",
+                batch.staged_count
+            ));
         }
         let amendments = amendment_queue
-            .list_pending_amendments(ws.path(), &crate::shared::domain::ProjectId::new("proj-review-1".to_owned()).map_err(|e| e.to_string())?)
+            .list_pending_amendments(
+                ws.path(),
+                &crate::shared::domain::ProjectId::new("proj-review-1".to_owned())
+                    .map_err(|e| e.to_string())?,
+            )
             .map_err(|e| e.to_string())?;
-        if amendments.iter().any(|amendment| amendment.body.contains("ignore this")) {
+        if amendments
+            .iter()
+            .any(|amendment| amendment.body.contains("ignore this"))
+        {
             return Err("unexpected amendment from non-whitelisted author".to_owned());
         }
 
@@ -14512,7 +15071,10 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             GithubComment {
                 id: 21,
                 body: "dedup me".to_owned(),
-                user: GithubUser { login: "alice".to_owned(), id: 1 },
+                user: GithubUser {
+                    login: "alice".to_owned(),
+                    id: 1,
+                },
                 created_at: "2026-03-17T00:00:00Z".to_owned(),
                 updated_at: "2026-03-17T00:00:00Z".to_owned(),
             },
@@ -14546,7 +15108,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
             label_dirty: false,
         };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
 
         let service = PrReviewIngestionService::new(
             &store,
@@ -14569,13 +15133,20 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .list_pending_amendments(ws.path(), &project_id)
             .map_err(|e| e.to_string())?;
         if first.len() != 1 {
-            return Err(format!("expected one staged amendment, got {}", first.len()));
+            return Err(format!(
+                "expected one staged amendment, got {}",
+                first.len()
+            ));
         }
 
-        let mut reset_task = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
+        let mut reset_task = store
+            .read_task(ws.path(), &task.task_id)
+            .map_err(|e| e.to_string())?;
         reset_task.last_seen_comment_id = None;
         reset_task.last_seen_review_id = None;
-        store.write_task(ws.path(), &reset_task).map_err(|e| e.to_string())?;
+        store
+            .write_task(ws.path(), &reset_task)
+            .map_err(|e| e.to_string())?;
 
         let _ = block_on_app_result(service.ingest_reviews(
             ws.path(),
@@ -14588,234 +15159,265 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .list_pending_amendments(ws.path(), &project_id)
             .map_err(|e| e.to_string())?;
         if second.len() != 1 {
-            return Err(format!("expected deduplicated amendment file set, got {}", second.len()));
-        }
-
-        Ok(())
-    });
-
-    reg!(m, "daemon.pr_review.transient_error_preserves_staged", || {
-        use crate::adapters::fs::{
-            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
-        };
-        use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
-        use crate::contexts::agent_execution::model::CancellationToken;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
-        };
-        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::contexts::project_run_record::service::AmendmentQueuePort;
-        use crate::shared::domain::{FlowPreset, ProjectId};
-        use crate::shared::error::{AppError, AppResult};
-
-        struct FailingSnapshotWrite;
-        impl crate::contexts::project_run_record::service::RunSnapshotWritePort for FailingSnapshotWrite {
-            fn write_run_snapshot(
-                &self,
-                _base_dir: &Path,
-                _project_id: &ProjectId,
-                _snapshot: &crate::contexts::project_run_record::model::RunSnapshot,
-            ) -> AppResult<()> {
-                Err(AppError::Io(std::io::Error::other("injected reopen failure")))
-            }
-        }
-
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-        create_project_fixture(ws.path(), "proj-review-3", "standard");
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/proj-review-3/run.json"),
-            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
-        )
-        .map_err(|e| e.to_string())?;
-        let store = FsDaemonStore;
-        let project_store = FsProjectStore;
-        let run_snapshot_read = FsRunSnapshotStore;
-        let amendment_queue = FsAmendmentQueueStore;
-        let github = InMemoryGithubClient::new();
-        github.pr_review_comments.lock().unwrap().push((
-            103,
-            GithubComment {
-                id: 31,
-                body: "persist me before failure".to_owned(),
-                user: GithubUser { login: "alice".to_owned(), id: 1 },
-                created_at: "2026-03-17T00:00:00Z".to_owned(),
-                updated_at: "2026-03-17T00:00:00Z".to_owned(),
-            },
-        ));
-        let now = chrono::Utc::now();
-        let task = DaemonTask {
-            task_id: "pr-review-failure".to_owned(),
-            issue_ref: "acme/widgets#103".to_owned(),
-            project_id: "proj-review-3".to_owned(),
-            project_name: Some("Failure".to_owned()),
-            prompt: Some("Prompt".to_owned()),
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Completed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 0,
-            lease_id: None,
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(103),
-            pr_url: Some("https://github.com/acme/widgets/pull/103".to_owned()),
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
-
-        let service = PrReviewIngestionService::new(
-            &store,
-            &project_store,
-            &run_snapshot_read,
-            &FailingSnapshotWrite,
-            &amendment_queue,
-            &github,
-        );
-        let err = block_on_app_result(service.ingest_reviews(
-            ws.path(),
-            ws.path(),
-            &task.task_id,
-            &ReviewWhitelist::default(),
-            &CancellationToken::new(),
-        ))
-        .expect_err("expected reopen failure");
-        if !err.contains("injected reopen failure") {
-            return Err(format!("unexpected error: {err}"));
-        }
-        let project_id = ProjectId::new("proj-review-3".to_owned()).map_err(|e| e.to_string())?;
-        let amendments = amendment_queue
-            .list_pending_amendments(ws.path(), &project_id)
-            .map_err(|e| e.to_string())?;
-        if amendments.is_empty() {
-            return Err("expected staged amendments to remain on disk after failure".to_owned());
-        }
-
-        Ok(())
-    });
-
-    reg!(m, "daemon.pr_review.completed_project_reopens_with_amendments", || {
-        use crate::adapters::fs::{
-            FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
-            FsRunSnapshotWriteStore,
-        };
-        use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
-        use crate::contexts::agent_execution::model::CancellationToken;
-        use crate::contexts::automation_runtime::model::{
-            DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
-        };
-        use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
-        use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::contexts::project_run_record::service::RunSnapshotPort;
-        use crate::shared::domain::{FlowPreset, ProjectId, StageId};
-
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-        create_project_fixture(ws.path(), "proj-review-4", "standard");
-        std::fs::write(
-            ws.path().join(".ralph-burning/projects/proj-review-4/run.json"),
-            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":2,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":2,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
-        )
-        .map_err(|e| e.to_string())?;
-        let store = FsDaemonStore;
-        let project_store = FsProjectStore;
-        let run_snapshot_read = FsRunSnapshotStore;
-        let run_snapshot_write = FsRunSnapshotWriteStore;
-        let amendment_queue = FsAmendmentQueueStore;
-        let github = InMemoryGithubClient::new();
-        github.pr_review_comments.lock().unwrap().push((
-            104,
-            GithubComment {
-                id: 41,
-                body: "reopen with this amendment".to_owned(),
-                user: GithubUser { login: "alice".to_owned(), id: 1 },
-                created_at: "2026-03-17T00:00:00Z".to_owned(),
-                updated_at: "2026-03-17T00:00:00Z".to_owned(),
-            },
-        ));
-        let now = chrono::Utc::now();
-        let task = DaemonTask {
-            task_id: "pr-review-reopen".to_owned(),
-            issue_ref: "acme/widgets#104".to_owned(),
-            project_id: "proj-review-4".to_owned(),
-            project_name: Some("Reopen".to_owned()),
-            prompt: Some("Prompt".to_owned()),
-            routing_command: None,
-            routing_labels: vec![],
-            resolved_flow: Some(FlowPreset::Standard),
-            routing_source: Some(RoutingSource::DefaultFlow),
-            routing_warnings: vec![],
-            status: TaskStatus::Completed,
-            created_at: now,
-            updated_at: now,
-            attempt_count: 0,
-            lease_id: None,
-            failure_class: None,
-            failure_message: None,
-            dispatch_mode: DispatchMode::Workflow,
-            source_revision: None,
-            requirements_run_id: None,
-            repo_slug: Some("acme/widgets".to_owned()),
-            issue_number: Some(104),
-            pr_url: Some("https://github.com/acme/widgets/pull/104".to_owned()),
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
-            label_dirty: false,
-        };
-        store.create_task(ws.path(), &task).map_err(|e| e.to_string())?;
-
-        let service = PrReviewIngestionService::new(
-            &store,
-            &project_store,
-            &run_snapshot_read,
-            &run_snapshot_write,
-            &amendment_queue,
-            &github,
-        );
-        let batch = block_on_app_result(service.ingest_reviews(
-            ws.path(),
-            ws.path(),
-            &task.task_id,
-            &ReviewWhitelist::default(),
-            &CancellationToken::new(),
-        ))?;
-        if !batch.reopened_project {
-            return Err("expected completed project to be reopened".to_owned());
-        }
-        let reopened = store.read_task(ws.path(), &task.task_id).map_err(|e| e.to_string())?;
-        if reopened.status != TaskStatus::Pending {
-            return Err(format!("expected pending task after reopen, got {}", reopened.status));
-        }
-        let snapshot = run_snapshot_read
-            .read_run_snapshot(
-                ws.path(),
-                &ProjectId::new("proj-review-4".to_owned()).map_err(|e| e.to_string())?,
-            )
-            .map_err(|e| e.to_string())?;
-        if snapshot.status != crate::contexts::project_run_record::model::RunStatus::Paused {
-            return Err(format!("expected paused snapshot, got {}", snapshot.status));
-        }
-        let interrupted = snapshot.interrupted_run.ok_or("expected interrupted_run after reopen")?;
-        if interrupted.stage_cursor.stage != StageId::Planning {
             return Err(format!(
-                "expected planning restart cursor, got {}",
-                interrupted.stage_cursor.stage
+                "expected deduplicated amendment file set, got {}",
+                second.len()
             ));
         }
 
         Ok(())
     });
+
+    reg!(
+        m,
+        "daemon.pr_review.transient_error_preserves_staged",
+        || {
+            use crate::adapters::fs::{
+                FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+            };
+            use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
+            use crate::contexts::agent_execution::model::CancellationToken;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+            };
+            use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::contexts::project_run_record::service::AmendmentQueuePort;
+            use crate::shared::domain::{FlowPreset, ProjectId};
+            use crate::shared::error::{AppError, AppResult};
+
+            struct FailingSnapshotWrite;
+            impl crate::contexts::project_run_record::service::RunSnapshotWritePort for FailingSnapshotWrite {
+                fn write_run_snapshot(
+                    &self,
+                    _base_dir: &Path,
+                    _project_id: &ProjectId,
+                    _snapshot: &crate::contexts::project_run_record::model::RunSnapshot,
+                ) -> AppResult<()> {
+                    Err(AppError::Io(std::io::Error::other(
+                        "injected reopen failure",
+                    )))
+                }
+            }
+
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+            create_project_fixture(ws.path(), "proj-review-3", "standard");
+            std::fs::write(
+            ws.path().join(".ralph-burning/projects/proj-review-3/run.json"),
+            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
+        )
+        .map_err(|e| e.to_string())?;
+            let store = FsDaemonStore;
+            let project_store = FsProjectStore;
+            let run_snapshot_read = FsRunSnapshotStore;
+            let amendment_queue = FsAmendmentQueueStore;
+            let github = InMemoryGithubClient::new();
+            github.pr_review_comments.lock().unwrap().push((
+                103,
+                GithubComment {
+                    id: 31,
+                    body: "persist me before failure".to_owned(),
+                    user: GithubUser {
+                        login: "alice".to_owned(),
+                        id: 1,
+                    },
+                    created_at: "2026-03-17T00:00:00Z".to_owned(),
+                    updated_at: "2026-03-17T00:00:00Z".to_owned(),
+                },
+            ));
+            let now = chrono::Utc::now();
+            let task = DaemonTask {
+                task_id: "pr-review-failure".to_owned(),
+                issue_ref: "acme/widgets#103".to_owned(),
+                project_id: "proj-review-3".to_owned(),
+                project_name: Some("Failure".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Completed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: None,
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(103),
+                pr_url: Some("https://github.com/acme/widgets/pull/103".to_owned()),
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(ws.path(), &task)
+                .map_err(|e| e.to_string())?;
+
+            let service = PrReviewIngestionService::new(
+                &store,
+                &project_store,
+                &run_snapshot_read,
+                &FailingSnapshotWrite,
+                &amendment_queue,
+                &github,
+            );
+            let err = block_on_app_result(service.ingest_reviews(
+                ws.path(),
+                ws.path(),
+                &task.task_id,
+                &ReviewWhitelist::default(),
+                &CancellationToken::new(),
+            ))
+            .expect_err("expected reopen failure");
+            if !err.contains("injected reopen failure") {
+                return Err(format!("unexpected error: {err}"));
+            }
+            let project_id =
+                ProjectId::new("proj-review-3".to_owned()).map_err(|e| e.to_string())?;
+            let amendments = amendment_queue
+                .list_pending_amendments(ws.path(), &project_id)
+                .map_err(|e| e.to_string())?;
+            if amendments.is_empty() {
+                return Err("expected staged amendments to remain on disk after failure".to_owned());
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(
+        m,
+        "daemon.pr_review.completed_project_reopens_with_amendments",
+        || {
+            use crate::adapters::fs::{
+                FsAmendmentQueueStore, FsDaemonStore, FsProjectStore, FsRunSnapshotStore,
+                FsRunSnapshotWriteStore,
+            };
+            use crate::adapters::github::{GithubComment, GithubUser, InMemoryGithubClient};
+            use crate::contexts::agent_execution::model::CancellationToken;
+            use crate::contexts::automation_runtime::model::{
+                DaemonTask, DispatchMode, ReviewWhitelist, RoutingSource, TaskStatus,
+            };
+            use crate::contexts::automation_runtime::pr_review::PrReviewIngestionService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::contexts::project_run_record::service::RunSnapshotPort;
+            use crate::shared::domain::{FlowPreset, ProjectId, StageId};
+
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+            create_project_fixture(ws.path(), "proj-review-4", "standard");
+            std::fs::write(
+            ws.path().join(".ralph-burning/projects/proj-review-4/run.json"),
+            r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[{"cycle":2,"stage_id":"final_review","started_at":"2026-03-17T00:00:00Z","completed_at":"2026-03-17T00:01:00Z"}],"completion_rounds":2,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed","last_stage_resolution_snapshot":null}"#,
+        )
+        .map_err(|e| e.to_string())?;
+            let store = FsDaemonStore;
+            let project_store = FsProjectStore;
+            let run_snapshot_read = FsRunSnapshotStore;
+            let run_snapshot_write = FsRunSnapshotWriteStore;
+            let amendment_queue = FsAmendmentQueueStore;
+            let github = InMemoryGithubClient::new();
+            github.pr_review_comments.lock().unwrap().push((
+                104,
+                GithubComment {
+                    id: 41,
+                    body: "reopen with this amendment".to_owned(),
+                    user: GithubUser {
+                        login: "alice".to_owned(),
+                        id: 1,
+                    },
+                    created_at: "2026-03-17T00:00:00Z".to_owned(),
+                    updated_at: "2026-03-17T00:00:00Z".to_owned(),
+                },
+            ));
+            let now = chrono::Utc::now();
+            let task = DaemonTask {
+                task_id: "pr-review-reopen".to_owned(),
+                issue_ref: "acme/widgets#104".to_owned(),
+                project_id: "proj-review-4".to_owned(),
+                project_name: Some("Reopen".to_owned()),
+                prompt: Some("Prompt".to_owned()),
+                routing_command: None,
+                routing_labels: vec![],
+                resolved_flow: Some(FlowPreset::Standard),
+                routing_source: Some(RoutingSource::DefaultFlow),
+                routing_warnings: vec![],
+                status: TaskStatus::Completed,
+                created_at: now,
+                updated_at: now,
+                attempt_count: 0,
+                lease_id: None,
+                failure_class: None,
+                failure_message: None,
+                dispatch_mode: DispatchMode::Workflow,
+                source_revision: None,
+                requirements_run_id: None,
+                repo_slug: Some("acme/widgets".to_owned()),
+                issue_number: Some(104),
+                pr_url: Some("https://github.com/acme/widgets/pull/104".to_owned()),
+                last_seen_comment_id: None,
+                last_seen_review_id: None,
+                label_dirty: false,
+            };
+            store
+                .create_task(ws.path(), &task)
+                .map_err(|e| e.to_string())?;
+
+            let service = PrReviewIngestionService::new(
+                &store,
+                &project_store,
+                &run_snapshot_read,
+                &run_snapshot_write,
+                &amendment_queue,
+                &github,
+            );
+            let batch = block_on_app_result(service.ingest_reviews(
+                ws.path(),
+                ws.path(),
+                &task.task_id,
+                &ReviewWhitelist::default(),
+                &CancellationToken::new(),
+            ))?;
+            if !batch.reopened_project {
+                return Err("expected completed project to be reopened".to_owned());
+            }
+            let reopened = store
+                .read_task(ws.path(), &task.task_id)
+                .map_err(|e| e.to_string())?;
+            if reopened.status != TaskStatus::Pending {
+                return Err(format!(
+                    "expected pending task after reopen, got {}",
+                    reopened.status
+                ));
+            }
+            let snapshot = run_snapshot_read
+                .read_run_snapshot(
+                    ws.path(),
+                    &ProjectId::new("proj-review-4".to_owned()).map_err(|e| e.to_string())?,
+                )
+                .map_err(|e| e.to_string())?;
+            if snapshot.status != crate::contexts::project_run_record::model::RunStatus::Paused {
+                return Err(format!("expected paused snapshot, got {}", snapshot.status));
+            }
+            let interrupted = snapshot
+                .interrupted_run
+                .ok_or("expected interrupted_run after reopen")?;
+            if interrupted.stage_cursor.stage != StageId::Planning {
+                return Err(format!(
+                    "expected planning restart cursor, got {}",
+                    interrupted.stage_cursor.stage
+                ));
+            }
+
+            Ok(())
+        }
+    );
 
     reg!(m, "daemon.rebase.agent_resolves_conflict", || {
         use crate::adapters::worktree::WorktreeAdapter;
@@ -14866,7 +15468,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_worktree(ws.path(), &worktree_path, "rb/200-proj", "rebase-agent")
             .map_err(|e| e.to_string())?;
 
-        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n")
+            .map_err(|e| e.to_string())?;
         run_git_in(&worktree_path, &["add", "conflict.txt"])?;
         run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
 
@@ -14920,7 +15523,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         worktree
             .create_worktree(ws.path(), &worktree_path, "rb/201-proj", "rebase-disabled")
             .map_err(|e| e.to_string())?;
-        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n")
+            .map_err(|e| e.to_string())?;
         run_git_in(&worktree_path, &["add", "conflict.txt"])?;
         run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
         std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
@@ -14942,7 +15546,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         if !matches!(
             outcome,
             crate::contexts::automation_runtime::RebaseOutcome::Failed {
-                classification: crate::contexts::automation_runtime::RebaseFailureClassification::Conflict,
+                classification:
+                    crate::contexts::automation_runtime::RebaseFailureClassification::Conflict,
                 ..
             }
         ) {
@@ -14987,7 +15592,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         worktree
             .create_worktree(ws.path(), &worktree_path, "rb/202-proj", "rebase-timeout")
             .map_err(|e| e.to_string())?;
-        std::fs::write(worktree_path.join("conflict.txt"), "branch\n").map_err(|e| e.to_string())?;
+        std::fs::write(worktree_path.join("conflict.txt"), "branch\n")
+            .map_err(|e| e.to_string())?;
         run_git_in(&worktree_path, &["add", "conflict.txt"])?;
         run_git_in(&worktree_path, &["commit", "-m", "branch change"])?;
         std::fs::write(ws.path().join("conflict.txt"), "main\n").map_err(|e| e.to_string())?;
@@ -15010,7 +15616,8 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         if !matches!(
             outcome,
             crate::contexts::automation_runtime::RebaseOutcome::Failed {
-                classification: crate::contexts::automation_runtime::RebaseFailureClassification::Timeout,
+                classification:
+                    crate::contexts::automation_runtime::RebaseFailureClassification::Timeout,
                 ..
             }
         ) {

@@ -1470,7 +1470,10 @@ impl DaemonStorePort for FsDaemonStore {
         project_id: &ProjectId,
         expected_owner: &str,
     ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
-        release_writer_lock_impl(&Self::writer_lock_path(base_dir, project_id), expected_owner)
+        release_writer_lock_impl(
+            &Self::writer_lock_path(base_dir, project_id),
+            expected_owner,
+        )
     }
 }
 
@@ -1894,7 +1897,10 @@ impl DaemonStorePort for FsDataDirDaemonStore {
         project_id: &ProjectId,
         expected_owner: &str,
     ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
-        release_writer_lock_impl(&Self::writer_lock_path(base_dir, project_id), expected_owner)
+        release_writer_lock_impl(
+            &Self::writer_lock_path(base_dir, project_id),
+            expected_owner,
+        )
     }
 }
 
