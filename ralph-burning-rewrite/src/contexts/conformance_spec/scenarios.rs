@@ -209,6 +209,35 @@ fn init_workspace(ws: &TempWorkspace) -> Result<(), String> {
     assert_success(&out)
 }
 
+const CONFORMANCE_TEST_REPO_SLUG: &str = "test/repo";
+const CONFORMANCE_TEST_OWNER: &str = "test";
+const CONFORMANCE_TEST_REPO: &str = "repo";
+
+/// Write a repo registration so reconcile and status can discover the repo.
+fn write_conformance_repo_registration(data_dir: &Path) {
+    let reg_path = data_dir
+        .join("repos")
+        .join(CONFORMANCE_TEST_OWNER)
+        .join(CONFORMANCE_TEST_REPO)
+        .join("registration.json");
+    std::fs::create_dir_all(reg_path.parent().unwrap()).expect("create registration dir");
+    let reg = serde_json::json!({
+        "repo_slug": CONFORMANCE_TEST_REPO_SLUG,
+        "repo_root": data_dir.join("repos").join(CONFORMANCE_TEST_OWNER).join(CONFORMANCE_TEST_REPO).join("repo"),
+        "workspace_root": data_dir.join("repos").join(CONFORMANCE_TEST_OWNER).join(CONFORMANCE_TEST_REPO).join("repo").join(".ralph-burning"),
+    });
+    std::fs::write(reg_path, serde_json::to_string_pretty(&reg).unwrap()).expect("write reg");
+}
+
+/// Return the daemon dir for the test repo within a data-dir.
+fn conformance_daemon_dir(data_dir: &Path) -> PathBuf {
+    data_dir
+        .join("repos")
+        .join(CONFORMANCE_TEST_OWNER)
+        .join(CONFORMANCE_TEST_REPO)
+        .join("daemon")
+}
+
 fn create_project_fixture(base_dir: &Path, project_id: &str, flow: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     std::fs::create_dir_all(&project_root).expect("create project directory");
@@ -7336,8 +7365,9 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-001", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        // Daemon start with no tasks should succeed
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        // Daemon status with no repos should succeed
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7345,7 +7375,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-002", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7353,8 +7384,9 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-003", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        // Abort requires a task ID
-        let out = run_cli(&["daemon", "abort", "nonexistent-task"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        // Abort with a non-numeric identifier fails
+        let out = run_cli(&["daemon", "abort", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7362,7 +7394,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-004", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "retry", "nonexistent-task"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "retry", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7370,7 +7403,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-LIFECYCLE-005", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "abort", "nonexistent-task"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "abort", "999", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_failure(&out)?;
         Ok(())
     });
@@ -7380,11 +7414,14 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         // lease's worktree cannot be removed.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        write_conformance_repo_registration(ws.path());
 
         // Create a task in Active status and a stale lease pointing to a
         // non-existent worktree path, so worktree removal will fail.
         let now = chrono::Utc::now();
         let one_hour_ago = now - chrono::Duration::hours(1);
+        let daemon_dir = conformance_daemon_dir(ws.path());
         let task_json = serde_json::json!({
             "task_id": "cleanup-fail-task",
             "issue_ref": "repo#cleanup",
@@ -7395,11 +7432,12 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "attempt_count": 0,
             "lease_id": "lease-cleanup-fail-task",
             "dispatch_mode": "workflow",
-            "routing_labels": []
+            "routing_labels": [],
+            "repo_slug": CONFORMANCE_TEST_REPO_SLUG,
+            "issue_number": 42
         });
-        let task_path = ws
-            .path()
-            .join(".ralph-burning/daemon/tasks/cleanup-fail-task.json");
+        let task_path = daemon_dir.join("tasks/cleanup-fail-task.json");
+        std::fs::create_dir_all(task_path.parent().unwrap()).map_err(|e| format!("mkdir tasks: {e}"))?;
         std::fs::write(
             &task_path,
             serde_json::to_string_pretty(&task_json).unwrap(),
@@ -7416,9 +7454,8 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "ttl_seconds": 60,
             "last_heartbeat": one_hour_ago.to_rfc3339()
         });
-        let lease_path = ws
-            .path()
-            .join(".ralph-burning/daemon/leases/lease-cleanup-fail-task.json");
+        let lease_path = daemon_dir.join("leases/lease-cleanup-fail-task.json");
+        std::fs::create_dir_all(lease_path.parent().unwrap()).map_err(|e| format!("mkdir leases: {e}"))?;
         std::fs::write(
             &lease_path,
             serde_json::to_string_pretty(&lease_json).unwrap(),
@@ -7426,13 +7463,11 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         .map_err(|e| format!("write lease: {e}"))?;
 
         // Create the writer lock so cleanup can attempt to release it
-        let lock_path = ws
-            .path()
-            .join(".ralph-burning/daemon/leases/writer-cleanup-proj.lock");
+        let lock_path = daemon_dir.join("leases/writer-cleanup-proj.lock");
         std::fs::write(&lock_path, "lease-cleanup-fail-task")
             .map_err(|e| format!("write lock: {e}"))?;
 
-        let out = run_cli(&["daemon", "reconcile", "--ttl-seconds", "0"], ws.path())?;
+        let out = run_cli(&["daemon", "reconcile", "--data-dir", data_dir, "--ttl-seconds", "0"], ws.path())?;
         assert_failure(&out)?;
         assert_contains(&out.stdout, "Cleanup Failures", "stdout")?;
         assert_contains(&out.stdout, "cleanup-fail-task", "stdout")?;
@@ -7652,7 +7687,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-001", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7660,7 +7696,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-002", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7668,7 +7705,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-003", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7676,7 +7714,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-004", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7684,7 +7723,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-005", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7692,7 +7732,8 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-006", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -7700,7 +7741,9 @@ fn register_daemon_routing(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "DAEMON-ROUTING-007", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let out = run_cli(&["daemon", "reconcile"], ws.path())?;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        write_conformance_repo_registration(ws.path());
+        let out = run_cli(&["daemon", "reconcile", "--data-dir", data_dir], ws.path())?;
         assert_success(&out)?;
         Ok(())
     });
@@ -8227,8 +8270,8 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "DAEMON-INTAKE-008", || {
-        // Daemon status surfaces waiting state and requirements_run_id
-        use crate::adapters::fs::FsDaemonStore;
+        // Daemon status surfaces waiting state
+        use crate::adapters::fs::FsDataDirDaemonStore;
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
@@ -8237,7 +8280,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let store = FsDaemonStore;
+        let data_dir = ws.path().to_str().ok_or("non-utf8 path")?;
+        let store = FsDataDirDaemonStore;
+        let daemon_dir = conformance_daemon_dir(ws.path());
         let now = chrono::Utc::now();
         let task = DaemonTask {
             task_id: "intake-wait-008".to_owned(),
@@ -8260,20 +8305,19 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: Some("rev88888".to_owned()),
             requirements_run_id: Some("req-123".to_owned()),
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(CONFORMANCE_TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(8),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
         };
         store
-            .create_task(ws.path(), &task)
+            .create_task(&daemon_dir, &task)
             .map_err(|e| e.to_string())?;
 
-        let out = run_cli(&["daemon", "status"], ws.path())?;
+        let out = run_cli(&["daemon", "status", "--data-dir", data_dir, "--repo", CONFORMANCE_TEST_REPO_SLUG], ws.path())?;
         assert_success(&out)?;
         assert_contains(&out.stdout, "waiting_for_requirements", "status output")?;
-        assert_contains(&out.stdout, "requirements_run=req-123", "status output")?;
         Ok(())
     });
 

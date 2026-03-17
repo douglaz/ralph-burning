@@ -692,8 +692,13 @@ impl GithubClient {
         base: &str,
         head: &str,
     ) -> AppResult<bool> {
+        // URL-encode ref names: branch names like `rb/42-project` contain
+        // slashes that must be percent-encoded in the compare URL path.
+        let encode_ref = |r: &str| r.replace('%', "%25").replace('/', "%2F");
         let url = self.api_url(&format!(
-            "/repos/{owner}/{repo}/compare/{base}...{head}"
+            "/repos/{owner}/{repo}/compare/{}...{}",
+            encode_ref(base),
+            encode_ref(head),
         ));
         let resp = self
             .http

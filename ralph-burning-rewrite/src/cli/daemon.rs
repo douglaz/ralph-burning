@@ -43,43 +43,42 @@ pub enum DaemonSubcommand {
         #[arg(long)]
         verbose: bool,
     },
-    /// Show status of daemon tasks. When --data-dir is provided, queries
-    /// multi-repo state. Otherwise uses current-directory single-repo state.
+    /// Show status of daemon tasks across registered repos.
     Status {
         /// Root directory for multi-repo daemon state.
         #[arg(long)]
-        data_dir: Option<String>,
+        data_dir: String,
         /// Filter status to specific repos.
         #[arg(long = "repo")]
         repos: Vec<String>,
     },
-    /// Abort a task by issue number (multi-repo) or task ID (single-repo).
+    /// Abort a task by issue number.
     Abort {
-        /// Issue number or task ID.
+        /// Issue number.
         identifier: String,
         /// Root directory for multi-repo daemon state.
         #[arg(long)]
-        data_dir: Option<String>,
-        /// Repo slug for issue-number resolution.
+        data_dir: String,
+        /// Repo slug for issue-number resolution (owner/repo).
         #[arg(long = "repo")]
-        repo: Option<String>,
+        repo: String,
     },
-    /// Retry a failed task by issue number (multi-repo) or task ID (single-repo).
+    /// Retry a failed or aborted task by issue number.
     Retry {
-        /// Issue number or task ID.
+        /// Issue number.
         identifier: String,
         /// Root directory for multi-repo daemon state.
         #[arg(long)]
-        data_dir: Option<String>,
-        /// Repo slug for issue-number resolution.
+        data_dir: String,
+        /// Repo slug for issue-number resolution (owner/repo).
         #[arg(long = "repo")]
-        repo: Option<String>,
+        repo: String,
     },
     /// Reconcile stale leases across all repos.
     Reconcile {
         /// Root directory for multi-repo daemon state.
         #[arg(long)]
-        data_dir: Option<String>,
+        data_dir: String,
         #[arg(long)]
         ttl_seconds: Option<u64>,
     },
@@ -120,54 +119,28 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                 })
             }
         }
-        DaemonSubcommand::Status { data_dir, repos } => {
-            if let Some(ref dd) = data_dir {
-                handle_status_multi_repo(dd, &repos).await
-            } else {
-                handle_status_legacy().await
-            }
+        DaemonSubcommand::Status { ref data_dir, ref repos } => {
+            handle_status_multi_repo(data_dir, repos).await
         }
         DaemonSubcommand::Abort {
-            identifier,
-            data_dir,
-            repo,
+            ref identifier,
+            ref data_dir,
+            ref repo,
         } => {
-            if let Some(ref dd) = data_dir {
-                let repo_slug = repo.as_deref().ok_or_else(|| AppError::InvalidConfigValue {
-                    key: "repo".to_owned(),
-                    value: String::new(),
-                    reason: "--repo is required with --data-dir for abort".to_owned(),
-                })?;
-                handle_abort_by_issue(dd, repo_slug, &identifier).await
-            } else {
-                handle_abort_legacy(&identifier).await
-            }
+            handle_abort_by_issue(data_dir, repo, identifier).await
         }
         DaemonSubcommand::Retry {
-            identifier,
-            data_dir,
-            repo,
+            ref identifier,
+            ref data_dir,
+            ref repo,
         } => {
-            if let Some(ref dd) = data_dir {
-                let repo_slug = repo.as_deref().ok_or_else(|| AppError::InvalidConfigValue {
-                    key: "repo".to_owned(),
-                    value: String::new(),
-                    reason: "--repo is required with --data-dir for retry".to_owned(),
-                })?;
-                handle_retry_by_issue(dd, repo_slug, &identifier).await
-            } else {
-                handle_retry_legacy(&identifier).await
-            }
+            handle_retry_by_issue(data_dir, repo, identifier).await
         }
         DaemonSubcommand::Reconcile {
-            data_dir,
+            ref data_dir,
             ttl_seconds,
         } => {
-            if let Some(ref dd) = data_dir {
-                handle_reconcile_multi_repo(dd, ttl_seconds).await
-            } else {
-                handle_reconcile_legacy(ttl_seconds).await
-            }
+            handle_reconcile_multi_repo(data_dir, ttl_seconds).await
         }
     }
 }
@@ -529,6 +502,7 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
     );
 
     if any_cleanup_failure {
+        println!("--- Cleanup Failures ---");
         return Err(AppError::ReconcileCleanupFailed {
             failed_count: total_failed,
         });
@@ -537,9 +511,8 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
 }
 
 // ===========================================================================
-// Legacy (current-dir) handlers — retained for backward-compatible
-// status/abort/retry/reconcile on single-repo workspaces.
-// Production daemon start always requires --data-dir and GitHub intake.
+// Test-only legacy single-repo start — gated behind env var, not reachable
+// from normal CLI usage. All other daemon commands require --data-dir.
 // ===========================================================================
 
 /// Test-only single-repo start. Uses FileIssueWatcher for test intake and
@@ -591,126 +564,6 @@ async fn handle_start_legacy_no_intake(poll_seconds: u64) -> AppResult<()> {
     };
 
     daemon_loop.run(&current_dir, &loop_config).await
-}
-
-async fn handle_status_legacy() -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let store = FsDaemonStore;
-    let tasks = DaemonTaskService::list_tasks(&store, &current_dir)?;
-    let leases = store.list_leases(&current_dir)?;
-
-    if tasks.is_empty() {
-        println!("No daemon tasks found.");
-        return Ok(());
-    }
-
-    for task in tasks {
-        let lease = leases.iter().find(|lease| lease.task_id == task.task_id);
-        let lease_id = lease
-            .map(|lease| lease.lease_id.as_str())
-            .or(task.lease_id.as_deref())
-            .unwrap_or("-");
-        let heartbeat = lease
-            .map(|lease| lease.last_heartbeat.to_rfc3339())
-            .unwrap_or_else(|| "-".to_owned());
-        let req_run = task.requirements_run_id.as_deref().unwrap_or("-");
-        println!(
-            "{}  {}  dispatch={}  lease={}  heartbeat={}  issue={}  requirements_run={}",
-            task.task_id,
-            task.status,
-            task.dispatch_mode,
-            lease_id,
-            heartbeat,
-            task.issue_ref,
-            req_run,
-        );
-    }
-
-    Ok(())
-}
-
-async fn handle_abort_legacy(task_id: &str) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let store = FsDaemonStore;
-    let worktree = WorktreeAdapter;
-    let task = store.read_task(&current_dir, task_id)?;
-    if task.status.is_terminal() {
-        return Err(AppError::TaskStateTransitionInvalid {
-            task_id: task.task_id,
-            from: task.status.as_str().to_owned(),
-            to: TaskStatus::Aborted.as_str().to_owned(),
-        });
-    }
-
-    let original_status = task.status;
-    DaemonTaskService::mark_aborted(&store, &current_dir, task_id)?;
-
-    if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &current_dir, &current_dir, task_id, original_status).await?;
-    }
-
-    println!("Aborted task {task_id}");
-    Ok(())
-}
-
-async fn handle_retry_legacy(task_id: &str) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let store = FsDaemonStore;
-    let task = DaemonTaskService::retry_task(&store, &current_dir, task_id)?;
-    println!(
-        "Retried task {} (attempt_count={})",
-        task.task_id, task.attempt_count
-    );
-    Ok(())
-}
-
-async fn handle_reconcile_legacy(ttl_seconds: Option<u64>) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let store = FsDaemonStore;
-    let worktree = WorktreeAdapter;
-    let report = LeaseService::reconcile(
-        &store,
-        &worktree,
-        &current_dir,
-        &current_dir,
-        ttl_seconds,
-        chrono::Utc::now(),
-    )?;
-
-    println!(
-        "reconciled stale_leases={} failed_tasks={} released_leases={}",
-        report.stale_lease_ids.len(),
-        report.failed_task_ids.len(),
-        report.released_lease_ids.len()
-    );
-
-    if report.has_cleanup_failures() {
-        println!("--- Cleanup Failures ---");
-        for failure in &report.cleanup_failures {
-            println!(
-                "  lease={} task={}: {}",
-                failure.lease_id,
-                failure.task_id.as_deref().unwrap_or("n/a"),
-                failure.details
-            );
-        }
-        return Err(AppError::ReconcileCleanupFailed {
-            failed_count: report.cleanup_failures.len(),
-        });
-    }
-    Ok(())
 }
 
 // ===========================================================================

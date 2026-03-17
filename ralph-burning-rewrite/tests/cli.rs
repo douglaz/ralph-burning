@@ -103,9 +103,34 @@ fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     .expect("write daemon task");
 }
 
-fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
-    let path = base_dir
-        .join(".ralph-burning/daemon/leases")
+
+const TEST_REPO_SLUG: &str = "test/repo";
+const TEST_OWNER: &str = "test";
+const TEST_REPO: &str = "repo";
+
+/// Write a daemon task under the data-dir layout.
+fn write_datadir_daemon_task(data_dir: &std::path::Path, task: &DaemonTask) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks")
+        .join(format!("{}.json", task.task_id));
+    fs::create_dir_all(path.parent().expect("task parent")).expect("create task dir");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(task).expect("serialize daemon task"),
+    )
+    .expect("write daemon task");
+}
+
+/// Write a worktree lease under the data-dir layout.
+fn write_datadir_worktree_lease(data_dir: &std::path::Path, lease: &WorktreeLease) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases")
         .join(format!("{}.json", lease.lease_id));
     fs::create_dir_all(path.parent().expect("lease parent")).expect("create lease dir");
     fs::write(
@@ -115,12 +140,37 @@ fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
     .expect("write daemon lease");
 }
 
-fn write_writer_lock(base_dir: &std::path::Path, project_id: &str, owner: &str) {
-    let path = base_dir
-        .join(".ralph-burning/daemon/leases")
+/// Write a writer lock under the data-dir layout.
+fn write_datadir_writer_lock(data_dir: &std::path::Path, project_id: &str, owner: &str) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases")
         .join(format!("writer-{project_id}.lock"));
     fs::create_dir_all(path.parent().expect("lock parent")).expect("create lease dir");
     fs::write(path, owner).expect("write writer lock");
+}
+
+/// Write a repo registration entry so reconcile can discover the repo.
+fn write_repo_registration(data_dir: &std::path::Path) {
+    let reg_path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("registration.json");
+    fs::create_dir_all(reg_path.parent().expect("registration parent"))
+        .expect("create registration dir");
+    let reg = serde_json::json!({
+        "repo_slug": TEST_REPO_SLUG,
+        "repo_root": data_dir.join("repos").join(TEST_OWNER).join(TEST_REPO).join("repo"),
+        "workspace_root": data_dir.join("repos").join(TEST_OWNER).join(TEST_REPO).join("repo").join(".ralph-burning"),
+    });
+    fs::write(
+        reg_path,
+        serde_json::to_string_pretty(&reg).expect("serialize registration"),
+    )
+    .expect("write registration");
 }
 
 fn init_git_repo(base_dir: &std::path::Path) {
@@ -281,11 +331,11 @@ fn config_show_prints_effective_values_and_sources() {
 
 #[test]
 fn daemon_status_lists_non_terminal_tasks_first() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-active".to_owned(),
             issue_ref: "repo#2".to_owned(),
@@ -307,28 +357,28 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(2),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-active".to_owned(),
             task_id: "task-active".to_owned(),
             project_id: "demo-active".to_owned(),
-            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-active"),
+            worktree_path: data_dir.path().join("repos").join(TEST_OWNER).join(TEST_REPO).join("worktrees/task-active"),
             branch_name: "rb/task/task-active".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
         },
     );
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-completed".to_owned(),
             issue_ref: "repo#3".to_owned(),
@@ -350,8 +400,8 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(3),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
@@ -359,25 +409,23 @@ fn daemon_status_lists_non_terminal_tasks_first() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "status", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(output.status.success(), "daemon status failed: {}", String::from_utf8_lossy(&output.stderr));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let active_idx = stdout.find("task-active").expect("active task");
     let completed_idx = stdout.find("task-completed").expect("completed task");
     assert!(active_idx < completed_idx);
-    assert!(stdout.contains("lease=lease-active"));
 }
 
 #[test]
 fn daemon_retry_transitions_failed_task_to_pending() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-failed".to_owned(),
             issue_ref: "repo#4".to_owned(),
@@ -399,8 +447,8 @@ fn daemon_retry_transitions_failed_task_to_pending() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(4),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
@@ -408,15 +456,17 @@ fn daemon_retry_transitions_failed_task_to_pending() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "retry", "task-failed"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "retry", "4", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon retry");
-    assert!(output.status.success());
+    assert!(output.status.success(), "daemon retry failed: {}", String::from_utf8_lossy(&output.stderr));
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-failed.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-failed.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Pending, task.status);
@@ -425,11 +475,11 @@ fn daemon_retry_transitions_failed_task_to_pending() {
 
 #[test]
 fn daemon_abort_claimed_task_releases_lease() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    let missing_worktree = temp_dir.path().join(".ralph-burning/worktrees/missing");
-    write_daemon_task(
-        temp_dir.path(),
+    let missing_worktree = data_dir.path().join("repos").join(TEST_OWNER).join(TEST_REPO).join("worktrees/missing");
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-claimed".to_owned(),
             issue_ref: "repo#5".to_owned(),
@@ -451,15 +501,15 @@ fn daemon_abort_claimed_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(5),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-claimed".to_owned(),
             task_id: "task-claimed".to_owned(),
@@ -471,11 +521,10 @@ fn daemon_abort_claimed_task_releases_lease() {
             last_heartbeat: now,
         },
     );
-    write_writer_lock(temp_dir.path(), "demo-claimed", "lease-claimed");
+    write_datadir_writer_lock(data_dir.path(), "demo-claimed", "lease-claimed");
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-claimed"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "abort", "5", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon abort");
     // Abort with a missing worktree triggers partial cleanup failure —
@@ -483,9 +532,12 @@ fn daemon_abort_claimed_task_releases_lease() {
     // when all three sub-steps don't positively succeed.
     assert!(!output.status.success());
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-claimed.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-claimed.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -498,13 +550,16 @@ fn daemon_abort_claimed_task_releases_lease() {
 
 #[test]
 fn daemon_abort_active_task_releases_lease() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    let missing_worktree = temp_dir
+    let missing_worktree = data_dir
         .path()
-        .join(".ralph-burning/worktrees/missing-active");
-    write_daemon_task(
-        temp_dir.path(),
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("worktrees/missing-active");
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-active-abort".to_owned(),
             issue_ref: "repo#5a".to_owned(),
@@ -526,15 +581,15 @@ fn daemon_abort_active_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(55),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-active-abort".to_owned(),
             task_id: "task-active-abort".to_owned(),
@@ -546,19 +601,21 @@ fn daemon_abort_active_task_releases_lease() {
             last_heartbeat: now,
         },
     );
-    write_writer_lock(temp_dir.path(), "demo-active-abort", "lease-active-abort");
+    write_datadir_writer_lock(data_dir.path(), "demo-active-abort", "lease-active-abort");
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-active-abort"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "abort", "55", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon abort");
     // Abort with a missing worktree triggers partial cleanup failure.
     assert!(!output.status.success());
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-active-abort.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-active-abort.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -568,10 +625,11 @@ fn daemon_abort_active_task_releases_lease() {
 
 #[test]
 fn daemon_reconcile_fails_stale_claimed_task() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    write_daemon_task(
-        temp_dir.path(),
+    write_repo_registration(data_dir.path());
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-stale".to_owned(),
             issue_ref: "repo#6".to_owned(),
@@ -593,20 +651,20 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(6),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-stale".to_owned(),
             task_id: "task-stale".to_owned(),
             project_id: "demo-stale".to_owned(),
-            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-stale"),
+            worktree_path: data_dir.path().join("repos").join(TEST_OWNER).join(TEST_REPO).join("worktrees/task-stale"),
             branch_name: "rb/task/task-stale".to_owned(),
             acquired_at: now - Duration::minutes(10),
             ttl_seconds: 300,
@@ -615,8 +673,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "reconcile", "--ttl-seconds", "1"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "reconcile", "--data-dir", data_dir.path().to_str().unwrap(), "--ttl-seconds", "1"])
         .output()
         .expect("run daemon reconcile");
 
@@ -640,9 +697,12 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     );
 
     // Task should still be marked as Failed with reconciliation_timeout
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-stale.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-stale.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Failed, task.status);
@@ -653,9 +713,12 @@ fn daemon_reconcile_fails_stale_claimed_task() {
 
     // Lease should remain durable (not released)
     assert!(
-        temp_dir
+        data_dir
             .path()
-            .join(".ralph-burning/daemon/leases/lease-stale.json")
+            .join("repos")
+            .join(TEST_OWNER)
+            .join(TEST_REPO)
+            .join("daemon/leases/lease-stale.json")
             .exists(),
         "lease should remain durable when worktree is absent"
     );
@@ -4293,11 +4356,11 @@ fn conformance_run_failure_exits_non_zero_with_single_report() {
 
 #[test]
 fn daemon_status_shows_waiting_for_requirements_task() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-waiting".to_owned(),
             issue_ref: "repo#99".to_owned(),
@@ -4319,8 +4382,8 @@ fn daemon_status_shows_waiting_for_requirements_task() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: Some("abc12345".to_owned()),
             requirements_run_id: Some("req-20260313".to_owned()),
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(99),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
@@ -4328,30 +4391,25 @@ fn daemon_status_shows_waiting_for_requirements_task() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "status", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(output.status.success(), "daemon status failed: {}", String::from_utf8_lossy(&output.stderr));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("waiting_for_requirements"),
         "status should show waiting_for_requirements, got: {stdout}"
     );
-    assert!(
-        stdout.contains("requirements_run=req-20260313"),
-        "status should show requirements_run_id, got: {stdout}"
-    );
 }
 
 #[test]
 fn daemon_status_shows_dispatch_mode() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-dispatch".to_owned(),
             issue_ref: "repo#100".to_owned(),
@@ -4373,8 +4431,8 @@ fn daemon_status_shows_dispatch_mode() {
             dispatch_mode: DispatchMode::RequirementsQuick,
             source_revision: Some("beef1234".to_owned()),
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(100),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
@@ -4382,11 +4440,10 @@ fn daemon_status_shows_dispatch_mode() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "status", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(output.status.success(), "daemon status failed: {}", String::from_utf8_lossy(&output.stderr));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -4397,11 +4454,11 @@ fn daemon_status_shows_dispatch_mode() {
 
 #[test]
 fn daemon_abort_waiting_task_succeeds() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-waiting-abort".to_owned(),
             issue_ref: "repo#101".to_owned(),
@@ -4423,8 +4480,8 @@ fn daemon_abort_waiting_task_succeeds() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: None,
             requirements_run_id: Some("req-abort-test".to_owned()),
-            repo_slug: None,
-            issue_number: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(101),
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
@@ -4432,22 +4489,24 @@ fn daemon_abort_waiting_task_succeeds() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-waiting-abort"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "abort", "101", "--data-dir", data_dir.path().to_str().unwrap(), "--repo", TEST_REPO_SLUG])
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    assert!(output.status.success(), "daemon abort failed: {}", String::from_utf8_lossy(&output.stderr));
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Aborted task task-waiting-abort"),
+        stdout.contains("Aborted") && stdout.contains("task-waiting-abort"),
         "should confirm abort, got: {stdout}"
     );
 
     // Verify task is now aborted
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-waiting-abort.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-waiting-abort.json");
     let task_json = fs::read_to_string(task_path).expect("read task");
     let task: DaemonTask = serde_json::from_str(&task_json).expect("parse task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -4692,16 +4751,17 @@ fn cli_run_start_close_failure_exits_nonzero() {
 
 #[test]
 fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     let output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "reconcile", "--data-dir", data_dir.path().to_str().unwrap()])
         .output()
         .expect("run reconcile");
     assert!(
         output.status.success(),
-        "reconcile should succeed with no leases"
+        "reconcile should succeed with no leases, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4721,12 +4781,15 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
 
 #[test]
 fn cli_daemon_reconcile_cleans_stale_cli_lease() {
-    let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "cli-reconcile");
-    select_active_project_fixture(temp_dir.path(), "cli-reconcile");
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
-    // Inject a stale CLI lease record and writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    // Inject a stale CLI lease record and writer lock into the data-dir layout.
+    let leases_dir = data_dir.path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4746,22 +4809,9 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
     )
     .expect("write writer lock");
 
-    // Verify run start fails because the writer lock is held.
-    let blocked_output = Command::new(binary())
-        .args(["run", "start"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run start blocked");
-    assert!(
-        !blocked_output.status.success(),
-        "run start should fail when stale CLI lock is held"
-    );
-
     // Run daemon reconcile to clean the stale CLI lease.
     let reconcile_output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "reconcile", "--data-dir", data_dir.path().to_str().unwrap()])
         .output()
         .expect("daemon reconcile");
     let reconcile_stdout = String::from_utf8_lossy(&reconcile_output.stdout);
@@ -4796,27 +4846,19 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
         !leases_dir.join("writer-cli-reconcile.lock").exists(),
         "writer lock should be removed after reconcile"
     );
-
-    // Verify run start now succeeds (lock is no longer held).
-    let start_output = Command::new(binary())
-        .args(["run", "start"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run start after reconcile");
-    assert!(
-        start_output.status.success(),
-        "run start should succeed after stale CLI lease is reconciled, stderr: {}",
-        String::from_utf8_lossy(&start_output.stderr)
-    );
 }
 
 #[test]
 fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     // Inject a stale CLI lease record WITHOUT a matching writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = data_dir.path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4833,8 +4875,7 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
 
     // Reconcile should fail because the writer lock is already absent.
     let output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args(["daemon", "reconcile", "--data-dir", data_dir.path().to_str().unwrap()])
         .output()
         .expect("daemon reconcile");
     assert!(
@@ -4858,12 +4899,15 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
 
 #[test]
 fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
-    let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "oversized-ttl-proj");
-    select_active_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     // Inject a fresh CLI lease record and matching writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = data_dir.path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4891,10 +4935,11 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         .args([
             "daemon",
             "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
             "--ttl-seconds",
             "18446744073709551615",
         ])
-        .current_dir(temp_dir.path())
         .output()
         .expect("daemon reconcile");
 

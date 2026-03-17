@@ -304,6 +304,9 @@ where
 
             // Sync labels for resumed tasks: WaitingForRequirements -> Pending
             // means the issue should now be labeled rb:ready instead of rb:waiting-feedback.
+            // A label sync failure quarantines this repo for the rest of the cycle
+            // (multi-repo failure isolation: no further task/lease/worktree mutation).
+            let mut label_sync_failed = false;
             for task_id in &resumed_task_ids {
                 if let Ok(resumed_task) = self.store.read_task(&daemon_dir, task_id) {
                     if let Err(e) = github_intake::sync_label_for_task(github, &resumed_task).await {
@@ -311,11 +314,13 @@ where
                             "daemon: failed to sync label for resumed task '{}' in {}: {e}",
                             task_id, reg.repo_slug
                         );
-                        // Label sync failure is not fatal — task state is already
-                        // truthful in durable storage; the mismatch will be caught
-                        // by reconcile or the next poll cycle.
+                        label_sync_failed = true;
+                        break;
                     }
                 }
+            }
+            if label_sync_failed {
+                continue; // Quarantine repo for this cycle
             }
 
             // Phase 3: Process pending tasks for this repo
