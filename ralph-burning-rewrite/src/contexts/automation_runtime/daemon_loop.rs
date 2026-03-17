@@ -198,15 +198,22 @@ where
             shutdown_watcher.cancel();
         });
 
-        // Ensure labels on all registered repos at startup
-        if let Err(e) = github_intake::ensure_labels_on_repos(github, &self.registrations).await {
-            eprintln!("daemon: failed to ensure labels: {e}");
+        // Ensure labels on all registered repos at startup — repos that fail
+        // are quarantined (excluded from the daemon loop).
+        let active_registrations =
+            github_intake::ensure_labels_on_repos(github, &self.registrations).await;
+        if active_registrations.is_empty() {
+            return Err(AppError::InvalidConfigValue {
+                key: "repos".to_owned(),
+                value: String::new(),
+                reason: "all registered repos failed label ensure at startup".to_owned(),
+            });
         }
 
         loop {
             if shutdown.is_cancelled() {
                 // Cleanup active leases across all repos
-                for reg in &self.registrations {
+                for reg in &active_registrations {
                     if let Ok((_, _)) = parse_repo_slug(&reg.repo_slug) {
                         let _ = self.cleanup_active_leases(&reg.repo_root);
                     }
@@ -214,15 +221,17 @@ where
                 break;
             }
 
-            self.process_cycle_multi_repo(data_dir, config, github, shutdown.clone())
-                .await?;
+            self.process_cycle_multi_repo(
+                data_dir, config, github, shutdown.clone(), &active_registrations,
+            )
+            .await?;
             if config.single_iteration {
                 break;
             }
 
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    for reg in &self.registrations {
+                    for reg in &active_registrations {
                         let _ = self.cleanup_active_leases(&reg.repo_root);
                     }
                     break;
@@ -243,8 +252,9 @@ where
         config: &DaemonLoopConfig,
         github: &G,
         shutdown: CancellationToken,
+        registrations: &[RepoRegistration],
     ) -> AppResult<()> {
-        for reg in &self.registrations {
+        for reg in registrations {
             let (owner, repo) = match parse_repo_slug(&reg.repo_slug) {
                 Ok(pair) => pair,
                 Err(e) => {
@@ -275,7 +285,7 @@ where
             }
 
             // Phase 2: Check waiting tasks for completed requirements runs
-            if let Err(e) = self.check_waiting_tasks(&daemon_dir) {
+            if let Err(e) = self.check_waiting_tasks(&daemon_dir, checkout) {
                 eprintln!(
                     "daemon: check_waiting_tasks failed for {}: {e}",
                     reg.repo_slug
@@ -330,7 +340,10 @@ where
                         "daemon: task {} failed for {}: {}",
                         task.task_id, reg.repo_slug, error
                     );
-                    // Continue scanning remaining tasks
+                    // Stop further task mutations for this repo in this cycle
+                    // (multi-repo failure isolation: a label or GitHub failure
+                    // quarantines the repo for the rest of the cycle).
+                    break;
                 }
             }
         }
@@ -357,16 +370,17 @@ where
         // Requirements dispatch before claiming lease/worktree
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
-                self.handle_requirements_quick(store_dir, task, &effective_config)
+                self.handle_requirements_quick(store_dir, repo_root, task, &effective_config)
                     .await?;
             }
             DispatchMode::RequirementsDraft => {
                 let result = self
-                    .handle_requirements_draft(store_dir, task, &effective_config)
+                    .handle_requirements_draft(store_dir, repo_root, task, &effective_config)
                     .await;
-                // Sync label after requirements draft (may be WaitingForRequirements or Failed)
+                // Sync label after requirements draft (may be WaitingForRequirements or Failed).
+                // Propagate label failure to quarantine this repo for the cycle.
                 if let Ok(updated_task) = self.store.read_task(store_dir, &task.task_id) {
-                    let _ = github_intake::sync_label_for_task(github, &updated_task).await;
+                    github_intake::sync_label_for_task(github, &updated_task).await?;
                 }
                 return result;
             }
@@ -393,8 +407,8 @@ where
         };
 
         println!("claimed task {}", claimed_task.task_id);
-        // Sync label: Claimed → rb:in-progress
-        let _ = github_intake::sync_label_for_task(github, &claimed_task).await;
+        // Sync label: Claimed → rb:in-progress. Propagate failure to quarantine repo.
+        github_intake::sync_label_for_task(github, &claimed_task).await?;
 
         if let Err(error) = self.worktree.rebase_onto_default_branch(
             repo_root,
@@ -418,7 +432,7 @@ where
             return Ok(());
         }
 
-        if let Err(error) = self.ensure_project(store_dir, &claimed_task) {
+        if let Err(error) = self.ensure_project(repo_root, &claimed_task) {
             self.handle_post_claim_failure(store_dir, repo_root, &claimed_task, &lease, &error)?;
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
             if let Some(ref ft) = failed_task {
@@ -455,13 +469,14 @@ where
                 }
             };
         println!("active task {}", active_task.task_id);
-        // Sync label: Active → rb:in-progress (same label as Claimed, but confirms state)
-        let _ = github_intake::sync_label_for_task(github, &active_task).await;
+        // Sync label: Active → rb:in-progress. Propagate failure to quarantine repo.
+        github_intake::sync_label_for_task(github, &active_task).await?;
 
         let task_cancel = CancellationToken::new();
         let outcome = self
             .drive_dispatch(
                 store_dir,
+                repo_root,
                 &active_task,
                 &lease,
                 &effective_config,
@@ -483,8 +498,8 @@ where
             Ok(()) => {
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
-                // Sync label: Completed → rb:completed
-                let _ = github_intake::sync_label_for_task(github, &completed_task).await;
+                // Sync label: Completed → rb:completed. Propagate failure to quarantine repo.
+                github_intake::sync_label_for_task(github, &completed_task).await?;
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("completed task {}", active_task.task_id);
@@ -501,8 +516,8 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
-                // Sync label: Failed → rb:failed
-                let _ = github_intake::sync_label_for_task(github, &failed_task).await;
+                // Sync label: Failed → rb:failed. Propagate failure to quarantine repo.
+                github_intake::sync_label_for_task(github, &failed_task).await?;
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
@@ -522,7 +537,7 @@ where
         self.poll_watchers(base_dir)?;
 
         // Phase 2: Check waiting tasks for completed requirements runs
-        self.check_waiting_tasks(base_dir)?;
+        self.check_waiting_tasks(base_dir, base_dir)?;
 
         // Phase 3: Process all pending tasks in this cycle. A per-task claim
         // failure or writer-lock contention does not stop the scan; the daemon
@@ -599,7 +614,7 @@ where
     /// linked requirements run has completed. Before resuming, derive the seed
     /// handoff and populate the task's project metadata so the next workflow
     /// dispatch cycle can create/resume the project correctly.
-    fn check_waiting_tasks(&self, base_dir: &Path) -> AppResult<()> {
+    fn check_waiting_tasks(&self, base_dir: &Path, workspace_dir: &Path) -> AppResult<()> {
         let Some(req_store) = self.requirements_store else {
             return Ok(());
         };
@@ -613,10 +628,10 @@ where
                 continue;
             };
 
-            match req_service::is_requirements_run_complete(req_store, base_dir, run_id) {
+            match req_service::is_requirements_run_complete(req_store, workspace_dir, run_id) {
                 Ok(true) => {
                     // Derive seed handoff before resuming so task has project metadata
-                    match req_service::extract_seed_handoff(req_store, base_dir, run_id) {
+                    match req_service::extract_seed_handoff(req_store, workspace_dir, run_id) {
                         Ok(handoff) => {
                             // Populate task with seed-derived project metadata.
                             // Guard: if any post-seed write fails, the task
@@ -739,14 +754,14 @@ where
         // requirements_draft enters WaitingForRequirements and returns immediately.
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
-                self.handle_requirements_quick(base_dir, task, &effective_config)
+                self.handle_requirements_quick(base_dir, base_dir, task, &effective_config)
                     .await?;
                 // Task is now Workflow mode with project metadata populated.
                 // Fall through to standard claim/dispatch below.
             }
             DispatchMode::RequirementsDraft => {
                 return self
-                    .handle_requirements_draft(base_dir, task, &effective_config)
+                    .handle_requirements_draft(base_dir, base_dir, task, &effective_config)
                     .await;
             }
             DispatchMode::Workflow => {
@@ -825,6 +840,7 @@ where
         let outcome = self
             .drive_dispatch(
                 base_dir,
+                base_dir,
                 &active_task,
                 &lease,
                 &effective_config,
@@ -874,6 +890,7 @@ where
     async fn handle_requirements_quick(
         &self,
         base_dir: &Path,
+        workspace_dir: &Path,
         task: &DaemonTask,
         effective_config: &EffectiveConfig,
     ) -> AppResult<()> {
@@ -900,7 +917,7 @@ where
             );
             e
         })?;
-        let run_id = match req_svc.quick(base_dir, &idea, Utc::now()).await {
+        let run_id = match req_svc.quick(workspace_dir, &idea, Utc::now()).await {
             Ok(run_id) => run_id,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(
@@ -947,7 +964,7 @@ where
         }
 
         // Derive seed and create project from completed requirements run
-        let handoff = match req_service::extract_seed_handoff(req_store, base_dir, &run_id) {
+        let handoff = match req_service::extract_seed_handoff(req_store, workspace_dir, &run_id) {
             Ok(h) => h,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(
@@ -1030,6 +1047,7 @@ where
     async fn handle_requirements_draft(
         &self,
         base_dir: &Path,
+        workspace_dir: &Path,
         task: &DaemonTask,
         effective_config: &EffectiveConfig,
     ) -> AppResult<()> {
@@ -1066,7 +1084,7 @@ where
             );
             e
         })?;
-        let run_id = match req_svc.draft(base_dir, &idea, Utc::now()).await {
+        let run_id = match req_svc.draft(workspace_dir, &idea, Utc::now()).await {
             Ok(run_id) => run_id,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(
@@ -1084,7 +1102,7 @@ where
         // If the question set was empty, the run completes directly (no user
         // answers needed). Only enter WaitingForRequirements when answers are
         // actually pending.
-        let run_complete = req_service::is_requirements_run_complete(req_store, base_dir, &run_id)?;
+        let run_complete = req_service::is_requirements_run_complete(req_store, workspace_dir, &run_id)?;
 
         if run_complete {
             // Empty-question draft: run already completed. Extract seed and
@@ -1124,7 +1142,7 @@ where
                 return Err(e);
             }
 
-            let handoff = match req_service::extract_seed_handoff(req_store, base_dir, &run_id) {
+            let handoff = match req_service::extract_seed_handoff(req_store, workspace_dir, &run_id) {
                 Ok(h) => h,
                 Err(e) => {
                     let _ = DaemonTaskService::mark_failed(
@@ -1257,6 +1275,7 @@ where
     async fn drive_dispatch(
         &self,
         base_dir: &Path,
+        workspace_dir: &Path,
         task: &DaemonTask,
         lease: &crate::contexts::automation_runtime::model::WorktreeLease,
         effective_config: &EffectiveConfig,
@@ -1274,9 +1293,9 @@ where
 
         let run_snapshot = self
             .run_snapshot_read
-            .read_run_snapshot(base_dir, &project_id)?;
+            .read_run_snapshot(workspace_dir, &project_id)?;
         let dispatch_future = self.dispatch_in_worktree(
-            base_dir,
+            workspace_dir,
             &project_id,
             flow,
             run_snapshot.status,

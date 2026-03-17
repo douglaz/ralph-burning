@@ -26,9 +26,8 @@ pub struct DaemonCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonSubcommand {
-    /// Start the daemon loop. When --data-dir and --repo are provided, runs
-    /// in multi-repo GitHub mode (production). Without --data-dir, runs in
-    /// single-repo file-watcher mode (test-only; will be removed in a future release).
+    /// Start the daemon loop. Requires --data-dir and at least one --repo.
+    /// Runs in multi-repo GitHub intake mode.
     Start {
         #[arg(long, default_value_t = 10)]
         poll_seconds: u64,
@@ -104,13 +103,16 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                     verbose,
                 )
                 .await
-            } else {
-                // Legacy file-watcher mode — test-only. Production must use --data-dir.
-                eprintln!(
-                    "warning: running daemon without --data-dir uses file-watcher intake \
-                     (test-only; use --data-dir and --repo for production GitHub intake)"
-                );
+            } else if single_iteration {
+                // Test-only legacy path: --single-iteration without --data-dir
+                // uses file-watcher intake. Production daemon requires --data-dir.
                 handle_start_legacy(poll_seconds, single_iteration).await
+            } else {
+                Err(AppError::InvalidConfigValue {
+                    key: "data-dir".to_owned(),
+                    value: String::new(),
+                    reason: "--data-dir is required for daemon start (file-watcher intake is test-only; use --single-iteration for test mode)".to_owned(),
+                })
             }
         }
         DaemonSubcommand::Status { data_dir, repos } => {
@@ -362,6 +364,20 @@ async fn handle_abort_by_issue(
         cleanup_aborted_task(&store, &worktree, &daemon_dir, &task_id, original_status).await?;
     }
 
+    // Sync GitHub label: Aborted → rb:failed
+    let aborted_task = store.read_task(&daemon_dir, &task_id)?;
+    if let Ok(gh_config) = GithubClientConfig::from_env() {
+        let gh = GithubClient::new(gh_config);
+        if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+            &gh,
+            &aborted_task,
+        )
+        .await
+        {
+            eprintln!("warning: failed to sync GitHub label after abort: {e}");
+        }
+    }
+
     println!("Aborted {repo_slug}#{issue_number} (task {task_id})");
     Ok(())
 }
@@ -391,6 +407,19 @@ async fn handle_retry_by_issue(
             })?;
 
     let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
+
+    // Sync GitHub label: retried task is Pending → rb:ready
+    if let Ok(gh_config) = GithubClientConfig::from_env() {
+        let gh = GithubClient::new(gh_config);
+        if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+            &gh, &task,
+        )
+        .await
+        {
+            eprintln!("warning: failed to sync GitHub label after retry: {e}");
+        }
+    }
+
     println!(
         "Retried {repo_slug}#{issue_number} (task {}, attempt_count={})",
         task.task_id, task.attempt_count

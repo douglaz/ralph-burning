@@ -205,16 +205,10 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                 task.last_seen_review_id = github_meta.last_seen_review_id;
                 store.write_task(base_dir, &task)?;
 
-                // Transition label from rb:ready to rb:in-progress
-                // Partial label failure is tolerated — task record exists, dedup prevents re-creation
-                if let Err(e) = github.remove_label(owner, repo, issue.number, "rb:ready").await {
-                    eprintln!(
-                        "github-intake: warning: failed to remove rb:ready from {}#{}: {e}",
-                        registration.repo_slug, issue.number
-                    );
-                }
-                // We don't add rb:in-progress yet — the task is Pending, not Claimed.
-                // The daemon loop will add it when the task is claimed.
+                // Task is Pending → label stays rb:ready (matches label_for_status).
+                // The daemon loop calls sync_label_for_task when the task transitions
+                // to Claimed (rb:in-progress). We do NOT remove rb:ready here because
+                // Pending maps to rb:ready and the label must reflect durable state.
 
                 created += 1;
             }
@@ -248,28 +242,58 @@ pub async fn sync_label_for_task<G: GithubPort>(
 
     let target_label = label_for_status(&task.status);
 
-    // Remove all rb: status labels, then add the correct one
+    // Remove all rb: status labels, then add the correct one.
+    // Failures are propagated so callers can quarantine the repo.
     let status_labels = ["rb:ready", "rb:in-progress", "rb:failed", "rb:completed", "rb:waiting-feedback"];
     for label in &status_labels {
-        let _ = github.remove_label(owner, repo, issue_number, label).await;
+        // Removing a label that doesn't exist is a no-op at the API level,
+        // but a transport/auth failure should propagate.
+        if let Err(e) = github.remove_label(owner, repo, issue_number, label).await {
+            // 404 (label not present) is not a real failure — only propagate others
+            let msg = e.to_string();
+            if !msg.contains("404") && !msg.contains("not found") {
+                return Err(e);
+            }
+        }
     }
     if let Some(label) = target_label {
-        let _ = github.add_label(owner, repo, issue_number, label).await;
+        github.add_label(owner, repo, issue_number, label).await?;
     }
 
     Ok(())
 }
 
 /// Ensure the label vocabulary exists on all registered repos.
+/// Returns the set of repos where label ensure succeeded. Repos where label
+/// ensure fails are quarantined (logged and excluded) rather than blocking
+/// the entire daemon startup.
 pub async fn ensure_labels_on_repos<G: GithubPort>(
     github: &G,
     registrations: &[RepoRegistration],
-) -> AppResult<()> {
+) -> Vec<RepoRegistration> {
+    let mut valid = Vec::new();
     for reg in registrations {
-        let (owner, repo) = super::repo_registry::parse_repo_slug(&reg.repo_slug)?;
-        github.ensure_labels(owner, repo, LABEL_VOCABULARY).await?;
+        match super::repo_registry::parse_repo_slug(&reg.repo_slug) {
+            Ok((owner, repo)) => {
+                match github.ensure_labels(owner, repo, LABEL_VOCABULARY).await {
+                    Ok(()) => valid.push(reg.clone()),
+                    Err(e) => {
+                        eprintln!(
+                            "daemon: quarantining repo '{}': failed to ensure labels: {e}",
+                            reg.repo_slug
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!(
+                    "daemon: quarantining repo '{}': invalid slug: {e}",
+                    reg.repo_slug
+                );
+            }
+        }
     }
-    Ok(())
+    valid
 }
 
 #[cfg(test)]
