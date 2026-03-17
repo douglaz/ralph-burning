@@ -198,15 +198,31 @@ where
             shutdown_watcher.cancel();
         });
 
-        // Ensure labels on all registered repos at startup — repos that fail
-        // are quarantined (excluded from the daemon loop).
+        // Ensure labels on all registered repos at startup. During `daemon start`,
+        // every requested repo must pass label ensure — silently excluding a
+        // requested repo is a startup contract violation. If any repo fails,
+        // surface the failure explicitly instead of quarantining.
         let active_registrations =
             github_intake::ensure_labels_on_repos(github, &self.registrations).await;
-        if active_registrations.is_empty() {
+        if active_registrations.len() < self.registrations.len() {
+            let quarantined: Vec<&str> = self
+                .registrations
+                .iter()
+                .filter(|r| {
+                    !active_registrations
+                        .iter()
+                        .any(|a| a.repo_slug == r.repo_slug)
+                })
+                .map(|r| r.repo_slug.as_str())
+                .collect();
             return Err(AppError::InvalidConfigValue {
                 key: "repos".to_owned(),
-                value: String::new(),
-                reason: "all registered repos failed label ensure at startup".to_owned(),
+                value: quarantined.join(", "),
+                reason: format!(
+                    "startup label ensure failed for requested repo(s): {} — \
+                     all repos must pass label ensure at daemon start",
+                    quarantined.join(", ")
+                ),
             });
         }
 

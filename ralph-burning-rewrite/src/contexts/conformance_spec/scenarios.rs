@@ -11296,6 +11296,53 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 );
             }
 
+            // Verify validate_repo_checkout REJECTS a checkout that has a
+            // malformed workspace.toml (exists as a file but invalid content).
+            // This ensures unusable workspace configs are caught at `daemon start`
+            // time instead of failing later during task processing.
+            let checkout3 = data_dir.join("repos/test-org/test-repo3/repo");
+            std::fs::create_dir_all(&checkout3).map_err(|e| e.to_string())?;
+            std::process::Command::new("git")
+                .args(["init", &checkout3.to_string_lossy()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            let ws3_dir = checkout3.join(".ralph-burning");
+            std::fs::create_dir_all(&ws3_dir).map_err(|e| e.to_string())?;
+            // Write syntactically valid TOML but structurally invalid workspace config
+            // (missing required `version` field, wrong shape, etc.)
+            std::fs::write(
+                ws3_dir.join("workspace.toml"),
+                b"[invalid]\nnot_a_workspace = true\n",
+            )
+            .map_err(|e| e.to_string())?;
+            if repo_registry::validate_repo_checkout(&checkout3).is_ok() {
+                return Err(
+                    "validate_repo_checkout should reject checkout with malformed workspace.toml"
+                        .into(),
+                );
+            }
+
+            // Also verify that completely broken TOML is rejected
+            let checkout4 = data_dir.join("repos/test-org/test-repo4/repo");
+            std::fs::create_dir_all(&checkout4).map_err(|e| e.to_string())?;
+            std::process::Command::new("git")
+                .args(["init", &checkout4.to_string_lossy()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            let ws4_dir = checkout4.join(".ralph-burning");
+            std::fs::create_dir_all(&ws4_dir).map_err(|e| e.to_string())?;
+            std::fs::write(
+                ws4_dir.join("workspace.toml"),
+                b"this is not valid toml {{{{",
+            )
+            .map_err(|e| e.to_string())?;
+            if repo_registry::validate_repo_checkout(&checkout4).is_ok() {
+                return Err(
+                    "validate_repo_checkout should reject checkout with broken TOML workspace.toml"
+                        .into(),
+                );
+            }
+
             Ok(())
         }
     );
@@ -11463,7 +11510,12 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.labels.ensure_on_startup", || {
-        use crate::contexts::automation_runtime::repo_registry::LABEL_VOCABULARY;
+        use crate::adapters::github::InMemoryGithubClient;
+        use crate::contexts::automation_runtime::repo_registry::{
+            RepoRegistration, LABEL_VOCABULARY,
+        };
+        use crate::contexts::automation_runtime::github_intake;
+        use std::path::PathBuf;
 
         // Verify the label vocabulary is complete
         let required = vec![
@@ -11491,6 +11543,54 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 LABEL_VOCABULARY.len(),
                 required.len()
             ));
+        }
+
+        // Verify ensure_labels_on_repos filters out repos that fail label ensure.
+        // Use InMemoryGithubClient configured to fail for one repo.
+        let gh = InMemoryGithubClient::new();
+        gh.set_ensure_labels_failure("fail-org", "fail-repo");
+
+        let registrations = vec![
+            RepoRegistration {
+                repo_slug: "good-org/good-repo".to_owned(),
+                repo_root: PathBuf::from("/tmp/good"),
+                workspace_root: PathBuf::from("/tmp/good/.ralph-burning"),
+            },
+            RepoRegistration {
+                repo_slug: "fail-org/fail-repo".to_owned(),
+                repo_root: PathBuf::from("/tmp/fail"),
+                workspace_root: PathBuf::from("/tmp/fail/.ralph-burning"),
+            },
+        ];
+
+        // Use the block_on helper that handles being inside an existing runtime
+        let run_label_ensure = async {
+            let active = github_intake::ensure_labels_on_repos(&gh, &registrations).await;
+            Ok(active) as crate::shared::error::AppResult<Vec<RepoRegistration>>
+        };
+        let active = block_on_app_result(run_label_ensure)?;
+
+        // Only the good repo should survive
+        if active.len() != 1 {
+            return Err(format!(
+                "expected 1 active repo after label ensure failure, got {}",
+                active.len()
+            ));
+        }
+        if active[0].repo_slug != "good-org/good-repo" {
+            return Err(format!(
+                "expected good-org/good-repo to survive, got {}",
+                active[0].repo_slug
+            ));
+        }
+
+        // Verify the startup contract: if any requested repo was filtered,
+        // the daemon start path should detect partial success and fail.
+        // (The actual daemon start code checks active < requested and errors.)
+        if active.len() >= registrations.len() {
+            return Err(
+                "ensure_labels_on_repos should have filtered the failing repo".into(),
+            );
         }
 
         Ok(())

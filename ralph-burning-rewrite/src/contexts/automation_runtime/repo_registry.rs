@@ -238,6 +238,23 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
                 .to_owned(),
         });
     }
+
+    // Parse and validate the workspace config so a malformed workspace.toml
+    // is caught at `daemon start` time instead of failing later during task
+    // processing when `EffectiveConfig::load()` is called.
+    match crate::contexts::workspace_governance::load_workspace_config(checkout_path) {
+        Ok(_config) => {}
+        Err(e) => {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: checkout_path.display().to_string(),
+                reason: format!(
+                    "workspace.toml exists but is not a valid workspace config: {e}"
+                ),
+            });
+        }
+    }
+
     Ok(())
 }
 

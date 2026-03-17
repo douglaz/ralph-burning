@@ -1151,6 +1151,8 @@ pub struct InMemoryGithubClient {
     /// Updated PR bodies: `(pr_number, body)`.
     pub updated_pr_bodies: std::sync::Mutex<Vec<(u64, String)>>,
     next_pr_number: std::sync::Mutex<u64>,
+    /// Repos for which `ensure_labels` should fail (set of `owner/repo` keys).
+    ensure_labels_failure_repos: std::sync::Mutex<std::collections::HashSet<String>>,
 }
 
 impl InMemoryGithubClient {
@@ -1168,10 +1170,25 @@ impl InMemoryGithubClient {
             ..Self::default()
         }
     }
+
+    /// Configure `ensure_labels` to fail for a specific `owner/repo` pair.
+    pub fn set_ensure_labels_failure(&self, owner: &str, repo: &str) {
+        self.ensure_labels_failure_repos
+            .lock()
+            .unwrap()
+            .insert(format!("{owner}/{repo}"));
+    }
 }
 
 impl GithubPort for InMemoryGithubClient {
-    async fn ensure_labels(&self, _owner: &str, _repo: &str, labels: &[&str]) -> AppResult<()> {
+    async fn ensure_labels(&self, owner: &str, repo: &str, labels: &[&str]) -> AppResult<()> {
+        let key = format!("{owner}/{repo}");
+        if self.ensure_labels_failure_repos.lock().unwrap().contains(&key) {
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("simulated ensure_labels failure for {key}"),
+            });
+        }
         let mut ensured = self.labels_ensured.lock().unwrap();
         for label in labels {
             if !ensured.contains(&label.to_string()) {
