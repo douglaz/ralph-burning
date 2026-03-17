@@ -151,7 +151,7 @@ where
 
         loop {
             if shutdown.is_cancelled() {
-                self.cleanup_active_leases(base_dir)?;
+                self.cleanup_active_leases(base_dir, base_dir)?;
                 break;
             }
 
@@ -165,7 +165,7 @@ where
             let _ = processed;
             tokio::select! {
                 _ = shutdown.cancelled() => {
-                    self.cleanup_active_leases(base_dir)?;
+                    self.cleanup_active_leases(base_dir, base_dir)?;
                     break;
                 }
                 _ = tokio::time::sleep(config.poll_interval) => {}
@@ -212,10 +212,12 @@ where
 
         loop {
             if shutdown.is_cancelled() {
-                // Cleanup active leases across all repos
+                // Cleanup active leases across all repos using daemon shard for
+                // store reads and checkout root for Git/worktree operations.
                 for reg in &active_registrations {
-                    if let Ok((_, _)) = parse_repo_slug(&reg.repo_slug) {
-                        let _ = self.cleanup_active_leases(&reg.repo_root);
+                    if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
+                        let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+                        let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
                     }
                 }
                 break;
@@ -232,7 +234,10 @@ where
             tokio::select! {
                 _ = shutdown.cancelled() => {
                     for reg in &active_registrations {
-                        let _ = self.cleanup_active_leases(&reg.repo_root);
+                        if let Ok((owner, repo)) = parse_repo_slug(&reg.repo_slug) {
+                            let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+                            let _ = self.cleanup_active_leases(&daemon_dir, &reg.repo_root);
+                        }
                     }
                     break;
                 }
@@ -1446,11 +1451,11 @@ where
         Ok(())
     }
 
-    fn cleanup_active_leases(&self, base_dir: &Path) -> AppResult<()> {
-        let leases = self.store.list_leases(base_dir)?;
+    fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
+        let leases = self.store.list_leases(store_dir)?;
         for lease in &leases {
-            let _ = DaemonTaskService::mark_aborted(self.store, base_dir, &lease.task_id);
-            if let Err(e) = self.release_task_lease(base_dir, base_dir, &lease.task_id, lease) {
+            let _ = DaemonTaskService::mark_aborted(self.store, store_dir, &lease.task_id);
+            if let Err(e) = self.release_task_lease(store_dir, repo_root, &lease.task_id, lease) {
                 eprintln!(
                     "daemon: cleanup failed for lease '{}' (task '{}'): {}",
                     lease.lease_id, lease.task_id, e

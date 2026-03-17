@@ -11540,32 +11540,35 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.start_requires_data_dir", || {
-        // Verify that the CLI surface rejects daemon start without --data-dir.
-        // We test the routing logic directly rather than spawning a process.
-        // The match arm in handle() returns InvalidConfigValue when data_dir is
-        // None and single_iteration is false.
+        // Verify that the real CLI binary rejects `daemon start` without --data-dir
+        // by spawning the binary in production mode (no RALPH_BURNING_TEST_LEGACY_DAEMON).
+        let ws = TempWorkspace::new()?;
 
-        // The production CLI no longer has any path to FileIssueWatcher:
-        // - daemon start without --data-dir always errors
-        // - handle_start_legacy_no_intake has been removed
-        // We verify the error path by confirming the expected error variant.
-        use crate::shared::error::AppError;
+        let mut cmd = Command::new(binary_path());
+        cmd.args(["daemon", "start", "--single-iteration"])
+            .current_dir(ws.path())
+            .env("RALPH_BURNING_BACKEND", "stub")
+            // Explicitly remove the test-legacy env var to exercise
+            // the production path where --data-dir is required.
+            .env_remove("RALPH_BURNING_TEST_LEGACY_DAEMON");
 
-        let err = AppError::InvalidConfigValue {
-            key: "data-dir".to_owned(),
-            value: String::new(),
-            reason: "--data-dir is required for daemon start".to_owned(),
-        };
+        let output = cmd
+            .output()
+            .map_err(|e| format!("failed to run CLI: {e}"))?;
 
-        let msg = err.to_string();
-        if !msg.contains("--data-dir") {
-            return Err(format!("error message missing --data-dir: {msg}"));
+        if output.status.success() {
+            return Err(
+                "daemon start without --data-dir should fail but succeeded".to_owned(),
+            );
         }
 
-        // Also verify no FileIssueWatcher import exists in the production start path.
-        // This is a structural assertion: the `handle_start_legacy_no_intake` function
-        // was removed, so the only `daemon start` path goes through
-        // `handle_start_multi_repo` which uses GitHub intake.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("--data-dir") {
+            return Err(format!(
+                "expected error mentioning --data-dir, got: {stderr}"
+            ));
+        }
+
         Ok(())
     });
 
