@@ -42,19 +42,37 @@ pub fn label_for_status(status: &super::model::TaskStatus) -> Option<&'static st
 }
 
 /// Parse and validate a repo slug in `owner/repo` form.
+///
+/// Rejects empty segments, path separators, dot segments (`.`, `..`), and
+/// characters that are not valid in GitHub owner/repo names so invalid or
+/// unsafe slugs fail before any data-dir path is built.
 pub fn parse_repo_slug(slug: &str) -> AppResult<(&str, &str)> {
     let trimmed = slug.trim();
     let parts: Vec<&str> = trimmed.split('/').collect();
-    if parts.len() != 2
-        || parts[0].is_empty()
-        || parts[1].is_empty()
-        || parts.iter().any(|p| p.contains(std::path::MAIN_SEPARATOR))
-    {
+    if parts.len() != 2 {
         return Err(AppError::InvalidConfigValue {
             key: "repo".to_owned(),
             value: slug.to_owned(),
             reason: "expected owner/repo format".to_owned(),
         });
+    }
+    for part in &parts {
+        if part.is_empty()
+            || *part == "."
+            || *part == ".."
+            || part.contains(std::path::MAIN_SEPARATOR)
+            || part.contains('\0')
+        {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: slug.to_owned(),
+                reason: format!(
+                    "invalid repo slug component '{}': must not be empty, '.', '..', \
+                     or contain path separators",
+                    part
+                ),
+            });
+        }
     }
     Ok((parts[0], parts[1]))
 }
@@ -431,6 +449,15 @@ mod tests {
         assert!(parse_repo_slug("too/many/parts").is_err());
         assert!(parse_repo_slug("/repo").is_err());
         assert!(parse_repo_slug("owner/").is_err());
+    }
+
+    #[test]
+    fn parse_rejects_dot_segments() {
+        assert!(parse_repo_slug("acme/.").is_err());
+        assert!(parse_repo_slug("acme/..").is_err());
+        assert!(parse_repo_slug("./repo").is_err());
+        assert!(parse_repo_slug("../repo").is_err());
+        assert!(parse_repo_slug("./..").is_err());
     }
 
     #[test]

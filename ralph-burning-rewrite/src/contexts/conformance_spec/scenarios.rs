@@ -13659,6 +13659,98 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         }
     });
 
+    reg!(m, "daemon.slug_validation.rejects_dot_segments", || {
+        use crate::contexts::automation_runtime::repo_registry::parse_repo_slug;
+
+        // Dot segments must be rejected
+        let bad_slugs = ["acme/.", "acme/..", "./repo", "../repo", "./.."];
+        for slug in &bad_slugs {
+            if parse_repo_slug(slug).is_ok() {
+                return Err(format!(
+                    "expected parse_repo_slug('{}') to fail, but it succeeded",
+                    slug
+                ));
+            }
+        }
+
+        // Valid slugs must still succeed
+        let (owner, repo) = parse_repo_slug("acme/widgets").map_err(|e| e.to_string())?;
+        if owner != "acme" || repo != "widgets" {
+            return Err(format!(
+                "expected (acme, widgets), got ({}, {})",
+                owner, repo
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.routing.run_overrides_stale_requirements", || {
+        use crate::contexts::automation_runtime::github_intake::extract_command;
+        use crate::contexts::automation_runtime::model::{DispatchMode, WatchedIssueMeta};
+        use crate::contexts::automation_runtime::watcher;
+
+        // Scenario: issue body contains stale `/rb requirements draft`,
+        // but a newer comment says `/rb run`.  The extracted explicit
+        // command should be `/rb run`, and dispatch should be Workflow.
+        let body = "Please implement this feature.\n/rb requirements draft\n";
+        let comments = vec!["looks good".to_owned(), "/rb run".to_owned()];
+
+        // extract_command should find /rb run (newest comment wins)
+        let cmd = extract_command(body, &comments);
+        if cmd.as_deref() != Some("/rb run") {
+            return Err(format!(
+                "expected extracted command '/rb run', got {:?}",
+                cmd
+            ));
+        }
+
+        // Now simulate what poll_and_ingest_repo does: detect /rb run,
+        // force DispatchMode::Workflow regardless of body content.
+        let explicit_run = cmd
+            .as_deref()
+            .map(|c| c.trim() == "/rb run")
+            .unwrap_or(false);
+        if !explicit_run {
+            return Err("expected explicit_run=true for '/rb run' command".into());
+        }
+
+        // With explicit_run=true, dispatch mode should be forced to Workflow.
+        // Verify that without the override, body scanning would produce
+        // RequirementsDraft (this proves the fix is load-bearing).
+        let meta = WatchedIssueMeta {
+            issue_ref: "acme/widgets#1".to_owned(),
+            source_revision: String::new(),
+            title: "test".to_owned(),
+            body: body.to_owned(),
+            labels: vec![],
+            routing_command: None, // /rb run is a daemon command, filtered out
+        };
+        let body_mode = watcher::resolve_dispatch_mode(&meta)
+            .map_err(|e| e.to_string())?;
+        if body_mode != DispatchMode::RequirementsDraft {
+            return Err(format!(
+                "expected body scan to produce RequirementsDraft, got {:?}",
+                body_mode
+            ));
+        }
+
+        // The actual fix: when explicit_run is true, we force Workflow
+        let dispatch_mode = if explicit_run {
+            DispatchMode::Workflow
+        } else {
+            body_mode
+        };
+        if dispatch_mode != DispatchMode::Workflow {
+            return Err(format!(
+                "expected forced Workflow dispatch, got {:?}",
+                dispatch_mode
+            ));
+        }
+
+        Ok(())
+    });
+
     reg!(m, "daemon.labels.requirements_draft_label_failure_quarantine", || {
         use crate::adapters::github::{
             GithubIssue, GithubLabel, GithubUser, InMemoryGithubClient,

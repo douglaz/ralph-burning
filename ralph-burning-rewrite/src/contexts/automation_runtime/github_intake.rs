@@ -8,7 +8,7 @@ use crate::shared::domain::FlowPreset;
 use crate::shared::error::AppResult;
 
 use super::lease_service::{LeaseService, ReleaseMode};
-use super::model::{DaemonTask, GithubTaskMeta, TaskStatus, WatchedIssueMeta};
+use super::model::{DaemonTask, DispatchMode, GithubTaskMeta, TaskStatus, WatchedIssueMeta};
 use super::repo_registry::{label_for_status, RepoRegistration, LABEL_VOCABULARY};
 use super::routing::RoutingEngine;
 use super::task_service::DaemonTaskService;
@@ -211,20 +211,38 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             }
         }
 
+        // Check whether the extracted explicit command is `/rb run` BEFORE
+        // clearing it for flow routing.  `/rb run` means "run the workflow
+        // now" and must force `DispatchMode::Workflow`, overriding any stale
+        // `/rb requirements` text that may still be present in the issue body.
+        let explicit_run = routing_command
+            .as_deref()
+            .map(|cmd| cmd.trim() == "/rb run")
+            .unwrap_or(false);
+
         // For /rb run (and any other daemon command), clear the routing_command
         // so flow resolution uses labels/default routing instead
         let routing_command_for_task =
             routing_command.filter(|cmd| !RoutingEngine::is_daemon_command(cmd));
 
         let meta = issue_to_watched_meta(issue, &registration.repo_slug, routing_command_for_task);
-        let dispatch_mode = match watcher::resolve_dispatch_mode(&meta) {
-            Ok(mode) => mode,
-            Err(e) => {
-                eprintln!(
-                    "github-intake: skipping {}#{}: {e}",
-                    registration.repo_slug, issue.number
-                );
-                continue;
+
+        // If `/rb run` was the extracted explicit command, force workflow
+        // dispatch.  Otherwise, resolve from the routing command / body as
+        // usual.  This ensures a newer `/rb run` comment always overrides
+        // stale `/rb requirements` text in the issue body.
+        let dispatch_mode = if explicit_run {
+            DispatchMode::Workflow
+        } else {
+            match watcher::resolve_dispatch_mode(&meta) {
+                Ok(mode) => mode,
+                Err(e) => {
+                    eprintln!(
+                        "github-intake: skipping {}#{}: {e}",
+                        registration.repo_slug, issue.number
+                    );
+                    continue;
+                }
             }
         };
 

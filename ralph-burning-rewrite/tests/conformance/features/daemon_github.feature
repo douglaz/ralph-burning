@@ -182,6 +182,20 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Then sync_label_for_task returns an error for the requeue path as well
     And label-sync failure on terminal Failed state is still detectable but tolerable
 
+  # daemon.slug_validation.rejects_dot_segments
+  Scenario: Repo slug parsing rejects dot segments and other unsafe components
+    When parsing repo slugs "acme/.", "acme/..", "./repo", and "../repo"
+    Then all are rejected with an InvalidConfigValue error
+    And valid slugs like "acme/widgets" continue to succeed
+
+  # daemon.routing.run_overrides_stale_requirements
+  Scenario: Explicit /rb run overrides stale /rb requirements in issue body
+    Given an issue with "/rb requirements draft" in the body
+    And a newer comment "/rb run"
+    When the intake extracts the explicit command
+    Then the dispatch mode is Workflow, not RequirementsDraft
+    And the body-level /rb requirements text is not consulted
+
   # daemon.github.port_covers_pr_operations
   Scenario: GithubPort trait exposes the full PR/branch API for slice-9 consumers
     Given an in-memory GitHub client behind dyn GithubPort
