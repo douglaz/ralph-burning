@@ -471,11 +471,16 @@ where
         };
 
         println!("claimed task {}", claimed_task.task_id);
-        // Sync label: Claimed → rb:in-progress. Propagate failure to quarantine repo,
-        // but mark label_dirty first so reconcile can repair.
+        // Sync label: Claimed → rb:in-progress. On failure, mark label_dirty and
+        // continue processing — the durable state is correct and Phase 0 will
+        // repair the label on the next cycle. Returning Err here would strand
+        // the Claimed task (Phase 3 only processes Pending tasks).
         if let Err(e) = github_intake::sync_label_for_task(github, &claimed_task).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
-            return Err(e);
+            eprintln!(
+                "daemon: label sync failed for claimed task '{}', continuing with dirty label: {e}",
+                claimed_task.task_id
+            );
         }
 
         if let Err(error) = self.worktree.rebase_onto_default_branch(
@@ -545,11 +550,16 @@ where
                 }
             };
         println!("active task {}", active_task.task_id);
-        // Sync label: Active → rb:in-progress. Propagate failure to quarantine repo,
-        // but mark label_dirty first so reconcile can repair.
+        // Sync label: Active → rb:in-progress. On failure, mark label_dirty and
+        // continue processing — the durable state is correct and Phase 0 will
+        // repair the label on the next cycle. Returning Err here would strand
+        // the Active task (Phase 3 only processes Pending tasks).
         if let Err(e) = github_intake::sync_label_for_task(github, &active_task).await {
             let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
-            return Err(e);
+            eprintln!(
+                "daemon: label sync failed for active task '{}', continuing with dirty label: {e}",
+                active_task.task_id
+            );
         }
 
         let task_cancel = CancellationToken::new();
@@ -580,11 +590,15 @@ where
             Ok(()) => {
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
-                // Sync label: Completed → rb:completed. Propagate failure to quarantine repo,
-                // but mark label_dirty first so reconcile can repair.
+                // Sync label: Completed → rb:completed. On failure, mark label_dirty
+                // but still release the lease — the task is terminal and must not
+                // retain lease/worktree ownership. Phase 0 will repair the label.
                 if let Err(e) = github_intake::sync_label_for_task(github, &completed_task).await {
                     let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
-                    return Err(e);
+                    eprintln!(
+                        "daemon: label sync failed for completed task '{}', releasing lease with dirty label: {e}",
+                        active_task.task_id
+                    );
                 }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
@@ -602,11 +616,15 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
-                // Sync label: Failed → rb:failed. Propagate failure to quarantine repo,
-                // but mark label_dirty first so reconcile can repair.
+                // Sync label: Failed → rb:failed. On failure, mark label_dirty
+                // but still release the lease — the task is terminal and must not
+                // retain lease/worktree ownership. Phase 0 will repair the label.
                 if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
                     let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
-                    return Err(e);
+                    eprintln!(
+                        "daemon: label sync failed for failed task '{}', releasing lease with dirty label: {e}",
+                        active_task.task_id
+                    );
                 }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);

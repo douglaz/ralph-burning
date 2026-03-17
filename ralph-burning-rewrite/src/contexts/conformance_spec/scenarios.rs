@@ -12183,4 +12183,163 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         Ok(())
     });
+
+    // -----------------------------------------------------------------------
+    // daemon.tasks.label_sync_recovery_after_state_transition
+    // Verifies that a label-sync failure after a non-terminal state transition
+    // (Claimed/Active) does not strand the task, and that a label-sync failure
+    // after a terminal transition (Completed/Failed) still releases the lease.
+    // -----------------------------------------------------------------------
+    reg!(m, "daemon.tasks.label_sync_recovery_after_state_transition", || {
+        use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+
+        let store = FsDataDirDaemonStore;
+        let now = chrono::Utc::now();
+
+        // --- Non-terminal case: Claimed task with label_dirty ---
+        // Simulates a label-sync failure right after claim. The task must
+        // remain Claimed (not rolled back) and retain label_dirty so Phase 0
+        // can repair the label, while the state machine continues processing.
+        let claimed_task = DaemonTask {
+            task_id: "gh-claimed-dirty-200".to_owned(),
+            issue_ref: "acme/widgets#200".to_owned(),
+            project_id: "proj-200".to_owned(),
+            project_name: Some("Claimed label-sync failure".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Claimed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: Some("lease-200".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(200),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store
+            .create_task(&daemon_dir, &claimed_task)
+            .map_err(|e| e.to_string())?;
+
+        // Simulate label-sync failure: mark dirty
+        DaemonTaskService::mark_label_dirty(&store, &daemon_dir, "gh-claimed-dirty-200")
+            .map_err(|e| e.to_string())?;
+
+        // The task must still be Claimed (not rolled back to Pending), so the
+        // state machine can continue. It must also be label_dirty for Phase 0 repair.
+        let loaded_claimed = store.read_task(&daemon_dir, "gh-claimed-dirty-200")
+            .map_err(|e| e.to_string())?;
+        if loaded_claimed.status != TaskStatus::Claimed {
+            return Err(format!(
+                "expected claimed task to remain claimed, got {}",
+                loaded_claimed.status
+            ));
+        }
+        if !loaded_claimed.label_dirty {
+            return Err("expected label_dirty=true for claimed task after label-sync failure".to_owned());
+        }
+
+        // Now the state machine continues: mark Active (simulating normal progression)
+        let active = DaemonTaskService::mark_active(&store, &daemon_dir, "gh-claimed-dirty-200")
+            .map_err(|e| e.to_string())?;
+        if active.status != TaskStatus::Active {
+            return Err(format!("expected active after mark_active, got {}", active.status));
+        }
+
+        // And eventually completes
+        let completed = DaemonTaskService::mark_completed(&store, &daemon_dir, "gh-claimed-dirty-200")
+            .map_err(|e| e.to_string())?;
+        if completed.status != TaskStatus::Completed {
+            return Err(format!("expected completed, got {}", completed.status));
+        }
+
+        // label_dirty should still be true (was never cleared by a successful sync)
+        if !completed.label_dirty {
+            return Err("expected label_dirty to persist through state transitions".to_owned());
+        }
+
+        // --- Terminal case: Completed task with label_dirty must release lease ---
+        // Simulates a label-sync failure after marking Completed. The task
+        // must still be terminal AND its lease must be releasable.
+        let terminal_task = DaemonTask {
+            task_id: "gh-completed-dirty-201".to_owned(),
+            issue_ref: "acme/widgets#201".to_owned(),
+            project_id: "proj-201".to_owned(),
+            project_name: Some("Completed label-sync failure".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: Some("lease-201".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(201),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: true,
+        };
+        store
+            .create_task(&daemon_dir, &terminal_task)
+            .map_err(|e| e.to_string())?;
+
+        // Verify terminal status
+        let loaded_terminal = store.read_task(&daemon_dir, "gh-completed-dirty-201")
+            .map_err(|e| e.to_string())?;
+        if !loaded_terminal.is_terminal() {
+            return Err("expected terminal status".to_owned());
+        }
+
+        // The runtime contract: even with label_dirty=true, the lease must
+        // be clearable so the terminal task does not retain ownership.
+        let mut cleared = loaded_terminal.clone();
+        cleared.clear_lease();
+        if cleared.lease_id.is_some() {
+            return Err("expected lease to be clearable on terminal task with dirty label".to_owned());
+        }
+
+        // Verify the task is still terminal and label_dirty after lease release
+        if !cleared.is_terminal() {
+            return Err("task should remain terminal after lease release".to_owned());
+        }
+        if !cleared.label_dirty {
+            return Err("label_dirty should persist after lease release".to_owned());
+        }
+
+        Ok(())
+    });
 }

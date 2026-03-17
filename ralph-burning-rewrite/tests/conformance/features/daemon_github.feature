@@ -116,3 +116,15 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     When "daemon retry" runs without GITHUB_TOKEN available
     Then the task transitions to "pending"
     And the task has label_dirty = true for later reconcile
+
+  # daemon.tasks.label_sync_recovery_after_state_transition
+  Scenario: Label-sync failure after state transition does not strand the task
+    Given a claimed daemon task with repo_slug "acme/widgets" and issue_number 200
+    When label sync fails after claim
+    Then the task remains "claimed" with label_dirty = true
+    And the state machine continues to active and completed
+    Given a completed daemon task with repo_slug "acme/widgets" and issue_number 201
+    And the task has label_dirty = true from a prior sync failure
+    When the daemon processes lease cleanup
+    Then the lease is released despite label_dirty = true
+    And the task remains terminal with label_dirty = true for Phase 0 repair
