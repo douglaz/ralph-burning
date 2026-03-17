@@ -1,4 +1,5 @@
 pub mod fs;
+pub mod github;
 pub mod issue_watcher;
 pub mod openrouter_backend;
 pub mod process_backend;

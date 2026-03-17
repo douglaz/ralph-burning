@@ -1,0 +1,1078 @@
+//! GitHub adapter providing the P0 API surface required by slices 8 and 9.
+//!
+//! All operations go through `GithubClient`, which wraps `reqwest` and the
+//! GitHub REST API. The adapter is designed for daemon use — every method is
+//! self-contained and does not hold persistent connections between calls.
+
+use serde::{Deserialize, Serialize};
+
+use crate::shared::error::{AppError, AppResult};
+
+// ---------------------------------------------------------------------------
+// Client
+// ---------------------------------------------------------------------------
+
+/// Configuration for the GitHub adapter.
+#[derive(Debug, Clone)]
+pub struct GithubClientConfig {
+    /// Personal access token or app installation token.
+    pub token: String,
+    /// Base URL for the GitHub API (default: `https://api.github.com`).
+    pub api_base_url: String,
+}
+
+impl GithubClientConfig {
+    pub fn from_env() -> AppResult<Self> {
+        let token = std::env::var("GITHUB_TOKEN").map_err(|_| AppError::InvalidConfigValue {
+            key: "GITHUB_TOKEN".to_owned(),
+            value: String::new(),
+            reason: "GITHUB_TOKEN environment variable is not set".to_owned(),
+        })?;
+        let api_base_url = std::env::var("GITHUB_API_URL")
+            .unwrap_or_else(|_| "https://api.github.com".to_owned());
+        Ok(Self {
+            token,
+            api_base_url,
+        })
+    }
+}
+
+/// GitHub REST API client for daemon operations.
+pub struct GithubClient {
+    config: GithubClientConfig,
+    http: reqwest::Client,
+}
+
+impl GithubClient {
+    pub fn new(config: GithubClientConfig) -> Self {
+        let http = reqwest::Client::builder()
+            .user_agent("ralph-burning-daemon/1.0")
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .expect("build reqwest client");
+        Self { config, http }
+    }
+
+    fn api_url(&self, path: &str) -> String {
+        format!("{}{}", self.config.api_base_url.trim_end_matches('/'), path)
+    }
+
+    fn auth_header(&self) -> String {
+        format!("Bearer {}", self.config.token)
+    }
+
+    // ── Labels ────────────────────────────────────────────────────────
+
+    /// Ensure a label exists on the repo, creating it if absent.
+    pub async fn ensure_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        label_name: &str,
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/labels/{label_name}"));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if resp.status().is_success() {
+            return Ok(());
+        }
+
+        if resp.status().as_u16() == 404 {
+            let create_url = self.api_url(&format!("/repos/{owner}/{repo}/labels"));
+            let body = serde_json::json!({
+                "name": label_name,
+                "color": "ededed",
+            });
+            let create_resp = self
+                .http
+                .post(&create_url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: e.to_string(),
+                })?;
+
+            if !create_resp.status().is_success() && create_resp.status().as_u16() != 422 {
+                let status = create_resp.status();
+                let text = create_resp.text().await.unwrap_or_default();
+                return Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to create label '{label_name}': {status} {text}"),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Ensure all labels in the vocabulary exist on the repo.
+    pub async fn ensure_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        labels: &[&str],
+    ) -> AppResult<()> {
+        for label in labels {
+            self.ensure_label(owner, repo, label).await?;
+        }
+        Ok(())
+    }
+
+    // ── Issues ────────────────────────────────────────────────────────
+
+    /// Poll candidate issues with a specific label.
+    pub async fn poll_candidate_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        label: &str,
+    ) -> AppResult<Vec<GithubIssue>> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues?labels={label}&state=open&sort=created&direction=asc"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to poll issues: {status} {text}"),
+            });
+        }
+
+        let issues: Vec<GithubIssue> = resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse issues response: {e}"),
+        })?;
+
+        // Filter out pull requests (GitHub API returns PRs as issues too)
+        Ok(issues
+            .into_iter()
+            .filter(|i| i.pull_request.is_none())
+            .collect())
+    }
+
+    // ── Issue Labels ──────────────────────────────────────────────────
+
+    /// Read labels on an issue.
+    pub async fn read_issue_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<String>> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/labels"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to read labels: {status} {text}"),
+            });
+        }
+
+        let labels: Vec<GithubLabel> =
+            resp.json().await.map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to parse labels: {e}"),
+            })?;
+
+        Ok(labels.into_iter().map(|l| l.name).collect())
+    }
+
+    /// Add a label to an issue.
+    pub async fn add_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/labels"
+        ));
+        let body = serde_json::json!({ "labels": [label] });
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to add label '{label}': {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Remove a label from an issue.
+    pub async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/labels/{label}"
+        ));
+        let resp = self
+            .http
+            .delete(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        // 404 is acceptable — label may already be absent
+        if !resp.status().is_success() && resp.status().as_u16() != 404 {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to remove label '{label}': {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Replace all labels on an issue with the given set.
+    pub async fn replace_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/labels"
+        ));
+        let body = serde_json::json!({ "labels": labels });
+        let resp = self
+            .http
+            .put(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to replace labels: {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    // ── Comments ──────────────────────────────────────────────────────
+
+    /// Fetch comments on an issue.
+    pub async fn fetch_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to fetch issue comments: {status} {text}"),
+            });
+        }
+
+        resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse comments: {e}"),
+        })
+    }
+
+    /// Post an idempotent comment (checks for existing comment with same marker).
+    pub async fn post_idempotent_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        marker: &str,
+        body: &str,
+    ) -> AppResult<()> {
+        // Check existing comments for the marker
+        let comments = self.fetch_issue_comments(owner, repo, issue_number).await?;
+        if comments.iter().any(|c| c.body.contains(marker)) {
+            return Ok(());
+        }
+
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/issues/{issue_number}/comments"
+        ));
+        let comment_body = format!("{body}\n\n<!-- {marker} -->");
+        let payload = serde_json::json!({ "body": comment_body });
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to post comment: {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    // ── Pull Requests ─────────────────────────────────────────────────
+
+    /// Fetch PR review comments (inline code comments).
+    pub async fn fetch_pr_review_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/pulls/{pr_number}/comments"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to fetch PR review comments: {status} {text}"),
+            });
+        }
+
+        resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse PR review comments: {e}"),
+        })
+    }
+
+    /// Fetch PR review summaries.
+    pub async fn fetch_pr_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubReview>> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/pulls/{pr_number}/reviews"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to fetch PR reviews: {status} {text}"),
+            });
+        }
+
+        resp.json().await.map_err(|e| AppError::BackendUnavailable {
+            backend: "github".to_owned(),
+            details: format!("failed to parse PR reviews: {e}"),
+        })
+    }
+
+    /// Create a draft pull request.
+    pub async fn create_draft_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+    ) -> AppResult<GithubPullRequest> {
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls"));
+        let payload = serde_json::json!({
+            "title": title,
+            "body": body,
+            "head": head,
+            "base": base,
+            "draft": true,
+        });
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to create draft PR: {status} {text}"),
+            });
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to parse PR response: {e}"),
+            })
+    }
+
+    /// Mark a draft PR as ready for review.
+    pub async fn mark_pr_ready(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        // GitHub REST API doesn't support this — requires GraphQL
+        // Use the GraphQL mutation updatePullRequest
+        let url = self.api_url("/graphql");
+        let query = format!(
+            r#"mutation {{ markPullRequestReadyForReview(input: {{ pullRequestId: "{}" }}) {{ pullRequest {{ id }} }} }}"#,
+            self.fetch_pr_node_id(owner, repo, pr_number).await?
+        );
+        let payload = serde_json::json!({ "query": query });
+        let resp = self
+            .http
+            .post(&url)
+            .header("Authorization", self.auth_header())
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to mark PR ready: {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Close a pull request.
+    pub async fn close_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}"));
+        let payload = serde_json::json!({ "state": "closed" });
+        let resp = self
+            .http
+            .patch(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to close PR: {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Fetch PR URL and state.
+    pub async fn fetch_pr_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<GithubPullRequest> {
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}"));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to fetch PR state: {status} {text}"),
+            });
+        }
+
+        resp.json()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to parse PR state: {e}"),
+            })
+    }
+
+    /// Update PR body.
+    pub async fn update_pr_body(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        body: &str,
+    ) -> AppResult<()> {
+        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}"));
+        let payload = serde_json::json!({ "body": body });
+        let resp = self
+            .http
+            .patch(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to update PR body: {status} {text}"),
+            });
+        }
+
+        Ok(())
+    }
+
+    // ── Branch comparison ─────────────────────────────────────────────
+
+    /// Detect whether a branch is ahead of base.
+    pub async fn is_branch_ahead(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> AppResult<bool> {
+        let url = self.api_url(&format!(
+            "/repos/{owner}/{repo}/compare/{base}...{head}"
+        ));
+        let resp = self
+            .http
+            .get(&url)
+            .header("Authorization", self.auth_header())
+            .header("Accept", "application/vnd.github+json")
+            .send()
+            .await
+            .map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: e.to_string(),
+            })?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let text = resp.text().await.unwrap_or_default();
+            return Err(AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to compare branches: {status} {text}"),
+            });
+        }
+
+        let comparison: GithubComparison =
+            resp.json().await.map_err(|e| AppError::BackendUnavailable {
+                backend: "github".to_owned(),
+                details: format!("failed to parse comparison: {e}"),
+            })?;
+
+        Ok(comparison.ahead_by > 0)
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────
+
+    async fn fetch_pr_node_id(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<String> {
+        let pr = self.fetch_pr_state(owner, repo, pr_number).await?;
+        Ok(pr.node_id)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GitHub API response types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubIssue {
+    pub number: u64,
+    pub title: String,
+    #[serde(default)]
+    pub body: Option<String>,
+    pub labels: Vec<GithubLabel>,
+    pub user: GithubUser,
+    pub html_url: String,
+    #[serde(default)]
+    pub pull_request: Option<serde_json::Value>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubLabel {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubUser {
+    pub login: String,
+    pub id: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubComment {
+    pub id: u64,
+    pub body: String,
+    pub user: GithubUser,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubReview {
+    pub id: u64,
+    pub user: GithubUser,
+    pub body: Option<String>,
+    pub state: String,
+    pub submitted_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubPullRequest {
+    pub number: u64,
+    pub html_url: String,
+    pub state: String,
+    pub draft: Option<bool>,
+    pub node_id: String,
+    #[serde(default)]
+    pub head: Option<GithubPrRef>,
+    #[serde(default)]
+    pub base: Option<GithubPrRef>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GithubPrRef {
+    #[serde(rename = "ref")]
+    pub ref_name: String,
+    pub sha: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GithubComparison {
+    pub ahead_by: u64,
+    pub behind_by: u64,
+    pub status: String,
+}
+
+// ---------------------------------------------------------------------------
+// Port trait for testability
+// ---------------------------------------------------------------------------
+
+/// Port trait abstracting GitHub operations for the daemon.
+///
+/// Production code uses `GithubClient`; tests use an in-memory stub.
+#[allow(async_fn_in_trait)]
+pub trait GithubPort: Send + Sync {
+    async fn ensure_labels(&self, owner: &str, repo: &str, labels: &[&str]) -> AppResult<()>;
+    async fn poll_candidate_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        label: &str,
+    ) -> AppResult<Vec<GithubIssue>>;
+    async fn read_issue_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<String>>;
+    async fn add_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()>;
+    async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()>;
+    async fn replace_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> AppResult<()>;
+    async fn fetch_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<GithubComment>>;
+    async fn post_idempotent_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        marker: &str,
+        body: &str,
+    ) -> AppResult<()>;
+}
+
+impl GithubPort for GithubClient {
+    async fn ensure_labels(&self, owner: &str, repo: &str, labels: &[&str]) -> AppResult<()> {
+        self.ensure_labels(owner, repo, labels).await
+    }
+
+    async fn poll_candidate_issues(
+        &self,
+        owner: &str,
+        repo: &str,
+        label: &str,
+    ) -> AppResult<Vec<GithubIssue>> {
+        self.poll_candidate_issues(owner, repo, label).await
+    }
+
+    async fn read_issue_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<String>> {
+        self.read_issue_labels(owner, repo, issue_number).await
+    }
+
+    async fn add_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        self.add_label(owner, repo, issue_number, label).await
+    }
+
+    async fn remove_label(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        self.remove_label(owner, repo, issue_number, label).await
+    }
+
+    async fn replace_labels(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> AppResult<()> {
+        self.replace_labels(owner, repo, issue_number, labels).await
+    }
+
+    async fn fetch_issue_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        self.fetch_issue_comments(owner, repo, issue_number).await
+    }
+
+    async fn post_idempotent_comment(
+        &self,
+        owner: &str,
+        repo: &str,
+        issue_number: u64,
+        marker: &str,
+        body: &str,
+    ) -> AppResult<()> {
+        self.post_idempotent_comment(owner, repo, issue_number, marker, body)
+            .await
+    }
+}
+
+/// In-memory stub for testing. Stores state but does not call any real API.
+#[derive(Debug, Default)]
+pub struct InMemoryGithubClient {
+    pub issues: std::sync::Mutex<Vec<GithubIssue>>,
+    pub labels_ensured: std::sync::Mutex<Vec<String>>,
+}
+
+impl InMemoryGithubClient {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_issues(issues: Vec<GithubIssue>) -> Self {
+        Self {
+            issues: std::sync::Mutex::new(issues),
+            labels_ensured: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl GithubPort for InMemoryGithubClient {
+    async fn ensure_labels(&self, _owner: &str, _repo: &str, labels: &[&str]) -> AppResult<()> {
+        let mut ensured = self.labels_ensured.lock().unwrap();
+        for label in labels {
+            if !ensured.contains(&label.to_string()) {
+                ensured.push(label.to_string());
+            }
+        }
+        Ok(())
+    }
+
+    async fn poll_candidate_issues(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        label: &str,
+    ) -> AppResult<Vec<GithubIssue>> {
+        let issues = self.issues.lock().unwrap();
+        Ok(issues
+            .iter()
+            .filter(|i| i.labels.iter().any(|l| l.name == label))
+            .cloned()
+            .collect())
+    }
+
+    async fn read_issue_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+    ) -> AppResult<Vec<String>> {
+        let issues = self.issues.lock().unwrap();
+        Ok(issues
+            .iter()
+            .find(|i| i.number == issue_number)
+            .map(|i| i.labels.iter().map(|l| l.name.clone()).collect())
+            .unwrap_or_default())
+    }
+
+    async fn add_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        let mut issues = self.issues.lock().unwrap();
+        if let Some(issue) = issues.iter_mut().find(|i| i.number == issue_number) {
+            if !issue.labels.iter().any(|l| l.name == label) {
+                issue.labels.push(GithubLabel {
+                    name: label.to_owned(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    async fn remove_label(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+        label: &str,
+    ) -> AppResult<()> {
+        let mut issues = self.issues.lock().unwrap();
+        if let Some(issue) = issues.iter_mut().find(|i| i.number == issue_number) {
+            issue.labels.retain(|l| l.name != label);
+        }
+        Ok(())
+    }
+
+    async fn replace_labels(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        issue_number: u64,
+        labels: &[&str],
+    ) -> AppResult<()> {
+        let mut issues = self.issues.lock().unwrap();
+        if let Some(issue) = issues.iter_mut().find(|i| i.number == issue_number) {
+            issue.labels = labels
+                .iter()
+                .map(|l| GithubLabel {
+                    name: l.to_string(),
+                })
+                .collect();
+        }
+        Ok(())
+    }
+
+    async fn fetch_issue_comments(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        Ok(Vec::new())
+    }
+
+    async fn post_idempotent_comment(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        _issue_number: u64,
+        _marker: &str,
+        _body: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}

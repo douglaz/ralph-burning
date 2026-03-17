@@ -82,6 +82,11 @@ impl DaemonTaskService {
             dispatch_mode: input.dispatch_mode,
             source_revision: input.source_revision,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         };
 
         store.create_task(base_dir, &task)?;
@@ -440,6 +445,32 @@ impl DaemonTaskService {
         Ok(task)
     }
 
+    /// Find a task by repo_slug + issue_number. Returns the first non-terminal
+    /// match, or the most recent terminal match if no non-terminal exists.
+    pub fn find_task_by_issue(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        repo_slug: &str,
+        issue_number: u64,
+    ) -> AppResult<Option<DaemonTask>> {
+        let tasks = store.list_tasks(base_dir)?;
+        // Prefer non-terminal task for this issue
+        let non_terminal = tasks.iter().find(|t| {
+            t.repo_slug.as_deref() == Some(repo_slug)
+                && t.issue_number == Some(issue_number)
+                && !t.is_terminal()
+        });
+        if let Some(task) = non_terminal {
+            return Ok(Some(task.clone()));
+        }
+        // Fall back to most recent terminal task
+        let terminal = tasks.iter().rev().find(|t| {
+            t.repo_slug.as_deref() == Some(repo_slug)
+                && t.issue_number == Some(issue_number)
+        });
+        Ok(terminal.cloned())
+    }
+
     pub fn clear_lease_reference(
         store: &dyn DaemonStorePort,
         base_dir: &Path,
@@ -524,6 +555,11 @@ impl DaemonTaskService {
             dispatch_mode,
             source_revision: Some(source_revision),
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         };
 
         store.create_task(base_dir, &task)?;

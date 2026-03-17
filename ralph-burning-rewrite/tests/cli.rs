@@ -307,6 +307,11 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
     write_worktree_lease(
@@ -345,6 +350,11 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -389,6 +399,11 @@ fn daemon_retry_transitions_failed_task_to_pending() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -436,6 +451,11 @@ fn daemon_abort_claimed_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
     write_worktree_lease(
@@ -506,6 +526,11 @@ fn daemon_abort_active_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
     write_worktree_lease(
@@ -568,6 +593,11 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
     write_worktree_lease(
@@ -661,6 +691,11 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -734,6 +769,11 @@ fn daemon_start_single_iteration_processes_pending_task() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -4277,6 +4317,11 @@ fn daemon_status_shows_waiting_for_requirements_task() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: Some("abc12345".to_owned()),
             requirements_run_id: Some("req-20260313".to_owned()),
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -4326,6 +4371,11 @@ fn daemon_status_shows_dispatch_mode() {
             dispatch_mode: DispatchMode::RequirementsQuick,
             source_revision: Some("beef1234".to_owned()),
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 
@@ -4371,6 +4421,11 @@ fn daemon_abort_waiting_task_succeeds() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: None,
             requirements_run_id: Some("req-abort-test".to_owned()),
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         },
     );
 

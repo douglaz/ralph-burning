@@ -64,10 +64,37 @@ impl RoutingEngine {
             });
         }
 
+        // GitHub explicit commands that don't change flow routing:
+        // /rb run, /rb retry, /rb abort — these are dispatched by the daemon
+        // but don't affect flow resolution. Return an error so the caller
+        // falls through to label/default routing.
+        if tokens.len() == 2
+            && matches!(tokens[0], "/rb" | "rb")
+            && matches!(tokens[1], "run" | "retry" | "abort")
+        {
+            return Err(AppError::RoutingResolutionFailed {
+                input: trimmed.to_owned(),
+                details: format!(
+                    "'{}' is a daemon command, not a flow routing command",
+                    trimmed
+                ),
+            });
+        }
+
         Err(AppError::RoutingResolutionFailed {
             input: trimmed.to_owned(),
             details: "expected `<preset>` or `/rb flow <preset>`".to_owned(),
         })
+    }
+
+    /// Check if a command is a GitHub explicit command (not a flow command).
+    /// These commands (`/rb run`, `/rb retry`, `/rb abort`) are handled by the
+    /// daemon directly and should not be passed to flow routing.
+    pub fn is_daemon_command(command: &str) -> bool {
+        let tokens: Vec<_> = command.trim().split_whitespace().collect();
+        tokens.len() == 2
+            && matches!(tokens[0], "/rb" | "rb")
+            && matches!(tokens[1], "run" | "retry" | "abort")
     }
 
     pub fn parse_labels(&self, labels: &[String]) -> AppResult<(Vec<FlowPreset>, Vec<String>)> {

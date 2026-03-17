@@ -63,6 +63,11 @@ pub struct DaemonLoop<'a, A, R, S> {
     routing_engine: RoutingEngine,
     watcher: Option<&'a dyn IssueWatcherPort>,
     requirements_store: Option<&'a dyn RequirementsStorePort>,
+    /// Multi-repo registrations. When non-empty, the daemon iterates across
+    /// registered repos each cycle instead of using the file watcher.
+    registrations: Vec<super::repo_registry::RepoRegistration>,
+    /// Data-dir root for multi-repo daemon state.
+    data_dir: Option<std::path::PathBuf>,
 }
 
 impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
@@ -95,6 +100,8 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
             routing_engine: RoutingEngine::new(),
             watcher: None,
             requirements_store: None,
+            registrations: Vec::new(),
+            data_dir: None,
         }
     }
 
@@ -106,6 +113,24 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
     pub fn with_requirements_store(mut self, store: &'a dyn RequirementsStorePort) -> Self {
         self.requirements_store = Some(store);
         self
+    }
+
+    pub fn with_registrations(
+        mut self,
+        registrations: Vec<super::repo_registry::RepoRegistration>,
+    ) -> Self {
+        self.registrations = registrations;
+        self
+    }
+
+    pub fn with_data_dir(mut self, data_dir: std::path::PathBuf) -> Self {
+        self.data_dir = Some(data_dir);
+        self
+    }
+
+    /// Whether this daemon loop is running in multi-repo mode.
+    pub fn is_multi_repo(&self) -> bool {
+        !self.registrations.is_empty()
     }
 }
 

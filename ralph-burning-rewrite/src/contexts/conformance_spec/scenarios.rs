@@ -378,6 +378,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_workflow_panels(&mut m);
     register_workflow_slice5(&mut m);
     register_validation_slice6(&mut m);
+    register_daemon_github(&mut m);
 
     m
 }
@@ -8253,6 +8254,11 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: Some("rev88888".to_owned()),
             requirements_run_id: Some("req-123".to_owned()),
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
         };
         store
             .create_task(ws.path(), &task)
@@ -11008,4 +11014,474 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             Ok(())
         }
     );
+}
+
+// ===========================================================================
+// Daemon GitHub and Multi-Repo Parity (Slice 8 — 9 scenarios)
+// ===========================================================================
+
+fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(
+        m,
+        "daemon.github.start_validates_repos_and_data_dir",
+        || {
+            use crate::contexts::automation_runtime::repo_registry;
+
+            let ws = TempWorkspace::new()?;
+            let data_dir = ws.path().join("daemon-data");
+            std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
+
+            // Valid data-dir validation
+            repo_registry::validate_data_dir(&data_dir).map_err(|e| e.to_string())?;
+
+            // Valid repo slug parsing
+            let (owner, repo) = repo_registry::parse_repo_slug("acme/widgets")
+                .map_err(|e| e.to_string())?;
+            assert_eq!(owner, "acme");
+            assert_eq!(repo, "widgets");
+
+            // Invalid repo slugs fail
+            if repo_registry::parse_repo_slug("invalid").is_ok() {
+                return Err("expected invalid slug to fail".into());
+            }
+            if repo_registry::parse_repo_slug("").is_ok() {
+                return Err("expected empty slug to fail".into());
+            }
+            if repo_registry::parse_repo_slug("a/b/c").is_ok() {
+                return Err("expected triple slug to fail".into());
+            }
+
+            // Register creates directory structure
+            let reg = repo_registry::register_repo(&data_dir, "acme/widgets")
+                .map_err(|e| e.to_string())?;
+            assert_eq!(reg.repo_slug, "acme/widgets");
+
+            let tasks_dir = data_dir.join("repos/acme/widgets/daemon/tasks");
+            if !tasks_dir.is_dir() {
+                return Err("tasks directory not created".into());
+            }
+            let worktrees_dir = data_dir.join("repos/acme/widgets/worktrees");
+            if !worktrees_dir.is_dir() {
+                return Err("worktrees directory not created".into());
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "daemon.github.multi_repo_status", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+
+        // Set up two repos
+        for slug in &["org-a/repo-1", "org-b/repo-2"] {
+            repo_registry::register_repo(&data_dir, slug).map_err(|e| e.to_string())?;
+        }
+
+        let store = FsDaemonStore;
+        let now = chrono::Utc::now();
+
+        // Create a task for repo-1
+        let checkout_1 = DataDirLayout::checkout_path(&data_dir, "org-a", "repo-1");
+        // Ensure the workspace dir exists for FsDaemonStore
+        std::fs::create_dir_all(checkout_1.join(".ralph-burning/daemon/tasks"))
+            .map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(checkout_1.join(".ralph-burning/daemon/leases"))
+            .map_err(|e| e.to_string())?;
+        let task1 = DaemonTask {
+            task_id: "task-r1-1".to_owned(),
+            issue_ref: "org-a/repo-1#10".to_owned(),
+            project_id: "proj-1".to_owned(),
+            project_name: Some("Task 1".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("org-a/repo-1".to_owned()),
+            issue_number: Some(10),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(&checkout_1, &task1)
+            .map_err(|e| e.to_string())?;
+
+        // Create a task for repo-2
+        let checkout_2 = DataDirLayout::checkout_path(&data_dir, "org-b", "repo-2");
+        std::fs::create_dir_all(checkout_2.join(".ralph-burning/daemon/tasks"))
+            .map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(checkout_2.join(".ralph-burning/daemon/leases"))
+            .map_err(|e| e.to_string())?;
+        let task2 = DaemonTask {
+            task_id: "task-r2-1".to_owned(),
+            issue_ref: "org-b/repo-2#20".to_owned(),
+            project_id: "proj-2".to_owned(),
+            project_name: Some("Task 2".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("org-b/repo-2".to_owned()),
+            issue_number: Some(20),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(&checkout_2, &task2)
+            .map_err(|e| e.to_string())?;
+
+        // Verify both repos have tasks
+        let tasks_1 = store.list_tasks(&checkout_1).map_err(|e| e.to_string())?;
+        let tasks_2 = store.list_tasks(&checkout_2).map_err(|e| e.to_string())?;
+
+        if tasks_1.len() != 1 {
+            return Err(format!("expected 1 task in repo-1, got {}", tasks_1.len()));
+        }
+        if tasks_2.len() != 1 {
+            return Err(format!("expected 1 task in repo-2, got {}", tasks_2.len()));
+        }
+        if tasks_1[0].repo_slug.as_deref() != Some("org-a/repo-1") {
+            return Err("task 1 missing repo_slug".into());
+        }
+        if tasks_2[0].repo_slug.as_deref() != Some("org-b/repo-2") {
+            return Err("task 2 missing repo_slug".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.routing.command_beats_label", || {
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::model::RoutingSource;
+        use crate::shared::domain::FlowPreset;
+
+        let engine = RoutingEngine::new();
+        let resolution = engine
+            .resolve_flow(
+                Some("/rb flow quick_dev"),
+                &["rb:flow:standard".to_owned()],
+                FlowPreset::Standard,
+            )
+            .map_err(|e| e.to_string())?;
+
+        if resolution.flow != FlowPreset::QuickDev {
+            return Err(format!(
+                "expected quick_dev, got {}",
+                resolution.flow.as_str()
+            ));
+        }
+        if resolution.source != RoutingSource::Command {
+            return Err("expected Command source".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.routing.label_used_when_no_command", || {
+        use crate::contexts::automation_runtime::routing::RoutingEngine;
+        use crate::contexts::automation_runtime::model::RoutingSource;
+        use crate::shared::domain::FlowPreset;
+
+        let engine = RoutingEngine::new();
+        let resolution = engine
+            .resolve_flow(
+                None,
+                &["rb:flow:docs_change".to_owned()],
+                FlowPreset::Standard,
+            )
+            .map_err(|e| e.to_string())?;
+
+        if resolution.flow != FlowPreset::DocsChange {
+            return Err(format!(
+                "expected docs_change, got {}",
+                resolution.flow.as_str()
+            ));
+        }
+        if resolution.source != RoutingSource::Label {
+            return Err("expected Label source".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.labels.ensure_on_startup", || {
+        use crate::contexts::automation_runtime::repo_registry::LABEL_VOCABULARY;
+
+        // Verify the label vocabulary is complete
+        let required = vec![
+            "rb:ready",
+            "rb:in-progress",
+            "rb:failed",
+            "rb:completed",
+            "rb:flow:standard",
+            "rb:flow:quick_dev",
+            "rb:flow:docs_change",
+            "rb:flow:ci_improvement",
+            "rb:requirements",
+            "rb:waiting-feedback",
+        ];
+
+        for label in &required {
+            if !LABEL_VOCABULARY.contains(label) {
+                return Err(format!("missing required label '{label}' in vocabulary"));
+            }
+        }
+
+        if LABEL_VOCABULARY.len() != required.len() {
+            return Err(format!(
+                "vocabulary has {} labels, expected {}",
+                LABEL_VOCABULARY.len(),
+                required.len()
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.abort_by_issue_number", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let store = FsDaemonStore;
+        let now = chrono::Utc::now();
+
+        let task = DaemonTask {
+            task_id: "gh-abort-42".to_owned(),
+            issue_ref: "acme/widgets#42".to_owned(),
+            project_id: "proj-42".to_owned(),
+            project_name: Some("Abort test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Active,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: Some("lease-abort-42".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(42),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
+
+        // Find by issue number
+        let found = DaemonTaskService::find_task_by_issue(
+            &store,
+            ws.path(),
+            "acme/widgets",
+            42,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let found = found.ok_or("task not found by issue number")?;
+        if found.task_id != "gh-abort-42" {
+            return Err(format!("wrong task found: {}", found.task_id));
+        }
+
+        // Abort it
+        DaemonTaskService::mark_aborted(&store, ws.path(), &found.task_id)
+            .map_err(|e| e.to_string())?;
+
+        let aborted = store
+            .read_task(ws.path(), "gh-abort-42")
+            .map_err(|e| e.to_string())?;
+        if aborted.status != TaskStatus::Aborted {
+            return Err(format!("expected aborted, got {}", aborted.status));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.retry_failed_issue", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let store = FsDaemonStore;
+        let now = chrono::Utc::now();
+
+        let task = DaemonTask {
+            task_id: "gh-retry-99".to_owned(),
+            issue_ref: "acme/widgets#99".to_owned(),
+            project_id: "proj-99".to_owned(),
+            project_name: Some("Retry test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Failed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: None,
+            failure_class: Some("test_failure".to_owned()),
+            failure_message: Some("boom".to_owned()),
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(99),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(ws.path(), &task)
+            .map_err(|e| e.to_string())?;
+
+        // Retry by task_id (found via issue number)
+        let found = DaemonTaskService::find_task_by_issue(
+            &store,
+            ws.path(),
+            "acme/widgets",
+            99,
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or("task not found by issue number")?;
+
+        let retried = DaemonTaskService::retry_task(&store, ws.path(), &found.task_id)
+            .map_err(|e| e.to_string())?;
+        if retried.status != TaskStatus::Pending {
+            return Err(format!("expected pending, got {}", retried.status));
+        }
+        if retried.attempt_count != 2 {
+            return Err(format!(
+                "expected attempt_count=2, got {}",
+                retried.attempt_count
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.reconcile_stale_leases", || {
+        use crate::adapters::fs::FsDaemonStore;
+        use crate::contexts::automation_runtime::lease_service::LeaseService;
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+
+        // Set up a repo with data-dir layout
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+
+        let checkout = DataDirLayout::checkout_path(&data_dir, "acme", "widgets");
+        std::fs::create_dir_all(checkout.join(".ralph-burning/daemon/tasks"))
+            .map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(checkout.join(".ralph-burning/daemon/leases"))
+            .map_err(|e| e.to_string())?;
+
+        // Reconcile with no leases should succeed with empty report
+        let store = FsDaemonStore;
+        let worktree = crate::adapters::worktree::WorktreeAdapter;
+        let report = LeaseService::reconcile(
+            &store,
+            &worktree,
+            &checkout,
+            &checkout,
+            None,
+            chrono::Utc::now(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        if !report.stale_lease_ids.is_empty() {
+            return Err("expected no stale leases".into());
+        }
+        if !report.failed_task_ids.is_empty() {
+            return Err("expected no failed tasks".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.worktree_isolation", || {
+        use crate::contexts::automation_runtime::repo_registry::DataDirLayout;
+        use std::path::Path;
+
+        let data_dir = Path::new("/tmp/test-data-dir");
+
+        // Verify worktree path format
+        let wt_path =
+            DataDirLayout::task_worktree_path(data_dir, "acme", "widgets", "task-42");
+        let expected = data_dir.join("repos/acme/widgets/worktrees/task-42");
+        if wt_path != expected {
+            return Err(format!(
+                "worktree path mismatch: got {}, expected {}",
+                wt_path.display(),
+                expected.display()
+            ));
+        }
+
+        // Verify branch naming
+        let branch = DataDirLayout::branch_name(42, "my-project");
+        if branch != "rb/42-my-project" {
+            return Err(format!("branch name mismatch: got {branch}"));
+        }
+
+        Ok(())
+    });
 }

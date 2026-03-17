@@ -5,8 +5,10 @@ use crate::shared::error::AppResult;
 
 pub mod cli_writer_lease;
 pub mod daemon_loop;
+pub mod github_intake;
 pub mod lease_service;
 pub mod model;
+pub mod repo_registry;
 pub mod routing;
 pub mod task_service;
 pub mod watcher;
@@ -20,8 +22,10 @@ pub use lease_service::{
 };
 pub use model::{
     CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
-    LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
+    GithubTaskMeta, LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta,
+    WorktreeLease,
 };
+pub use repo_registry::{DataDirLayout, RepoRegistration, RepoRegistryPort};
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;

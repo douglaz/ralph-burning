@@ -83,6 +83,21 @@ pub struct DaemonTask {
     /// Linked requirements run ID (set during requirements_draft or requirements_quick dispatch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements_run_id: Option<String>,
+    /// GitHub repo slug (e.g. "owner/repo") for multi-repo daemon tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_slug: Option<String>,
+    /// GitHub issue number for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_number: Option<u64>,
+    /// GitHub PR URL associated with this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// Dedup cursor: last-seen comment ID for incremental comment ingestion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_comment_id: Option<u64>,
+    /// Dedup cursor: last-seen review ID for incremental review ingestion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_review_id: Option<u64>,
 }
 
 fn default_dispatch_mode() -> DispatchMode {
@@ -129,6 +144,20 @@ impl DaemonTask {
         self.failure_class = Some(failure_class.into());
         self.failure_message = Some(failure_message.into());
     }
+}
+
+/// GitHub-specific task metadata for multi-repo daemon tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubTaskMeta {
+    pub repo_slug: String,
+    pub issue_number: u64,
+    pub issue_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_comment_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_review_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
