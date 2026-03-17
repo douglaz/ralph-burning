@@ -120,7 +120,6 @@ pub fn evaluate_prompt_change_on_resume(
                 base_dir,
                 project_id,
                 cursor.cycle,
-                cursor.completion_round,
                 &stage_plan[next_stage_index..],
             )?;
             snapshot.last_stage_resolution_snapshot = None;
@@ -148,7 +147,6 @@ fn clear_abandoned_supporting_records(
     base_dir: &Path,
     project_id: &ProjectId,
     cycle: u32,
-    completion_round: u32,
     abandoned_stages: &[StageId],
 ) -> AppResult<()> {
     let stage_lookup: std::collections::HashSet<StageId> =
@@ -163,7 +161,6 @@ fn clear_abandoned_supporting_records(
     for payload in payloads {
         if payload.record_kind != RecordKind::StageSupporting
             || payload.cycle != cycle
-            || payload.completion_round != completion_round
             || !stage_lookup.contains(&payload.stage_id)
         {
             continue;
@@ -560,5 +557,84 @@ mod tests {
             read_project_record(base_dir, &project_id).prompt_hash,
             FileSystem::prompt_hash("# Prompt\n\nChanged prompt.\n")
         );
+    }
+
+    #[test]
+    fn restart_cycle_clears_abandoned_supporting_records_across_completion_rounds() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let (project_id, run_id, original_prompt_hash) =
+            setup_project(base_dir, "prompt-restart-multi-round-cleanup").expect("project setup");
+        std::fs::write(
+            project_root(base_dir, &project_id).join("prompt.md"),
+            "# Prompt\n\nChanged prompt.\n",
+        )
+        .expect("write changed prompt");
+
+        for (stage_id, completion_round) in [
+            (StageId::PromptReview, 1),
+            (StageId::Planning, 1),
+            (StageId::CompletionPanel, 1),
+            (StageId::FinalReview, 1),
+            (StageId::Planning, 2),
+            (StageId::Review, 2),
+            (StageId::CompletionPanel, 2),
+            (StageId::FinalReview, 2),
+        ] {
+            let (payload, artifact) = supporting_record(stage_id, 1, completion_round);
+            FsPayloadArtifactWriteStore
+                .write_payload_artifact_pair(base_dir, &project_id, &payload, &artifact)
+                .expect("write supporting record");
+        }
+
+        let mut seq = 1;
+        let mut snapshot = RunSnapshot::initial();
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 2).expect("cursor");
+        let result = evaluate_prompt_change_on_resume(
+            &FsArtifactStore,
+            &FsPayloadArtifactWriteStore,
+            &FsRunSnapshotWriteStore,
+            &FsJournalStore,
+            &FsRuntimeLogWriteStore,
+            base_dir,
+            &project_id,
+            &project_root(base_dir, &project_id),
+            "prompt.md",
+            &run_id,
+            &mut seq,
+            &mut snapshot,
+            &cursor,
+            &[
+                StageId::PromptReview,
+                StageId::Planning,
+                StageId::Review,
+                StageId::CompletionPanel,
+                StageId::FinalReview,
+            ],
+            StageId::Planning,
+            &original_prompt_hash,
+            PromptChangeAction::RestartCycle,
+        )
+        .expect("restart_cycle should succeed");
+
+        let PromptChangeResumeDecision::RestartCycle { next_cursor, .. } = result else {
+            panic!("expected restart_cycle decision");
+        };
+        assert_eq!(next_cursor.stage, StageId::Planning);
+        assert_eq!(next_cursor.completion_round, 2);
+
+        let remaining_payloads = FsArtifactStore
+            .list_payloads(base_dir, &project_id)
+            .expect("payload listing");
+        assert_eq!(remaining_payloads.len(), 1);
+        assert_eq!(remaining_payloads[0].stage_id, StageId::PromptReview);
+        assert_eq!(remaining_payloads[0].completion_round, 1);
+
+        let remaining_artifacts = FsArtifactStore
+            .list_artifacts(base_dir, &project_id)
+            .expect("artifact listing");
+        assert_eq!(remaining_artifacts.len(), 1);
+        assert_eq!(remaining_artifacts[0].stage_id, StageId::PromptReview);
+        assert_eq!(remaining_artifacts[0].completion_round, 1);
     }
 }
