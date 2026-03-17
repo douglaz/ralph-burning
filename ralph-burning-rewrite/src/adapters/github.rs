@@ -874,6 +874,69 @@ pub trait GithubPort: Send + Sync {
         marker: &str,
         body: &str,
     ) -> AppResult<()>;
+
+    // ── PR / branch operations (slice-9 handoff) ─────────────────────
+
+    async fn fetch_pr_review_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubComment>>;
+
+    async fn fetch_pr_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubReview>>;
+
+    async fn create_draft_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+    ) -> AppResult<GithubPullRequest>;
+
+    async fn mark_pr_ready(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()>;
+
+    async fn close_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()>;
+
+    async fn fetch_pr_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<GithubPullRequest>;
+
+    async fn update_pr_body(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        body: &str,
+    ) -> AppResult<()>;
+
+    async fn is_branch_ahead(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> AppResult<bool>;
 }
 
 impl GithubPort for GithubClient {
@@ -949,6 +1012,84 @@ impl GithubPort for GithubClient {
         self.post_idempotent_comment(owner, repo, issue_number, marker, body)
             .await
     }
+
+    async fn fetch_pr_review_comments(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        self.fetch_pr_review_comments(owner, repo, pr_number).await
+    }
+
+    async fn fetch_pr_reviews(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubReview>> {
+        self.fetch_pr_reviews(owner, repo, pr_number).await
+    }
+
+    async fn create_draft_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        head: &str,
+        base: &str,
+    ) -> AppResult<GithubPullRequest> {
+        self.create_draft_pr(owner, repo, title, body, head, base)
+            .await
+    }
+
+    async fn mark_pr_ready(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        self.mark_pr_ready(owner, repo, pr_number).await
+    }
+
+    async fn close_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        self.close_pr(owner, repo, pr_number).await
+    }
+
+    async fn fetch_pr_state(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+    ) -> AppResult<GithubPullRequest> {
+        self.fetch_pr_state(owner, repo, pr_number).await
+    }
+
+    async fn update_pr_body(
+        &self,
+        owner: &str,
+        repo: &str,
+        pr_number: u64,
+        body: &str,
+    ) -> AppResult<()> {
+        self.update_pr_body(owner, repo, pr_number, body).await
+    }
+
+    async fn is_branch_ahead(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> AppResult<bool> {
+        self.is_branch_ahead(owner, repo, base, head).await
+    }
 }
 
 /// In-memory stub for testing. Stores state but does not call any real API.
@@ -956,17 +1097,27 @@ impl GithubPort for GithubClient {
 pub struct InMemoryGithubClient {
     pub issues: std::sync::Mutex<Vec<GithubIssue>>,
     pub labels_ensured: std::sync::Mutex<Vec<String>>,
+    pub pull_requests: std::sync::Mutex<Vec<GithubPullRequest>>,
+    pub pr_review_comments: std::sync::Mutex<Vec<(u64, GithubComment)>>,
+    pub pr_reviews: std::sync::Mutex<Vec<(u64, GithubReview)>>,
+    /// Tracks which branches are ahead of base (key: `owner/repo:base...head`).
+    pub branches_ahead: std::sync::Mutex<std::collections::HashSet<String>>,
+    next_pr_number: std::sync::Mutex<u64>,
 }
 
 impl InMemoryGithubClient {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            next_pr_number: std::sync::Mutex::new(100),
+            ..Self::default()
+        }
     }
 
     pub fn with_issues(issues: Vec<GithubIssue>) -> Self {
         Self {
             issues: std::sync::Mutex::new(issues),
-            labels_ensured: std::sync::Mutex::new(Vec::new()),
+            next_pr_number: std::sync::Mutex::new(100),
+            ..Self::default()
         }
     }
 }
@@ -1079,5 +1230,145 @@ impl GithubPort for InMemoryGithubClient {
         _body: &str,
     ) -> AppResult<()> {
         Ok(())
+    }
+
+    async fn fetch_pr_review_comments(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubComment>> {
+        let comments = self.pr_review_comments.lock().unwrap();
+        Ok(comments
+            .iter()
+            .filter(|(pr, _)| *pr == pr_number)
+            .map(|(_, c)| c.clone())
+            .collect())
+    }
+
+    async fn fetch_pr_reviews(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> AppResult<Vec<GithubReview>> {
+        let reviews = self.pr_reviews.lock().unwrap();
+        Ok(reviews
+            .iter()
+            .filter(|(pr, _)| *pr == pr_number)
+            .map(|(_, r)| r.clone())
+            .collect())
+    }
+
+    async fn create_draft_pr(
+        &self,
+        owner: &str,
+        repo: &str,
+        title: &str,
+        body: &str,
+        head: &str,
+        _base: &str,
+    ) -> AppResult<GithubPullRequest> {
+        let mut prs = self.pull_requests.lock().unwrap();
+        let mut next = self.next_pr_number.lock().unwrap();
+        let number = *next;
+        *next += 1;
+        let pr = GithubPullRequest {
+            number,
+            html_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
+            state: "open".to_owned(),
+            draft: Some(true),
+            node_id: format!("PR_{number}"),
+            head: Some(GithubPrRef {
+                ref_name: head.to_owned(),
+                sha: "0000000".to_owned(),
+            }),
+            base: None,
+        };
+        prs.push(pr.clone());
+        // Suppress unused variable warnings by using title/body in debug context
+        let _ = (title, body);
+        Ok(pr)
+    }
+
+    async fn mark_pr_ready(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        let mut prs = self.pull_requests.lock().unwrap();
+        if let Some(pr) = prs.iter_mut().find(|p| p.number == pr_number) {
+            pr.draft = Some(false);
+            Ok(())
+        } else {
+            Err(AppError::BackendUnavailable {
+                backend: "github-inmemory".to_owned(),
+                details: format!("PR #{pr_number} not found"),
+            })
+        }
+    }
+
+    async fn close_pr(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> AppResult<()> {
+        let mut prs = self.pull_requests.lock().unwrap();
+        if let Some(pr) = prs.iter_mut().find(|p| p.number == pr_number) {
+            pr.state = "closed".to_owned();
+            Ok(())
+        } else {
+            Err(AppError::BackendUnavailable {
+                backend: "github-inmemory".to_owned(),
+                details: format!("PR #{pr_number} not found"),
+            })
+        }
+    }
+
+    async fn fetch_pr_state(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+    ) -> AppResult<GithubPullRequest> {
+        let prs = self.pull_requests.lock().unwrap();
+        prs.iter()
+            .find(|p| p.number == pr_number)
+            .cloned()
+            .ok_or_else(|| AppError::BackendUnavailable {
+                backend: "github-inmemory".to_owned(),
+                details: format!("PR #{pr_number} not found"),
+            })
+    }
+
+    async fn update_pr_body(
+        &self,
+        _owner: &str,
+        _repo: &str,
+        pr_number: u64,
+        _body: &str,
+    ) -> AppResult<()> {
+        let prs = self.pull_requests.lock().unwrap();
+        if prs.iter().any(|p| p.number == pr_number) {
+            Ok(())
+        } else {
+            Err(AppError::BackendUnavailable {
+                backend: "github-inmemory".to_owned(),
+                details: format!("PR #{pr_number} not found"),
+            })
+        }
+    }
+
+    async fn is_branch_ahead(
+        &self,
+        owner: &str,
+        repo: &str,
+        base: &str,
+        head: &str,
+    ) -> AppResult<bool> {
+        let ahead = self.branches_ahead.lock().unwrap();
+        Ok(ahead.contains(&format!("{owner}/{repo}:{base}...{head}")))
     }
 }

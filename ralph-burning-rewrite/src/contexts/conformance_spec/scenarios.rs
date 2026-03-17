@@ -12722,4 +12722,162 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         Ok(())
     });
+
+    // daemon.github.port_covers_pr_operations
+    // Verifies that the full slice-9 PR/branch API is callable through the
+    // GithubPort trait (via generic bound) and the in-memory test double.
+    reg!(m, "daemon.github.port_covers_pr_operations", || {
+        use crate::adapters::github::{
+            GithubComment, GithubPort, GithubReview, GithubUser, InMemoryGithubClient,
+        };
+
+        let client = InMemoryGithubClient::new();
+
+        // Seed review comments and reviews for later fetch
+        {
+            let mut comments = client.pr_review_comments.lock().unwrap();
+            comments.push((
+                100,
+                GithubComment {
+                    id: 1,
+                    body: "review inline comment".to_owned(),
+                    user: GithubUser {
+                        login: "reviewer".to_owned(),
+                        id: 42,
+                    },
+                    created_at: "2026-01-01T00:00:00Z".to_owned(),
+                    updated_at: "2026-01-01T00:00:00Z".to_owned(),
+                },
+            ));
+            let mut reviews = client.pr_reviews.lock().unwrap();
+            reviews.push((
+                100,
+                GithubReview {
+                    id: 10,
+                    user: GithubUser {
+                        login: "reviewer".to_owned(),
+                        id: 42,
+                    },
+                    body: Some("LGTM".to_owned()),
+                    state: "APPROVED".to_owned(),
+                    submitted_at: Some("2026-01-01T00:00:00Z".to_owned()),
+                },
+            ));
+        }
+
+        // Seed a branch-ahead entry
+        {
+            let mut ahead = client.branches_ahead.lock().unwrap();
+            ahead.insert("acme/widgets:main...rb/42-proj".to_owned());
+        }
+
+        // Generic helper that exercises all PR/branch methods through
+        // the GithubPort trait bound — proves the trait surface is complete.
+        async fn exercise_pr_port<G: GithubPort>(port: &G) -> Result<(), String> {
+            // create_draft_pr
+            let pr = port
+                .create_draft_pr("acme", "widgets", "test PR", "body", "rb/42-proj", "main")
+                .await
+                .map_err(|e| e.to_string())?;
+            if pr.draft != Some(true) {
+                return Err("expected draft PR".to_owned());
+            }
+            let pr_num = pr.number;
+
+            // fetch_pr_state
+            let fetched = port
+                .fetch_pr_state("acme", "widgets", pr_num)
+                .await
+                .map_err(|e| e.to_string())?;
+            if fetched.state != "open" {
+                return Err(format!("expected open state, got {}", fetched.state));
+            }
+
+            // mark_pr_ready
+            port.mark_pr_ready("acme", "widgets", pr_num)
+                .await
+                .map_err(|e| e.to_string())?;
+            let ready = port
+                .fetch_pr_state("acme", "widgets", pr_num)
+                .await
+                .map_err(|e| e.to_string())?;
+            if ready.draft != Some(false) {
+                return Err("expected PR to be marked ready".to_owned());
+            }
+
+            // update_pr_body
+            port.update_pr_body("acme", "widgets", pr_num, "updated body")
+                .await
+                .map_err(|e| e.to_string())?;
+
+            // close_pr
+            port.close_pr("acme", "widgets", pr_num)
+                .await
+                .map_err(|e| e.to_string())?;
+            let closed = port
+                .fetch_pr_state("acme", "widgets", pr_num)
+                .await
+                .map_err(|e| e.to_string())?;
+            if closed.state != "closed" {
+                return Err(format!("expected closed state, got {}", closed.state));
+            }
+
+            // fetch_pr_review_comments
+            let review_comments = port
+                .fetch_pr_review_comments("acme", "widgets", 100)
+                .await
+                .map_err(|e| e.to_string())?;
+            if review_comments.len() != 1 {
+                return Err(format!(
+                    "expected 1 review comment, got {}",
+                    review_comments.len()
+                ));
+            }
+
+            // fetch_pr_reviews
+            let reviews = port
+                .fetch_pr_reviews("acme", "widgets", 100)
+                .await
+                .map_err(|e| e.to_string())?;
+            if reviews.len() != 1 {
+                return Err(format!("expected 1 review, got {}", reviews.len()));
+            }
+            if reviews[0].state != "APPROVED" {
+                return Err(format!(
+                    "expected APPROVED review, got {}",
+                    reviews[0].state
+                ));
+            }
+
+            // is_branch_ahead — positive
+            let ahead = port
+                .is_branch_ahead("acme", "widgets", "main", "rb/42-proj")
+                .await
+                .map_err(|e| e.to_string())?;
+            if !ahead {
+                return Err("expected branch to be ahead".to_owned());
+            }
+
+            // is_branch_ahead — negative
+            let not_ahead = port
+                .is_branch_ahead("acme", "widgets", "main", "rb/99-other")
+                .await
+                .map_err(|e| e.to_string())?;
+            if not_ahead {
+                return Err("expected branch NOT to be ahead".to_owned());
+            }
+
+            Ok(())
+        }
+
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            tokio::task::block_in_place(|| handle.block_on(exercise_pr_port(&client)))
+        } else {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| e.to_string())?;
+            rt.block_on(exercise_pr_port(&client))
+        }
+    });
 }

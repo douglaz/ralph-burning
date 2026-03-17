@@ -145,3 +145,11 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Given a failed daemon task with a retained lease reference
     When retry is attempted without prior cleanup
     Then retry is rejected and the task remains failed with lease preserved
+
+  # daemon.github.port_covers_pr_operations
+  Scenario: GithubPort trait exposes the full PR/branch API for slice-9 consumers
+    Given an in-memory GitHub client behind dyn GithubPort
+    When a draft PR is created, marked ready, body updated, state fetched, and closed
+    And PR review comments and review summaries are fetched
+    And branch-ahead detection is checked
+    Then all operations succeed through the trait object without downcasting
