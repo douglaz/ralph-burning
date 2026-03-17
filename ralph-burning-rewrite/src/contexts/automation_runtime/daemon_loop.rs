@@ -2496,6 +2496,7 @@ fn build_requirements_service_default(
 /// Test-only seam: build a requirements service from an explicit
 /// `StubBackendAdapter`.  Tests call this to inject custom stub payloads while
 /// exercising the same workspace-default wiring the daemon uses.
+#[cfg(feature = "test-stub")]
 pub fn build_requirements_service_for_test(
     adapter: crate::adapters::stub_backend::StubBackendAdapter,
     effective_config: &EffectiveConfig,

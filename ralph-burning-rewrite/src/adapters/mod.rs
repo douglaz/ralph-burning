@@ -3,6 +3,7 @@ pub mod github;
 pub mod issue_watcher;
 pub mod openrouter_backend;
 pub mod process_backend;
+#[cfg(feature = "test-stub")]
 pub mod stub_backend;
 pub mod validation_runner;
 pub mod worktree;
@@ -16,9 +17,11 @@ use crate::shared::error::AppResult;
 
 use self::openrouter_backend::OpenRouterBackendAdapter;
 use self::process_backend::ProcessBackendAdapter;
+#[cfg(feature = "test-stub")]
 use self::stub_backend::StubBackendAdapter;
 
 pub enum BackendAdapter {
+    #[cfg(feature = "test-stub")]
     Stub(StubBackendAdapter),
     Process(ProcessBackendAdapter),
     OpenRouter(OpenRouterBackendAdapter),
@@ -31,6 +34,7 @@ impl AgentExecutionPort for BackendAdapter {
         contract: &InvocationContract,
     ) -> AppResult<()> {
         match self {
+            #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.check_capability(backend, contract).await,
             Self::Process(adapter) => {
                 if backend.backend.family == BackendFamily::OpenRouter {
@@ -47,6 +51,7 @@ impl AgentExecutionPort for BackendAdapter {
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
         match self {
+            #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.check_availability(backend).await,
             Self::Process(adapter) => {
                 if backend.backend.family == BackendFamily::OpenRouter {
@@ -63,6 +68,7 @@ impl AgentExecutionPort for BackendAdapter {
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         match self {
+            #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.invoke(request).await,
             Self::Process(adapter) => {
                 if request.resolved_target.backend.family == BackendFamily::OpenRouter {
@@ -77,6 +83,7 @@ impl AgentExecutionPort for BackendAdapter {
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()> {
         match self {
+            #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.cancel(invocation_id).await,
             Self::Process(adapter) => adapter.cancel(invocation_id).await,
             Self::OpenRouter(adapter) => adapter.cancel(invocation_id).await,

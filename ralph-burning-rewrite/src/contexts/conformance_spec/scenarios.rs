@@ -514,6 +514,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_workspace_init(&mut m);
     register_workspace_config(&mut m);
     register_backend_policy(&mut m);
+    register_backend_stub(&mut m);
     register_active_project(&mut m);
     register_flow_discovery(&mut m);
     register_project_records(&mut m);
@@ -10117,6 +10118,46 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
             Ok(())
         }
     );
+}
+
+// ===========================================================================
+// Backend Stub Gating (1 scenario)
+// ===========================================================================
+
+fn register_backend_stub(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "backend.stub.production_rejects_stub_selector", || {
+        let output = Command::new("cargo")
+            .args([
+                "test",
+                "--no-default-features",
+                "--lib",
+                "build_backend_adapter_rejects_stub_when_test_stub_feature_disabled",
+            ])
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .map_err(|e| format!("run cargo test without test-stub feature: {e}"))?;
+
+        if !output.status.success() {
+            return Err(format!(
+                "expected no-feature stub-selector check to pass\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("running 1 test")
+            || !stdout.contains("build_backend_adapter_rejects_stub_when_test_stub_feature_disabled")
+        {
+            return Err(format!(
+                "expected targeted no-feature test to execute exactly once\nstdout:\n{}\nstderr:\n{}",
+                stdout,
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+
+        Ok(())
+    });
 }
 
 fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
