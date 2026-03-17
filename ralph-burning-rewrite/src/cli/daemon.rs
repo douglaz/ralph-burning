@@ -104,14 +104,15 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                 )
                 .await
             } else if single_iteration {
-                // Test-only legacy path: --single-iteration without --data-dir
-                // uses file-watcher intake. Production daemon requires --data-dir.
-                handle_start_legacy(poll_seconds, single_iteration).await
+                // Legacy single-repo mode: processes pre-seeded tasks only.
+                // No intake (neither FileIssueWatcher nor GitHub); used for
+                // tests that pre-populate daemon/tasks/ and run one cycle.
+                handle_start_legacy_no_intake(poll_seconds).await
             } else {
                 Err(AppError::InvalidConfigValue {
                     key: "data-dir".to_owned(),
                     value: String::new(),
-                    reason: "--data-dir is required for daemon start (file-watcher intake is test-only; use --single-iteration for test mode)".to_owned(),
+                    reason: "--data-dir is required for daemon start".to_owned(),
                 })
             }
         }
@@ -333,6 +334,7 @@ async fn handle_abort_by_issue(
     let store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
     let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
+    let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
 
     let issue_number: u64 = identifier.parse().map_err(|_| AppError::InvalidConfigValue {
         key: "issue-number".to_owned(),
@@ -361,7 +363,7 @@ async fn handle_abort_by_issue(
     DaemonTaskService::mark_aborted(&store, &daemon_dir, &task_id)?;
 
     if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &daemon_dir, &task_id, original_status).await?;
+        cleanup_aborted_task(&store, &worktree, &daemon_dir, &checkout, &task_id, original_status).await?;
     }
 
     // Sync GitHub label: Aborted → rb:failed
@@ -531,11 +533,16 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
 }
 
 // ===========================================================================
-// Legacy (current-dir) handlers — retained for test-only use.
-// Production daemon always requires --data-dir and GitHub intake.
+// Legacy (current-dir) handlers — retained for backward-compatible
+// status/abort/retry/reconcile on single-repo workspaces.
+// Production daemon start always requires --data-dir and GitHub intake.
 // ===========================================================================
 
-async fn handle_start_legacy(poll_seconds: u64, single_iteration: bool) -> AppResult<()> {
+/// Test-only single-repo start for `--single-iteration` without `--data-dir`.
+/// Uses `FileIssueWatcher` for test intake (watched issue files). This path
+/// is NOT reachable from production (`daemon start` without `--data-dir` and
+/// without `--single-iteration` returns an error).
+async fn handle_start_legacy_no_intake(poll_seconds: u64) -> AppResult<()> {
     use crate::adapters::issue_watcher::FileIssueWatcher;
     use crate::contexts::workspace_governance::config::EffectiveConfig;
 
@@ -555,9 +562,8 @@ async fn handle_start_legacy(poll_seconds: u64, single_iteration: bool) -> AppRe
     let artifact_write = FsPayloadArtifactWriteStore;
     let log_write = FsRuntimeLogWriteStore;
     let amendment_queue = FsAmendmentQueueStore;
-
-    let issue_watcher = FileIssueWatcher;
     let requirements_store = FsRequirementsStore;
+    let issue_watcher = FileIssueWatcher;
 
     let daemon_loop = DaemonLoop::new(
         &daemon_store,
@@ -577,7 +583,7 @@ async fn handle_start_legacy(poll_seconds: u64, single_iteration: bool) -> AppRe
 
     let loop_config = DaemonLoopConfig {
         poll_interval: std::time::Duration::from_secs(poll_seconds),
-        single_iteration,
+        single_iteration: true,
         ..DaemonLoopConfig::default()
     };
 
@@ -643,7 +649,7 @@ async fn handle_abort_legacy(task_id: &str) -> AppResult<()> {
     DaemonTaskService::mark_aborted(&store, &current_dir, task_id)?;
 
     if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &current_dir, task_id, original_status).await?;
+        cleanup_aborted_task(&store, &worktree, &current_dir, &current_dir, task_id, original_status).await?;
     }
 
     println!("Aborted task {task_id}");
@@ -708,10 +714,17 @@ async fn handle_reconcile_legacy(ttl_seconds: Option<u64>) -> AppResult<()> {
 // Shared helpers
 // ===========================================================================
 
+/// Clean up lease and worktree resources for an aborted task.
+///
+/// `base_dir` is the directory containing daemon state (tasks/leases).
+/// `repo_root` is the Git checkout root used for worktree operations.
+/// In single-repo (legacy) mode these are the same; in multi-repo mode
+/// `base_dir` is the daemon shard and `repo_root` is the checkout path.
 async fn cleanup_aborted_task(
     store: &dyn DaemonStorePort,
     worktree: &WorktreeAdapter,
     base_dir: &std::path::Path,
+    repo_root: &std::path::Path,
     task_id: &str,
     original_status: TaskStatus,
 ) -> AppResult<()> {
@@ -737,7 +750,7 @@ async fn cleanup_aborted_task(
             store,
             worktree,
             base_dir,
-            base_dir,
+            repo_root,
             &lease,
             ReleaseMode::Idempotent,
         );

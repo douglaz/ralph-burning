@@ -91,6 +91,10 @@ pub fn build_github_meta(
 /// Poll a single registered repo for candidate issues and ingest them as
 /// daemon tasks. Returns the number of newly created tasks.
 ///
+/// Polls `rb:ready` for new issue intake AND `rb:in-progress` + `rb:failed`
+/// for explicit commands (`/rb retry`, `/rb abort`). This ensures that
+/// commands on non-ready issues are observed.
+///
 /// A GitHub API failure (polling, comments, labels) for this repo propagates
 /// as an `Err` so the caller can skip further mutations for this repo in the
 /// current cycle (multi-repo failure isolation).
@@ -104,7 +108,53 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
 ) -> AppResult<u32> {
     let (owner, repo) = super::repo_registry::parse_repo_slug(&registration.repo_slug)?;
 
-    // Poll for issues labeled `rb:ready`
+    // Phase A: Poll for explicit commands on non-ready issues (rb:in-progress, rb:failed).
+    // These issues already have tasks; we only need to check for /rb retry or /rb abort.
+    for command_label in &["rb:in-progress", "rb:failed"] {
+        let command_issues = github
+            .poll_candidate_issues(owner, repo, command_label)
+            .await
+            .map_err(|e| {
+                eprintln!(
+                    "github-intake: failed to poll {} for {}: {e}",
+                    command_label, registration.repo_slug
+                );
+                e
+            })?;
+
+        for issue in &command_issues {
+            let comments = github
+                .fetch_issue_comments(owner, repo, issue.number)
+                .await
+                .map_err(|e| {
+                    eprintln!(
+                        "github-intake: failed to fetch comments for {}#{}: {e}",
+                        registration.repo_slug, issue.number
+                    );
+                    e
+                })?
+                .into_iter()
+                .map(|c| c.body)
+                .collect::<Vec<_>>();
+
+            let routing_command = extract_command(
+                issue.body.as_deref().unwrap_or(""),
+                &comments,
+            );
+
+            if let Some(ref cmd) = routing_command {
+                let cmd_trimmed = cmd.trim();
+                if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
+                    handle_explicit_command(
+                        github, store, base_dir, registration, issue, cmd_trimmed,
+                    )
+                    .await?;
+                }
+            }
+        }
+    }
+
+    // Phase B: Poll for new issues labeled `rb:ready` — standard intake path.
     let issues = github.poll_candidate_issues(owner, repo, "rb:ready").await
         .map_err(|e| {
             eprintln!(
@@ -135,37 +185,14 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             &comments,
         );
 
-        // 3. Handle daemon commands inline
+        // 3. Handle daemon commands (/rb retry, /rb abort) on rb:ready issues too
         if let Some(ref cmd) = routing_command {
-            if cmd.trim() == "/rb retry" || cmd.trim() == "/rb abort" {
-                // Handle as operation on existing task
-                let issue_number = issue.number;
-                let repo_slug = &registration.repo_slug;
-
-                if cmd.trim() == "/rb retry" {
-                    if let Ok(Some(task)) = DaemonTaskService::find_task_by_issue(
-                        store, base_dir, repo_slug, issue_number,
-                    ) {
-                        if task.status == super::model::TaskStatus::Failed {
-                            let _ = DaemonTaskService::retry_task(
-                                store, base_dir, &task.task_id,
-                            );
-                        }
-                    }
-                } else {
-                    // /rb abort
-                    if let Ok(Some(task)) = DaemonTaskService::find_task_by_issue(
-                        store, base_dir, repo_slug, issue_number,
-                    ) {
-                        if !task.status.is_terminal() {
-                            let _ = DaemonTaskService::mark_aborted(
-                                store, base_dir, &task.task_id,
-                            );
-                        }
-                    }
-                }
-                // Remove rb:ready label so it doesn't keep being polled
-                let _ = github.remove_label(owner, repo, issue_number, "rb:ready").await;
+            let cmd_trimmed = cmd.trim();
+            if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
+                handle_explicit_command(
+                    github, store, base_dir, registration, issue, cmd_trimmed,
+                )
+                .await?;
                 continue; // Don't create a new task
             }
         }
@@ -225,6 +252,46 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
     }
 
     Ok(created)
+}
+
+/// Handle an explicit `/rb retry` or `/rb abort` command on an issue,
+/// mutate the durable task state, and reconcile the GitHub label.
+async fn handle_explicit_command<G: GithubPort>(
+    github: &G,
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    registration: &RepoRegistration,
+    issue: &GithubIssue,
+    cmd: &str,
+) -> AppResult<()> {
+    let issue_number = issue.number;
+    let repo_slug = &registration.repo_slug;
+
+    let task = match DaemonTaskService::find_task_by_issue(
+        store, base_dir, repo_slug, issue_number,
+    )? {
+        Some(t) => t,
+        None => return Ok(()), // No matching task — ignore
+    };
+
+    if cmd == "/rb retry" {
+        if task.status == super::model::TaskStatus::Failed
+            || task.status == super::model::TaskStatus::Aborted
+        {
+            let retried = DaemonTaskService::retry_task(store, base_dir, &task.task_id)?;
+            // Reconcile label: retried task is Pending → rb:ready
+            sync_label_for_task(github, &retried).await?;
+        }
+    } else if cmd == "/rb abort" {
+        if !task.status.is_terminal() {
+            DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
+            let aborted = store.read_task(base_dir, &task.task_id)?;
+            // Reconcile label: Aborted → rb:failed
+            sync_label_for_task(github, &aborted).await?;
+        }
+    }
+
+    Ok(())
 }
 
 /// Update the GitHub label on an issue to match the task's durable status.

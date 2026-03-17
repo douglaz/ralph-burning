@@ -165,7 +165,9 @@ pub fn validate_data_dir(data_dir: &Path) -> AppResult<()> {
     Ok(())
 }
 
-/// Validate that a repo checkout exists and has a .ralph-burning workspace.
+/// Validate that a repo checkout exists, is a usable Git checkout, and has
+/// a `.ralph-burning` workspace. This catches unusable directories early at
+/// `daemon start` time instead of failing later on worktree/rebase operations.
 pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
     if !checkout_path.is_dir() {
         return Err(AppError::InvalidConfigValue {
@@ -174,6 +176,44 @@ pub fn validate_repo_checkout(checkout_path: &Path) -> AppResult<()> {
             reason: "checkout directory does not exist".to_owned(),
         });
     }
+
+    // Verify this is a usable Git checkout: .git must exist as a directory
+    // (normal repo) or a file (worktree/submodule).
+    let git_marker = checkout_path.join(".git");
+    if !git_marker.exists() {
+        return Err(AppError::InvalidConfigValue {
+            key: "repo".to_owned(),
+            value: checkout_path.display().to_string(),
+            reason: "checkout is not a Git repository (missing .git)".to_owned(),
+        });
+    }
+
+    // Quick sanity check: run `git rev-parse --git-dir` to verify Git can
+    // actually use this checkout. This catches corrupt or incomplete clones.
+    let git_check = std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(checkout_path)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    match git_check {
+        Ok(status) if !status.success() => {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: checkout_path.display().to_string(),
+                reason: "checkout has .git but is not a usable Git repository".to_owned(),
+            });
+        }
+        Err(e) => {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: checkout_path.display().to_string(),
+                reason: format!("failed to verify Git checkout: {e}"),
+            });
+        }
+        _ => {}
+    }
+
     let workspace_dir = checkout_path.join(".ralph-burning");
     if !workspace_dir.is_dir() {
         return Err(AppError::InvalidConfigValue {
