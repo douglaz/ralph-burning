@@ -272,17 +272,32 @@ where
             let checkout = &reg.repo_root;
 
             // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
-            // Best-effort: a failure here does not quarantine the repo.
+            // A GitHub label failure during repair quarantines this repo for the
+            // rest of the cycle, consistent with multi-repo failure isolation.
+            let mut phase0_quarantined = false;
             if let Ok(tasks) = DaemonTaskService::list_tasks(self.store, &daemon_dir) {
                 for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
-                    if github_intake::sync_label_for_task(github, dirty_task).await.is_ok() {
-                        let _ = DaemonTaskService::clear_label_dirty(
-                            self.store,
-                            &daemon_dir,
-                            &dirty_task.task_id,
-                        );
+                    match github_intake::sync_label_for_task(github, dirty_task).await {
+                        Ok(()) => {
+                            let _ = DaemonTaskService::clear_label_dirty(
+                                self.store,
+                                &daemon_dir,
+                                &dirty_task.task_id,
+                            );
+                        }
+                        Err(e) => {
+                            eprintln!(
+                                "daemon: label repair failed for task '{}' in {}: {e} — quarantining repo for this cycle",
+                                dirty_task.task_id, reg.repo_slug
+                            );
+                            phase0_quarantined = true;
+                            break;
+                        }
                     }
                 }
+            }
+            if phase0_quarantined {
+                continue; // Multi-repo failure isolation: skip to next repo
             }
 
             // Phase 1: Poll GitHub for new issue candidates

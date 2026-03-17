@@ -98,3 +98,21 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     When daemon reconcile runs and repairs GitHub labels
     Then the task's label_dirty flag is cleared
     And the issue label matches the task's durable status
+
+  # daemon.tasks.phase0_label_repair_quarantine
+  Scenario: A label repair failure during Phase 0 quarantines the repo for the cycle
+    Given a registered repo "acme/widgets" with a label_dirty task
+    When Phase 0 dirty-label repair fails for that repo
+    Then no further GitHub polling or task processing occurs for "acme/widgets" in that cycle
+    And other registered repos continue processing normally
+
+  # daemon.tasks.abort_retry_label_dirty_without_token
+  Scenario: Abort and retry mark label_dirty when GITHUB_TOKEN is unavailable
+    Given a daemon task with repo_slug "acme/widgets" and issue_number 55
+    When "daemon abort" runs without GITHUB_TOKEN available
+    Then the task transitions to "aborted"
+    And the task has label_dirty = true for later reconcile
+    Given a failed daemon task with repo_slug "acme/widgets" and issue_number 56
+    When "daemon retry" runs without GITHUB_TOKEN available
+    Then the task transitions to "pending"
+    And the task has label_dirty = true for later reconcile

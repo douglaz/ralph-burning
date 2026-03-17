@@ -345,15 +345,21 @@ async fn handle_abort_by_issue(
 
     // Sync GitHub label: Aborted → rb:failed
     let aborted_task = store.read_task(&daemon_dir, &task_id)?;
-    if let Ok(gh_config) = GithubClientConfig::from_env() {
-        let gh = GithubClient::new(gh_config);
-        if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
-            &gh,
-            &aborted_task,
-        )
-        .await
-        {
-            eprintln!("warning: failed to sync GitHub label after abort: {e}");
+    match GithubClientConfig::from_env() {
+        Ok(gh_config) => {
+            let gh = GithubClient::new(gh_config);
+            if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+                &gh,
+                &aborted_task,
+            )
+            .await
+            {
+                eprintln!("warning: failed to sync GitHub label after abort: {e}");
+                let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
+            }
+        }
+        Err(_) => {
+            eprintln!("warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile");
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
         }
     }
@@ -389,14 +395,20 @@ async fn handle_retry_by_issue(
     let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
 
     // Sync GitHub label: retried task is Pending → rb:ready
-    if let Ok(gh_config) = GithubClientConfig::from_env() {
-        let gh = GithubClient::new(gh_config);
-        if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
-            &gh, &task,
-        )
-        .await
-        {
-            eprintln!("warning: failed to sync GitHub label after retry: {e}");
+    match GithubClientConfig::from_env() {
+        Ok(gh_config) => {
+            let gh = GithubClient::new(gh_config);
+            if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+                &gh, &task,
+            )
+            .await
+            {
+                eprintln!("warning: failed to sync GitHub label after retry: {e}");
+                let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
+            }
+        }
+        Err(_) => {
+            eprintln!("warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile");
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
         }
     }
