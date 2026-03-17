@@ -300,6 +300,12 @@ fn init_git_repo(ws: &TempWorkspace) -> Result<String, String> {
     Ok(sha)
 }
 
+fn commit_runtime_workspace(ws: &TempWorkspace, message: &str) -> Result<String, String> {
+    run_git_in(ws.path(), &["add", ".ralph-burning"])?;
+    run_git_in(ws.path(), &["commit", "-m", message])?;
+    run_git_in(ws.path(), &["rev-parse", "HEAD"])
+}
+
 fn read_rollback_points(
     ws: &TempWorkspace,
     project_id: &str,
@@ -5007,6 +5013,7 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "wf-checkpoint-hard", "standard")?;
         init_git_repo(&ws)?;
+        commit_runtime_workspace(&ws, "track runtime workspace")?;
 
         let start = run_cli(&["run", "start"], ws.path())?;
         assert_success(&start)?;
@@ -5020,6 +5027,19 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
             .to_owned();
         if checkpoint_sha.is_empty() {
             return Err("implementation rollback point should record a checkpoint SHA".into());
+        }
+
+        let checkpoint_tree = run_git_in(
+            ws.path(),
+            &["ls-tree", "-r", "--name-only", &checkpoint_sha],
+        )?;
+        if checkpoint_tree
+            .lines()
+            .any(|line| line.starts_with(".ralph-burning/"))
+        {
+            return Err(format!(
+                "checkpoint commit should omit runtime workspace files, got tree:\n{checkpoint_tree}"
+            ));
         }
 
         std::fs::write(ws.path().join("after-checkpoint.txt"), "later HEAD\n")

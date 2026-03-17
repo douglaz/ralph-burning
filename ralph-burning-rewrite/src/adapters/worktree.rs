@@ -3,6 +3,8 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+use uuid::Uuid;
+
 use crate::contexts::automation_runtime::{WorktreeCleanupOutcome, WorktreePort};
 use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::contexts::workflow_composition::checkpoints::{
@@ -15,30 +17,112 @@ use crate::shared::error::{AppError, AppResult};
 #[derive(Debug, Default, Clone, Copy)]
 pub struct WorktreeAdapter;
 
+struct TemporaryGitIndex {
+    path: PathBuf,
+}
+
+impl TemporaryGitIndex {
+    fn new() -> Self {
+        Self {
+            path: std::env::temp_dir().join(format!("rb-checkpoint-index-{}", Uuid::new_v4())),
+        }
+    }
+
+    fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for TemporaryGitIndex {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
 impl WorktreeAdapter {
-    fn stage_checkpoint_changes(repo_root: &Path) -> AppResult<()> {
+    fn git_error(output: &Output) -> AppError {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        let message = if !stderr.is_empty() {
+            stderr
+        } else if !stdout.is_empty() {
+            stdout
+        } else {
+            "git command failed".to_owned()
+        };
+
+        AppError::Io(std::io::Error::other(message))
+    }
+
+    fn git_command_with_index(dir: &Path, index_path: &Path) -> Command {
+        let mut command = Self::git_command(dir);
+        command.env("GIT_INDEX_FILE", index_path);
+        command
+    }
+
+    fn git_in_index(repo_root: &Path, index_path: &Path, args: &[&str]) -> AppResult<Output> {
+        Self::git_command_with_index(repo_root, index_path)
+            .args(args)
+            .output()
+            .map_err(AppError::from)
+    }
+
+    fn build_checkpoint_tree(repo_root: &Path, parent_sha: Option<&str>) -> AppResult<String> {
+        let checkpoint_index = TemporaryGitIndex::new();
+        let index_path = checkpoint_index.path();
+
+        let read_tree_output = match parent_sha {
+            Some(parent_sha) => {
+                Self::git_in_index(repo_root, index_path, &["read-tree", parent_sha])?
+            }
+            None => Self::git_in_index(repo_root, index_path, &["read-tree", "--empty"])?,
+        };
+        if !read_tree_output.status.success() {
+            return Err(Self::git_error(&read_tree_output));
+        }
+
+        let remove_workspace_output = Self::git_in_index(
+            repo_root,
+            index_path,
+            &[
+                "rm",
+                "-r",
+                "--cached",
+                "--ignore-unmatch",
+                "--quiet",
+                "--",
+                WORKSPACE_DIR,
+            ],
+        )?;
+        if !remove_workspace_output.status.success() {
+            return Err(Self::git_error(&remove_workspace_output));
+        }
+
         let workspace_exclude = format!(":(exclude){WORKSPACE_DIR}");
-        let add_output = Self::git(repo_root, &["add", "-A", "--", ".", &workspace_exclude])?;
+        let add_output = Self::git_in_index(
+            repo_root,
+            index_path,
+            &["add", "-A", "--", ".", &workspace_exclude],
+        )?;
         if !add_output.status.success() {
+            return Err(Self::git_error(&add_output));
+        }
+
+        let write_tree_output = Self::git_in_index(repo_root, index_path, &["write-tree"])?;
+        if !write_tree_output.status.success() {
+            return Err(Self::git_error(&write_tree_output));
+        }
+
+        let tree_sha = String::from_utf8_lossy(&write_tree_output.stdout)
+            .trim()
+            .to_owned();
+        if tree_sha.is_empty() {
             return Err(AppError::Io(std::io::Error::other(
-                String::from_utf8_lossy(&add_output.stderr)
-                    .trim()
-                    .to_owned(),
+                "git write-tree returned no tree SHA",
             )));
         }
 
-        // Runtime state under .ralph-burning is canonical application state, not
-        // user repo content. Unstage it even if something else staged it first.
-        let reset_output = Self::git(repo_root, &["reset", "-q", "HEAD", "--", WORKSPACE_DIR])?;
-        if !reset_output.status.success() {
-            return Err(AppError::Io(std::io::Error::other(
-                String::from_utf8_lossy(&reset_output.stderr)
-                    .trim()
-                    .to_owned(),
-            )));
-        }
-
-        Ok(())
+        Ok(tree_sha)
     }
 
     fn git_command(dir: &Path) -> Command {
@@ -162,26 +246,40 @@ impl VcsCheckpointPort for WorktreeAdapter {
         cycle: u32,
         completion_round: u32,
     ) -> AppResult<String> {
-        Self::stage_checkpoint_changes(repo_root)?;
+        let parent_sha = self.current_head_sha(repo_root)?;
+        let tree_sha = Self::build_checkpoint_tree(repo_root, parent_sha.as_deref())?;
 
         let subject = checkpoint_subject(project_id, stage_id, cycle, completion_round);
         let body = checkpoint_body(project_id, run_id, stage_id, cycle, completion_round);
-        let commit_output = Self::git_with_input(
-            repo_root,
-            &["commit", "--allow-empty", "-F", "-"],
-            &format!("{subject}\n\n{body}\n"),
-        )?;
+        let message = format!("{subject}\n\n{body}\n");
+        let mut commit_args = vec!["commit-tree", tree_sha.as_str()];
+        if let Some(parent_sha) = parent_sha.as_deref() {
+            commit_args.extend(["-p", parent_sha]);
+        }
+        commit_args.extend(["-F", "-"]);
+        let commit_output = Self::git_with_input(repo_root, &commit_args, &message)?;
         if !commit_output.status.success() {
+            return Err(Self::git_error(&commit_output));
+        }
+
+        let checkpoint_sha = String::from_utf8_lossy(&commit_output.stdout)
+            .trim()
+            .to_owned();
+        if checkpoint_sha.is_empty() {
             return Err(AppError::Io(std::io::Error::other(
-                String::from_utf8_lossy(&commit_output.stderr)
-                    .trim()
-                    .to_owned(),
+                "git commit-tree returned no commit SHA",
             )));
         }
 
-        self.current_head_sha(repo_root)?.ok_or_else(|| {
-            AppError::Io(std::io::Error::other("git rev-parse HEAD returned no SHA"))
-        })
+        let reset_output = Self::git(
+            repo_root,
+            &["reset", "--mixed", "-q", checkpoint_sha.as_str()],
+        )?;
+        if !reset_output.status.success() {
+            return Err(Self::git_error(&reset_output));
+        }
+
+        Ok(checkpoint_sha)
     }
 
     fn find_checkpoint(
