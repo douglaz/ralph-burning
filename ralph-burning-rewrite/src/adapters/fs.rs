@@ -13,6 +13,9 @@ use crate::contexts::agent_execution::session::{PersistedSessions, SessionStoreP
 use crate::contexts::automation_runtime::model::{
     DaemonJournalEvent, DaemonTask, LeaseRecord, WorktreeLease,
 };
+use crate::contexts::automation_runtime::repo_registry::{
+    parse_repo_slug, RepoRegistration, RepoRegistryPort,
+};
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
@@ -1467,184 +1470,520 @@ impl DaemonStorePort for FsDaemonStore {
         project_id: &ProjectId,
         expected_owner: &str,
     ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
-        use crate::contexts::automation_runtime::WriterLockReleaseOutcome;
-        use std::io::Read as _;
-        let path = Self::writer_lock_path(base_dir, project_id);
+        release_writer_lock_impl(&Self::writer_lock_path(base_dir, project_id), expected_owner)
+    }
+}
 
-        // ── Phase 1: read-only ownership check ──────────────────────────
-        // Open via fd so we can later compare inodes after the rename to
-        // detect a concurrent file replacement.
-        let mut file = match fs::File::open(&path) {
-            Ok(f) => f,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
-            }
-            Err(e) => return Err(e.into()),
-        };
+/// Shared implementation of the TOCTOU-safe writer-lock release logic.
+/// Used by both `FsDaemonStore` and `FsDataDirDaemonStore` to avoid
+/// duplicating the four-phase inode-verification protocol.
+fn release_writer_lock_impl(
+    path: &Path,
+    expected_owner: &str,
+) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
+    use crate::contexts::automation_runtime::WriterLockReleaseOutcome;
+    use std::io::Read as _;
 
-        let mut contents = String::new();
-        file.read_to_string(&mut contents)?;
-
-        if contents != expected_owner {
-            return Ok(WriterLockReleaseOutcome::OwnerMismatch {
-                actual_owner: contents,
-            });
+    // ── Phase 1: read-only ownership check ──────────────────────────
+    // Open via fd so we can later compare inodes after the rename to
+    // detect a concurrent file replacement.
+    let mut file = match fs::File::open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
         }
+        Err(e) => return Err(e.into()),
+    };
 
-        // ── Phase 2: atomic rename-to-staging ───────────────────────────
-        // Content matches. Atomically move the lock file to a staging path
-        // so the subsequent delete cannot affect a replacement lock that
-        // appeared after our read. The staging target is unique per releaser
-        // (keyed by expected_owner) so two concurrent releasers cannot
-        // clobber each other's staging file.
-        #[cfg(test)]
-        release_lock_testing::invoke_pre_rename_hook();
+    let mut contents = String::new();
+    file.read_to_string(&mut contents)?;
 
-        let staging = path.with_extension(format!(
-            "lock.releasing.{}",
-            expected_owner.replace('/', "_")
-        ));
-        match fs::rename(&path, &staging) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
-            }
-            Err(e) => return Err(e.into()),
+    if contents != expected_owner {
+        return Ok(WriterLockReleaseOutcome::OwnerMismatch {
+            actual_owner: contents,
+        });
+    }
+
+    // ── Phase 2: atomic rename-to-staging ───────────────────────────
+    // Content matches. Atomically move the lock file to a staging path
+    // so the subsequent delete cannot affect a replacement lock that
+    // appeared after our read. The staging target is unique per releaser
+    // (keyed by expected_owner) so two concurrent releasers cannot
+    // clobber each other's staging file.
+    #[cfg(test)]
+    release_lock_testing::invoke_pre_rename_hook();
+
+    let staging = path.with_extension(format!(
+        "lock.releasing.{}",
+        expected_owner.replace('/', "_")
+    ));
+    match fs::rename(path, &staging) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(WriterLockReleaseOutcome::AlreadyAbsent);
         }
+        Err(e) => return Err(e.into()),
+    }
 
-        #[cfg(test)]
-        release_lock_testing::invoke_post_rename_hook();
+    #[cfg(test)]
+    release_lock_testing::invoke_post_rename_hook();
 
-        // ── Phase 3: inode verification ─────────────────────────────────
-        // Verify the renamed file is the same inode we read from. Between
-        // phase 1 (open) and phase 2 (rename), another writer could have
-        // replaced the file; the rename would then move their file to
-        // staging. Detect this by comparing the fd inode with the staging
-        // inode.
-        {
-            use std::os::unix::fs::MetadataExt;
-            let fd_meta = match file.metadata() {
-                Ok(m) => m,
-                Err(e) => {
-                    // fstat on the open fd failed. Attempt non-clobbering
-                    // restore via hard_link so we never overwrite a newly
-                    // acquired canonical lock.
-                    match fs::hard_link(&staging, &path) {
-                        Ok(()) => {
-                            let _ = fs::remove_file(&staging);
-                        }
-                        Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
-                            // Canonical lock was recreated — leave staged
-                            // artifact durable and return error.
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
-                                    "writer lock release: verification failed ({e}) \
-                                     and canonical lock was recreated; staged artifact preserved"
-                                ),
-                            )));
-                        }
-                        Err(link_err) => {
-                            // Cannot restore — staged artifact remains
-                            // durable for later recovery.
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
-                                    "writer lock release: verification failed ({e}) \
-                                     and could not restore lock from staging: {link_err}"
-                                ),
-                            )));
-                        }
-                    }
-                    return Err(e.into());
-                }
-            };
-            let staged_meta = match fs::metadata(&staging) {
-                Ok(m) => m,
-                Err(e) => {
-                    // Cannot verify — attempt non-clobbering restore via
-                    // hard_link so we never overwrite a newly acquired lock.
-                    match fs::hard_link(&staging, &path) {
-                        Ok(()) => {
-                            let _ = fs::remove_file(&staging);
-                        }
-                        Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
-                            // Canonical lock was recreated — leave staged
-                            // artifact durable and return error.
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
-                                    "writer lock release: staging verification failed ({e}) \
-                                     and canonical lock was recreated; staged artifact preserved"
-                                ),
-                            )));
-                        }
-                        Err(link_err) => {
-                            return Err(AppError::Io(std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!(
-                                    "writer lock release: staging verification failed ({e}) \
-                                     and could not restore lock: {link_err}"
-                                ),
-                            )));
-                        }
-                    }
-                    return Err(e.into());
-                }
-            };
-            if fd_meta.ino() != staged_meta.ino() || fd_meta.dev() != staged_meta.dev() {
-                // A different file was at the canonical path when we
-                // renamed. Restore it via hard_link (which fails safely
-                // if a new lock already exists at the canonical path).
-                drop(file);
-                match fs::hard_link(&staging, &path) {
+    // ── Phase 3: inode verification ─────────────────────────────────
+    // Verify the renamed file is the same inode we read from. Between
+    // phase 1 (open) and phase 2 (rename), another writer could have
+    // replaced the file; the rename would then move their file to
+    // staging. Detect this by comparing the fd inode with the staging
+    // inode.
+    {
+        use std::os::unix::fs::MetadataExt;
+        let fd_meta = match file.metadata() {
+            Ok(m) => m,
+            Err(e) => {
+                // fstat on the open fd failed. Attempt non-clobbering
+                // restore via hard_link so we never overwrite a newly
+                // acquired canonical lock.
+                match fs::hard_link(&staging, path) {
                     Ok(()) => {
                         let _ = fs::remove_file(&staging);
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                        // Canonical path already has a new lock — the
-                        // staging copy has been superseded; safe to
-                        // delete it.
-                        let _ = fs::remove_file(&staging);
-                    }
-                    Err(restore_err) => {
-                        // Cannot restore to canonical path due to an
-                        // unexpected I/O error. Leave the staging file
-                        // intact for later recovery. Surface as an I/O
-                        // error rather than masquerading as OwnerMismatch
-                        // so callers know the lock is not at the canonical
-                        // path and the staging artifact is still durable.
+                    Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // Canonical lock was recreated — leave staged
+                        // artifact durable and return error.
                         return Err(AppError::Io(std::io::Error::new(
                             std::io::ErrorKind::Other,
                             format!(
-                                "writer lock release: inode mismatch detected \
-                                 but could not restore replacement lock: {restore_err}"
+                                "writer lock release: verification failed ({e}) \
+                                 and canonical lock was recreated; staged artifact preserved"
+                            ),
+                        )));
+                    }
+                    Err(link_err) => {
+                        // Cannot restore — staged artifact remains
+                        // durable for later recovery.
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: verification failed ({e}) \
+                                 and could not restore lock from staging: {link_err}"
                             ),
                         )));
                     }
                 }
-                return Ok(WriterLockReleaseOutcome::OwnerMismatch {
-                    actual_owner: "(replaced)".to_owned(),
-                });
+                return Err(e.into());
             }
+        };
+        let staged_meta = match fs::metadata(&staging) {
+            Ok(m) => m,
+            Err(e) => {
+                // Cannot verify — attempt non-clobbering restore via
+                // hard_link so we never overwrite a newly acquired lock.
+                match fs::hard_link(&staging, path) {
+                    Ok(()) => {
+                        let _ = fs::remove_file(&staging);
+                    }
+                    Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
+                        // Canonical lock was recreated — leave staged
+                        // artifact durable and return error.
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: staging verification failed ({e}) \
+                                 and canonical lock was recreated; staged artifact preserved"
+                            ),
+                        )));
+                    }
+                    Err(link_err) => {
+                        return Err(AppError::Io(std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!(
+                                "writer lock release: staging verification failed ({e}) \
+                                 and could not restore lock: {link_err}"
+                            ),
+                        )));
+                    }
+                }
+                return Err(e.into());
+            }
+        };
+        if fd_meta.ino() != staged_meta.ino() || fd_meta.dev() != staged_meta.dev() {
+            // A different file was at the canonical path when we
+            // renamed. Restore it via hard_link (which fails safely
+            // if a new lock already exists at the canonical path).
+            drop(file);
+            match fs::hard_link(&staging, path) {
+                Ok(()) => {
+                    let _ = fs::remove_file(&staging);
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                    // Canonical path already has a new lock — the
+                    // staging copy has been superseded; safe to
+                    // delete it.
+                    let _ = fs::remove_file(&staging);
+                }
+                Err(restore_err) => {
+                    // Cannot restore to canonical path due to an
+                    // unexpected I/O error. Leave the staging file
+                    // intact for later recovery. Surface as an I/O
+                    // error rather than masquerading as OwnerMismatch
+                    // so callers know the lock is not at the canonical
+                    // path and the staging artifact is still durable.
+                    return Err(AppError::Io(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!(
+                            "writer lock release: inode mismatch detected \
+                             but could not restore replacement lock: {restore_err}"
+                        ),
+                    )));
+                }
+            }
+            return Ok(WriterLockReleaseOutcome::OwnerMismatch {
+                actual_owner: "(replaced)".to_owned(),
+            });
+        }
+    }
+
+    // ── Phase 4: delete the verified staging file ───────────────────
+    // The staging path is unique per expected_owner, so no concurrent
+    // releaser can rename a different lock onto our staging slot. This
+    // delete operates on the exact file instance we verified.
+    drop(file);
+
+    #[cfg(test)]
+    release_lock_testing::invoke_post_verify_hook();
+
+    match fs::remove_file(&staging) {
+        Ok(()) => Ok(WriterLockReleaseOutcome::Released),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            Ok(WriterLockReleaseOutcome::Released)
+        }
+        Err(e) => Err(e.into()),
+    }
+}
+
+// ── Data-dir daemon store (base_dir IS the daemon directory) ────────────────
+
+/// Filesystem-backed daemon store where `base_dir` IS the daemon directory
+/// directly (containing `tasks/`, `leases/`, `journal.ndjson`), unlike
+/// `FsDaemonStore` which resolves through `.ralph-burning/daemon/`.
+pub struct FsDataDirDaemonStore;
+
+impl FsDataDirDaemonStore {
+    fn tasks_dir(base_dir: &Path) -> PathBuf {
+        base_dir.join(DAEMON_TASKS_DIR)
+    }
+
+    fn leases_dir(base_dir: &Path) -> PathBuf {
+        base_dir.join(DAEMON_LEASES_DIR)
+    }
+
+    fn task_path(base_dir: &Path, task_id: &str) -> PathBuf {
+        Self::tasks_dir(base_dir).join(format!("{task_id}.json"))
+    }
+
+    fn lease_path(base_dir: &Path, lease_id: &str) -> PathBuf {
+        Self::leases_dir(base_dir).join(format!("{lease_id}.json"))
+    }
+
+    fn writer_lock_path(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+        Self::leases_dir(base_dir).join(format!("writer-{}.lock", project_id.as_str()))
+    }
+
+    fn daemon_journal_path(base_dir: &Path) -> PathBuf {
+        base_dir.join(DAEMON_JOURNAL_FILE)
+    }
+
+    fn read_json_file<T: serde::de::DeserializeOwned>(path: &Path, file: String) -> AppResult<T> {
+        let raw = fs::read_to_string(path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::CorruptRecord {
+                    file: file.clone(),
+                    details: "canonical file is missing".to_owned(),
+                }
+            } else {
+                error.into()
+            }
+        })?;
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file,
+            details: error.to_string(),
+        })
+    }
+}
+
+impl DaemonStorePort for FsDataDirDaemonStore {
+    fn list_tasks(&self, base_dir: &Path) -> AppResult<Vec<DaemonTask>> {
+        let dir = Self::tasks_dir(base_dir);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
         }
 
-        // ── Phase 4: delete the verified staging file ───────────────────
-        // The staging path is unique per expected_owner, so no concurrent
-        // releaser can rename a different lock onto our staging slot. This
-        // delete operates on the exact file instance we verified.
-        drop(file);
-
-        #[cfg(test)]
-        release_lock_testing::invoke_post_verify_hook();
-
-        match fs::remove_file(&staging) {
-            Ok(()) => Ok(WriterLockReleaseOutcome::Released),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(WriterLockReleaseOutcome::Released)
+        let mut tasks = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
             }
-            Err(e) => Err(e.into()),
+            let file = format!(
+                "tasks/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            tasks.push(Self::read_json_file(&path, file)?);
         }
+
+        tasks.sort_by(|a: &DaemonTask, b: &DaemonTask| {
+            a.status
+                .is_terminal()
+                .cmp(&b.status.is_terminal())
+                .then_with(|| a.created_at.cmp(&b.created_at))
+                .then_with(|| a.task_id.cmp(&b.task_id))
+        });
+        Ok(tasks)
+    }
+
+    fn read_task(&self, base_dir: &Path, task_id: &str) -> AppResult<DaemonTask> {
+        Self::read_json_file(
+            &Self::task_path(base_dir, task_id),
+            format!("tasks/{task_id}.json"),
+        )
+    }
+
+    fn create_task(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(task)?;
+        FileSystem::write_create_new(&Self::task_path(base_dir, &task.task_id), &contents)
+    }
+
+    fn write_task(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(task)?;
+        FileSystem::write_atomic(&Self::task_path(base_dir, &task.task_id), &contents)
+    }
+
+    fn list_leases(&self, base_dir: &Path) -> AppResult<Vec<WorktreeLease>> {
+        Ok(self
+            .list_lease_records(base_dir)?
+            .into_iter()
+            .filter_map(|record| match record {
+                LeaseRecord::Worktree(lease) => Some(lease),
+                LeaseRecord::CliWriter(_) => None,
+            })
+            .collect())
+    }
+
+    fn read_lease(&self, base_dir: &Path, lease_id: &str) -> AppResult<WorktreeLease> {
+        match self.read_lease_record(base_dir, lease_id)? {
+            LeaseRecord::Worktree(lease) => Ok(lease),
+            LeaseRecord::CliWriter(_) => Err(AppError::CorruptRecord {
+                file: format!("leases/{lease_id}.json"),
+                details: "lease record is not a worktree lease".to_owned(),
+            }),
+        }
+    }
+
+    fn write_lease(&self, base_dir: &Path, lease: &WorktreeLease) -> AppResult<()> {
+        self.write_lease_record(base_dir, &LeaseRecord::from(lease.clone()))
+    }
+
+    fn list_lease_records(&self, base_dir: &Path) -> AppResult<Vec<LeaseRecord>> {
+        let dir = Self::leases_dir(base_dir);
+        if !dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut leases = Vec::new();
+        for entry in fs::read_dir(&dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if !path.extension().is_some_and(|ext| ext == "json") {
+                continue;
+            }
+            let file = format!(
+                "leases/{}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
+            leases.push(Self::read_json_file(&path, file)?);
+        }
+        leases.sort_by(|a: &LeaseRecord, b: &LeaseRecord| {
+            a.acquired_at()
+                .cmp(b.acquired_at())
+                .then_with(|| a.lease_id().cmp(b.lease_id()))
+        });
+        Ok(leases)
+    }
+
+    fn read_lease_record(&self, base_dir: &Path, lease_id: &str) -> AppResult<LeaseRecord> {
+        Self::read_json_file(
+            &Self::lease_path(base_dir, lease_id),
+            format!("leases/{lease_id}.json"),
+        )
+    }
+
+    fn write_lease_record(&self, base_dir: &Path, lease: &LeaseRecord) -> AppResult<()> {
+        let contents = serde_json::to_string_pretty(lease)?;
+        FileSystem::write_atomic(&Self::lease_path(base_dir, lease.lease_id()), &contents)
+    }
+
+    fn remove_lease(
+        &self,
+        base_dir: &Path,
+        lease_id: &str,
+    ) -> AppResult<crate::contexts::automation_runtime::ResourceCleanupOutcome> {
+        use crate::contexts::automation_runtime::ResourceCleanupOutcome;
+        match fs::remove_file(Self::lease_path(base_dir, lease_id)) {
+            Ok(()) => Ok(ResourceCleanupOutcome::Removed),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(ResourceCleanupOutcome::AlreadyAbsent)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_daemon_journal(&self, base_dir: &Path) -> AppResult<Vec<DaemonJournalEvent>> {
+        let path = Self::daemon_journal_path(base_dir);
+        match fs::read_to_string(&path) {
+            Ok(contents) => {
+                let mut events = Vec::new();
+                for line in contents.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let event: DaemonJournalEvent =
+                        serde_json::from_str(trimmed).map_err(|error| AppError::CorruptRecord {
+                            file: "journal.ndjson".to_owned(),
+                            details: error.to_string(),
+                        })?;
+                    events.push(event);
+                }
+                Ok(events)
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn append_daemon_journal_event(
+        &self,
+        base_dir: &Path,
+        event: &DaemonJournalEvent,
+    ) -> AppResult<()> {
+        let line = serde_json::to_string(event)?;
+        FileSystem::append_line(&Self::daemon_journal_path(base_dir), &line)
+    }
+
+    fn acquire_writer_lock(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        lease_id: &str,
+    ) -> AppResult<()> {
+        let path = Self::writer_lock_path(base_dir, project_id);
+        match FileSystem::write_create_new(&path, lease_id) {
+            Ok(()) => Ok(()),
+            Err(AppError::Io(error)) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                Err(AppError::ProjectWriterLockHeld {
+                    project_id: project_id.to_string(),
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn release_writer_lock(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        expected_owner: &str,
+    ) -> AppResult<crate::contexts::automation_runtime::WriterLockReleaseOutcome> {
+        release_writer_lock_impl(&Self::writer_lock_path(base_dir, project_id), expected_owner)
+    }
+}
+
+// ── Repo registry filesystem store ──────────────────────────────────────────
+
+/// Filesystem-backed implementation of `RepoRegistryPort`.
+/// Persists repo registrations as JSON files under `<data-dir>/repos/<owner>/<repo>/registration.json`.
+pub struct FsRepoRegistryStore;
+
+impl FsRepoRegistryStore {
+    fn registration_path(data_dir: &Path, owner: &str, repo: &str) -> PathBuf {
+        data_dir
+            .join("repos")
+            .join(owner)
+            .join(repo)
+            .join("registration.json")
+    }
+}
+
+impl RepoRegistryPort for FsRepoRegistryStore {
+    fn list_registrations(&self, data_dir: &Path) -> AppResult<Vec<RepoRegistration>> {
+        let repos_dir = data_dir.join("repos");
+        if !repos_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut registrations = Vec::new();
+        for owner_entry in fs::read_dir(&repos_dir)? {
+            let owner_entry = owner_entry?;
+            let owner_path = owner_entry.path();
+            if !owner_path.is_dir() {
+                continue;
+            }
+            for repo_entry in fs::read_dir(&owner_path)? {
+                let repo_entry = repo_entry?;
+                let repo_path = repo_entry.path();
+                if !repo_path.is_dir() {
+                    continue;
+                }
+                let reg_path = repo_path.join("registration.json");
+                match fs::read_to_string(&reg_path) {
+                    Ok(raw) => {
+                        let reg: RepoRegistration =
+                            serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+                                file: reg_path.display().to_string(),
+                                details: e.to_string(),
+                            })?;
+                        registrations.push(reg);
+                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                        // No registration.json in this repo directory — skip.
+                        continue;
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        registrations.sort_by(|a, b| a.repo_slug.cmp(&b.repo_slug));
+        Ok(registrations)
+    }
+
+    fn read_registration(&self, data_dir: &Path, repo_slug: &str) -> AppResult<RepoRegistration> {
+        let (owner, repo) = parse_repo_slug(repo_slug)?;
+        let path = Self::registration_path(data_dir, owner, repo);
+        let raw = fs::read_to_string(&path).map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                AppError::CorruptRecord {
+                    file: path.display().to_string(),
+                    details: "registration file not found".to_owned(),
+                }
+            } else {
+                error.into()
+            }
+        })?;
+        serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+            file: path.display().to_string(),
+            details: e.to_string(),
+        })
+    }
+
+    fn write_registration(
+        &self,
+        data_dir: &Path,
+        registration: &RepoRegistration,
+    ) -> AppResult<()> {
+        let (owner, repo) = parse_repo_slug(&registration.repo_slug)?;
+        let path = Self::registration_path(data_dir, owner, repo);
+        let contents = serde_json::to_string_pretty(registration)?;
+        FileSystem::write_atomic(&path, &contents)
     }
 }
 

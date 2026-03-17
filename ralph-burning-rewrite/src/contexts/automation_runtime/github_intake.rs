@@ -116,13 +116,65 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
 
     let mut created = 0u32;
     for issue in &issues {
-        // Extract command from issue body (comments would require another API call)
+        // 1. Fetch comments for this issue
+        let comments = match github.fetch_issue_comments(owner, repo, issue.number).await {
+            Ok(c) => c.into_iter().map(|c| c.body).collect::<Vec<_>>(),
+            Err(e) => {
+                eprintln!(
+                    "github-intake: failed to fetch comments for {}#{}: {e}",
+                    registration.repo_slug, issue.number
+                );
+                vec![]
+            }
+        };
+
+        // 2. Extract command from body + comments
         let routing_command = extract_command(
             issue.body.as_deref().unwrap_or(""),
-            &[], // Skip comment fetching for poll — commands in body suffice for P0
+            &comments,
         );
 
-        let meta = issue_to_watched_meta(issue, &registration.repo_slug, routing_command);
+        // 3. Handle daemon commands inline
+        if let Some(ref cmd) = routing_command {
+            if cmd.trim() == "/rb retry" || cmd.trim() == "/rb abort" {
+                // Handle as operation on existing task
+                let issue_number = issue.number;
+                let repo_slug = &registration.repo_slug;
+
+                if cmd.trim() == "/rb retry" {
+                    if let Ok(Some(task)) = DaemonTaskService::find_task_by_issue(
+                        store, base_dir, repo_slug, issue_number,
+                    ) {
+                        if task.status == super::model::TaskStatus::Failed {
+                            let _ = DaemonTaskService::retry_task(
+                                store, base_dir, &task.task_id,
+                            );
+                        }
+                    }
+                } else {
+                    // /rb abort
+                    if let Ok(Some(task)) = DaemonTaskService::find_task_by_issue(
+                        store, base_dir, repo_slug, issue_number,
+                    ) {
+                        if !task.status.is_terminal() {
+                            let _ = DaemonTaskService::mark_aborted(
+                                store, base_dir, &task.task_id,
+                            );
+                        }
+                    }
+                }
+                // Remove rb:ready label so it doesn't keep being polled
+                let _ = github.remove_label(owner, repo, issue_number, "rb:ready").await;
+                continue; // Don't create a new task
+            }
+        }
+
+        // For /rb run (and any other daemon command), clear the routing_command
+        // so flow resolution uses labels/default routing instead
+        let routing_command_for_task =
+            routing_command.filter(|cmd| !RoutingEngine::is_daemon_command(cmd));
+
+        let meta = issue_to_watched_meta(issue, &registration.repo_slug, routing_command_for_task);
         let dispatch_mode = match watcher::resolve_dispatch_mode(&meta) {
             Ok(mode) => mode,
             Err(e) => {

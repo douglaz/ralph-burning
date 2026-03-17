@@ -116,6 +116,8 @@ impl DaemonTaskService {
         task_id: &str,
         default_flow: FlowPreset,
         lease_ttl_seconds: u64,
+        worktree_path_override: Option<std::path::PathBuf>,
+        branch_name_override: Option<String>,
     ) -> AppResult<(DaemonTask, WorktreeLease)> {
         let mut task = store.read_task(base_dir, task_id)?;
         if task.status != TaskStatus::Pending {
@@ -149,6 +151,8 @@ impl DaemonTaskService {
             &task.task_id,
             &project_id,
             lease_ttl_seconds,
+            worktree_path_override,
+            branch_name_override,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {
@@ -522,7 +526,10 @@ impl DaemonTaskService {
         let flow_routing_cmd = issue
             .routing_command
             .as_deref()
-            .filter(|cmd| !super::watcher::is_requirements_command(cmd));
+            .filter(|cmd| {
+                !super::watcher::is_requirements_command(cmd)
+                    && !super::routing::RoutingEngine::is_daemon_command(cmd)
+            });
         let resolution =
             routing_engine.resolve_flow(flow_routing_cmd, &issue.labels, default_flow)?;
 

@@ -5,16 +5,20 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::adapters::fs::FileSystem;
+use crate::adapters::github::GithubPort;
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::agent_execution::service::{AgentExecutionPort, RawOutputPort};
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::automation_runtime::lease_service::LeaseService;
 use crate::contexts::automation_runtime::model::{DaemonTask, DispatchMode, TaskStatus};
+use crate::contexts::automation_runtime::repo_registry::{
+    parse_repo_slug, DataDirLayout, RepoRegistration,
+};
 use crate::contexts::automation_runtime::routing::RoutingEngine;
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::watcher::{self, IssueWatcherPort};
-use crate::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
+use crate::contexts::automation_runtime::{github_intake, DaemonStorePort, WorktreePort};
 use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{
     create_project, AmendmentQueuePort, ArtifactStorePort, JournalStorePort,
@@ -65,7 +69,7 @@ pub struct DaemonLoop<'a, A, R, S> {
     requirements_store: Option<&'a dyn RequirementsStorePort>,
     /// Multi-repo registrations. When non-empty, the daemon iterates across
     /// registered repos each cycle instead of using the file watcher.
-    registrations: Vec<super::repo_registry::RepoRegistration>,
+    registrations: Vec<RepoRegistration>,
     /// Data-dir root for multi-repo daemon state.
     data_dir: Option<std::path::PathBuf>,
 }
@@ -115,10 +119,7 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
         self
     }
 
-    pub fn with_registrations(
-        mut self,
-        registrations: Vec<super::repo_registry::RepoRegistration>,
-    ) -> Self {
+    pub fn with_registrations(mut self, registrations: Vec<RepoRegistration>) -> Self {
         self.registrations = registrations;
         self
     }
@@ -168,6 +169,311 @@ where
                     break;
                 }
                 _ = tokio::time::sleep(config.poll_interval) => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Run the daemon loop in multi-repo GitHub mode. The GitHub adapter is
+    /// passed by generic parameter to avoid dyn-compatibility issues with
+    /// async trait methods. Each cycle: ensure labels once, poll GitHub
+    /// for each registered repo, then process tasks per-repo with data-dir
+    /// based state isolation.
+    pub async fn run_multi_repo<G: GithubPort>(
+        &self,
+        config: &DaemonLoopConfig,
+        github: &G,
+    ) -> AppResult<()> {
+        let data_dir = self.data_dir.as_deref().ok_or_else(|| AppError::InvalidConfigValue {
+            key: "data-dir".to_owned(),
+            value: String::new(),
+            reason: "data-dir is required for multi-repo mode".to_owned(),
+        })?;
+
+        let shutdown = CancellationToken::new();
+        let shutdown_watcher = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = wait_for_shutdown_signal().await;
+            shutdown_watcher.cancel();
+        });
+
+        // Ensure labels on all registered repos at startup
+        if let Err(e) = github_intake::ensure_labels_on_repos(github, &self.registrations).await {
+            eprintln!("daemon: failed to ensure labels: {e}");
+        }
+
+        loop {
+            if shutdown.is_cancelled() {
+                // Cleanup active leases across all repos
+                for reg in &self.registrations {
+                    if let Ok((_, _)) = parse_repo_slug(&reg.repo_slug) {
+                        let _ = self.cleanup_active_leases(&reg.repo_root);
+                    }
+                }
+                break;
+            }
+
+            self.process_cycle_multi_repo(data_dir, config, github, shutdown.clone())
+                .await?;
+            if config.single_iteration {
+                break;
+            }
+
+            tokio::select! {
+                _ = shutdown.cancelled() => {
+                    for reg in &self.registrations {
+                        let _ = self.cleanup_active_leases(&reg.repo_root);
+                    }
+                    break;
+                }
+                _ = tokio::time::sleep(config.poll_interval) => {}
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process one multi-repo cycle: poll GitHub for each registration,
+    /// check waiting tasks, and process pending tasks. Per-repo failures
+    /// are isolated — a failure in one repo does not block others.
+    async fn process_cycle_multi_repo<G: GithubPort>(
+        &self,
+        data_dir: &Path,
+        config: &DaemonLoopConfig,
+        github: &G,
+        shutdown: CancellationToken,
+    ) -> AppResult<()> {
+        for reg in &self.registrations {
+            let (owner, repo) = match parse_repo_slug(&reg.repo_slug) {
+                Ok(pair) => pair,
+                Err(e) => {
+                    eprintln!("daemon: invalid repo slug '{}': {e}", reg.repo_slug);
+                    continue;
+                }
+            };
+
+            let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+            let checkout = &reg.repo_root;
+
+            // Phase 1: Poll GitHub for new issue candidates
+            // Handle daemon commands (/rb retry, /rb abort) inline during ingestion
+            if let Err(e) = github_intake::poll_and_ingest_repo(
+                github,
+                self.store,
+                &daemon_dir,
+                reg,
+                &self.routing_engine,
+                EffectiveConfig::load(checkout)
+                    .map(|c| c.default_flow())
+                    .unwrap_or(FlowPreset::Standard),
+            )
+            .await
+            {
+                eprintln!("daemon: GitHub poll failed for {}: {e}", reg.repo_slug);
+                continue; // Multi-repo failure isolation
+            }
+
+            // Phase 2: Check waiting tasks for completed requirements runs
+            if let Err(e) = self.check_waiting_tasks(&daemon_dir) {
+                eprintln!(
+                    "daemon: check_waiting_tasks failed for {}: {e}",
+                    reg.repo_slug
+                );
+                // Continue to other repos
+                continue;
+            }
+
+            // Phase 3: Process pending tasks for this repo
+            let pending_tasks: Vec<DaemonTask> =
+                match DaemonTaskService::list_tasks(self.store, &daemon_dir) {
+                    Ok(tasks) => tasks
+                        .into_iter()
+                        .filter(|t| t.status == TaskStatus::Pending)
+                        .collect(),
+                    Err(e) => {
+                        eprintln!(
+                            "daemon: list_tasks failed for {}: {e}",
+                            reg.repo_slug
+                        );
+                        continue;
+                    }
+                };
+
+            for task in &pending_tasks {
+                if shutdown.is_cancelled() {
+                    return Ok(());
+                }
+
+                // Compute data-dir-aware worktree path and branch name
+                let worktree_path_override = Some(
+                    DataDirLayout::task_worktree_path(data_dir, owner, repo, &task.task_id),
+                );
+                let branch_name_override = task.issue_number.map(|issue_num| {
+                    DataDirLayout::branch_name(issue_num, &task.project_id)
+                });
+
+                if let Err(error) = self
+                    .process_task_multi_repo(
+                        &daemon_dir,
+                        checkout,
+                        task,
+                        config,
+                        shutdown.clone(),
+                        worktree_path_override,
+                        branch_name_override,
+                    )
+                    .await
+                {
+                    eprintln!(
+                        "daemon: task {} failed for {}: {}",
+                        task.task_id, reg.repo_slug, error
+                    );
+                    // Continue scanning remaining tasks
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Process a single task in multi-repo mode with separate store_dir and
+    /// repo_root paths, and data-dir-aware worktree overrides.
+    async fn process_task_multi_repo(
+        &self,
+        store_dir: &Path,
+        repo_root: &Path,
+        task: &DaemonTask,
+        config: &DaemonLoopConfig,
+        shutdown: CancellationToken,
+        worktree_path_override: Option<std::path::PathBuf>,
+        branch_name_override: Option<String>,
+    ) -> AppResult<()> {
+        let effective_config = EffectiveConfig::load(repo_root)?;
+        let default_flow = effective_config.default_flow();
+
+        // Requirements dispatch before claiming lease/worktree
+        match task.dispatch_mode {
+            DispatchMode::RequirementsQuick => {
+                self.handle_requirements_quick(store_dir, task, &effective_config)
+                    .await?;
+            }
+            DispatchMode::RequirementsDraft => {
+                return self
+                    .handle_requirements_draft(store_dir, task, &effective_config)
+                    .await;
+            }
+            DispatchMode::Workflow => {}
+        }
+
+        let task = &self.store.read_task(store_dir, &task.task_id)?;
+
+        let (claimed_task, lease) = match DaemonTaskService::claim_task(
+            self.store,
+            self.worktree,
+            &self.routing_engine,
+            store_dir,
+            repo_root,
+            &task.task_id,
+            default_flow,
+            config.lease_ttl.as_secs(),
+            worktree_path_override,
+            branch_name_override,
+        ) {
+            Ok(value) => value,
+            Err(AppError::ProjectWriterLockHeld { .. }) => return Ok(()),
+            Err(error) => return Err(error),
+        };
+
+        println!("claimed task {}", claimed_task.task_id);
+
+        if let Err(error) = self.worktree.rebase_onto_default_branch(
+            repo_root,
+            &lease.worktree_path,
+            &lease.branch_name,
+        ) {
+            let _ = self.fail_claimed_task(
+                store_dir,
+                repo_root,
+                &claimed_task.task_id,
+                &lease,
+                "rebase_conflict",
+                &error.to_string(),
+            );
+            println!("failed task {}: {}", claimed_task.task_id, error);
+            return Ok(());
+        }
+
+        if let Err(error) = self.ensure_project(store_dir, &claimed_task) {
+            self.handle_post_claim_failure(store_dir, repo_root, &claimed_task, &lease, &error)?;
+            println!("failed task {}: {}", claimed_task.task_id, error);
+            return Ok(());
+        }
+        let task_on_disk = self.store.read_task(store_dir, &claimed_task.task_id)?;
+        if task_on_disk.status == TaskStatus::Aborted {
+            let _ = self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease);
+            return Ok(());
+        }
+
+        let active_task =
+            match DaemonTaskService::mark_active(self.store, store_dir, &claimed_task.task_id) {
+                Ok(task) => task,
+                Err(error) => {
+                    self.handle_post_claim_failure(
+                        store_dir,
+                        repo_root,
+                        &claimed_task,
+                        &lease,
+                        &error,
+                    )?;
+                    println!("failed task {}: {}", claimed_task.task_id, error);
+                    return Ok(());
+                }
+            };
+        println!("active task {}", active_task.task_id);
+
+        let task_cancel = CancellationToken::new();
+        let outcome = self
+            .drive_dispatch(
+                store_dir,
+                &active_task,
+                &lease,
+                &effective_config,
+                config,
+                shutdown,
+                task_cancel,
+            )
+            .await;
+
+        let latest_task = self.store.read_task(store_dir, &active_task.task_id)?;
+        if latest_task.status == TaskStatus::Aborted {
+            let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+            return Ok(());
+        }
+
+        match outcome {
+            Ok(()) => {
+                let _ =
+                    DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
+                let _ =
+                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                println!("completed task {}", active_task.task_id);
+            }
+            Err(error) => {
+                let failure_class = error
+                    .failure_class()
+                    .map(|class| class.as_str().to_owned())
+                    .unwrap_or_else(|| "daemon_dispatch_failed".to_owned());
+                let _ = DaemonTaskService::mark_failed(
+                    self.store,
+                    store_dir,
+                    &active_task.task_id,
+                    &failure_class,
+                    &error.to_string(),
+                )?;
+                let _ =
+                    self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
+                println!("failed task {}: {}", active_task.task_id, error);
             }
         }
 
@@ -428,6 +734,8 @@ where
             &task.task_id,
             default_flow,
             config.lease_ttl.as_secs(),
+            None,
+            None,
         ) {
             Ok(value) => value,
             Err(AppError::ProjectWriterLockHeld { .. }) => return Ok(()),

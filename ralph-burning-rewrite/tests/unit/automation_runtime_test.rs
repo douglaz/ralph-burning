@@ -1479,6 +1479,8 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
         "claim-rollback-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -1533,6 +1535,8 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
         "claim-fail-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -1587,6 +1591,8 @@ fn claim_journal_failure_with_release_failure_marks_failed_retains_lease() {
         "double-fail-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -3095,6 +3101,8 @@ fn claim_journal_failure_with_partial_release_marks_failed_retains_lease() {
         "partial-release-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -5501,6 +5509,8 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         "wt-rb-fail-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 
@@ -5745,6 +5755,8 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports
         "wt-partial-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 
@@ -5801,6 +5813,8 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
         "wt-partial-ok-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 

@@ -11070,7 +11070,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     );
 
     reg!(m, "daemon.github.multi_repo_status", || {
-        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::fs::FsDataDirDaemonStore;
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
@@ -11086,16 +11086,11 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             repo_registry::register_repo(&data_dir, slug).map_err(|e| e.to_string())?;
         }
 
-        let store = FsDaemonStore;
+        let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
 
-        // Create a task for repo-1
-        let checkout_1 = DataDirLayout::checkout_path(&data_dir, "org-a", "repo-1");
-        // Ensure the workspace dir exists for FsDaemonStore
-        std::fs::create_dir_all(checkout_1.join(".ralph-burning/daemon/tasks"))
-            .map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(checkout_1.join(".ralph-burning/daemon/leases"))
-            .map_err(|e| e.to_string())?;
+        // Create a task for repo-1 using data-dir daemon path
+        let daemon_dir_1 = DataDirLayout::daemon_dir(&data_dir, "org-a", "repo-1");
         let task1 = DaemonTask {
             task_id: "task-r1-1".to_owned(),
             issue_ref: "org-a/repo-1#10".to_owned(),
@@ -11124,15 +11119,11 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
         };
         store
-            .create_task(&checkout_1, &task1)
+            .create_task(&daemon_dir_1, &task1)
             .map_err(|e| e.to_string())?;
 
-        // Create a task for repo-2
-        let checkout_2 = DataDirLayout::checkout_path(&data_dir, "org-b", "repo-2");
-        std::fs::create_dir_all(checkout_2.join(".ralph-burning/daemon/tasks"))
-            .map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(checkout_2.join(".ralph-burning/daemon/leases"))
-            .map_err(|e| e.to_string())?;
+        // Create a task for repo-2 using data-dir daemon path
+        let daemon_dir_2 = DataDirLayout::daemon_dir(&data_dir, "org-b", "repo-2");
         let task2 = DaemonTask {
             task_id: "task-r2-1".to_owned(),
             issue_ref: "org-b/repo-2#20".to_owned(),
@@ -11161,12 +11152,12 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
         };
         store
-            .create_task(&checkout_2, &task2)
+            .create_task(&daemon_dir_2, &task2)
             .map_err(|e| e.to_string())?;
 
-        // Verify both repos have tasks
-        let tasks_1 = store.list_tasks(&checkout_1).map_err(|e| e.to_string())?;
-        let tasks_2 = store.list_tasks(&checkout_2).map_err(|e| e.to_string())?;
+        // Verify both repos have tasks via data-dir daemon paths
+        let tasks_1 = store.list_tasks(&daemon_dir_1).map_err(|e| e.to_string())?;
+        let tasks_2 = store.list_tasks(&daemon_dir_2).map_err(|e| e.to_string())?;
 
         if tasks_1.len() != 1 {
             return Err(format!("expected 1 task in repo-1, got {}", tasks_1.len()));
@@ -11273,18 +11264,22 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.abort_by_issue_number", || {
-        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::fs::FsDataDirDaemonStore;
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
-        let store = FsDaemonStore;
+        let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
 
         let task = DaemonTask {
@@ -11315,13 +11310,13 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
         };
         store
-            .create_task(ws.path(), &task)
+            .create_task(&daemon_dir, &task)
             .map_err(|e| e.to_string())?;
 
         // Find by issue number
         let found = DaemonTaskService::find_task_by_issue(
             &store,
-            ws.path(),
+            &daemon_dir,
             "acme/widgets",
             42,
         )
@@ -11333,11 +11328,11 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Abort it
-        DaemonTaskService::mark_aborted(&store, ws.path(), &found.task_id)
+        DaemonTaskService::mark_aborted(&store, &daemon_dir, &found.task_id)
             .map_err(|e| e.to_string())?;
 
         let aborted = store
-            .read_task(ws.path(), "gh-abort-42")
+            .read_task(&daemon_dir, "gh-abort-42")
             .map_err(|e| e.to_string())?;
         if aborted.status != TaskStatus::Aborted {
             return Err(format!("expected aborted, got {}", aborted.status));
@@ -11347,18 +11342,22 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.retry_failed_issue", || {
-        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::fs::FsDataDirDaemonStore;
         use crate::contexts::automation_runtime::model::{
             DaemonTask, DispatchMode, RoutingSource, TaskStatus,
         };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
         use crate::shared::domain::FlowPreset;
 
         let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
 
-        let store = FsDaemonStore;
+        let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
 
         let task = DaemonTask {
@@ -11389,20 +11388,20 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             last_seen_review_id: None,
         };
         store
-            .create_task(ws.path(), &task)
+            .create_task(&daemon_dir, &task)
             .map_err(|e| e.to_string())?;
 
         // Retry by task_id (found via issue number)
         let found = DaemonTaskService::find_task_by_issue(
             &store,
-            ws.path(),
+            &daemon_dir,
             "acme/widgets",
             99,
         )
         .map_err(|e| e.to_string())?
         .ok_or("task not found by issue number")?;
 
-        let retried = DaemonTaskService::retry_task(&store, ws.path(), &found.task_id)
+        let retried = DaemonTaskService::retry_task(&store, &daemon_dir, &found.task_id)
             .map_err(|e| e.to_string())?;
         if retried.status != TaskStatus::Pending {
             return Err(format!("expected pending, got {}", retried.status));
@@ -11418,7 +11417,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.reconcile_stale_leases", || {
-        use crate::adapters::fs::FsDaemonStore;
+        use crate::adapters::fs::FsDataDirDaemonStore;
         use crate::contexts::automation_runtime::lease_service::LeaseService;
         use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
 
@@ -11429,19 +11428,16 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         repo_registry::register_repo(&data_dir, "acme/widgets")
             .map_err(|e| e.to_string())?;
 
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
         let checkout = DataDirLayout::checkout_path(&data_dir, "acme", "widgets");
-        std::fs::create_dir_all(checkout.join(".ralph-burning/daemon/tasks"))
-            .map_err(|e| e.to_string())?;
-        std::fs::create_dir_all(checkout.join(".ralph-burning/daemon/leases"))
-            .map_err(|e| e.to_string())?;
 
         // Reconcile with no leases should succeed with empty report
-        let store = FsDaemonStore;
+        let store = FsDataDirDaemonStore;
         let worktree = crate::adapters::worktree::WorktreeAdapter;
         let report = LeaseService::reconcile(
             &store,
             &worktree,
-            &checkout,
+            &daemon_dir,
             &checkout,
             None,
             chrono::Utc::now(),

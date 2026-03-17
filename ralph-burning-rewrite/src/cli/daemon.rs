@@ -1,16 +1,17 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsDataDirDaemonStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRepoRegistryStore, FsRequirementsStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
+use crate::adapters::github::{GithubClient, GithubClientConfig};
 use crate::adapters::issue_watcher::FileIssueWatcher;
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use crate::contexts::automation_runtime::model::TaskStatus;
-use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, RepoRegistryPort};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::workspace_governance;
@@ -207,23 +208,19 @@ async fn handle_start_multi_repo(
         );
     }
 
-    // For now, multi-repo start validates and sets up the data-dir layout.
-    // Full GitHub intake polling is wired through the daemon loop's
-    // `with_registrations` path — the loop iterates registered repos
-    // each cycle. This handler sets up the infrastructure and delegates
-    // to the existing daemon loop with file-watcher disabled.
-    let agent_service = build_agent_execution_service()?;
+    // Create GitHub client early so we fail fast if GITHUB_TOKEN is missing
+    let github_config = GithubClientConfig::from_env()?;
+    let github_client = GithubClient::new(github_config);
 
-    // Use the first repo's checkout as the base_dir for the daemon loop.
-    // Each repo gets its own daemon state under data-dir.
-    let base_dir = registrations[0].repo_root.clone();
-
-    // Ensure workspace exists in the checkout
-    if base_dir.is_dir() {
-        let _ = workspace_governance::load_workspace_config(&base_dir);
+    // Persist registrations so status/reconcile can discover them later
+    let registry_store = FsRepoRegistryStore;
+    for reg in &registrations {
+        registry_store.write_registration(data_dir_path, reg)?;
     }
 
-    let daemon_store = FsDaemonStore;
+    let agent_service = build_agent_execution_service()?;
+
+    let daemon_store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
     let project_store = FsProjectStore;
     let run_snapshot_read = FsRunSnapshotStore;
@@ -258,55 +255,34 @@ async fn handle_start_multi_repo(
         ..DaemonLoopConfig::default()
     };
 
-    daemon_loop.run(&base_dir, &loop_config).await
+    daemon_loop.run_multi_repo(&loop_config, &github_client).await
 }
 
 async fn handle_status_multi_repo(data_dir: &str, repos: &[String]) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     repo_registry::validate_data_dir(data_dir_path)?;
 
-    let store = FsDaemonStore;
+    let store = FsDataDirDaemonStore;
 
     // Determine which repos to query
-    let slugs: Vec<&str> = if repos.is_empty() {
-        // List all repos under data-dir/repos/
-        let repos_dir = data_dir_path.join("repos");
-        if !repos_dir.is_dir() {
+    let slug_strings: Vec<String> = if repos.is_empty() {
+        let registry = FsRepoRegistryStore;
+        let registrations = registry.list_registrations(data_dir_path)?;
+        if registrations.is_empty() {
             println!("No repos registered.");
             return Ok(());
         }
-        // Collect all owner/repo pairs from directory structure
-        let mut found = Vec::new();
-        if let Ok(owners) = std::fs::read_dir(&repos_dir) {
-            for owner_entry in owners.flatten() {
-                if !owner_entry.path().is_dir() {
-                    continue;
-                }
-                let owner = owner_entry.file_name().to_string_lossy().to_string();
-                if let Ok(repo_entries) = std::fs::read_dir(owner_entry.path()) {
-                    for repo_entry in repo_entries.flatten() {
-                        if repo_entry.path().is_dir() {
-                            let repo_name = repo_entry.file_name().to_string_lossy().to_string();
-                            found.push(format!("{owner}/{repo_name}"));
-                        }
-                    }
-                }
-            }
-        }
-        // We'll print tasks from all found repos below
-        print_multi_repo_status(&store, data_dir_path, &found)?;
-        return Ok(());
+        registrations.iter().map(|r| r.repo_slug.clone()).collect()
     } else {
-        repos.iter().map(|s| s.as_str()).collect()
+        repos.to_vec()
     };
 
-    let slug_strings: Vec<String> = slugs.iter().map(|s| s.to_string()).collect();
     print_multi_repo_status(&store, data_dir_path, &slug_strings)?;
     Ok(())
 }
 
 fn print_multi_repo_status(
-    store: &FsDaemonStore,
+    store: &FsDataDirDaemonStore,
     data_dir: &std::path::Path,
     repo_slugs: &[String],
 ) -> AppResult<()> {
@@ -315,16 +291,7 @@ fn print_multi_repo_status(
     for slug in repo_slugs {
         let (owner, repo) = repo_registry::parse_repo_slug(slug)?;
         let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
-        let tasks_dir = daemon_dir.join("tasks");
-        if !tasks_dir.is_dir() {
-            continue;
-        }
-
-        // Use the repo's daemon dir parent as the base_dir for the store
-        // The FsDaemonStore expects base_dir such that daemon/ is under .ralph-burning/
-        // For multi-repo, we need to point at the checkout path
-        let checkout = DataDirLayout::checkout_path(data_dir, owner, repo);
-        let tasks = match store.list_tasks(&checkout) {
+        let tasks = match store.list_tasks(&daemon_dir) {
             Ok(tasks) => tasks,
             Err(_) => continue,
         };
@@ -357,9 +324,9 @@ async fn handle_abort_by_issue(
 ) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
-    let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
-    let store = FsDaemonStore;
+    let store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
+    let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
 
     let issue_number: u64 = identifier.parse().map_err(|_| AppError::InvalidConfigValue {
         key: "issue-number".to_owned(),
@@ -367,12 +334,13 @@ async fn handle_abort_by_issue(
         reason: "expected a numeric issue number".to_owned(),
     })?;
 
-    let task = DaemonTaskService::find_task_by_issue(&store, &checkout, repo_slug, issue_number)?
-        .ok_or_else(|| AppError::InvalidConfigValue {
-            key: "issue-number".to_owned(),
-            value: identifier.to_owned(),
-            reason: format!("no task found for {repo_slug}#{issue_number}"),
-        })?;
+    let task =
+        DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+            .ok_or_else(|| AppError::InvalidConfigValue {
+                key: "issue-number".to_owned(),
+                value: identifier.to_owned(),
+                reason: format!("no task found for {repo_slug}#{issue_number}"),
+            })?;
 
     if task.status.is_terminal() {
         return Err(AppError::TaskStateTransitionInvalid {
@@ -384,10 +352,10 @@ async fn handle_abort_by_issue(
 
     let original_status = task.status;
     let task_id = task.task_id.clone();
-    DaemonTaskService::mark_aborted(&store, &checkout, &task_id)?;
+    DaemonTaskService::mark_aborted(&store, &daemon_dir, &task_id)?;
 
     if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &checkout, &task_id, original_status).await?;
+        cleanup_aborted_task(&store, &worktree, &daemon_dir, &task_id, original_status).await?;
     }
 
     println!("Aborted {repo_slug}#{issue_number} (task {task_id})");
@@ -401,8 +369,8 @@ async fn handle_retry_by_issue(
 ) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
-    let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
-    let store = FsDaemonStore;
+    let store = FsDataDirDaemonStore;
+    let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
 
     let issue_number: u64 = identifier.parse().map_err(|_| AppError::InvalidConfigValue {
         key: "issue-number".to_owned(),
@@ -410,14 +378,15 @@ async fn handle_retry_by_issue(
         reason: "expected a numeric issue number".to_owned(),
     })?;
 
-    let task = DaemonTaskService::find_task_by_issue(&store, &checkout, repo_slug, issue_number)?
-        .ok_or_else(|| AppError::InvalidConfigValue {
-            key: "issue-number".to_owned(),
-            value: identifier.to_owned(),
-            reason: format!("no task found for {repo_slug}#{issue_number}"),
-        })?;
+    let task =
+        DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+            .ok_or_else(|| AppError::InvalidConfigValue {
+                key: "issue-number".to_owned(),
+                value: identifier.to_owned(),
+                reason: format!("no task found for {repo_slug}#{issue_number}"),
+            })?;
 
-    let task = DaemonTaskService::retry_task(&store, &checkout, &task.task_id)?;
+    let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
     println!(
         "Retried {repo_slug}#{issue_number} (task {}, attempt_count={})",
         task.task_id, task.attempt_count
@@ -429,12 +398,53 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
     let data_dir_path = std::path::Path::new(data_dir);
     repo_registry::validate_data_dir(data_dir_path)?;
 
-    let store = FsDaemonStore;
+    let store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
+    let registry = FsRepoRegistryStore;
 
-    // Iterate all repos under data-dir
-    let repos_dir = data_dir_path.join("repos");
-    if !repos_dir.is_dir() {
+    let registrations = match registry.list_registrations(data_dir_path) {
+        Ok(regs) => regs,
+        Err(_) => {
+            // Fallback to directory scan
+            let repos_dir = data_dir_path.join("repos");
+            if !repos_dir.is_dir() {
+                println!("No repos registered.");
+                return Ok(());
+            }
+            let mut found = Vec::new();
+            if let Ok(owners) = std::fs::read_dir(&repos_dir) {
+                for owner_entry in owners.flatten() {
+                    if !owner_entry.path().is_dir() {
+                        continue;
+                    }
+                    let owner = owner_entry.file_name().to_string_lossy().to_string();
+                    if let Ok(repo_entries) = std::fs::read_dir(owner_entry.path()) {
+                        for repo_entry in repo_entries.flatten() {
+                            if !repo_entry.path().is_dir() {
+                                continue;
+                            }
+                            let repo_name =
+                                repo_entry.file_name().to_string_lossy().to_string();
+                            found.push(format!("{owner}/{repo_name}"));
+                        }
+                    }
+                }
+            }
+            if found.is_empty() {
+                println!("No repos registered.");
+                return Ok(());
+            }
+            // Convert to minimal registrations for iteration
+            let mut regs = Vec::new();
+            for slug in &found {
+                let reg = repo_registry::register_repo(data_dir_path, slug)?;
+                regs.push(reg);
+            }
+            regs
+        }
+    };
+
+    if registrations.is_empty() {
         println!("No repos registered.");
         return Ok(());
     }
@@ -444,45 +454,33 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
     let mut total_released = 0usize;
     let mut any_cleanup_failure = false;
 
-    if let Ok(owners) = std::fs::read_dir(&repos_dir) {
-        for owner_entry in owners.flatten() {
-            if !owner_entry.path().is_dir() {
-                continue;
-            }
-            let owner = owner_entry.file_name().to_string_lossy().to_string();
-            if let Ok(repo_entries) = std::fs::read_dir(owner_entry.path()) {
-                for repo_entry in repo_entries.flatten() {
-                    if !repo_entry.path().is_dir() {
-                        continue;
-                    }
-                    let repo_name = repo_entry.file_name().to_string_lossy().to_string();
-                    let checkout = DataDirLayout::checkout_path(data_dir_path, &owner, &repo_name);
+    for reg in &registrations {
+        let (owner, repo_name) = repo_registry::parse_repo_slug(&reg.repo_slug)?;
+        let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo_name);
+        let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo_name);
 
-                    let report = LeaseService::reconcile(
-                        &store,
-                        &worktree,
-                        &checkout,
-                        &checkout,
-                        ttl_seconds,
-                        chrono::Utc::now(),
-                    )?;
+        let report = LeaseService::reconcile(
+            &store,
+            &worktree,
+            &daemon_dir,
+            &checkout,
+            ttl_seconds,
+            chrono::Utc::now(),
+        )?;
 
-                    total_stale += report.stale_lease_ids.len();
-                    total_failed += report.failed_task_ids.len();
-                    total_released += report.released_lease_ids.len();
+        total_stale += report.stale_lease_ids.len();
+        total_failed += report.failed_task_ids.len();
+        total_released += report.released_lease_ids.len();
 
-                    if report.has_cleanup_failures() {
-                        any_cleanup_failure = true;
-                        for failure in &report.cleanup_failures {
-                            println!(
-                                "  {owner}/{repo_name}: lease={} task={}: {}",
-                                failure.lease_id,
-                                failure.task_id.as_deref().unwrap_or("n/a"),
-                                failure.details
-                            );
-                        }
-                    }
-                }
+        if report.has_cleanup_failures() {
+            any_cleanup_failure = true;
+            for failure in &report.cleanup_failures {
+                println!(
+                    "  {owner}/{repo_name}: lease={} task={}: {}",
+                    failure.lease_id,
+                    failure.task_id.as_deref().unwrap_or("n/a"),
+                    failure.details
+                );
             }
         }
     }
