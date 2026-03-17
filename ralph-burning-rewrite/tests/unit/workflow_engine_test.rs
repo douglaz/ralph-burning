@@ -370,6 +370,60 @@ async fn successful_stage_transitions_create_rollback_points() {
 }
 
 #[tokio::test]
+async fn checkpoint_creation_failure_is_tolerated_and_logged() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "checkpoint-warn");
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await
+    .expect("run completes without git repo");
+
+    let rollback_dir = base_dir.join(".ralph-burning/projects/checkpoint-warn/rollback");
+    let rollback_files: Vec<_> = fs::read_dir(&rollback_dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .collect();
+    assert_eq!(rollback_files.len(), 8, "one rollback point per completed stage");
+    for path in rollback_files {
+        let rollback_json: Value =
+            serde_json::from_str(&fs::read_to_string(path).unwrap()).expect("parse rollback");
+        assert!(
+            rollback_json
+                .get("git_sha")
+                .map_or(true, serde_json::Value::is_null),
+            "non-git runs should persist rollback points without git_sha"
+        );
+    }
+
+    let runtime_logs = fs::read_to_string(
+        base_dir.join(".ralph-burning/projects/checkpoint-warn/runtime/logs/run.ndjson"),
+    )
+    .expect("read runtime logs");
+    let warning_count = runtime_logs
+        .lines()
+        .filter(|line| line.contains("checkpoint creation failed"))
+        .count();
+    assert_eq!(warning_count, 8, "every checkpoint failure should be warned");
+}
+
+#[tokio::test]
 async fn resume_after_rollback_preserves_abandoned_payload_artifacts_on_disk() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

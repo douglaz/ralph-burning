@@ -43,6 +43,7 @@ use crate::shared::domain::{
 use crate::shared::error::{AppError, AppResult};
 
 use super::completion;
+use super::checkpoints::VcsCheckpointPort;
 use super::contracts::{self, ValidatedBundle};
 use super::drift::{self, PromptChangeResumeDecision};
 use super::final_review;
@@ -485,6 +486,7 @@ where
     S: SessionStorePort,
 {
     let rollback_store = FsRollbackPointStore;
+    let checkpoint_port = WorktreeAdapter;
     execute_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
@@ -494,6 +496,7 @@ where
         log_write,
         amendment_queue_port,
         &rollback_store,
+        &checkpoint_port,
         base_dir,
         None,
         project_id,
@@ -528,6 +531,7 @@ where
     S: SessionStorePort,
 {
     let rollback_store = FsRollbackPointStore;
+    let checkpoint_port = WorktreeAdapter;
     execute_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
@@ -537,6 +541,7 @@ where
         log_write,
         amendment_queue_port,
         &rollback_store,
+        &checkpoint_port,
         base_dir,
         execution_cwd,
         project_id,
@@ -558,6 +563,7 @@ async fn execute_run_with_retry_internal<A, R, S>(
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
+    checkpoint_port: &dyn VcsCheckpointPort,
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
@@ -669,6 +675,7 @@ where
         log_write,
         amendment_queue_port,
         rollback_store,
+        checkpoint_port,
         base_dir,
         execution_cwd,
         project_id,
@@ -785,6 +792,7 @@ where
     S: SessionStorePort,
 {
     let rollback_store = FsRollbackPointStore;
+    let checkpoint_port = WorktreeAdapter;
     resume_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
@@ -795,6 +803,7 @@ where
         log_write,
         amendment_queue_port,
         &rollback_store,
+        &checkpoint_port,
         base_dir,
         None,
         project_id,
@@ -830,6 +839,7 @@ where
     S: SessionStorePort,
 {
     let rollback_store = FsRollbackPointStore;
+    let checkpoint_port = WorktreeAdapter;
     resume_run_with_retry_internal(
         agent_service,
         run_snapshot_read,
@@ -840,6 +850,7 @@ where
         log_write,
         amendment_queue_port,
         &rollback_store,
+        &checkpoint_port,
         base_dir,
         execution_cwd,
         project_id,
@@ -862,6 +873,7 @@ async fn resume_run_with_retry_internal<A, R, S>(
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
+    checkpoint_port: &dyn VcsCheckpointPort,
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
@@ -1220,6 +1232,7 @@ where
         log_write,
         amendment_queue_port,
         rollback_store,
+        checkpoint_port,
         base_dir,
         execution_cwd,
         project_id,
@@ -1329,6 +1342,7 @@ async fn execute_run_internal<A, R, S>(
     log_write: &dyn RuntimeLogWritePort,
     amendment_queue_port: &dyn AmendmentQueuePort,
     rollback_store: &dyn RollbackPointStorePort,
+    checkpoint_port: &dyn VcsCheckpointPort,
     base_dir: &Path,
     execution_cwd: Option<&Path>,
     project_id: &ProjectId,
@@ -1393,6 +1407,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -1720,6 +1736,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -1930,6 +1948,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -2083,6 +2103,8 @@ where
                         if let Err(error) = persist_rollback_point(
                             rollback_store,
                             journal_store,
+                            log_write,
+                            checkpoint_port,
                             base_dir,
                             project_id,
                             run_id,
@@ -2401,6 +2423,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -2728,6 +2752,8 @@ where
                         if let Err(error) = persist_rollback_point(
                             rollback_store,
                             journal_store,
+                            log_write,
+                            checkpoint_port,
                             base_dir,
                             project_id,
                             run_id,
@@ -2787,6 +2813,8 @@ where
             if let Err(error) = persist_rollback_point(
                 rollback_store,
                 journal_store,
+                log_write,
+                checkpoint_port,
                 base_dir,
                 project_id,
                 run_id,
@@ -3037,6 +3065,8 @@ where
             if let Err(error) = persist_rollback_point(
                 rollback_store,
                 journal_store,
+                log_write,
+                checkpoint_port,
                 base_dir,
                 project_id,
                 run_id,
@@ -3269,6 +3299,8 @@ where
                             if let Err(error) = persist_rollback_point(
                                 rollback_store,
                                 journal_store,
+                                log_write,
+                                checkpoint_port,
                                 base_dir,
                                 project_id,
                                 run_id,
@@ -3519,6 +3551,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -3739,6 +3773,8 @@ where
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
                         journal_store,
+                        log_write,
+                        checkpoint_port,
                         base_dir,
                         project_id,
                         run_id,
@@ -3858,6 +3894,8 @@ where
             if let Err(error) = persist_rollback_point(
                 rollback_store,
                 journal_store,
+                log_write,
+                checkpoint_port,
                 base_dir,
                 project_id,
                 run_id,
@@ -3923,6 +3961,8 @@ where
         if let Err(error) = persist_rollback_point(
             rollback_store,
             journal_store,
+            log_write,
+            checkpoint_port,
             base_dir,
             project_id,
             run_id,
@@ -4463,9 +4503,25 @@ async fn persist_stage_success(
     Ok(())
 }
 
+fn checkpoint_completion_round(snapshot: &RunSnapshot) -> u32 {
+    snapshot
+        .active_run
+        .as_ref()
+        .map(|active_run| active_run.stage_cursor.completion_round)
+        .or_else(|| {
+            snapshot
+                .interrupted_run
+                .as_ref()
+                .map(|active_run| active_run.stage_cursor.completion_round)
+        })
+        .unwrap_or_else(|| snapshot.completion_rounds.max(1))
+}
+
 fn persist_rollback_point(
     rollback_store: &dyn RollbackPointStorePort,
     journal_store: &dyn JournalStorePort,
+    log_write: &dyn RuntimeLogWritePort,
+    checkpoint_port: &dyn VcsCheckpointPort,
     base_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
@@ -4474,14 +4530,43 @@ fn persist_rollback_point(
     stage_id: StageId,
     cycle: u32,
 ) -> AppResult<()> {
-    let worktree = WorktreeAdapter;
     let created_at = Utc::now();
+    let completion_round = checkpoint_completion_round(snapshot);
+    let git_sha = match checkpoint_port.create_checkpoint(
+        base_dir,
+        project_id,
+        run_id,
+        stage_id,
+        cycle,
+        completion_round,
+    ) {
+        Ok(sha) => Some(sha),
+        Err(error) => {
+            let _ = log_write.append_runtime_log(
+                base_dir,
+                project_id,
+                &RuntimeLogEntry {
+                    timestamp: created_at,
+                    level: LogLevel::Warn,
+                    source: "engine".to_owned(),
+                    message: format!(
+                        "checkpoint creation failed: stage={} cycle={} round={} error={}",
+                        stage_id.as_str(),
+                        cycle,
+                        completion_round,
+                        error
+                    ),
+                },
+            );
+            None
+        }
+    };
     let rollback_point = RollbackPoint {
         rollback_id: Uuid::new_v4().to_string(),
         created_at,
         stage_id,
         cycle,
-        git_sha: worktree.current_head_sha(base_dir).ok().flatten(),
+        git_sha,
         run_snapshot: snapshot.clone(),
     };
 

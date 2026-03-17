@@ -1,3 +1,4 @@
+pub mod checkpoints;
 pub mod completion;
 pub mod contracts;
 pub mod drift;

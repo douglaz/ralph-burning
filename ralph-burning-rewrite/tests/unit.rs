@@ -72,3 +72,6 @@ mod workflow_panels_test;
 
 #[path = "unit/validation_runner_test.rs"]
 mod validation_runner_test;
+
+#[path = "unit/checkpoint_test.rs"]
+mod checkpoint_test;

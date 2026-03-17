@@ -268,37 +268,68 @@ fn setup_workspace_with_project(
     Ok(())
 }
 
+fn run_git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_AUTHOR_NAME", "test")
+        .env("GIT_AUTHOR_EMAIL", "test@test")
+        .env("GIT_COMMITTER_NAME", "test")
+        .env("GIT_COMMITTER_EMAIL", "test@test")
+        .output()
+        .map_err(|e| format!("git {}: {e}", args[0]))?;
+    if !output.status.success() {
+        return Err(format!(
+            "git {} failed: {}",
+            args[0],
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 /// Initialize a git repository in the temp workspace with an initial commit.
 /// Returns the SHA of the initial commit so tests can assert against it.
 fn init_git_repo(ws: &TempWorkspace) -> Result<String, String> {
-    let run = |args: &[&str]| -> Result<String, String> {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(ws.path())
-            .env("GIT_AUTHOR_NAME", "test")
-            .env("GIT_AUTHOR_EMAIL", "test@test")
-            .env("GIT_COMMITTER_NAME", "test")
-            .env("GIT_COMMITTER_EMAIL", "test@test")
-            .output()
-            .map_err(|e| format!("git {}: {e}", args[0]))?;
-        if !output.status.success() {
-            return Err(format!(
-                "git {} failed: {}",
-                args[0],
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    };
-    run(&["init"])?;
+    run_git_in(ws.path(), &["init"])?;
     // Exclude .ralph-burning/ from git so that git reset --hard doesn't
     // clobber the canonical run snapshot written by the engine.
     std::fs::write(ws.path().join(".gitignore"), ".ralph-burning/\n")
         .map_err(|e| format!("write .gitignore: {e}"))?;
-    run(&["add", "."])?;
-    run(&["commit", "-m", "initial"])?;
-    let sha = run(&["rev-parse", "HEAD"])?;
+    run_git_in(ws.path(), &["add", "."])?;
+    run_git_in(ws.path(), &["commit", "-m", "initial"])?;
+    let sha = run_git_in(ws.path(), &["rev-parse", "HEAD"])?;
     Ok(sha)
+}
+
+fn read_rollback_points(
+    ws: &TempWorkspace,
+    project_id: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let dir = ws
+        .path()
+        .join(format!(".ralph-burning/projects/{project_id}/rollback"));
+    let mut points = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read rollback dir: {e}"))? {
+        let path = entry.map_err(|e| format!("read rollback dir entry: {e}"))?.path();
+        let contents =
+            std::fs::read_to_string(&path).map_err(|e| format!("read rollback point: {e}"))?;
+        points.push(
+            serde_json::from_str(&contents).map_err(|e| format!("parse rollback point: {e}"))?,
+        );
+    }
+    Ok(points)
+}
+
+fn rollback_point_for_stage(
+    ws: &TempWorkspace,
+    project_id: &str,
+    stage_id: &str,
+) -> Result<serde_json::Value, String> {
+    read_rollback_points(ws, project_id)?
+        .into_iter()
+        .find(|point| point.get("stage_id").and_then(|value| value.as_str()) == Some(stage_id))
+        .ok_or_else(|| format!("missing rollback point for stage '{stage_id}'"))
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +362,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_run_resume_retry(&mut m);
     register_run_resume_non_standard(&mut m);
     register_run_rollback(&mut m);
+    register_workflow_checkpoint(&mut m);
     register_requirements_drafting(&mut m);
     register_backend_requirements(&mut m);
     register_backend_openrouter(&mut m);
@@ -4957,6 +4989,138 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
         if event_sha.is_empty() {
             return Err("rollback_performed should record git_sha even when reset fails".into());
         }
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Workflow Checkpoints (2 scenarios)
+// ===========================================================================
+
+fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "workflow.rollback.hard_uses_checkpoint", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "wf-checkpoint-hard", "standard")?;
+        init_git_repo(&ws)?;
+
+        let start = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&start)?;
+
+        let implementation_point =
+            rollback_point_for_stage(&ws, "wf-checkpoint-hard", "implementation")?;
+        let checkpoint_sha = implementation_point
+            .get("git_sha")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned();
+        if checkpoint_sha.is_empty() {
+            return Err("implementation rollback point should record a checkpoint SHA".into());
+        }
+
+        std::fs::write(ws.path().join("after-checkpoint.txt"), "later HEAD\n")
+            .map_err(|e| format!("write after-checkpoint.txt: {e}"))?;
+        run_git_in(ws.path(), &["add", "."])?;
+        run_git_in(ws.path(), &["commit", "-m", "after checkpoint"]) ?;
+        let moved_head = run_git_in(ws.path(), &["rev-parse", "HEAD"])?;
+        if moved_head == checkpoint_sha {
+            return Err("expected HEAD to move after the checkpoint commit".into());
+        }
+
+        let mut snapshot = read_run_snapshot(&ws, "wf-checkpoint-hard")?;
+        snapshot["status"] = serde_json::json!("paused");
+        snapshot["active_run"] = serde_json::json!(null);
+        snapshot["status_summary"] = serde_json::json!("paused for checkpoint rollback");
+        std::fs::write(
+            ws.path()
+                .join(".ralph-burning/projects/wf-checkpoint-hard/run.json"),
+            serde_json::to_string_pretty(&snapshot).unwrap(),
+        )
+        .map_err(|e| format!("write paused run.json: {e}"))?;
+
+        let rollback = run_cli(
+            &["run", "rollback", "--to", "implementation", "--hard"],
+            ws.path(),
+        )?;
+        assert_success(&rollback)?;
+
+        let reset_head = run_git_in(ws.path(), &["rev-parse", "HEAD"])?;
+        if reset_head != checkpoint_sha {
+            return Err(format!(
+                "hard rollback should reset HEAD to checkpoint SHA {checkpoint_sha}, got {reset_head}"
+            ));
+        }
+        if reset_head == moved_head {
+            return Err("hard rollback should not leave HEAD at the later ambient commit".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "workflow.checkpoint.commit_metadata_stable", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "wf-checkpoint-meta", "standard")?;
+        init_git_repo(&ws)?;
+
+        let start = run_cli(&["run", "start"], ws.path())?;
+        assert_success(&start)?;
+
+        let implementation_point =
+            rollback_point_for_stage(&ws, "wf-checkpoint-meta", "implementation")?;
+        let checkpoint_sha = implementation_point
+            .get("git_sha")
+            .and_then(|value| value.as_str())
+            .unwrap_or("")
+            .to_owned();
+        if checkpoint_sha.is_empty() {
+            return Err("implementation rollback point should record a checkpoint SHA".into());
+        }
+
+        let run_id = implementation_point
+            .get("run_snapshot")
+            .and_then(|snapshot| snapshot.get("active_run"))
+            .or_else(|| {
+                implementation_point
+                    .get("run_snapshot")
+                    .and_then(|snapshot| snapshot.get("interrupted_run"))
+            })
+            .and_then(|active_run| active_run.get("run_id"))
+            .and_then(|value| value.as_str())
+            .ok_or_else(|| "rollback point should preserve the checkpoint run_id".to_owned())?;
+        let cycle = implementation_point
+            .get("cycle")
+            .and_then(|value| value.as_u64())
+            .ok_or_else(|| "rollback point should preserve cycle".to_owned())?;
+        let completion_round = implementation_point
+            .get("run_snapshot")
+            .and_then(|snapshot| snapshot.get("active_run"))
+            .or_else(|| {
+                implementation_point
+                    .get("run_snapshot")
+                    .and_then(|snapshot| snapshot.get("interrupted_run"))
+            })
+            .and_then(|active_run| active_run.get("stage_cursor"))
+            .and_then(|cursor| cursor.get("completion_round"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(1);
+
+        let message = run_git_in(
+            ws.path(),
+            &["show", "--quiet", "--format=%B", &checkpoint_sha],
+        )?;
+        let expected = format!(
+            "rb: checkpoint project=wf-checkpoint-meta stage=implementation cycle={cycle} round={completion_round}\n\nRB-Project: wf-checkpoint-meta\nRB-Run: {run_id}\nRB-Stage: implementation\nRB-Cycle: {cycle}\nRB-Completion-Round: {completion_round}"
+        );
+        if message != expected {
+            return Err(format!(
+                "checkpoint commit message mismatch.\nexpected:\n{expected}\n\nactual:\n{message}"
+            ));
+        }
+        assert_contains(
+            &message,
+            "RB-Completion-Round:",
+            "checkpoint commit message",
+        )?;
 
         Ok(())
     });
