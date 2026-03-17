@@ -228,6 +228,12 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             }
         };
 
+        // Build GitHub metadata BEFORE task creation so it is persisted
+        // atomically with the initial task record. This prevents a window
+        // where a live task exists without repo_slug/issue_number if the
+        // second write were to fail.
+        let github_meta = build_github_meta(&registration.repo_slug, issue, &raw_comments);
+
         match DaemonTaskService::create_task_from_watched_issue(
             store,
             base_dir,
@@ -235,18 +241,9 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             default_flow,
             &meta,
             dispatch_mode,
+            Some(&github_meta),
         ) {
-            Ok(Some(mut task)) => {
-                // Attach GitHub metadata to the task, including dedup cursors
-                // derived from the fetched comments.
-                let github_meta = build_github_meta(&registration.repo_slug, issue, &raw_comments);
-                task.repo_slug = Some(github_meta.repo_slug);
-                task.issue_number = Some(github_meta.issue_number);
-                task.pr_url = github_meta.pr_url;
-                task.last_seen_comment_id = github_meta.last_seen_comment_id;
-                task.last_seen_review_id = github_meta.last_seen_review_id;
-                store.write_task(base_dir, &task)?;
-
+            Ok(Some(_task)) => {
                 // Task is Pending → label stays rb:ready (matches label_for_status).
                 // The daemon loop calls sync_label_for_task when the task transitions
                 // to Claimed (rb:in-progress). We do NOT remove rb:ready here because

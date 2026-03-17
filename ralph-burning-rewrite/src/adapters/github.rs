@@ -377,9 +377,13 @@ impl GithubClient {
         marker: &str,
         body: &str,
     ) -> AppResult<()> {
-        // Check existing comments for the marker
+        // Check existing comments for the exact hidden HTML comment marker.
+        // We match the full `<!-- marker -->` form instead of bare `contains(marker)`
+        // to avoid false positives on ordinary user text that happens to include
+        // the marker string.
+        let hidden_marker = format!("<!-- {marker} -->");
         let comments = self.fetch_issue_comments(owner, repo, issue_number).await?;
-        if comments.iter().any(|c| c.body.contains(marker)) {
+        if comments.iter().any(|c| c.body.contains(&hidden_marker)) {
             return Ok(());
         }
 

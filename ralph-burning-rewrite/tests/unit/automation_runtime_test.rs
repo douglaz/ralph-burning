@@ -417,6 +417,7 @@ fn watched_issue_ingestion_creates_task_idempotently() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create from watched issue");
     assert!(result.is_some());
@@ -433,6 +434,7 @@ fn watched_issue_ingestion_creates_task_idempotently() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::Workflow,
+        None,
     )
     .expect("idempotent re-ingestion");
     assert!(result2.is_none());
@@ -461,6 +463,7 @@ fn watched_issue_newer_revision_after_terminal_creates_fresh_task() {
         FlowPreset::Standard,
         &issue1,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create first");
     let task = result.unwrap();
@@ -488,6 +491,7 @@ fn watched_issue_newer_revision_after_terminal_creates_fresh_task() {
         FlowPreset::Standard,
         &issue2,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create second for new revision");
     assert!(result2.is_some());
@@ -515,6 +519,7 @@ fn watched_issue_different_revision_while_non_terminal_fails() {
         FlowPreset::Standard,
         &issue1,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create first");
 
@@ -534,6 +539,7 @@ fn watched_issue_different_revision_while_non_terminal_fails() {
         FlowPreset::Standard,
         &issue2,
         DispatchMode::Workflow,
+        None,
     )
     .expect_err("should reject different revision while non-terminal");
 
@@ -779,6 +785,7 @@ fn watched_issue_with_requirements_command_routes_flow_from_labels() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::RequirementsQuick,
+        None,
     )
     .expect("should succeed with label-based flow routing");
     let task = result.expect("task should be created");

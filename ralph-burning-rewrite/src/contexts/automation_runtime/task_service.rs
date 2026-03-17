@@ -593,6 +593,11 @@ impl DaemonTaskService {
     /// for the same issue_ref and source_revision, the call is a no-op.
     /// If a prior task for the same issue_ref is terminal and a newer
     /// source_revision appears, a fresh task may be created.
+    ///
+    /// If `github_meta` is provided, the GitHub-specific fields (`repo_slug`,
+    /// `issue_number`, `pr_url`, dedup cursors) are populated atomically on the
+    /// initial task record. This prevents a window where a persisted task lacks
+    /// GitHub metadata if a subsequent write fails.
     pub fn create_task_from_watched_issue(
         store: &dyn DaemonStorePort,
         base_dir: &Path,
@@ -600,6 +605,7 @@ impl DaemonTaskService {
         default_flow: FlowPreset,
         issue: &WatchedIssueMeta,
         dispatch_mode: DispatchMode,
+        github_meta: Option<&super::model::GithubTaskMeta>,
     ) -> AppResult<Option<DaemonTask>> {
         let issue_ref = normalize_required("issue_ref", &issue.issue_ref)?;
         let source_revision = normalize_required("source_revision", &issue.source_revision)?;
@@ -663,11 +669,11 @@ impl DaemonTaskService {
             dispatch_mode,
             source_revision: Some(source_revision),
             requirements_run_id: None,
-            repo_slug: None,
-            issue_number: None,
-            pr_url: None,
-            last_seen_comment_id: None,
-            last_seen_review_id: None,
+            repo_slug: github_meta.map(|m| m.repo_slug.clone()),
+            issue_number: github_meta.map(|m| m.issue_number),
+            pr_url: github_meta.and_then(|m| m.pr_url.clone()),
+            last_seen_comment_id: github_meta.and_then(|m| m.last_seen_comment_id),
+            last_seen_review_id: github_meta.and_then(|m| m.last_seen_review_id),
             label_dirty: false,
         };
 

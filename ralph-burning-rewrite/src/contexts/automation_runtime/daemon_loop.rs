@@ -805,6 +805,7 @@ where
                 default_flow,
                 issue,
                 dispatch_mode,
+                None, // file-based watcher: no GitHub metadata
             ) {
                 Ok(Some(task)) => {
                     println!(

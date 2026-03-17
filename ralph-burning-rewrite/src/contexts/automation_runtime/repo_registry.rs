@@ -312,19 +312,26 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
     // the cloned repo's remote config.
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
 
-    // Pass GITHUB_TOKEN via a top-level `git -c` flag (before the `clone`
-    // subcommand) so the credential is transient and never written into the
-    // cloned repo's `.git/config`. This is distinct from `git clone -c`,
-    // which persists config keys into the new repo.
+    // Pass GITHUB_TOKEN via environment-based Git config injection
+    // (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`).
+    // Unlike `-c http.extraHeader=...`, this mechanism:
+    //  - Does NOT expose the token in process arguments (visible via
+    //    `/proc/<pid>/cmdline` on Linux).
+    //  - Does NOT persist the credential into the cloned repo's
+    //    `.git/config`.
+    // Environment variables are inherited by the child process but are
+    // not visible to other users via `/proc/<pid>/cmdline`.
     let token = std::env::var("GITHUB_TOKEN").ok();
     let mut cmd = std::process::Command::new("git");
 
     if let Some(ref t) = token {
         if !t.is_empty() {
-            cmd.args([
-                "-c",
-                &format!("http.extraHeader=Authorization: Bearer {t}"),
-            ]);
+            cmd.env("GIT_CONFIG_COUNT", "1")
+                .env("GIT_CONFIG_KEY_0", "http.extraHeader")
+                .env(
+                    "GIT_CONFIG_VALUE_0",
+                    format!("Authorization: Bearer {t}"),
+                );
         }
     }
 

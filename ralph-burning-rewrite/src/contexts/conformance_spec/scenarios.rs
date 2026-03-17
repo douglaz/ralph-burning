@@ -7891,6 +7891,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             FlowPreset::Standard,
             &issue,
             DispatchMode::Workflow,
+            None,
         )
         .map_err(|e| e.to_string())?;
         let task = result.ok_or("expected a task to be created")?;
@@ -7935,6 +7936,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             FlowPreset::Standard,
             &issue,
             DispatchMode::Workflow,
+            None,
         )
         .map_err(|e| e.to_string())?;
         if r1.is_none() {
@@ -7949,6 +7951,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             FlowPreset::Standard,
             &issue,
             DispatchMode::Workflow,
+            None,
         )
         .map_err(|e| e.to_string())?;
         if r2.is_some() {
@@ -8190,6 +8193,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             FlowPreset::Standard,
             &issue1,
             DispatchMode::Workflow,
+            None,
         )
         .map_err(|e| e.to_string())?;
 
@@ -8208,6 +8212,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             FlowPreset::Standard,
             &issue2,
             DispatchMode::Workflow,
+            None,
         );
         match err {
             Err(AppError::DuplicateWatchedIssue { .. }) => Ok(()),
@@ -11887,6 +11892,84 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 "expected last_seen_comment_id = None with no comments, got {:?}",
                 meta_empty.last_seen_comment_id
             ));
+        }
+
+        // Verify atomic metadata persistence: create_task_from_watched_issue
+        // with github_meta populates repo_slug/issue_number/cursor atomically
+        // on the initial persisted task record (no second write needed).
+        {
+            use crate::adapters::fs::FsDaemonStore;
+            use crate::contexts::automation_runtime::model::{
+                DispatchMode, WatchedIssueMeta,
+            };
+            use crate::contexts::automation_runtime::routing::RoutingEngine;
+            use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+            use crate::contexts::automation_runtime::DaemonStorePort;
+            use crate::shared::domain::FlowPreset;
+
+            let ws2 = TempWorkspace::new()?;
+            init_workspace(&ws2)?;
+            let store = FsDaemonStore;
+            let routing = RoutingEngine::new();
+
+            let watched = WatchedIssueMeta {
+                issue_ref: "acme/widgets#10".to_owned(),
+                source_revision: "abc12345".to_owned(),
+                title: "Fix bug".to_owned(),
+                body: "Fix the bug".to_owned(),
+                labels: vec![],
+                routing_command: None,
+            };
+
+            let task = DaemonTaskService::create_task_from_watched_issue(
+                &store,
+                ws2.path(),
+                &routing,
+                FlowPreset::Standard,
+                &watched,
+                DispatchMode::Workflow,
+                Some(&meta),
+            )
+            .map_err(|e| e.to_string())?
+            .ok_or("expected task to be created")?;
+
+            // These fields must be populated on the initial record
+            if task.repo_slug.as_deref() != Some("acme/widgets") {
+                return Err(format!(
+                    "expected repo_slug = Some(\"acme/widgets\"), got {:?}",
+                    task.repo_slug
+                ));
+            }
+            if task.issue_number != Some(10) {
+                return Err(format!(
+                    "expected issue_number = Some(10), got {:?}",
+                    task.issue_number
+                ));
+            }
+            if task.last_seen_comment_id != Some(250) {
+                return Err(format!(
+                    "expected last_seen_comment_id = Some(250), got {:?}",
+                    task.last_seen_comment_id
+                ));
+            }
+
+            // Re-read from store to confirm persistence (not just in-memory)
+            let tasks = store.list_tasks(ws2.path())
+                .map_err(|e| e.to_string())?;
+            let persisted = tasks.iter().find(|t| t.task_id == task.task_id)
+                .ok_or("task not found in store after creation")?;
+            if persisted.repo_slug.as_deref() != Some("acme/widgets") {
+                return Err(format!(
+                    "persisted repo_slug mismatch: {:?}",
+                    persisted.repo_slug
+                ));
+            }
+            if persisted.issue_number != Some(10) {
+                return Err(format!(
+                    "persisted issue_number mismatch: {:?}",
+                    persisted.issue_number
+                ));
+            }
         }
 
         Ok(())
