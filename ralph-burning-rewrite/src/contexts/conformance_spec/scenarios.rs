@@ -70,8 +70,6 @@ fn run_cli_with_env(args: &[&str], cwd: &Path, env: &[(&str, &str)]) -> Result<C
     if !env.iter().any(|(key, _)| *key == "RALPH_BURNING_BACKEND") {
         cmd.env("RALPH_BURNING_BACKEND", "stub");
     }
-    // Enable test-only legacy daemon path for conformance scenarios
-    cmd.env("RALPH_BURNING_TEST_LEGACY_DAEMON", "1");
     for (k, v) in env {
         cmd.env(k, v);
     }
@@ -99,6 +97,136 @@ where
             .map_err(|e| format!("build tokio runtime: {e}"))?;
         runtime.block_on(future).map_err(|error| error.to_string())
     }
+}
+
+// ---------------------------------------------------------------------------
+// In-process daemon iteration helper (test-only)
+//
+// Replaces the legacy `run_cli(["daemon", "start", "--single-iteration"])` path
+// that was removed from the production CLI. Constructs a DaemonLoop in-process
+// with the stub backend, FileIssueWatcher, and standard FS stores, then runs
+// a single iteration. Label overrides can be applied to the stub backend.
+// ---------------------------------------------------------------------------
+
+/// Run a single daemon iteration in-process using the stub backend and
+/// file-based issue watcher. This is the test-only replacement for the
+/// former `daemon start --single-iteration` legacy CLI path.
+fn run_daemon_iteration_in_process(ws_path: &Path) -> Result<(), String> {
+    run_daemon_iteration_with_backend(ws_path, None)
+}
+
+/// Run a single daemon iteration in-process with an explicit `BackendAdapter`.
+/// When `backend_override` is `None`, the default stub backend is used.
+/// When the stub is used, `RALPH_BURNING_TEST_LABEL_OVERRIDES` from the current
+/// environment is honoured (matching the old CLI behavior).
+fn run_daemon_iteration_with_backend(
+    ws_path: &Path,
+    backend_override: Option<crate::adapters::BackendAdapter>,
+) -> Result<(), String> {
+    use crate::adapters::fs::{
+        FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore,
+        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    };
+    use crate::adapters::issue_watcher::FileIssueWatcher;
+    use crate::adapters::stub_backend::StubBackendAdapter;
+    use crate::adapters::worktree::WorktreeAdapter;
+    use crate::adapters::BackendAdapter;
+    use crate::contexts::agent_execution::service::AgentExecutionService;
+    use crate::adapters::fs::{FsRawOutputStore, FsSessionStore};
+    use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
+
+    // The daemon loop internally builds a RequirementsService via
+    // `build_requirements_service_default` which reads RALPH_BURNING_BACKEND.
+    // Ensure this env var matches the injected adapter so the requirements
+    // path uses the same backend family.
+    let prev_backend_env = std::env::var("RALPH_BURNING_BACKEND").ok();
+
+    let adapter = match backend_override {
+        Some(a) => {
+            // Caller-provided adapter — don't override RALPH_BURNING_BACKEND
+            // (caller is responsible, e.g. run_daemon_iteration_with_process_backend)
+            a
+        }
+        None => {
+            std::env::set_var("RALPH_BURNING_BACKEND", "stub");
+            let stub = StubBackendAdapter::default();
+            BackendAdapter::Stub(
+                crate::composition::agent_execution_builder::apply_test_label_overrides(stub),
+            )
+        }
+    };
+    let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+
+    let daemon_store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let project_store = FsProjectStore;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_store = FsArtifactStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+    let amendment_queue = FsAmendmentQueueStore;
+    let requirements_store = FsRequirementsStore;
+    let issue_watcher = FileIssueWatcher;
+
+    let daemon_loop = DaemonLoop::new(
+        &daemon_store,
+        &worktree,
+        &project_store,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_store,
+        &artifact_write,
+        &log_write,
+        &amendment_queue,
+        &agent_service,
+    )
+    .with_watcher(&issue_watcher)
+    .with_requirements_store(&requirements_store);
+
+    let loop_config = DaemonLoopConfig {
+        single_iteration: true,
+        ..DaemonLoopConfig::default()
+    };
+
+    let result = block_on_app_result(daemon_loop.run(ws_path, &loop_config));
+
+    // Restore RALPH_BURNING_BACKEND to its previous value
+    match prev_backend_env {
+        Some(val) => std::env::set_var("RALPH_BURNING_BACKEND", &val),
+        None => std::env::remove_var("RALPH_BURNING_BACKEND"),
+    }
+
+    result
+}
+
+/// Run a single daemon iteration using the process backend with a custom PATH.
+/// Used for scenarios that test real backend execution through the daemon.
+fn run_daemon_iteration_with_process_backend(
+    ws_path: &Path,
+    extra_path: &str,
+) -> Result<(), String> {
+    use crate::adapters::process_backend::ProcessBackendAdapter;
+    use crate::adapters::BackendAdapter;
+
+    // Temporarily prepend the extra path for process backend binary resolution
+    // and set RALPH_BURNING_BACKEND=process so the daemon's internal
+    // RequirementsService also uses the process backend.
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let new_path = format!("{extra_path}:{original_path}");
+    // SAFETY: this is test-only code; conformance scenarios run sequentially
+    std::env::set_var("PATH", &new_path);
+    std::env::set_var("RALPH_BURNING_BACKEND", "process");
+    let result = run_daemon_iteration_with_backend(
+        ws_path,
+        Some(BackendAdapter::Process(ProcessBackendAdapter::new())),
+    );
+    std::env::set_var("PATH", &original_path);
+    std::env::remove_var("RALPH_BURNING_BACKEND");
+    result
 }
 
 fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, String> {
@@ -6813,10 +6941,6 @@ fi
             .map_err(|e| format!("chmod fake codex: {e}"))?;
         }
 
-        // Build PATH with our fake binaries first
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{}", bin_dir.display(), original_path);
-
         // Write a watched issue file for the daemon's FileIssueWatcher
         let watched_dir = ws.path().join(".ralph-burning/daemon/watched");
         std::fs::create_dir_all(&watched_dir).map_err(|e| format!("mkdir watched: {e}"))?;
@@ -6834,13 +6958,8 @@ fi
         )
         .map_err(|e| format!("write watched issue: {e}"))?;
 
-        // Run one daemon cycle with RALPH_BURNING_BACKEND=process and fake binaries
-        let out = run_cli_with_env(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-            &[("RALPH_BURNING_BACKEND", "process"), ("PATH", &new_path)],
-        )?;
-        assert_success(&out)?;
+        // Run one daemon cycle with process backend and fake binaries
+        run_daemon_iteration_with_process_backend(ws.path(), &bin_dir.display().to_string())?;
 
         // Verify the task was created and the requirements portion completed.
         // The subsequent workflow dispatch may fail because the fake binaries
@@ -7542,8 +7661,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write task2: {e}"))?;
 
-        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        assert_success(&out)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // Writer-lock contention invariant: the locked task must remain pending,
         // acquire no lease/worktree, and produce no claim-side durable mutation.
@@ -7587,13 +7705,6 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             ));
         }
 
-        // Verify output mentions the free task was attempted
-        let combined = format!("{}{}", out.stdout, out.stderr);
-        if !combined.contains("free-task") {
-            return Err(format!(
-                "expected daemon output to mention 'free-task', output: {combined}"
-            ));
-        }
         Ok(())
     });
 
@@ -7643,11 +7754,10 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
         .map_err(|e| format!("write task: {e}"))?;
 
         let cwd_before = std::env::current_dir().map_err(|e| format!("get cwd: {e}"))?;
-        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        // Dispatch must succeed — if the command fails, the task fixture was
+        // Dispatch must succeed — if the helper fails, the task fixture was
         // malformed or the daemon could not process it, which must not count as
         // a passing CWD-unchanged assertion.
-        assert_success(&out)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         let cwd_after = std::env::current_dir().map_err(|e| format!("get cwd: {e}"))?;
         if cwd_before != cwd_after {
@@ -7670,10 +7780,9 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|v| v.as_str())
             .unwrap_or("pending");
         if task_status == "pending" {
-            let combined = format!("{}{}", out.stdout, out.stderr);
-            return Err(format!(
-                "task was never dispatched (still pending after successful daemon cycle), output: {combined}"
-            ));
+            return Err(
+                "task was never dispatched (still pending after successful daemon cycle)".to_owned(),
+            );
         }
         Ok(())
     });
@@ -7889,8 +7998,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Run one daemon cycle — the full watcher → requirements_quick →
         // seed handoff → project creation → workflow dispatch pipeline.
-        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        assert_success(&out)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // Verify the task was created and processed to completion
         let store = FsDaemonStore;
@@ -8001,15 +8109,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         });
 
         // Run one daemon cycle with the label override
-        let out = run_cli_with_env(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-            &[(
-                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
-            )],
-        )?;
-        assert_success(&out)?;
+        std::env::set_var("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string());
+        run_daemon_iteration_in_process(ws.path())?;
+        std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
 
         // Verify the task was created and entered waiting_for_requirements
         let store = FsDaemonStore;
@@ -8146,7 +8248,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         // routing command says "quick_dev". The subsequent worktree step may
         // fail in a non-git workspace, but the routing warning should be
         // durably persisted on the task.
-        let _out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // Verify the task used the routed flow (quick_dev), not the seed's recommendation
         let store = FsDaemonStore;
@@ -8250,8 +8352,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle — the watcher should skip this issue
-        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        assert_success(&out)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // No task should have been created for the malformed issue
         let store = FsDaemonStore;
@@ -8364,15 +8465,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         });
 
         // First daemon cycle: task enters waiting_for_requirements
-        let out1 = run_cli_with_env(
-            &["daemon", "start", "--single-iteration"],
-            ws.path(),
-            &[(
-                "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
-            )],
-        )?;
-        assert_success(&out1)?;
+        std::env::set_var("RALPH_BURNING_TEST_LABEL_OVERRIDES", &label_overrides.to_string());
+        run_daemon_iteration_in_process(ws.path())?;
+        std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
 
         // Verify the task is in waiting state
         let store = FsDaemonStore;
@@ -8439,8 +8534,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         // Second daemon cycle: check_waiting_tasks should see the completed
         // requirements run, resume the task, derive the seed, create the
         // project, and complete the workflow.
-        let out2 = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        assert_success(&out2)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // Re-read the task — it should now be completed
         let tasks2 = store.list_tasks(ws.path()).map_err(|e| e.to_string())?;
@@ -8513,8 +8607,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         .map_err(|e| format!("write watched issue: {e}"))?;
 
         // Run one daemon cycle (no label overrides → empty questions → immediate completion)
-        let out = run_cli(&["daemon", "start", "--single-iteration"], ws.path())?;
-        assert_success(&out)?;
+        run_daemon_iteration_in_process(ws.path())?;
 
         // Verify the task was requeued as Pending with Workflow dispatch_mode
         let store = FsDaemonStore;
@@ -11590,17 +11683,13 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "daemon.tasks.start_requires_data_dir", || {
-        // Verify that the real CLI binary rejects `daemon start` without --data-dir
-        // by spawning the binary in production mode (no RALPH_BURNING_TEST_LEGACY_DAEMON).
+        // Verify that the real CLI binary rejects `daemon start` without --data-dir.
         let ws = TempWorkspace::new()?;
 
         let mut cmd = Command::new(binary_path());
         cmd.args(["daemon", "start", "--single-iteration"])
             .current_dir(ws.path())
-            .env("RALPH_BURNING_BACKEND", "stub")
-            // Explicitly remove the test-legacy env var to exercise
-            // the production path where --data-dir is required.
-            .env_remove("RALPH_BURNING_TEST_LEGACY_DAEMON");
+            .env("RALPH_BURNING_BACKEND", "stub");
 
         let output = cmd
             .output()
@@ -12718,6 +12807,210 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         if still_failed.lease_id.as_deref() != Some("lease-303") {
             return Err("expected lease_id preserved after rejected retry".to_owned());
+        }
+
+        Ok(())
+    });
+
+    // -----------------------------------------------------------------------
+    // daemon.tasks.label_failure_quarantines_repo
+    // Loop-level regression test: drives a real multi-repo daemon cycle
+    // through process_task_multi_repo with a GithubPort that fails on
+    // add_label. Verifies that after the label-sync failure the task is
+    // marked label_dirty and the repo is quarantined — no second task is
+    // processed in the same cycle.
+    // -----------------------------------------------------------------------
+    reg!(m, "daemon.tasks.label_failure_quarantines_repo", || {
+        use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::adapters::github::{
+            GithubComment, GithubIssue, GithubPort, GithubPullRequest, GithubReview,
+        };
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::adapters::BackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionService;
+        use crate::adapters::fs::{
+            FsAmendmentQueueStore, FsArtifactStore, FsJournalStore,
+            FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore,
+            FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+            FsRawOutputStore, FsSessionStore,
+        };
+        use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+        use crate::shared::error::{AppError, AppResult};
+
+        // --- A GitHub adapter that always fails on add_label ---
+        struct FailLabelGithub;
+        impl GithubPort for FailLabelGithub {
+            async fn ensure_labels(&self, _o: &str, _r: &str, _l: &[&str]) -> AppResult<()> { Ok(()) }
+            async fn poll_candidate_issues(&self, _o: &str, _r: &str, _l: &str) -> AppResult<Vec<GithubIssue>> { Ok(vec![]) }
+            async fn read_issue_labels(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<String>> { Ok(vec![]) }
+            async fn add_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
+                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "simulated label failure".to_owned() })
+            }
+            async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> { Ok(()) }
+            async fn replace_labels(&self, _o: &str, _r: &str, _n: u64, _l: &[&str]) -> AppResult<()> { Ok(()) }
+            async fn fetch_issue_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
+            async fn post_idempotent_comment(&self, _o: &str, _r: &str, _n: u64, _m: &str, _b: &str) -> AppResult<()> { Ok(()) }
+            async fn fetch_pr_review_comments(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubComment>> { Ok(vec![]) }
+            async fn fetch_pr_reviews(&self, _o: &str, _r: &str, _n: u64) -> AppResult<Vec<GithubReview>> { Ok(vec![]) }
+            async fn create_draft_pr(&self, _o: &str, _r: &str, _t: &str, _b: &str, _h: &str, _bs: &str) -> AppResult<GithubPullRequest> {
+                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "not implemented".to_owned() })
+            }
+            async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
+            async fn close_pr(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> { Ok(()) }
+            async fn fetch_pr_state(&self, _o: &str, _r: &str, _n: u64) -> AppResult<GithubPullRequest> {
+                Err(AppError::BackendUnavailable { backend: "github".to_owned(), details: "not implemented".to_owned() })
+            }
+            async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> { Ok(()) }
+            async fn is_branch_ahead(&self, _o: &str, _r: &str, _b: &str, _h: &str) -> AppResult<bool> { Ok(false) }
+        }
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        init_git_repo(&ws)?;
+
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+        let store = FsDataDirDaemonStore;
+        let now = chrono::Utc::now();
+
+        // Pre-seed two pending tasks for the same repo. The first will trigger
+        // a label-sync failure during claim; the second must NOT be processed
+        // due to repo quarantine.
+        let task1 = DaemonTask {
+            task_id: "qr-task-1".to_owned(),
+            issue_ref: "acme/widgets#501".to_owned(),
+            project_id: "proj-501".to_owned(),
+            project_name: Some("Quarantine test 1".to_owned()),
+            prompt: Some("First task".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(501),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        let task2 = DaemonTask {
+            task_id: "qr-task-2".to_owned(),
+            issue_ref: "acme/widgets#502".to_owned(),
+            project_id: "proj-502".to_owned(),
+            project_name: Some("Quarantine test 2".to_owned()),
+            prompt: Some("Second task".to_owned()),
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Pending,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 0,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(502),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store.create_task(&daemon_dir, &task1).map_err(|e| e.to_string())?;
+        store.create_task(&daemon_dir, &task2).map_err(|e| e.to_string())?;
+
+        // Build a DaemonLoop with the failing GitHub adapter and run one cycle
+        let reg = repo_registry::RepoRegistration {
+            repo_slug: "acme/widgets".to_owned(),
+            repo_root: ws.path().to_path_buf(),
+            workspace_root: ws.path().to_path_buf(),
+        };
+
+        let adapter = BackendAdapter::Stub(StubBackendAdapter::default());
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+
+        let worktree = crate::adapters::worktree::WorktreeAdapter;
+        let project_store = FsProjectStore;
+        let run_snapshot_read = FsRunSnapshotStore;
+        let run_snapshot_write = FsRunSnapshotWriteStore;
+        let journal_store = FsJournalStore;
+        let artifact_store = FsArtifactStore;
+        let artifact_write = FsPayloadArtifactWriteStore;
+        let log_write = FsRuntimeLogWriteStore;
+        let amendment_queue = FsAmendmentQueueStore;
+        let requirements_store = FsRequirementsStore;
+
+        let daemon_loop = DaemonLoop::new(
+            &store,
+            &worktree,
+            &project_store,
+            &run_snapshot_read,
+            &run_snapshot_write,
+            &journal_store,
+            &artifact_store,
+            &artifact_write,
+            &log_write,
+            &amendment_queue,
+            &agent_service,
+        )
+        .with_requirements_store(&requirements_store)
+        .with_registrations(vec![reg.clone()])
+        .with_data_dir(data_dir.clone());
+
+        let loop_config = DaemonLoopConfig {
+            single_iteration: true,
+            ..DaemonLoopConfig::default()
+        };
+
+        let github = FailLabelGithub;
+
+        // Run one multi-repo cycle — task 1 gets claimed, label sync fails,
+        // repo is quarantined, task 2 stays pending.
+        block_on_app_result(daemon_loop.run_multi_repo(&loop_config, &github))?;
+
+        // Verify: task 1 was claimed and label_dirty is set
+        let t1 = store.read_task(&daemon_dir, "qr-task-1").map_err(|e| e.to_string())?;
+        if t1.status == TaskStatus::Pending {
+            return Err("task 1 should have been claimed (not still pending)".to_owned());
+        }
+        if !t1.label_dirty {
+            return Err("task 1 should have label_dirty=true after failed label sync".to_owned());
+        }
+
+        // Verify: task 2 was NOT processed (still pending) — proves quarantine
+        let t2 = store.read_task(&daemon_dir, "qr-task-2").map_err(|e| e.to_string())?;
+        if t2.status != TaskStatus::Pending {
+            return Err(format!(
+                "task 2 should still be pending (quarantine failed), got {}",
+                t2.status
+            ));
+        }
+        if t2.label_dirty {
+            return Err("task 2 should NOT have label_dirty (never touched)".to_owned());
         }
 
         Ok(())

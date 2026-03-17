@@ -146,6 +146,13 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     When retry is attempted without prior cleanup
     Then retry is rejected and the task remains failed with lease preserved
 
+  # daemon.tasks.label_failure_quarantines_repo
+  Scenario: Label-sync failure during task processing quarantines the repo for the cycle
+    Given two pending tasks in the same repo with a failing GitHub label adapter
+    When the daemon runs a multi-repo cycle
+    Then the first task is claimed with label_dirty = true
+    And the second task remains pending because the repo was quarantined
+
   # daemon.github.port_covers_pr_operations
   Scenario: GithubPort trait exposes the full PR/branch API for slice-9 consumers
     Given an in-memory GitHub client behind dyn GithubPort

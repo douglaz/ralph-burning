@@ -93,13 +93,15 @@ pub fn build_requirements_service(
 /// `Process` adapters this is a no-op.
 fn apply_label_overrides_if_stub(adapter: BackendAdapter) -> BackendAdapter {
     match adapter {
-        BackendAdapter::Stub(stub) => BackendAdapter::Stub(apply_label_overrides_to_stub(stub)),
+        BackendAdapter::Stub(stub) => BackendAdapter::Stub(apply_test_label_overrides(stub)),
         other => other,
     }
 }
 
 /// Apply `RALPH_BURNING_TEST_LABEL_OVERRIDES` to a `StubBackendAdapter`.
-fn apply_label_overrides_to_stub(mut adapter: StubBackendAdapter) -> StubBackendAdapter {
+/// Public so that in-process test harnesses (e.g. conformance daemon helper)
+/// can replicate the same override behaviour without spawning a CLI binary.
+pub fn apply_test_label_overrides(mut adapter: StubBackendAdapter) -> StubBackendAdapter {
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
         if let Ok(overrides) =
             serde_json::from_str::<HashMap<String, serde_json::Value>>(&overrides_json)
@@ -161,7 +163,7 @@ fn build_stub_backend_adapter() -> StubBackendAdapter {
 
     // Also apply label overrides so that stub-backed requirements and panel
     // paths can drive role-specific payloads in tests.
-    apply_label_overrides_to_stub(adapter)
+    apply_test_label_overrides(adapter)
 }
 
 #[cfg(test)]

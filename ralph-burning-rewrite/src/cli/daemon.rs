@@ -1,7 +1,7 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsDataDirDaemonStore, FsJournalStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsDataDirDaemonStore, FsJournalStore,
     FsPayloadArtifactWriteStore, FsProjectStore, FsRepoRegistryStore, FsRequirementsStore,
     FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
@@ -13,7 +13,6 @@ use crate::contexts::automation_runtime::model::TaskStatus;
 use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, RepoRegistryPort};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::DaemonStorePort;
-use crate::contexts::workspace_governance;
 use crate::shared::error::{AppError, AppResult};
 
 use crate::composition::agent_execution_builder::build_agent_execution_service;
@@ -102,15 +101,6 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
                     verbose,
                 )
                 .await
-            } else if std::env::var("RALPH_BURNING_TEST_LEGACY_DAEMON").ok().as_deref()
-                == Some("1")
-                && single_iteration
-            {
-                // Test-only legacy single-repo mode: processes pre-seeded tasks
-                // without any intake (no FileIssueWatcher, no GitHub). Only
-                // reachable when RALPH_BURNING_TEST_LEGACY_DAEMON=1 and
-                // --single-iteration are both set.
-                handle_start_legacy_no_intake(poll_seconds).await
             } else {
                 Err(AppError::InvalidConfigValue {
                     key: "data-dir".to_owned(),
@@ -588,62 +578,6 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
         });
     }
     Ok(())
-}
-
-// ===========================================================================
-// Test-only legacy single-repo start — gated behind env var, not reachable
-// from normal CLI usage. All other daemon commands require --data-dir.
-// ===========================================================================
-
-/// Test-only single-repo start. Uses FileIssueWatcher for test intake and
-/// processes pre-seeded tasks. Gated behind RALPH_BURNING_TEST_LEGACY_DAEMON=1
-/// and --single-iteration. Not reachable from normal CLI usage.
-async fn handle_start_legacy_no_intake(poll_seconds: u64) -> AppResult<()> {
-    use crate::adapters::issue_watcher::FileIssueWatcher;
-    use crate::contexts::workspace_governance::config::EffectiveConfig;
-
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-    let _ = EffectiveConfig::load(&current_dir)?;
-
-    let agent_service = build_agent_execution_service()?;
-    let daemon_store = FsDaemonStore;
-    let worktree = WorktreeAdapter;
-    let project_store = FsProjectStore;
-    let run_snapshot_read = FsRunSnapshotStore;
-    let run_snapshot_write = FsRunSnapshotWriteStore;
-    let journal_store = FsJournalStore;
-    let artifact_store = FsArtifactStore;
-    let artifact_write = FsPayloadArtifactWriteStore;
-    let log_write = FsRuntimeLogWriteStore;
-    let amendment_queue = FsAmendmentQueueStore;
-    let requirements_store = FsRequirementsStore;
-    let issue_watcher = FileIssueWatcher;
-
-    let daemon_loop = DaemonLoop::new(
-        &daemon_store,
-        &worktree,
-        &project_store,
-        &run_snapshot_read,
-        &run_snapshot_write,
-        &journal_store,
-        &artifact_store,
-        &artifact_write,
-        &log_write,
-        &amendment_queue,
-        &agent_service,
-    )
-    .with_watcher(&issue_watcher)
-    .with_requirements_store(&requirements_store);
-
-    let loop_config = DaemonLoopConfig {
-        poll_interval: std::time::Duration::from_secs(poll_seconds),
-        single_iteration: true,
-        ..DaemonLoopConfig::default()
-    };
-
-    daemon_loop.run(&current_dir, &loop_config).await
 }
 
 // ===========================================================================

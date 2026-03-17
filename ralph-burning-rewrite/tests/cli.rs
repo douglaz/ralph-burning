@@ -173,6 +173,71 @@ fn write_repo_registration(data_dir: &std::path::Path) {
     .expect("write registration");
 }
 
+/// Run a single daemon iteration in-process using the stub backend and the
+/// single-repo DaemonLoop::run path. This replaces the former CLI binary
+/// invocation that used `RALPH_BURNING_TEST_LEGACY_DAEMON=1`.
+fn run_daemon_iteration_in_process(ws_path: &std::path::Path) {
+    use ralph_burning::adapters::fs::{
+        FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
+        FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsRawOutputStore, FsSessionStore,
+    };
+    use ralph_burning::adapters::stub_backend::StubBackendAdapter;
+    use ralph_burning::adapters::worktree::WorktreeAdapter;
+    use ralph_burning::adapters::BackendAdapter;
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+    use ralph_burning::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
+
+    // The daemon loop internally builds a RequirementsService via
+    // build_requirements_service_default which reads RALPH_BURNING_BACKEND.
+    // Ensure it uses the stub backend to match the injected adapter.
+    std::env::set_var("RALPH_BURNING_BACKEND", "stub");
+
+    let adapter = BackendAdapter::Stub(StubBackendAdapter::default());
+    let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+
+    let daemon_store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let project_store = FsProjectStore;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_store = FsArtifactStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+    let amendment_queue = FsAmendmentQueueStore;
+    let requirements_store = FsRequirementsStore;
+
+    let daemon_loop = DaemonLoop::new(
+        &daemon_store,
+        &worktree,
+        &project_store,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_store,
+        &artifact_write,
+        &log_write,
+        &amendment_queue,
+        &agent_service,
+    )
+    .with_requirements_store(&requirements_store);
+
+    let loop_config = DaemonLoopConfig {
+        single_iteration: true,
+        ..DaemonLoopConfig::default()
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(daemon_loop.run(ws_path, &loop_config))
+        .expect("daemon iteration should succeed");
+
+    std::env::remove_var("RALPH_BURNING_BACKEND");
+}
+
 fn init_git_repo(base_dir: &std::path::Path) {
     let init = Command::new("git")
         .args(["init", "-b", "main"])
@@ -769,22 +834,10 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
         },
     );
 
-    let output = Command::new(binary())
-        .args(["daemon", "start", "--single-iteration"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .env("RALPH_BURNING_TEST_LEGACY_DAEMON", "1")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run daemon start");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("claimed task task-conflict"));
-    assert!(stdout.contains("failed task task-conflict"));
+    // Run daemon in-process (test-only) instead of spawning the CLI binary.
+    // The production CLI requires --data-dir; this path uses DaemonLoop::run
+    // directly so it processes pre-seeded tasks without GitHub.
+    run_daemon_iteration_in_process(temp_dir.path());
 
     let task_path = temp_dir
         .path()
@@ -849,22 +902,8 @@ fn daemon_start_single_iteration_processes_pending_task() {
         },
     );
 
-    let output = Command::new(binary())
-        .args(["daemon", "start", "--single-iteration"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .env("RALPH_BURNING_TEST_LEGACY_DAEMON", "1")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run daemon start");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("claimed task task-run"));
-    assert!(stdout.contains("completed task task-run"));
+    // Run daemon in-process (test-only) instead of spawning the CLI binary.
+    run_daemon_iteration_in_process(temp_dir.path());
 
     let task_path = temp_dir
         .path()
