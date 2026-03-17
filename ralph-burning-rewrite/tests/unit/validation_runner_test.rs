@@ -269,6 +269,111 @@ fn pre_commit_no_cargo_toml_skips_cargo_checks() {
     assert!(result.commands.is_empty());
 }
 
+// ── Pre-commit: failed auto-fix keeps group failed ─────────────────────────
+
+#[test]
+fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
+    // Regression: if the auto-fix attempt (`cargo fmt`) itself fails, the
+    // pre-commit group must remain failed even if the recheck somehow passes.
+    // We simulate this with a stateful fake `cargo` script that:
+    //   call 1 (fmt --check): fail
+    //   call 2 (fmt):         fail  (repair fails)
+    //   call 3 (fmt --check): pass  (recheck passes despite failed repair)
+    let rt = rt();
+    let tmp = tempfile::tempdir().unwrap();
+
+    // Cargo.toml must exist for cargo checks to run.
+    std::fs::write(tmp.path().join("Cargo.toml"), "[package]\nname = \"t\"\n").unwrap();
+
+    // Create a fake `cargo` script that uses a counter file to vary behavior.
+    let bin_dir = tmp.path().join("fake_bin");
+    std::fs::create_dir(&bin_dir).unwrap();
+    let counter_path = tmp.path().join("cargo_call_count");
+    let fake_cargo = bin_dir.join("cargo");
+    std::fs::write(
+        &fake_cargo,
+        format!(
+            "#!/bin/sh\n\
+             CF=\"{counter}\"\n\
+             count=$(cat \"$CF\" 2>/dev/null || echo 0)\n\
+             count=$((count + 1))\n\
+             echo $count > \"$CF\"\n\
+             # call 1: fmt --check fails; call 2: fmt fails; call 3: fmt --check passes\n\
+             if [ \"$count\" -le 2 ]; then exit 1; fi\n\
+             exit 0\n",
+            counter = counter_path.display()
+        ),
+    )
+    .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    // Prepend the fake bin dir so our script shadows the real `cargo`.
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    // SAFETY: we restore PATH immediately after the async block.
+    unsafe { std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path)); }
+
+    let result = rt.block_on(run_pre_commit_checks(
+        tmp.path(),
+        true,  // fmt
+        false, // clippy
+        false, // nix_build
+        true,  // fmt_auto_fix
+        Duration::from_secs(10),
+    ));
+
+    unsafe { std::env::set_var("PATH", &original_path); }
+
+    // The group must be failed because the repair attempt itself failed,
+    // even though the recheck passed.
+    assert!(
+        !result.passed,
+        "group should fail when auto-fix attempt itself fails"
+    );
+    // 3 commands: original fmt check, fmt fix attempt, fmt recheck.
+    assert_eq!(
+        result.commands.len(),
+        3,
+        "expected 3 commands: original check, fix attempt, recheck"
+    );
+    assert!(!result.commands[0].passed, "original fmt check should fail");
+    assert!(!result.commands[1].passed, "fmt fix attempt should fail");
+    // The recheck passes, but the group is still failed due to fix failure.
+    assert!(result.commands[2].passed, "fmt recheck should pass (but group still fails)");
+}
+
+// ── UTF-8 safe truncation ──────────────────────────────────────────────────
+
+#[test]
+fn failing_excerpts_handles_non_ascii_output() {
+    // Regression: truncate_excerpt must not panic when multibyte UTF-8
+    // characters cross the truncation boundary.
+    let long_non_ascii = "日本語のエラーメッセージ".repeat(100); // ~3600 chars, ~10800 bytes
+    let result = ValidationGroupResult {
+        group_name: "test".to_owned(),
+        commands: vec![ValidationCommandResult {
+            command: "check".to_owned(),
+            exit_code: Some(1),
+            stdout: long_non_ascii.clone(),
+            stderr: long_non_ascii,
+            duration_ms: 50,
+            passed: false,
+        }],
+        passed: false,
+    };
+    // This must not panic.
+    let excerpts = result.failing_excerpts();
+    assert_eq!(excerpts.len(), 1);
+    // The excerpt should be truncated (contains the ellipsis marker).
+    assert!(excerpts[0].contains('…'), "expected truncation marker");
+    // And the excerpt should be valid UTF-8 (it compiled and didn't panic).
+    assert!(excerpts[0].contains("stderr"));
+}
+
 // ── Validation module: local validation ────────────────────────────────────
 
 #[test]

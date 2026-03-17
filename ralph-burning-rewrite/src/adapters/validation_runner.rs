@@ -85,7 +85,13 @@ fn truncate_excerpt(text: &str, max_len: usize) -> String {
     if trimmed.len() <= max_len {
         trimmed.to_owned()
     } else {
-        format!("{}…", &trimmed[..max_len])
+        // Find the last char boundary at or before max_len so that multibyte
+        // UTF-8 sequences are never split, which would panic on slicing.
+        let mut end = max_len;
+        while !trimmed.is_char_boundary(end) {
+            end -= 1;
+        }
+        format!("{}…", &trimmed[..end])
     }
 }
 
@@ -269,6 +275,7 @@ pub async fn run_pre_commit_checks(
             // Attempt auto-fix.
             let fix_result =
                 run_single_command("cargo fmt", repo_root, timeout).await;
+            let fix_passed = fix_result.passed;
             results.push(fix_result);
 
             // Rerun check.
@@ -277,7 +284,9 @@ pub async fn run_pre_commit_checks(
             let recheck_passed = recheck_result.passed;
             results.push(recheck_result);
 
-            if !recheck_passed {
+            // The fmt sequence passes only when both the auto-fix command
+            // succeeds AND the rerun of `cargo fmt --check` succeeds.
+            if !fix_passed || !recheck_passed {
                 group_passed = false;
             }
         } else if !fmt_result.passed {
