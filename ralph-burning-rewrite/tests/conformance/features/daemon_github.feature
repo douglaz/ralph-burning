@@ -75,6 +75,14 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     Then the worktree path is under "<data-dir>/repos/acme/widgets/worktrees/task-42/"
     And the branch name follows the pattern "rb/<issue-number>-<project-id>"
 
+  # daemon.tasks.dedup_cursor_persisted
+  Scenario: Dedup cursor is computed from comment IDs during intake
+    Given an issue with multiple comments with IDs 100, 150, and 250
+    When build_github_meta is called with the comments
+    Then last_seen_comment_id is 250 (the maximum)
+    And last_seen_review_id is None (slice-9 responsibility)
+    And with no comments, last_seen_comment_id is None
+
   # daemon.tasks.abort_waiting_feedback
   Scenario: Abort via /rb abort on a waiting-feedback issue
     Given a waiting-for-requirements daemon task with repo_slug "acme/widgets" and issue_number 77

@@ -7568,7 +7568,7 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             "task_id": "cleanup-fail-task",
             "project_id": "cleanup-proj",
             "worktree_path": ws.path().join("nonexistent-worktree-for-cleanup"),
-            "branch_name": "rb/task/cleanup-fail-task",
+            "branch_name": "rb/cleanup-fail-task",
             "acquired_at": one_hour_ago.to_rfc3339(),
             "ttl_seconds": 60,
             "last_heartbeat": one_hour_ago.to_rfc3339()
@@ -11209,6 +11209,32 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("worktrees directory not created".into());
             }
 
+            // Bootstrap on a fresh empty checkout dir should attempt clone,
+            // which will fail in tests (no real GitHub), verifying bootstrap
+            // failures fail explicitly.
+            let bootstrap_result =
+                repo_registry::bootstrap_repo_checkout(&data_dir, "acme/widgets");
+            if bootstrap_result.is_ok() {
+                return Err(
+                    "expected bootstrap to fail (git clone without real GitHub)".into(),
+                );
+            }
+
+            // Bootstrap on an already-valid checkout should succeed (no-op).
+            // Set up a minimal git repo to simulate a pre-existing checkout.
+            let checkout = data_dir.join("repos/test-org/test-repo/repo");
+            std::fs::create_dir_all(&checkout).map_err(|e| e.to_string())?;
+            std::process::Command::new("git")
+                .args(["init", &checkout.to_string_lossy()])
+                .output()
+                .map_err(|e| e.to_string())?;
+            repo_registry::bootstrap_repo_checkout(&data_dir, "test-org/test-repo")
+                .map_err(|e| e.to_string())?;
+            let workspace_dir = checkout.join(".ralph-burning");
+            if !workspace_dir.is_dir() {
+                return Err("bootstrap did not create .ralph-burning workspace".into());
+            }
+
             Ok(())
         }
     );
@@ -11733,6 +11759,78 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let branch = DataDirLayout::branch_name(42, "my-project");
         if branch != "rb/42-my-project" {
             return Err(format!("branch name mismatch: got {branch}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.dedup_cursor_persisted", || {
+        use crate::adapters::github::{
+            GithubComment, GithubIssue, GithubUser,
+        };
+        use crate::contexts::automation_runtime::github_intake;
+
+        // Verify build_github_meta computes the maximum comment ID as cursor.
+        let comments = vec![
+            GithubComment {
+                id: 100,
+                body: "first comment".to_owned(),
+                user: GithubUser { login: "u".to_owned(), id: 1 },
+                created_at: "2026-03-17T01:00:00Z".to_owned(),
+                updated_at: "2026-03-17T01:00:00Z".to_owned(),
+            },
+            GithubComment {
+                id: 250,
+                body: "second comment".to_owned(),
+                user: GithubUser { login: "u".to_owned(), id: 1 },
+                created_at: "2026-03-17T02:00:00Z".to_owned(),
+                updated_at: "2026-03-17T02:00:00Z".to_owned(),
+            },
+            GithubComment {
+                id: 150,
+                body: "middle comment".to_owned(),
+                user: GithubUser { login: "u".to_owned(), id: 1 },
+                created_at: "2026-03-17T01:30:00Z".to_owned(),
+                updated_at: "2026-03-17T01:30:00Z".to_owned(),
+            },
+        ];
+
+        let issue = GithubIssue {
+            number: 10,
+            title: "Fix bug".to_owned(),
+            body: Some("Fix the bug".to_owned()),
+            labels: vec![],
+            user: GithubUser { login: "user".to_owned(), id: 1 },
+            html_url: "https://github.com/acme/widgets/issues/10".to_owned(),
+            pull_request: None,
+            updated_at: "2026-03-17T00:00:00Z".to_owned(),
+        };
+
+        let meta = github_intake::build_github_meta("acme/widgets", &issue, &comments);
+
+        // The cursor should be the maximum comment ID
+        if meta.last_seen_comment_id != Some(250) {
+            return Err(format!(
+                "expected last_seen_comment_id = Some(250), got {:?}",
+                meta.last_seen_comment_id
+            ));
+        }
+
+        // Review cursor should be None (slice 9 responsibility)
+        if meta.last_seen_review_id.is_some() {
+            return Err(format!(
+                "expected last_seen_review_id = None, got {:?}",
+                meta.last_seen_review_id
+            ));
+        }
+
+        // With no comments, cursor should be None
+        let meta_empty = github_intake::build_github_meta("acme/widgets", &issue, &[]);
+        if meta_empty.last_seen_comment_id.is_some() {
+            return Err(format!(
+                "expected last_seen_comment_id = None with no comments, got {:?}",
+                meta_empty.last_seen_comment_id
+            ));
         }
 
         Ok(())

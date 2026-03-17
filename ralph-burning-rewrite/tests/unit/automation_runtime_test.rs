@@ -164,7 +164,7 @@ fn lease_ttl_detects_staleness() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: "/tmp/demo".into(),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -211,7 +211,7 @@ fn legacy_worktree_lease_json_deserializes_as_lease_record() {
         "task_id": "task-legacy-1",
         "project_id": "demo",
         "worktree_path": "/tmp/demo",
-        "branch_name": "rb/task/task-legacy-1",
+        "branch_name": "rb/task-legacy-1",
         "acquired_at": "2026-03-14T02:50:39Z",
         "ttl_seconds": 300,
         "last_heartbeat": "2026-03-14T02:55:39Z"
@@ -238,7 +238,7 @@ fn cli_writer_lease_staleness_matches_worktree_lease() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: "/tmp/demo".into(),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -273,7 +273,7 @@ fn fs_daemon_store_lists_worktree_and_cli_lease_records_from_same_directory() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: temp.path().join("worktree-task-1"),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -323,8 +323,8 @@ fn worktree_path_derivation_is_deterministic() {
     let temp = tempdir().expect("tempdir");
     let path = adapter.worktree_path(temp.path(), "task-99");
 
-    assert_eq!(temp.path().join(".ralph-burning/worktrees/task-99"), path);
-    assert_eq!("rb/task/task-99", adapter.branch_name("task-99"));
+    assert_eq!(temp.path().join("worktrees/task-99"), path);
+    assert_eq!("rb/task-99", adapter.branch_name("task-99"));
 }
 
 #[test]
@@ -1132,7 +1132,7 @@ impl WorktreePort for FailingWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -1183,7 +1183,7 @@ impl WorktreePort for SuccessWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -3151,7 +3151,7 @@ impl WorktreePort for DisappearingWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -5561,7 +5561,7 @@ impl WorktreePort for PartialCreateWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(

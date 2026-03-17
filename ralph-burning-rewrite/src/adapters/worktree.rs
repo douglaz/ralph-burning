@@ -339,14 +339,11 @@ impl RepositoryResetPort for WorktreeAdapter {
 
 impl WorktreePort for WorktreeAdapter {
     fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
-        base_dir
-            .join(".ralph-burning")
-            .join("worktrees")
-            .join(task_id)
+        base_dir.join("worktrees").join(task_id)
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(

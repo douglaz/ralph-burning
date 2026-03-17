@@ -244,6 +244,97 @@ pub fn register_repo(
     })
 }
 
+/// Bootstrap a repo checkout under the data-dir shard if not already present.
+///
+/// If the checkout directory already contains a `.git` marker, bootstrap is a
+/// no-op (just ensures the `.ralph-burning` workspace dir exists). Otherwise,
+/// clones the repo from GitHub using `GITHUB_TOKEN` for authentication when
+/// available, then creates the workspace directory.
+///
+/// Returns `Err` if cloning fails so `daemon start` can fail early and
+/// explicitly rather than silently skipping the repo.
+pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()> {
+    let (owner, repo) = parse_repo_slug(repo_slug)?;
+    let checkout_path = DataDirLayout::checkout_path(data_dir, owner, repo);
+
+    // If .git already exists, the checkout is already bootstrapped.
+    let git_marker = checkout_path.join(".git");
+    if git_marker.exists() {
+        // Ensure workspace dir exists (may be missing if manually cloned)
+        let workspace_dir = checkout_path.join(".ralph-burning");
+        if !workspace_dir.is_dir() {
+            std::fs::create_dir_all(&workspace_dir)?;
+        }
+        return Ok(());
+    }
+
+    // The checkout dir may exist as an empty directory from ensure_repo_dirs.
+    // Remove it so `git clone` can create it (git clone refuses to clone into
+    // a non-empty directory).
+    if checkout_path.exists() {
+        // Only remove if truly empty — if it has contents but no .git,
+        // something unexpected is there; fail rather than destroy data.
+        let is_empty = checkout_path
+            .read_dir()
+            .map(|mut entries| entries.next().is_none())
+            .unwrap_or(false);
+        if is_empty {
+            std::fs::remove_dir(&checkout_path)?;
+        } else {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: repo_slug.to_owned(),
+                reason: format!(
+                    "checkout directory '{}' exists with contents but no .git — \
+                     remove it manually or provide a valid checkout",
+                    checkout_path.display()
+                ),
+            });
+        }
+    }
+
+    // Build clone URL, embedding GITHUB_TOKEN for private repo access.
+    let token = std::env::var("GITHUB_TOKEN").ok();
+    let clone_url = match token {
+        Some(ref t) if !t.is_empty() => {
+            format!("https://x-access-token:{t}@github.com/{owner}/{repo}.git")
+        }
+        _ => format!("https://github.com/{owner}/{repo}.git"),
+    };
+
+    let output = std::process::Command::new("git")
+        .args(["clone", &clone_url, &checkout_path.to_string_lossy()])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .output();
+
+    match output {
+        Ok(ref o) if o.status.success() => {
+            // Clone succeeded — ensure workspace dir exists
+            let workspace_dir = checkout_path.join(".ralph-burning");
+            std::fs::create_dir_all(&workspace_dir)?;
+            Ok(())
+        }
+        Ok(ref o) => {
+            let stderr = String::from_utf8_lossy(&o.stderr);
+            Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: repo_slug.to_owned(),
+                reason: format!(
+                    "git clone failed (exit {}): {}",
+                    o.status.code().unwrap_or(-1),
+                    stderr.trim()
+                ),
+            })
+        }
+        Err(e) => Err(AppError::InvalidConfigValue {
+            key: "repo".to_owned(),
+            value: repo_slug.to_owned(),
+            reason: format!("failed to execute git clone: {e}"),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

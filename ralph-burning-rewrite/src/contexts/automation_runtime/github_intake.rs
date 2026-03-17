@@ -74,17 +74,25 @@ pub fn issue_to_watched_meta(
     }
 }
 
-/// Build GitHub-specific task metadata from an issue.
+/// Build GitHub-specific task metadata from an issue, capturing the dedup
+/// cursor from the fetched comments so later cycles and slice-9 review
+/// ingestion can deduplicate from persisted task state.
 pub fn build_github_meta(
     repo_slug: &str,
     issue: &GithubIssue,
+    comments: &[crate::adapters::github::GithubComment],
 ) -> GithubTaskMeta {
+    // Compute the maximum comment ID as the dedup cursor. Subsequent
+    // polling cycles only need to inspect comments with ID > this value.
+    let max_comment_id = comments.iter().map(|c| c.id).max();
+
     GithubTaskMeta {
         repo_slug: repo_slug.to_owned(),
         issue_number: issue.number,
         issue_ref: format!("{repo_slug}#{}", issue.number),
         pr_url: None,
-        last_seen_comment_id: None,
+        last_seen_comment_id: max_comment_id,
+        // Review IDs are populated by slice-9 PR review ingestion.
         last_seen_review_id: None,
     }
 }
@@ -127,7 +135,7 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             })?;
 
         for issue in &command_issues {
-            let comments = github
+            let raw_comments = github
                 .fetch_issue_comments(owner, repo, issue.number)
                 .await
                 .map_err(|e| {
@@ -136,15 +144,18 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                         registration.repo_slug, issue.number
                     );
                     e
-                })?
-                .into_iter()
-                .map(|c| c.body)
-                .collect::<Vec<_>>();
+                })?;
+            let comment_bodies: Vec<String> =
+                raw_comments.iter().map(|c| c.body.clone()).collect();
 
             let routing_command = extract_command(
                 issue.body.as_deref().unwrap_or(""),
-                &comments,
+                &comment_bodies,
             );
+
+            // Update dedup cursor on the existing task regardless of command
+            let max_comment_id = raw_comments.iter().map(|c| c.id).max();
+            update_task_cursor(store, base_dir, &registration.repo_slug, issue.number, max_comment_id);
 
             if let Some(ref cmd) = routing_command {
                 let cmd_trimmed = cmd.trim();
@@ -170,23 +181,22 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
 
     let mut created = 0u32;
     for issue in &issues {
-        // 1. Fetch comments for this issue — failure stops this repo for the cycle
-        let comments = github.fetch_issue_comments(owner, repo, issue.number).await
+        // 1. Fetch comments for this issue — failure stops this repo for the cycle.
+        //    Keep the full GithubComment objects so we can extract dedup cursors.
+        let raw_comments = github.fetch_issue_comments(owner, repo, issue.number).await
             .map_err(|e| {
                 eprintln!(
                     "github-intake: failed to fetch comments for {}#{}: {e}",
                     registration.repo_slug, issue.number
                 );
                 e
-            })?
-            .into_iter()
-            .map(|c| c.body)
-            .collect::<Vec<_>>();
+            })?;
+        let comment_bodies: Vec<String> = raw_comments.iter().map(|c| c.body.clone()).collect();
 
         // 2. Extract command from body + comments
         let routing_command = extract_command(
             issue.body.as_deref().unwrap_or(""),
-            &comments,
+            &comment_bodies,
         );
 
         // 3. Handle daemon commands (/rb retry, /rb abort) on rb:ready issues too
@@ -227,8 +237,9 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             dispatch_mode,
         ) {
             Ok(Some(mut task)) => {
-                // Attach GitHub metadata to the task
-                let github_meta = build_github_meta(&registration.repo_slug, issue);
+                // Attach GitHub metadata to the task, including dedup cursors
+                // derived from the fetched comments.
+                let github_meta = build_github_meta(&registration.repo_slug, issue, &raw_comments);
                 task.repo_slug = Some(github_meta.repo_slug);
                 task.issue_number = Some(github_meta.issue_number);
                 task.pr_url = github_meta.pr_url;
@@ -352,6 +363,32 @@ async fn handle_explicit_command<G: GithubPort>(
     }
 
     Ok(())
+}
+
+/// Best-effort update of the dedup comment cursor on an existing task.
+/// Called during each polling cycle so later cycles and slice-9 review
+/// ingestion can skip already-processed comments.
+fn update_task_cursor(
+    store: &dyn DaemonStorePort,
+    base_dir: &Path,
+    repo_slug: &str,
+    issue_number: u64,
+    max_comment_id: Option<u64>,
+) {
+    if max_comment_id.is_none() {
+        return; // No comments — nothing to update
+    }
+    if let Ok(Some(mut task)) =
+        DaemonTaskService::find_task_by_issue(store, base_dir, repo_slug, issue_number)
+    {
+        let current = task.last_seen_comment_id.unwrap_or(0);
+        if let Some(new_max) = max_comment_id {
+            if new_max > current {
+                task.last_seen_comment_id = Some(new_max);
+                let _ = store.write_task(base_dir, &task);
+            }
+        }
+    }
 }
 
 /// Update the GitHub label on an issue to match the task's durable status.

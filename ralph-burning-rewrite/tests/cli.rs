@@ -437,7 +437,7 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             task_id: "task-active".to_owned(),
             project_id: "demo-active".to_owned(),
             worktree_path: data_dir.path().join("repos").join(TEST_OWNER).join(TEST_REPO).join("worktrees/task-active"),
-            branch_name: "rb/task/task-active".to_owned(),
+            branch_name: "rb/task-active".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
@@ -584,7 +584,7 @@ fn daemon_abort_claimed_task_releases_lease() {
             task_id: "task-claimed".to_owned(),
             project_id: "demo-claimed".to_owned(),
             worktree_path: missing_worktree,
-            branch_name: "rb/task/task-claimed".to_owned(),
+            branch_name: "rb/task-claimed".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
@@ -665,7 +665,7 @@ fn daemon_abort_active_task_releases_lease() {
             task_id: "task-active-abort".to_owned(),
             project_id: "demo-active-abort".to_owned(),
             worktree_path: missing_worktree,
-            branch_name: "rb/task/task-active-abort".to_owned(),
+            branch_name: "rb/task-active-abort".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
@@ -736,7 +736,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             task_id: "task-stale".to_owned(),
             project_id: "demo-stale".to_owned(),
             worktree_path: data_dir.path().join("repos").join(TEST_OWNER).join(TEST_REPO).join("worktrees/task-stale"),
-            branch_name: "rb/task/task-stale".to_owned(),
+            branch_name: "rb/task-stale".to_owned(),
             acquired_at: now - Duration::minutes(10),
             ttl_seconds: 300,
             last_heartbeat: now - Duration::minutes(10),
@@ -860,7 +860,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
         .exists());
     assert!(!temp_dir
         .path()
-        .join(".ralph-burning/worktrees/task-conflict")
+        .join("worktrees/task-conflict")
         .exists());
 }
 

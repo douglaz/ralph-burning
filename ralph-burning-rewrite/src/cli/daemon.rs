@@ -157,20 +157,31 @@ async fn handle_start_multi_repo(
         });
     }
 
-    // Validate and register all repos upfront
+    // Register, bootstrap, and validate all repos upfront.
+    // Bootstrap clones the repo if the checkout dir is empty; validate
+    // ensures the result is a usable Git checkout with a workspace dir.
     let mut registrations = Vec::new();
     for slug in repos {
         let reg = repo_registry::register_repo(data_dir_path, slug)?;
-        // Validate checkout if it exists
-        if reg.repo_root.is_dir() {
-            if let Err(e) = repo_registry::validate_repo_checkout(&reg.repo_root) {
-                return Err(AppError::InvalidConfigValue {
-                    key: "repo".to_owned(),
-                    value: slug.clone(),
-                    reason: format!("repo validation failed: {e}"),
-                });
-            }
+
+        // Bootstrap: clone from GitHub if checkout is missing .git
+        if let Err(e) = repo_registry::bootstrap_repo_checkout(data_dir_path, slug) {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: slug.clone(),
+                reason: format!("checkout bootstrap failed: {e}"),
+            });
         }
+
+        // Validate the (possibly just-bootstrapped) checkout
+        if let Err(e) = repo_registry::validate_repo_checkout(&reg.repo_root) {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: slug.clone(),
+                reason: format!("repo validation failed: {e}"),
+            });
+        }
+
         registrations.push(reg);
     }
 
