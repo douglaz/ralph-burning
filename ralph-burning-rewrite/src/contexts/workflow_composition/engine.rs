@@ -381,27 +381,6 @@ fn advance_completion_round_active_run(
     ))
 }
 
-fn count_iteration_counters(events: &[JournalEvent]) -> (u32, u32) {
-    let mut qa_iterations: u32 = 0;
-    let mut review_iterations: u32 = 0;
-
-    for event in events {
-        if event.event_type == JournalEventType::CycleAdvanced {
-            match event.details.get("from_stage").and_then(Value::as_str) {
-                Some("review") => {
-                    review_iterations = review_iterations.saturating_add(1);
-                }
-                Some("qa") | Some("docs_validation") | Some("ci_validation") => {
-                    qa_iterations = qa_iterations.saturating_add(1);
-                }
-                _ => {}
-            }
-        }
-    }
-
-    (qa_iterations, review_iterations)
-}
-
 fn count_final_review_restarts(events: &[JournalEvent]) -> u32 {
     events
         .iter()
@@ -417,6 +396,21 @@ fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
     Ok(interrupted_active_run(snapshot)?
         .prompt_hash_at_cycle_start
         .clone())
+}
+
+fn resume_iteration_counters(
+    snapshot: &RunSnapshot,
+    resume_cursor: &StageCursor,
+) -> AppResult<(u32, u32)> {
+    let interrupted = interrupted_active_run(snapshot)?;
+    if interrupted.stage_cursor.cycle != resume_cursor.cycle {
+        return Ok((0, 0));
+    }
+
+    Ok((
+        interrupted.qa_iterations_current_cycle,
+        interrupted.review_iterations_current_cycle,
+    ))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -926,42 +920,43 @@ where
         .iter()
         .map(|entry| entry.stage_id)
         .collect::<Vec<_>>();
-    let current_prompt_hash = match drift::evaluate_prompt_change_on_resume(
-        artifact_store,
-        artifact_write,
-        run_snapshot_write,
-        journal_store,
-        log_write,
-        base_dir,
-        project_id,
-        &project_root,
-        project_record.prompt_reference.as_str(),
-        &resume_state.run_id,
-        &mut seq,
-        &mut snapshot,
-        &resume_state.cursor,
-        &stage_id_plan,
-        semantics.planning_stage,
-        &prompt_change_baseline,
-        effective_config.run_policy().prompt_change_action,
-    )? {
-        PromptChangeResumeDecision::NoChange {
-            current_prompt_hash,
-        }
-        | PromptChangeResumeDecision::Continue {
-            current_prompt_hash,
-        } => current_prompt_hash,
-        PromptChangeResumeDecision::RestartCycle {
-            current_prompt_hash,
-            next_cursor,
-            next_stage_index,
-        } => {
-            resume_state.cursor = next_cursor;
-            resume_state.stage_index = next_stage_index;
-            execution_context = None;
-            current_prompt_hash
-        }
-    };
+    let (current_prompt_hash, prompt_hash_at_cycle_start) =
+        match drift::evaluate_prompt_change_on_resume(
+            artifact_store,
+            artifact_write,
+            run_snapshot_write,
+            journal_store,
+            log_write,
+            base_dir,
+            project_id,
+            &project_root,
+            project_record.prompt_reference.as_str(),
+            &resume_state.run_id,
+            &mut seq,
+            &mut snapshot,
+            &resume_state.cursor,
+            &stage_id_plan,
+            semantics.planning_stage,
+            &prompt_change_baseline,
+            effective_config.run_policy().prompt_change_action,
+        )? {
+            PromptChangeResumeDecision::NoChange {
+                current_prompt_hash,
+            }
+            | PromptChangeResumeDecision::Continue {
+                current_prompt_hash,
+            } => (current_prompt_hash, prompt_change_baseline.clone()),
+            PromptChangeResumeDecision::RestartCycle {
+                current_prompt_hash,
+                next_cursor,
+                next_stage_index,
+            } => {
+                resume_state.cursor = next_cursor;
+                resume_state.stage_index = next_stage_index;
+                execution_context = None;
+                (current_prompt_hash.clone(), current_prompt_hash)
+            }
+        };
 
     // ── Resume drift detection (runs BEFORE preflight) ────────────────────────
     // Re-resolve the current stage or panel, compare against the persisted
@@ -1143,13 +1138,13 @@ where
     // snapshot from drift detection so the stage can compare against it later.
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
     let (qa_iterations_current_cycle, review_iterations_current_cycle) =
-        count_iteration_counters(&visible_events);
+        resume_iteration_counters(&snapshot, &resume_state.cursor)?;
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(build_active_run(
         &resume_state.run_id,
         resume_state.cursor.clone(),
         resume_state.started_at,
-        current_prompt_hash.clone(),
+        prompt_hash_at_cycle_start,
         current_prompt_hash.clone(),
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
@@ -2946,21 +2941,9 @@ where
                         .await;
                     }
 
-                    let (next_qa_iterations, next_review_iterations, final_review_restart_count) = {
+                    let final_review_restart_count = {
                         let current = current_active_run(snapshot)?;
-                        (
-                            if stage_id == StageId::Review {
-                                current.qa_iterations_current_cycle
-                            } else {
-                                current.qa_iterations_current_cycle.saturating_add(1)
-                            },
-                            if stage_id == StageId::Review {
-                                current.review_iterations_current_cycle.saturating_add(1)
-                            } else {
-                                current.review_iterations_current_cycle
-                            },
-                            current.final_review_restart_count,
-                        )
+                        current.final_review_restart_count
                     };
                     snapshot.status = RunStatus::Running;
                     snapshot.active_run = Some(reset_cycle_active_run(
@@ -2968,8 +2951,8 @@ where
                         run_id,
                         next_cursor.clone(),
                         project_prompt_hash(&project_root, prompt_reference)?,
-                        next_qa_iterations,
-                        next_review_iterations,
+                        0,
+                        0,
                         final_review_restart_count,
                         None,
                     )?);

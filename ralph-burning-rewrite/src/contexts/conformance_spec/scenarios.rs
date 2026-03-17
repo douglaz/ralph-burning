@@ -10350,7 +10350,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "qa-cap", "standard")?;
         let config_out = run_cli(
-            &["config", "set", "workflow.max_qa_iterations", "1"],
+            &["config", "set", "workflow.max_qa_iterations", "0"],
             ws.path(),
         )?;
         assert_success(&config_out)?;
@@ -10358,7 +10358,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         let overrides = serde_json::json!({
             "qa": [
                 {"outcome": "request_changes", "evidence": ["Needs fixes"], "findings_or_gaps": ["gap-1"], "follow_up_or_amendments": ["fix-1"]},
-                {"outcome": "request_changes", "evidence": ["Still needs fixes"], "findings_or_gaps": ["gap-2"], "follow_up_or_amendments": ["fix-2"]},
             ]
         });
         let out = run_cli_with_env(
@@ -10380,7 +10379,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "review-cap", "standard")?;
         let config_out = run_cli(
-            &["config", "set", "workflow.max_review_iterations", "1"],
+            &["config", "set", "workflow.max_review_iterations", "0"],
             ws.path(),
         )?;
         assert_success(&config_out)?;
@@ -10388,7 +10387,6 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
         let overrides = serde_json::json!({
             "review": [
                 {"outcome": "request_changes", "evidence": ["Needs fixes"], "findings_or_gaps": ["gap-1"], "follow_up_or_amendments": ["fix-1"]},
-                {"outcome": "request_changes", "evidence": ["Still needs fixes"], "findings_or_gaps": ["gap-2"], "follow_up_or_amendments": ["fix-2"]},
             ]
         });
         let out = run_cli_with_env(
