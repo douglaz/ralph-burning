@@ -11598,4 +11598,175 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         Ok(())
     });
+
+    reg!(m, "daemon.tasks.abort_waiting_feedback", || {
+        use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+
+        let store = FsDataDirDaemonStore;
+        let now = chrono::Utc::now();
+
+        // Create a task in WaitingForRequirements state
+        let task = DaemonTask {
+            task_id: "gh-abort-waiting-77".to_owned(),
+            issue_ref: "acme/widgets#77".to_owned(),
+            project_id: "proj-77".to_owned(),
+            project_name: Some("Abort waiting test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: Some("req-run-77".to_owned()),
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(77),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(&daemon_dir, &task)
+            .map_err(|e| e.to_string())?;
+
+        // Verify the waiting-feedback label mapping
+        let label = label_for_status(&TaskStatus::WaitingForRequirements);
+        if label != Some("rb:waiting-feedback") {
+            return Err(format!("expected rb:waiting-feedback, got {:?}", label));
+        }
+
+        // Abort the waiting task (simulating what handle_explicit_command does
+        // when /rb abort is found on an rb:waiting-feedback issue)
+        let found = DaemonTaskService::find_task_by_issue(
+            &store,
+            &daemon_dir,
+            "acme/widgets",
+            77,
+        )
+        .map_err(|e| e.to_string())?
+        .ok_or("task not found by issue number")?;
+
+        if found.status != TaskStatus::WaitingForRequirements {
+            return Err(format!("expected waiting_for_requirements, got {}", found.status));
+        }
+
+        // mark_aborted accepts WaitingForRequirements (it's non-terminal)
+        DaemonTaskService::mark_aborted(&store, &daemon_dir, &found.task_id)
+            .map_err(|e| e.to_string())?;
+
+        let aborted = store
+            .read_task(&daemon_dir, "gh-abort-waiting-77")
+            .map_err(|e| e.to_string())?;
+        if aborted.status != TaskStatus::Aborted {
+            return Err(format!("expected aborted, got {}", aborted.status));
+        }
+
+        // Verify the label that should be synced after abort
+        let aborted_label = label_for_status(&TaskStatus::Aborted);
+        if aborted_label != Some("rb:failed") {
+            return Err(format!("expected rb:failed for aborted, got {:?}", aborted_label));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.waiting_feedback_resume_label_sync", || {
+        use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+
+        let store = FsDataDirDaemonStore;
+        let now = chrono::Utc::now();
+
+        // Create a task in WaitingForRequirements state
+        let task = DaemonTask {
+            task_id: "gh-resume-88".to_owned(),
+            issue_ref: "acme/widgets#88".to_owned(),
+            project_id: "proj-88".to_owned(),
+            project_name: Some("Resume label sync test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::WaitingForRequirements,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: Some("req-run-88".to_owned()),
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(88),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+        };
+        store
+            .create_task(&daemon_dir, &task)
+            .map_err(|e| e.to_string())?;
+
+        // Verify pre-resume label is rb:waiting-feedback
+        let pre_label = label_for_status(&TaskStatus::WaitingForRequirements);
+        if pre_label != Some("rb:waiting-feedback") {
+            return Err(format!("expected rb:waiting-feedback, got {:?}", pre_label));
+        }
+
+        // Resume the task (simulating what check_waiting_tasks does
+        // when the requirements run completes)
+        let resumed = DaemonTaskService::resume_from_waiting(
+            &store,
+            &daemon_dir,
+            "gh-resume-88",
+        )
+        .map_err(|e| e.to_string())?;
+
+        if resumed.status != TaskStatus::Pending {
+            return Err(format!("expected pending, got {}", resumed.status));
+        }
+
+        // Verify the label that should be synced after resume is rb:ready
+        let post_label = label_for_status(&resumed.status);
+        if post_label != Some("rb:ready") {
+            return Err(format!("expected rb:ready for pending, got {:?}", post_label));
+        }
+
+        Ok(())
+    });
 }

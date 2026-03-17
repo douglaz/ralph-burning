@@ -91,9 +91,10 @@ pub fn build_github_meta(
 /// Poll a single registered repo for candidate issues and ingest them as
 /// daemon tasks. Returns the number of newly created tasks.
 ///
-/// Polls `rb:ready` for new issue intake AND `rb:in-progress` + `rb:failed`
-/// for explicit commands (`/rb retry`, `/rb abort`). This ensures that
-/// commands on non-ready issues are observed.
+/// Polls `rb:ready` for new issue intake AND `rb:in-progress`, `rb:failed`,
+/// and `rb:waiting-feedback` for explicit commands (`/rb retry`, `/rb abort`).
+/// This ensures that commands on non-ready issues are observed regardless of
+/// the issue's current status label.
 ///
 /// A GitHub API failure (polling, comments, labels) for this repo propagates
 /// as an `Err` so the caller can skip further mutations for this repo in the
@@ -108,9 +109,10 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
 ) -> AppResult<u32> {
     let (owner, repo) = super::repo_registry::parse_repo_slug(&registration.repo_slug)?;
 
-    // Phase A: Poll for explicit commands on non-ready issues (rb:in-progress, rb:failed).
-    // These issues already have tasks; we only need to check for /rb retry or /rb abort.
-    for command_label in &["rb:in-progress", "rb:failed"] {
+    // Phase A: Poll for explicit commands on non-ready issues (rb:in-progress, rb:failed,
+    // rb:waiting-feedback). These issues already have tasks; we only need to check for
+    // /rb retry or /rb abort.
+    for command_label in &["rb:in-progress", "rb:failed", "rb:waiting-feedback"] {
         let command_issues = github
             .poll_candidate_issues(owner, repo, command_label)
             .await

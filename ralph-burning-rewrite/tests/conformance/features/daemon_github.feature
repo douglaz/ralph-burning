@@ -74,3 +74,19 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     When a task worktree is requested for task "task-42"
     Then the worktree path is under "<data-dir>/repos/acme/widgets/worktrees/task-42/"
     And the branch name follows the pattern "rb/<issue-number>-<project-id>"
+
+  # daemon.tasks.abort_waiting_feedback
+  Scenario: Abort via /rb abort on a waiting-feedback issue
+    Given a waiting-for-requirements daemon task with repo_slug "acme/widgets" and issue_number 77
+    And the issue is labeled "rb:waiting-feedback"
+    When the daemon polls rb:waiting-feedback issues and finds /rb abort
+    Then the task transitions to "aborted"
+    And the issue label is reconciled to "rb:failed"
+
+  # daemon.tasks.waiting_feedback_resume_label_sync
+  Scenario: Resume from waiting syncs the issue label back to rb:ready
+    Given a waiting-for-requirements daemon task with repo_slug "acme/widgets" and issue_number 88
+    And the issue is labeled "rb:waiting-feedback"
+    When the requirements run completes and the task resumes to pending
+    Then the task status is "pending"
+    And the issue label is reconciled to "rb:ready"

@@ -290,13 +290,32 @@ where
             }
 
             // Phase 2: Check waiting tasks for completed requirements runs
-            if let Err(e) = self.check_waiting_tasks(&daemon_dir, checkout) {
-                eprintln!(
-                    "daemon: check_waiting_tasks failed for {}: {e}",
-                    reg.repo_slug
-                );
-                // Continue to other repos
-                continue;
+            let resumed_task_ids = match self.check_waiting_tasks(&daemon_dir, checkout) {
+                Ok(ids) => ids,
+                Err(e) => {
+                    eprintln!(
+                        "daemon: check_waiting_tasks failed for {}: {e}",
+                        reg.repo_slug
+                    );
+                    // Continue to other repos
+                    continue;
+                }
+            };
+
+            // Sync labels for resumed tasks: WaitingForRequirements -> Pending
+            // means the issue should now be labeled rb:ready instead of rb:waiting-feedback.
+            for task_id in &resumed_task_ids {
+                if let Ok(resumed_task) = self.store.read_task(&daemon_dir, task_id) {
+                    if let Err(e) = github_intake::sync_label_for_task(github, &resumed_task).await {
+                        eprintln!(
+                            "daemon: failed to sync label for resumed task '{}' in {}: {e}",
+                            task_id, reg.repo_slug
+                        );
+                        // Label sync failure is not fatal — task state is already
+                        // truthful in durable storage; the mismatch will be caught
+                        // by reconcile or the next poll cycle.
+                    }
+                }
             }
 
             // Phase 3: Process pending tasks for this repo
@@ -542,7 +561,8 @@ where
         self.poll_watchers(base_dir)?;
 
         // Phase 2: Check waiting tasks for completed requirements runs
-        self.check_waiting_tasks(base_dir, base_dir)?;
+        // In single-repo mode, no GitHub labels to sync — just check and resume.
+        let _resumed = self.check_waiting_tasks(base_dir, base_dir)?;
 
         // Phase 3: Process all pending tasks in this cycle. A per-task claim
         // failure or writer-lock contention does not stop the scan; the daemon
@@ -619,11 +639,15 @@ where
     /// linked requirements run has completed. Before resuming, derive the seed
     /// handoff and populate the task's project metadata so the next workflow
     /// dispatch cycle can create/resume the project correctly.
-    fn check_waiting_tasks(&self, base_dir: &Path, workspace_dir: &Path) -> AppResult<()> {
+    /// Check waiting-for-requirements tasks and resume any whose requirements
+    /// run is complete. Returns a list of task IDs that were resumed to Pending
+    /// so callers can sync GitHub labels.
+    fn check_waiting_tasks(&self, base_dir: &Path, workspace_dir: &Path) -> AppResult<Vec<String>> {
         let Some(req_store) = self.requirements_store else {
-            return Ok(());
+            return Ok(vec![]);
         };
 
+        let mut resumed_task_ids = Vec::new();
         let tasks = DaemonTaskService::list_tasks(self.store, base_dir)?;
         for task in tasks {
             if task.status != TaskStatus::WaitingForRequirements {
@@ -701,6 +725,7 @@ where
                                         "daemon: resumed task '{}' from waiting (requirements run '{}' complete)",
                                         task.task_id, run_id
                                     );
+                                    resumed_task_ids.push(task.task_id.clone());
                                 }
                                 Err(e) => {
                                     println!(
@@ -738,7 +763,7 @@ where
             }
         }
 
-        Ok(())
+        Ok(resumed_task_ids)
     }
 
     async fn process_task(
