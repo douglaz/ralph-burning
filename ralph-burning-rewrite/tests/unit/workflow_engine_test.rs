@@ -1598,6 +1598,42 @@ impl JournalStorePort for FailingJournalStore {
     }
 }
 
+/// A journal store that fails specifically when final_review tries to commit a
+/// completion_round_advanced event. This exercises the gap where the run
+/// snapshot is already advanced but the journal has not caught up yet.
+struct FinalReviewRoundAdvanceFailingJournalStore;
+
+impl JournalStorePort for FinalReviewRoundAdvanceFailingJournalStore {
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        FsJournalStore.read_journal(base_dir, project_id)
+    }
+
+    fn append_event(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        line: &str,
+    ) -> AppResult<()> {
+        let event = journal::deserialize_event(line)?;
+        if event.event_type == JournalEventType::CompletionRoundAdvanced
+            && event
+                .details
+                .get("source_stage")
+                .and_then(|value| value.as_str())
+                == Some(StageId::FinalReview.as_str())
+        {
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated final-review completion_round_advanced failure",
+            )));
+        }
+        FsJournalStore.append_event(base_dir, project_id, line)
+    }
+}
+
 /// A snapshot write store that delegates to `FsRunSnapshotWriteStore` but fails
 /// on the Nth write call (1-indexed).
 struct FailingSnapshotWriteStore {
@@ -4094,6 +4130,126 @@ async fn final_review_request_changes_triggers_completion_round_advancement() {
         .collect();
     assert_eq!(round_events.len(), 1);
     assert_eq!(round_events[0].details["source_stage"], "final_review");
+}
+
+#[tokio::test]
+async fn resume_uses_interrupted_final_review_restart_count_when_journal_lags() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "fr-restart-counter-resume");
+    EffectiveConfig::set(base_dir, "final_review.max_restarts", "1").unwrap();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_stage_payload_sequence(
+            StageId::FinalReview,
+            vec![
+                conditionally_approved_payload(&["tighten final wording"]),
+                conditionally_approved_payload(&["tighten final wording again"]),
+            ],
+        ),
+    );
+    let failing_journal = FinalReviewRoundAdvanceFailingJournalStore;
+
+    let first_result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(
+        first_result.is_err(),
+        "run should fail after persisting the final-review restart snapshot"
+    );
+
+    let failed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(failed_snapshot.status, RunStatus::Failed);
+    assert_eq!(failed_snapshot.completion_rounds, 2);
+    let interrupted = failed_snapshot
+        .interrupted_run
+        .as_ref()
+        .expect("failed run should preserve interrupted active_run");
+    assert_eq!(interrupted.stage_cursor.stage, StageId::Planning);
+    assert_eq!(interrupted.stage_cursor.completion_round, 2);
+    assert_eq!(
+        interrupted.final_review_restart_count, 1,
+        "interrupted snapshot should retain the consumed final-review restart"
+    );
+
+    let failed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        failed_events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::CompletionRoundAdvanced
+                    && event
+                        .details
+                        .get("source_stage")
+                        .and_then(|value| value.as_str())
+                        == Some(StageId::FinalReview.as_str())
+            })
+            .count(),
+        0,
+        "journal should still lag the snapshot after the injected append failure"
+    );
+
+    let resume_result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+    assert!(
+        resume_result.is_ok(),
+        "resume should honor the interrupted final-review restart count and force-complete instead of attempting another restart: {resume_result:?}"
+    );
+
+    let completed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(completed_snapshot.status, RunStatus::Completed);
+    assert_eq!(
+        completed_snapshot.completion_rounds, 2,
+        "resume should not allow a third completion round when the restart cap is already consumed"
+    );
+
+    let resumed_events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    assert_eq!(
+        resumed_events
+            .iter()
+            .filter(|event| {
+                event.event_type == JournalEventType::CompletionRoundAdvanced
+                    && event.details.get("source_stage").and_then(|value| value.as_str())
+                        == Some(StageId::FinalReview.as_str())
+            })
+            .count(),
+        0,
+        "resume should not attempt another final-review completion_round_advanced append once the persisted restart count is at the cap"
+    );
+    assert_eq!(
+        stage_events(&resumed_events, JournalEventType::StageEntered, "planning").len(),
+        2,
+        "the run should resume at round-two planning only once"
+    );
 }
 
 #[tokio::test]

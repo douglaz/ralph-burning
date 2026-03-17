@@ -392,6 +392,16 @@ fn count_final_review_restarts(events: &[JournalEvent]) -> u32 {
         .count() as u32
 }
 
+fn resume_final_review_restart_count(
+    snapshot: &RunSnapshot,
+    events: &[JournalEvent],
+) -> AppResult<u32> {
+    let interrupted = interrupted_active_run(snapshot)?;
+    Ok(interrupted
+        .final_review_restart_count
+        .max(count_final_review_restarts(events)))
+}
+
 fn prompt_change_baseline(snapshot: &RunSnapshot) -> AppResult<String> {
     Ok(interrupted_active_run(snapshot)?
         .prompt_hash_at_cycle_start
@@ -1139,6 +1149,7 @@ where
     let resumed_snapshot = snapshot.last_stage_resolution_snapshot.clone();
     let (qa_iterations_current_cycle, review_iterations_current_cycle) =
         resume_iteration_counters(&snapshot, &resume_state.cursor)?;
+    let final_review_restart_count = resume_final_review_restart_count(&snapshot, &visible_events)?;
     snapshot.status = RunStatus::Running;
     snapshot.active_run = Some(build_active_run(
         &resume_state.run_id,
@@ -1148,7 +1159,7 @@ where
         current_prompt_hash.clone(),
         qa_iterations_current_cycle,
         review_iterations_current_cycle,
-        count_final_review_restarts(&visible_events),
+        final_review_restart_count,
         resumed_snapshot,
     ));
     snapshot.interrupted_run = None;
