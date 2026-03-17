@@ -271,6 +271,20 @@ where
             let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
             let checkout = &reg.repo_root;
 
+            // Phase 0: Attempt to repair label_dirty tasks from prior cycles.
+            // Best-effort: a failure here does not quarantine the repo.
+            if let Ok(tasks) = DaemonTaskService::list_tasks(self.store, &daemon_dir) {
+                for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
+                    if github_intake::sync_label_for_task(github, dirty_task).await.is_ok() {
+                        let _ = DaemonTaskService::clear_label_dirty(
+                            self.store,
+                            &daemon_dir,
+                            &dirty_task.task_id,
+                        );
+                    }
+                }
+            }
+
             // Phase 1: Poll GitHub for new issue candidates
             // Handle daemon commands (/rb retry, /rb abort) inline during ingestion
             if let Err(e) = github_intake::poll_and_ingest_repo(
@@ -306,6 +320,7 @@ where
             // means the issue should now be labeled rb:ready instead of rb:waiting-feedback.
             // A label sync failure quarantines this repo for the rest of the cycle
             // (multi-repo failure isolation: no further task/lease/worktree mutation).
+            // Mark label_dirty so reconcile can repair the mismatch later.
             let mut label_sync_failed = false;
             for task_id in &resumed_task_ids {
                 if let Ok(resumed_task) = self.store.read_task(&daemon_dir, task_id) {
@@ -314,6 +329,7 @@ where
                             "daemon: failed to sync label for resumed task '{}' in {}: {e}",
                             task_id, reg.repo_slug
                         );
+                        let _ = DaemonTaskService::mark_label_dirty(self.store, &daemon_dir, task_id);
                         label_sync_failed = true;
                         break;
                     }
@@ -407,9 +423,13 @@ where
                     .handle_requirements_draft(store_dir, repo_root, task, &effective_config)
                     .await;
                 // Sync label after requirements draft (may be WaitingForRequirements or Failed).
-                // Propagate label failure to quarantine this repo for the cycle.
+                // Propagate label failure to quarantine this repo for the cycle,
+                // but mark label_dirty first so reconcile can repair.
                 if let Ok(updated_task) = self.store.read_task(store_dir, &task.task_id) {
-                    github_intake::sync_label_for_task(github, &updated_task).await?;
+                    if let Err(e) = github_intake::sync_label_for_task(github, &updated_task).await {
+                        let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &task.task_id);
+                        return Err(e);
+                    }
                 }
                 return result;
             }
@@ -436,8 +456,12 @@ where
         };
 
         println!("claimed task {}", claimed_task.task_id);
-        // Sync label: Claimed → rb:in-progress. Propagate failure to quarantine repo.
-        github_intake::sync_label_for_task(github, &claimed_task).await?;
+        // Sync label: Claimed → rb:in-progress. Propagate failure to quarantine repo,
+        // but mark label_dirty first so reconcile can repair.
+        if let Err(e) = github_intake::sync_label_for_task(github, &claimed_task).await {
+            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+            return Err(e);
+        }
 
         if let Err(error) = self.worktree.rebase_onto_default_branch(
             repo_root,
@@ -452,10 +476,12 @@ where
                 "rebase_conflict",
                 &error.to_string(),
             );
-            // Sync label: Failed → rb:failed
+            // Sync label: Failed → rb:failed (best-effort; mark dirty on failure)
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
             if let Some(ref ft) = failed_task {
-                let _ = github_intake::sync_label_for_task(github, ft).await;
+                if github_intake::sync_label_for_task(github, ft).await.is_err() {
+                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+                }
             }
             println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
@@ -465,15 +491,19 @@ where
             self.handle_post_claim_failure(store_dir, repo_root, &claimed_task, &lease, &error)?;
             let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
             if let Some(ref ft) = failed_task {
-                let _ = github_intake::sync_label_for_task(github, ft).await;
+                if github_intake::sync_label_for_task(github, ft).await.is_err() {
+                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+                }
             }
             println!("failed task {}: {}", claimed_task.task_id, error);
             return Ok(());
         }
         let task_on_disk = self.store.read_task(store_dir, &claimed_task.task_id)?;
         if task_on_disk.status == TaskStatus::Aborted {
-            // Sync label: Aborted → rb:failed
-            let _ = github_intake::sync_label_for_task(github, &task_on_disk).await;
+            // Sync label: Aborted → rb:failed (best-effort; mark dirty on failure)
+            if github_intake::sync_label_for_task(github, &task_on_disk).await.is_err() {
+                let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &task_on_disk.task_id);
+            }
             let _ = self.release_task_lease(store_dir, repo_root, &task_on_disk.task_id, &lease);
             return Ok(());
         }
@@ -491,15 +521,21 @@ where
                     )?;
                     let failed_task = self.store.read_task(store_dir, &claimed_task.task_id).ok();
                     if let Some(ref ft) = failed_task {
-                        let _ = github_intake::sync_label_for_task(github, ft).await;
+                        if github_intake::sync_label_for_task(github, ft).await.is_err() {
+                            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &claimed_task.task_id);
+                        }
                     }
                     println!("failed task {}: {}", claimed_task.task_id, error);
                     return Ok(());
                 }
             };
         println!("active task {}", active_task.task_id);
-        // Sync label: Active → rb:in-progress. Propagate failure to quarantine repo.
-        github_intake::sync_label_for_task(github, &active_task).await?;
+        // Sync label: Active → rb:in-progress. Propagate failure to quarantine repo,
+        // but mark label_dirty first so reconcile can repair.
+        if let Err(e) = github_intake::sync_label_for_task(github, &active_task).await {
+            let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+            return Err(e);
+        }
 
         let task_cancel = CancellationToken::new();
         let outcome = self
@@ -517,8 +553,10 @@ where
 
         let latest_task = self.store.read_task(store_dir, &active_task.task_id)?;
         if latest_task.status == TaskStatus::Aborted {
-            // Sync label: Aborted → rb:failed
-            let _ = github_intake::sync_label_for_task(github, &latest_task).await;
+            // Sync label: Aborted → rb:failed (best-effort; mark dirty on failure)
+            if github_intake::sync_label_for_task(github, &latest_task).await.is_err() {
+                let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+            }
             let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
             return Ok(());
         }
@@ -527,8 +565,12 @@ where
             Ok(()) => {
                 let completed_task =
                     DaemonTaskService::mark_completed(self.store, store_dir, &active_task.task_id)?;
-                // Sync label: Completed → rb:completed. Propagate failure to quarantine repo.
-                github_intake::sync_label_for_task(github, &completed_task).await?;
+                // Sync label: Completed → rb:completed. Propagate failure to quarantine repo,
+                // but mark label_dirty first so reconcile can repair.
+                if let Err(e) = github_intake::sync_label_for_task(github, &completed_task).await {
+                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                    return Err(e);
+                }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("completed task {}", active_task.task_id);
@@ -545,8 +587,12 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
-                // Sync label: Failed → rb:failed. Propagate failure to quarantine repo.
-                github_intake::sync_label_for_task(github, &failed_task).await?;
+                // Sync label: Failed → rb:failed. Propagate failure to quarantine repo,
+                // but mark label_dirty first so reconcile can repair.
+                if let Err(e) = github_intake::sync_label_for_task(github, &failed_task).await {
+                    let _ = DaemonTaskService::mark_label_dirty(self.store, store_dir, &active_task.task_id);
+                    return Err(e);
+                }
                 let _ =
                     self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);

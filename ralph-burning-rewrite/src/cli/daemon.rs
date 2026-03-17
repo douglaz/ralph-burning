@@ -354,6 +354,7 @@ async fn handle_abort_by_issue(
         .await
         {
             eprintln!("warning: failed to sync GitHub label after abort: {e}");
+            let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
         }
     }
 
@@ -396,6 +397,7 @@ async fn handle_retry_by_issue(
         .await
         {
             eprintln!("warning: failed to sync GitHub label after retry: {e}");
+            let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
         }
     }
 
@@ -465,6 +467,12 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
     let mut total_failed = 0usize;
     let mut total_released = 0usize;
     let mut any_cleanup_failure = false;
+    let mut total_label_repaired = 0usize;
+    let mut total_label_repair_failed = 0usize;
+
+    // Attempt GitHub label repair for tasks with label_dirty = true.
+    // Best-effort: if GitHub credentials are unavailable, skip label repair.
+    let github_client = GithubClientConfig::from_env().ok().map(GithubClient::new);
 
     for reg in &registrations {
         let (owner, repo_name) = repo_registry::parse_repo_slug(&reg.repo_slug)?;
@@ -495,11 +503,49 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
                 );
             }
         }
+
+        // Repair GitHub labels for tasks with label_dirty = true
+        if let Some(ref gh) = github_client {
+            if let Ok(tasks) = store.list_tasks(&daemon_dir) {
+                for task in tasks.iter().filter(|t| t.label_dirty) {
+                    match crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+                        gh, task,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            let _ = DaemonTaskService::clear_label_dirty(
+                                &store,
+                                &daemon_dir,
+                                &task.task_id,
+                            );
+                            total_label_repaired += 1;
+                            println!(
+                                "  {owner}/{repo_name}: repaired label for task {}",
+                                task.task_id
+                            );
+                        }
+                        Err(e) => {
+                            total_label_repair_failed += 1;
+                            println!(
+                                "  {owner}/{repo_name}: failed to repair label for task {}: {e}",
+                                task.task_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
     }
 
     println!(
         "reconciled stale_leases={total_stale} failed_tasks={total_failed} released_leases={total_released}"
     );
+    if total_label_repaired > 0 || total_label_repair_failed > 0 {
+        println!(
+            "label_repair repaired={total_label_repaired} failed={total_label_repair_failed}"
+        );
+    }
 
     if any_cleanup_failure {
         println!("--- Cleanup Failures ---");

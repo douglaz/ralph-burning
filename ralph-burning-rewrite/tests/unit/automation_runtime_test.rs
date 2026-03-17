@@ -45,6 +45,7 @@ fn sample_task() -> DaemonTask {
         pr_url: None,
         last_seen_comment_id: None,
         last_seen_review_id: None,
+        label_dirty: false,
     }
 }
 

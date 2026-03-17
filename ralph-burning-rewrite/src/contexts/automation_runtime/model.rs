@@ -98,6 +98,11 @@ pub struct DaemonTask {
     /// Dedup cursor: last-seen review ID for incremental review ingestion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_seen_review_id: Option<u64>,
+    /// True when the GitHub status label is known to be out of sync with
+    /// durable task state. Set on label-sync failure; cleared by reconcile
+    /// or a successful subsequent sync.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub label_dirty: bool,
 }
 
 fn default_dispatch_mode() -> DispatchMode {

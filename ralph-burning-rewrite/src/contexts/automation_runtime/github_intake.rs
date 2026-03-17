@@ -282,14 +282,22 @@ async fn handle_explicit_command<G: GithubPort>(
         {
             let retried = DaemonTaskService::retry_task(store, base_dir, &task.task_id)?;
             // Reconcile label: retried task is Pending → rb:ready
-            sync_label_for_task(github, &retried).await?;
+            // Mark label_dirty on failure so reconcile can repair.
+            if let Err(e) = sync_label_for_task(github, &retried).await {
+                let _ = DaemonTaskService::mark_label_dirty(store, base_dir, &retried.task_id);
+                return Err(e);
+            }
         }
     } else if cmd == "/rb abort" {
         if !task.status.is_terminal() {
             DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
             let aborted = store.read_task(base_dir, &task.task_id)?;
             // Reconcile label: Aborted → rb:failed
-            sync_label_for_task(github, &aborted).await?;
+            // Mark label_dirty on failure so reconcile can repair.
+            if let Err(e) = sync_label_for_task(github, &aborted).await {
+                let _ = DaemonTaskService::mark_label_dirty(store, base_dir, &aborted.task_id);
+                return Err(e);
+            }
         }
     }
 
@@ -311,12 +319,21 @@ pub async fn sync_label_for_task<G: GithubPort>(
 
     let target_label = label_for_status(&task.status);
 
-    // Remove all rb: status labels, then add the correct one.
-    // Failures are propagated so callers can quarantine the repo.
+    // Add the target label FIRST, then remove stale labels.
+    // This ordering prevents the "no status label" stranded-task state:
+    // if the add succeeds but a remove fails, the issue has the correct
+    // label plus possibly an extra stale one (benign).  If the add fails,
+    // the old label(s) are still present and the issue remains visible to
+    // polling.
     let status_labels = ["rb:ready", "rb:in-progress", "rb:failed", "rb:completed", "rb:waiting-feedback"];
-    for label in &status_labels {
-        // Removing a label that doesn't exist is a no-op at the API level,
-        // but a transport/auth failure should propagate.
+    if let Some(label) = target_label {
+        github.add_label(owner, repo, issue_number, label).await?;
+    }
+    for &label in &status_labels {
+        // Skip removal of the label we just added
+        if Some(label) == target_label {
+            continue;
+        }
         if let Err(e) = github.remove_label(owner, repo, issue_number, label).await {
             // 404 (label not present) is not a real failure — only propagate others
             let msg = e.to_string();
@@ -324,9 +341,6 @@ pub async fn sync_label_for_task<G: GithubPort>(
                 return Err(e);
             }
         }
-    }
-    if let Some(label) = target_label {
-        github.add_label(owner, repo, issue_number, label).await?;
     }
 
     Ok(())

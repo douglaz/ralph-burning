@@ -362,6 +362,7 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
     write_datadir_worktree_lease(
@@ -405,6 +406,7 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -452,6 +454,7 @@ fn daemon_retry_transitions_failed_task_to_pending() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -506,6 +509,7 @@ fn daemon_abort_claimed_task_releases_lease() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
     write_datadir_worktree_lease(
@@ -586,6 +590,7 @@ fn daemon_abort_active_task_releases_lease() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
     write_datadir_worktree_lease(
@@ -656,6 +661,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
     write_datadir_worktree_lease(
@@ -759,6 +765,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -838,6 +845,7 @@ fn daemon_start_single_iteration_processes_pending_task() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -4387,6 +4395,7 @@ fn daemon_status_shows_waiting_for_requirements_task() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -4436,6 +4445,7 @@ fn daemon_status_shows_dispatch_mode() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
@@ -4485,6 +4495,7 @@ fn daemon_abort_waiting_task_succeeds() {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 

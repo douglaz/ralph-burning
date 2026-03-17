@@ -87,6 +87,7 @@ impl DaemonTaskService {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
 
         store.create_task(base_dir, &task)?;
@@ -487,6 +488,36 @@ impl DaemonTaskService {
         Ok(task)
     }
 
+    /// Mark a task's GitHub status label as out-of-sync with durable state.
+    /// Called when `sync_label_for_task` fails so the mismatch is durable and
+    /// `daemon reconcile` can repair it later.
+    pub fn mark_label_dirty(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+    ) -> AppResult<()> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        task.label_dirty = true;
+        task.updated_at = Utc::now();
+        store.write_task(base_dir, &task)?;
+        Ok(())
+    }
+
+    /// Clear the label_dirty flag after a successful label re-sync.
+    pub fn clear_label_dirty(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+    ) -> AppResult<()> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        if task.label_dirty {
+            task.label_dirty = false;
+            task.updated_at = Utc::now();
+            store.write_task(base_dir, &task)?;
+        }
+        Ok(())
+    }
+
     /// Create a task from a watched issue, enforcing idempotency by
     /// `(issue_ref, source_revision)`. If a non-terminal task already exists
     /// for the same issue_ref and source_revision, the call is a no-op.
@@ -567,6 +598,7 @@ impl DaemonTaskService {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
 
         store.create_task(base_dir, &task)?;

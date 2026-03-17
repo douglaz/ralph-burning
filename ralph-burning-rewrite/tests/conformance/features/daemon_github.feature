@@ -90,3 +90,11 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     When the requirements run completes and the task resumes to pending
     Then the task status is "pending"
     And the issue label is reconciled to "rb:ready"
+
+  # daemon.tasks.label_sync_failure_recovery
+  Scenario: A task with a failed label sync is recoverable via reconcile
+    Given a completed daemon task with repo_slug "acme/widgets" and issue_number 99
+    And the task has label_dirty = true because a prior label sync failed
+    When daemon reconcile runs and repairs GitHub labels
+    Then the task's label_dirty flag is cleared
+    And the issue label matches the task's durable status

@@ -8310,6 +8310,7 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11167,6 +11168,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir_1, &task1)
@@ -11200,6 +11202,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir_2, &task2)
@@ -11358,6 +11361,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11436,6 +11440,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11549,6 +11554,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11689,6 +11695,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11781,6 +11788,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             pr_url: None,
             last_seen_comment_id: None,
             last_seen_review_id: None,
+            label_dirty: false,
         };
         store
             .create_task(&daemon_dir, &task)
@@ -11809,6 +11817,98 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let post_label = label_for_status(&resumed.status);
         if post_label != Some("rb:ready") {
             return Err(format!("expected rb:ready for pending, got {:?}", post_label));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "daemon.tasks.label_sync_failure_recovery", || {
+        use crate::adapters::fs::FsDataDirDaemonStore;
+        use crate::contexts::automation_runtime::model::{
+            DaemonTask, DispatchMode, RoutingSource, TaskStatus,
+        };
+        use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, label_for_status};
+        use crate::contexts::automation_runtime::task_service::DaemonTaskService;
+        use crate::contexts::automation_runtime::DaemonStorePort;
+        use crate::shared::domain::FlowPreset;
+
+        let ws = TempWorkspace::new()?;
+        let data_dir = ws.path().join("daemon-data");
+        repo_registry::register_repo(&data_dir, "acme/widgets")
+            .map_err(|e| e.to_string())?;
+        let daemon_dir = DataDirLayout::daemon_dir(&data_dir, "acme", "widgets");
+
+        let store = FsDataDirDaemonStore;
+        let now = chrono::Utc::now();
+
+        // Create a completed task with label_dirty = true, simulating a
+        // label sync failure after the task was marked completed.
+        let task = DaemonTask {
+            task_id: "gh-dirty-99".to_owned(),
+            issue_ref: "acme/widgets#99".to_owned(),
+            project_id: "proj-99".to_owned(),
+            project_name: Some("Label sync failure test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Completed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: None,
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(99),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: true,
+        };
+        store
+            .create_task(&daemon_dir, &task)
+            .map_err(|e| e.to_string())?;
+
+        // Verify the task was created with label_dirty = true
+        let loaded = store.read_task(&daemon_dir, "gh-dirty-99")
+            .map_err(|e| e.to_string())?;
+        if !loaded.label_dirty {
+            return Err("expected label_dirty=true after creation".to_owned());
+        }
+
+        // Verify the expected label for this task's status
+        let expected_label = label_for_status(&loaded.status);
+        if expected_label != Some("rb:completed") {
+            return Err(format!(
+                "expected rb:completed for completed status, got {:?}",
+                expected_label
+            ));
+        }
+
+        // Simulate a successful reconcile repair by clearing label_dirty
+        // (in production, reconcile would call sync_label_for_task then clear_label_dirty)
+        DaemonTaskService::clear_label_dirty(&store, &daemon_dir, "gh-dirty-99")
+            .map_err(|e| e.to_string())?;
+
+        // Verify label_dirty is now false
+        let repaired = store.read_task(&daemon_dir, "gh-dirty-99")
+            .map_err(|e| e.to_string())?;
+        if repaired.label_dirty {
+            return Err("expected label_dirty=false after repair".to_owned());
+        }
+
+        // Verify the task's durable status is still correct (not mutated)
+        if repaired.status != TaskStatus::Completed {
+            return Err(format!(
+                "expected completed status after repair, got {}",
+                repaired.status
+            ));
         }
 
         Ok(())
