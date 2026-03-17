@@ -14,20 +14,18 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::adapters::validation_runner::{
-    render_validation_group, run_command_group, run_pre_commit_checks,
-    ValidationGroupResult, DEFAULT_VALIDATION_COMMAND_TIMEOUT_SECS,
+    render_validation_group, run_command_group, run_pre_commit_checks, ValidationGroupResult,
+    DEFAULT_VALIDATION_COMMAND_TIMEOUT_SECS,
 };
 use crate::contexts::project_run_record::model::{
-    ArtifactRecord, PayloadRecord, RuntimeLogEntry, LogLevel,
+    ArtifactRecord, LogLevel, PayloadRecord, RuntimeLogEntry,
 };
-use crate::contexts::project_run_record::service::{
-    PayloadArtifactWritePort, RuntimeLogWritePort,
-};
+use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
 use crate::contexts::workflow_composition::panel_contracts::{RecordKind, RecordProducer};
 use crate::contexts::workflow_composition::payloads::{ReviewOutcome, ValidationPayload};
+use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::domain::{ProjectId, StageCursor, StageId};
 use crate::shared::error::AppResult;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
 
 /// Per-command timeout for validation commands.
 fn validation_timeout() -> Duration {
@@ -148,8 +146,13 @@ pub async fn run_standard_validation_evidence(
     if commands.is_empty() {
         return None;
     }
-    let result =
-        run_command_group("standard_validation", commands, repo_root, validation_timeout()).await;
+    let result = run_command_group(
+        "standard_validation",
+        commands,
+        repo_root,
+        validation_timeout(),
+    )
+    .await;
     Some(result)
 }
 
@@ -197,9 +200,7 @@ pub fn pre_commit_checks_disabled(effective_config: &EffectiveConfig) -> bool {
 }
 
 /// Build remediation context from a failed pre-commit result.
-pub fn pre_commit_remediation_context(
-    group_result: &ValidationGroupResult,
-) -> serde_json::Value {
+pub fn pre_commit_remediation_context(group_result: &ValidationGroupResult) -> serde_json::Value {
     json!({
         "source_stage": "pre_commit",
         "cycle": 0,

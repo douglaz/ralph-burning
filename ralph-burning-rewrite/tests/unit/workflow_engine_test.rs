@@ -12,7 +12,6 @@ use ralph_burning::adapters::fs::{
     FsProjectStore, FsRawOutputStore, FsRollbackPointStore, FsRunSnapshotStore,
     FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
 };
-use ralph_burning::contexts::project_run_record::ArtifactStorePort;
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
 use ralph_burning::contexts::agent_execution::model::{
     CancellationToken, InvocationEnvelope, InvocationRequest,
@@ -27,6 +26,7 @@ use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, ProjectStorePort, RunSnapshotPort,
     RunSnapshotWritePort, RuntimeLogWritePort,
 };
+use ralph_burning::contexts::project_run_record::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::workspace_governance;
@@ -400,7 +400,11 @@ async fn checkpoint_creation_failure_is_tolerated_and_logged() {
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect();
-    assert_eq!(rollback_files.len(), 8, "one rollback point per completed stage");
+    assert_eq!(
+        rollback_files.len(),
+        8,
+        "one rollback point per completed stage"
+    );
     for path in rollback_files {
         let rollback_json: Value =
             serde_json::from_str(&fs::read_to_string(path).unwrap()).expect("parse rollback");
@@ -420,7 +424,10 @@ async fn checkpoint_creation_failure_is_tolerated_and_logged() {
         .lines()
         .filter(|line| line.contains("checkpoint creation failed"))
         .count();
-    assert_eq!(warning_count, 8, "every checkpoint failure should be warned");
+    assert_eq!(
+        warning_count, 8,
+        "every checkpoint failure should be warned"
+    );
 }
 
 #[tokio::test]
@@ -704,10 +711,7 @@ async fn docs_change_remediation_restarts_from_docs_update() {
     // Append docs_commands to workspace config so EffectiveConfig::load picks them up.
     let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
-    ws_config.push_str(&format!(
-        "\n[validation]\ndocs_commands = [{:?}]\n",
-        cmd
-    ));
+    ws_config.push_str(&format!("\n[validation]\ndocs_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
 
     let adapter = RecordingAdapter::new(StubBackendAdapter::default());
@@ -835,10 +839,7 @@ async fn ci_improvement_remediation_restarts_from_ci_update() {
     // Append ci_commands to workspace config.
     let ws_config_path = base_dir.join(".ralph-burning/workspace.toml");
     let mut ws_config = fs::read_to_string(&ws_config_path).unwrap();
-    ws_config.push_str(&format!(
-        "\n[validation]\nci_commands = [{:?}]\n",
-        cmd
-    ));
+    ws_config.push_str(&format!("\n[validation]\nci_commands = [{:?}]\n", cmd));
     fs::write(&ws_config_path, ws_config).unwrap();
 
     let adapter = RecordingAdapter::new(StubBackendAdapter::default());
@@ -5812,9 +5813,7 @@ async fn pre_commit_failure_remediation_survives_resume() {
 
     // Create a minimal Cargo project in the project root with intentionally
     // bad formatting so `cargo fmt --check` fails.
-    let project_root = base_dir
-        .join(".ralph-burning/projects")
-        .join(pid.as_str());
+    let project_root = base_dir.join(".ralph-burning/projects").join(pid.as_str());
     fs::write(
         project_root.join("Cargo.toml"),
         "[package]\nname = \"test-fmt\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",

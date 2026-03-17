@@ -8,6 +8,7 @@ use crate::contexts::project_run_record::service::RepositoryResetPort;
 use crate::contexts::workflow_composition::checkpoints::{
     checkpoint_body, checkpoint_subject, parse_checkpoint_commit_message, VcsCheckpointPort,
 };
+use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{ProjectId, RunId, StageId};
 use crate::shared::error::{AppError, AppResult};
 
@@ -15,6 +16,31 @@ use crate::shared::error::{AppError, AppResult};
 pub struct WorktreeAdapter;
 
 impl WorktreeAdapter {
+    fn stage_checkpoint_changes(repo_root: &Path) -> AppResult<()> {
+        let workspace_exclude = format!(":(exclude){WORKSPACE_DIR}");
+        let add_output = Self::git(repo_root, &["add", "-A", "--", ".", &workspace_exclude])?;
+        if !add_output.status.success() {
+            return Err(AppError::Io(std::io::Error::other(
+                String::from_utf8_lossy(&add_output.stderr)
+                    .trim()
+                    .to_owned(),
+            )));
+        }
+
+        // Runtime state under .ralph-burning is canonical application state, not
+        // user repo content. Unstage it even if something else staged it first.
+        let reset_output = Self::git(repo_root, &["reset", "-q", "HEAD", "--", WORKSPACE_DIR])?;
+        if !reset_output.status.success() {
+            return Err(AppError::Io(std::io::Error::other(
+                String::from_utf8_lossy(&reset_output.stderr)
+                    .trim()
+                    .to_owned(),
+            )));
+        }
+
+        Ok(())
+    }
+
     fn git_command(dir: &Path) -> Command {
         let mut command = Command::new("git");
         command
@@ -30,8 +56,7 @@ impl WorktreeAdapter {
             )
             .env(
                 "GIT_COMMITTER_NAME",
-                std::env::var("GIT_COMMITTER_NAME")
-                    .unwrap_or_else(|_| "ralph-burning".to_owned()),
+                std::env::var("GIT_COMMITTER_NAME").unwrap_or_else(|_| "ralph-burning".to_owned()),
             )
             .env(
                 "GIT_COMMITTER_EMAIL",
@@ -137,12 +162,7 @@ impl VcsCheckpointPort for WorktreeAdapter {
         cycle: u32,
         completion_round: u32,
     ) -> AppResult<String> {
-        let add_output = Self::git(repo_root, &["add", "-A"])?;
-        if !add_output.status.success() {
-            return Err(AppError::Io(std::io::Error::other(
-                String::from_utf8_lossy(&add_output.stderr).trim().to_owned(),
-            )));
-        }
+        Self::stage_checkpoint_changes(repo_root)?;
 
         let subject = checkpoint_subject(project_id, stage_id, cycle, completion_round);
         let body = checkpoint_body(project_id, run_id, stage_id, cycle, completion_round);
@@ -153,12 +173,15 @@ impl VcsCheckpointPort for WorktreeAdapter {
         )?;
         if !commit_output.status.success() {
             return Err(AppError::Io(std::io::Error::other(
-                String::from_utf8_lossy(&commit_output.stderr).trim().to_owned(),
+                String::from_utf8_lossy(&commit_output.stderr)
+                    .trim()
+                    .to_owned(),
             )));
         }
 
-        self.current_head_sha(repo_root)?
-            .ok_or_else(|| AppError::Io(std::io::Error::other("git rev-parse HEAD returned no SHA")))
+        self.current_head_sha(repo_root)?.ok_or_else(|| {
+            AppError::Io(std::io::Error::other("git rev-parse HEAD returned no SHA"))
+        })
     }
 
     fn find_checkpoint(
@@ -171,12 +194,7 @@ impl VcsCheckpointPort for WorktreeAdapter {
     ) -> AppResult<Option<String>> {
         let output = Self::git(
             repo_root,
-            &[
-                "log",
-                "--format=%H%x1f%B%x1e",
-                "--grep",
-                "^rb: checkpoint ",
-            ],
+            &["log", "--format=%H%x1f%B%x1e", "--grep", "^rb: checkpoint "],
         )?;
         if !output.status.success() {
             return Err(AppError::Io(std::io::Error::other(

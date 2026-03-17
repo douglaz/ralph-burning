@@ -292,11 +292,9 @@ fn run_git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
 /// Returns the SHA of the initial commit so tests can assert against it.
 fn init_git_repo(ws: &TempWorkspace) -> Result<String, String> {
     run_git_in(ws.path(), &["init"])?;
-    // Exclude .ralph-burning/ from git so that git reset --hard doesn't
-    // clobber the canonical run snapshot written by the engine.
-    std::fs::write(ws.path().join(".gitignore"), ".ralph-burning/\n")
-        .map_err(|e| format!("write .gitignore: {e}"))?;
-    run_git_in(ws.path(), &["add", "."])?;
+    std::fs::write(ws.path().join("README.md"), "# fixture\n")
+        .map_err(|e| format!("write README.md: {e}"))?;
+    run_git_in(ws.path(), &["add", "README.md"])?;
     run_git_in(ws.path(), &["commit", "-m", "initial"])?;
     let sha = run_git_in(ws.path(), &["rev-parse", "HEAD"])?;
     Ok(sha)
@@ -311,7 +309,9 @@ fn read_rollback_points(
         .join(format!(".ralph-burning/projects/{project_id}/rollback"));
     let mut points = Vec::new();
     for entry in std::fs::read_dir(&dir).map_err(|e| format!("read rollback dir: {e}"))? {
-        let path = entry.map_err(|e| format!("read rollback dir entry: {e}"))?.path();
+        let path = entry
+            .map_err(|e| format!("read rollback dir entry: {e}"))?
+            .path();
         let contents =
             std::fs::read_to_string(&path).map_err(|e| format!("read rollback point: {e}"))?;
         points.push(
@@ -4035,7 +4035,9 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-docs-amend", "docs_change")?;
 
-        let marker = ws.path().join(".ralph-burning/projects/ns-docs-amend/runtime/temp/docs_marker");
+        let marker = ws
+            .path()
+            .join(".ralph-burning/projects/ns-docs-amend/runtime/temp/docs_marker");
         let marker_str = marker.display().to_string();
         let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
         let config_path = ws
@@ -4072,7 +4074,9 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "ns-ci-amend", "ci_improvement")?;
 
-        let marker = ws.path().join(".ralph-burning/projects/ns-ci-amend/runtime/temp/ci_marker");
+        let marker = ws
+            .path()
+            .join(".ralph-burning/projects/ns-ci-amend/runtime/temp/ci_marker");
         let marker_str = marker.display().to_string();
         let cmd = format!("test -f {marker_str} || (touch {marker_str} && exit 1)");
         let config_path = ws
@@ -5020,8 +5024,8 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
 
         std::fs::write(ws.path().join("after-checkpoint.txt"), "later HEAD\n")
             .map_err(|e| format!("write after-checkpoint.txt: {e}"))?;
-        run_git_in(ws.path(), &["add", "."])?;
-        run_git_in(ws.path(), &["commit", "-m", "after checkpoint"]) ?;
+        run_git_in(ws.path(), &["add", "after-checkpoint.txt"])?;
+        run_git_in(ws.path(), &["commit", "-m", "after checkpoint"])?;
         let moved_head = run_git_in(ws.path(), &["rev-parse", "HEAD"])?;
         if moved_head == checkpoint_sha {
             return Err("expected HEAD to move after the checkpoint commit".into());
@@ -5052,6 +5056,42 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         if reset_head == moved_head {
             return Err("hard rollback should not leave HEAD at the later ambient commit".into());
+        }
+
+        let restored_snapshot = read_run_snapshot(&ws, "wf-checkpoint-hard")?;
+        let status = restored_snapshot
+            .get("status")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if status != "paused" {
+            return Err(format!(
+                "hard rollback should leave run.json paused, got '{status}'"
+            ));
+        }
+        if !restored_snapshot
+            .get("active_run")
+            .is_some_and(serde_json::Value::is_null)
+        {
+            return Err("hard rollback should clear active_run in run.json".into());
+        }
+        let rollback_count = restored_snapshot
+            .get("rollback_point_meta")
+            .and_then(|meta| meta.get("rollback_count"))
+            .and_then(|value| value.as_u64())
+            .unwrap_or(0);
+        if rollback_count != 1 {
+            return Err(format!(
+                "hard rollback should persist rollback_count=1, got {rollback_count}"
+            ));
+        }
+        let summary = restored_snapshot
+            .get("status_summary")
+            .and_then(|value| value.as_str())
+            .unwrap_or("");
+        if !summary.contains("paused after rollback to Implementation") {
+            return Err(format!(
+                "hard rollback should persist rollback status summary, got '{summary}'"
+            ));
         }
 
         Ok(())
@@ -10615,11 +10655,8 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let config_path = ws
             .path()
             .join(".ralph-burning/projects/vd-pass/config.toml");
-        std::fs::write(
-            &config_path,
-            "[validation]\ndocs_commands = [\"true\"]\n",
-        )
-        .map_err(|e| format!("write config: {e}"))?;
+        std::fs::write(&config_path, "[validation]\ndocs_commands = [\"true\"]\n")
+            .map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
@@ -10634,36 +10671,40 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
-    reg!(m, "validation.docs.command_failure_requests_changes", || {
-        let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "vd-fail", "docs_change")?;
+    reg!(
+        m,
+        "validation.docs.command_failure_requests_changes",
+        || {
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "vd-fail", "docs_change")?;
 
-        // Configure docs_commands to a command that always fails.
-        let config_path = ws
-            .path()
-            .join(".ralph-burning/projects/vd-fail/config.toml");
-        std::fs::write(
-            &config_path,
-            "[validation]\ndocs_commands = [\"false\"]\n",
-        )
-        .map_err(|e| format!("write config: {e}"))?;
+            // Configure docs_commands to a command that always fails.
+            let config_path = ws
+                .path()
+                .join(".ralph-burning/projects/vd-fail/config.toml");
+            std::fs::write(&config_path, "[validation]\ndocs_commands = [\"false\"]\n")
+                .map_err(|e| format!("write config: {e}"))?;
 
-        let _out = run_cli(&["run", "start"], ws.path())?;
-        // The run should fail because the validation fails and remediation is exhausted.
-        let snapshot = read_run_snapshot(&ws, "vd-fail")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        // After remediation exhaustion, the run will fail.
-        if status != "failed" && status != "running" {
-            return Err(format!("expected failed or running status, got: {status}"));
+            let _out = run_cli(&["run", "start"], ws.path())?;
+            // The run should fail because the validation fails and remediation is exhausted.
+            let snapshot = read_run_snapshot(&ws, "vd-fail")?;
+            let status = snapshot
+                .get("status")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            // After remediation exhaustion, the run will fail.
+            if status != "failed" && status != "running" {
+                return Err(format!("expected failed or running status, got: {status}"));
+            }
+
+            // Verify that local validation evidence was persisted.
+            let payload_count = count_payload_files(&ws, "vd-fail")?;
+            if payload_count == 0 {
+                return Err("expected at least one payload file from local validation".to_owned());
+            }
+            Ok(())
         }
-
-        // Verify that local validation evidence was persisted.
-        let payload_count = count_payload_files(&ws, "vd-fail")?;
-        if payload_count == 0 {
-            return Err("expected at least one payload file from local validation".to_owned());
-        }
-        Ok(())
-    });
+    );
 
     // ── CI validation ──────────────────────────────────────────────────────
     reg!(m, "validation.ci.commands_pass", || {
@@ -10673,11 +10714,8 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let config_path = ws
             .path()
             .join(".ralph-burning/projects/vc-pass/config.toml");
-        std::fs::write(
-            &config_path,
-            "[validation]\nci_commands = [\"true\"]\n",
-        )
-        .map_err(|e| format!("write config: {e}"))?;
+        std::fs::write(&config_path, "[validation]\nci_commands = [\"true\"]\n")
+            .map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_success(&out)?;
@@ -10699,15 +10737,15 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let config_path = ws
             .path()
             .join(".ralph-burning/projects/vc-fail/config.toml");
-        std::fs::write(
-            &config_path,
-            "[validation]\nci_commands = [\"false\"]\n",
-        )
-        .map_err(|e| format!("write config: {e}"))?;
+        std::fs::write(&config_path, "[validation]\nci_commands = [\"false\"]\n")
+            .map_err(|e| format!("write config: {e}"))?;
 
         let _out = run_cli(&["run", "start"], ws.path())?;
         let snapshot = read_run_snapshot(&ws, "vc-fail")?;
-        let status = snapshot.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        let status = snapshot
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         if status != "failed" && status != "running" {
             return Err(format!("expected failed or running status, got: {status}"));
         }
@@ -10727,9 +10765,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             let ws = TempWorkspace::new()?;
             setup_workspace_with_project(&ws, "vs-ctx", "standard")?;
 
-            let config_path = ws
-                .path()
-                .join(".ralph-burning/projects/vs-ctx/config.toml");
+            let config_path = ws.path().join(".ralph-burning/projects/vs-ctx/config.toml");
             std::fs::write(
                 &config_path,
                 "[validation]\nstandard_commands = [\"echo validation-evidence-marker\"]\npre_commit_fmt = false\npre_commit_clippy = false\n",
@@ -10794,8 +10830,7 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             // Ensure no Cargo.toml at repo root.
             let cargo_toml = ws.path().join("Cargo.toml");
             if cargo_toml.exists() {
-                std::fs::remove_file(&cargo_toml)
-                    .map_err(|e| format!("remove Cargo.toml: {e}"))?;
+                std::fs::remove_file(&cargo_toml).map_err(|e| format!("remove Cargo.toml: {e}"))?;
             }
 
             let out = run_cli(&["run", "start"], ws.path())?;
@@ -10844,7 +10879,10 @@ fn register_validation_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 );
             let source = context.get("source_stage").and_then(|v| v.as_str());
             if source != Some("pre_commit") {
-                return Err(format!("expected source_stage=pre_commit, got {:?}", source));
+                return Err(format!(
+                    "expected source_stage=pre_commit, got {:?}",
+                    source
+                ));
             }
             Ok(())
         }

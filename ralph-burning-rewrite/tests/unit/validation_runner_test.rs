@@ -19,7 +19,12 @@ fn rt() -> tokio::runtime::Runtime {
 #[test]
 fn empty_command_list_is_noop_pass() {
     let rt = rt();
-    let result = rt.block_on(run_command_group("test", &[], Path::new("/tmp"), Duration::from_secs(10)));
+    let result = rt.block_on(run_command_group(
+        "test",
+        &[],
+        Path::new("/tmp"),
+        Duration::from_secs(10),
+    ));
     assert!(result.passed);
     assert!(result.commands.is_empty());
     assert_eq!(result.group_name, "test");
@@ -114,9 +119,7 @@ fn command_timeout() {
 fn command_timeout_preserves_partial_output() {
     let rt = rt();
     // Emit output before sleeping so partial capture is possible.
-    let commands = vec![
-        "echo partial-stdout && echo partial-stderr >&2 && sleep 60".to_owned(),
-    ];
+    let commands = vec!["echo partial-stdout && echo partial-stderr >&2 && sleep 60".to_owned()];
     let result = rt.block_on(run_command_group(
         "test",
         &commands,
@@ -315,7 +318,9 @@ fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
     // Prepend the fake bin dir so our script shadows the real `cargo`.
     let original_path = std::env::var("PATH").unwrap_or_default();
     // SAFETY: we restore PATH immediately after the async block.
-    unsafe { std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path)); }
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
+    }
 
     let result = rt.block_on(run_pre_commit_checks(
         tmp.path(),
@@ -326,7 +331,9 @@ fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
         Duration::from_secs(10),
     ));
 
-    unsafe { std::env::set_var("PATH", &original_path); }
+    unsafe {
+        std::env::set_var("PATH", &original_path);
+    }
 
     // The group must be failed because the repair attempt itself failed,
     // even though the recheck passed.
@@ -343,7 +350,10 @@ fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
     assert!(!result.commands[0].passed, "original fmt check should fail");
     assert!(!result.commands[1].passed, "fmt fix attempt should fail");
     // The recheck passes, but the group is still failed due to fix failure.
-    assert!(result.commands[2].passed, "fmt recheck should pass (but group still fails)");
+    assert!(
+        result.commands[2].passed,
+        "fmt recheck should pass (but group still fails)"
+    );
 }
 
 // ── UTF-8 safe truncation ──────────────────────────────────────────────────
@@ -469,6 +479,9 @@ fn build_local_validation_context_structure() {
 
     let ctx = validation::build_local_validation_context(&result);
     let lv = ctx.get("local_validation").unwrap();
-    assert_eq!(lv.get("group").and_then(|v| v.as_str()), Some("standard_validation"));
+    assert_eq!(
+        lv.get("group").and_then(|v| v.as_str()),
+        Some("standard_validation")
+    );
     assert_eq!(lv.get("passed").and_then(|v| v.as_bool()), Some(true));
 }

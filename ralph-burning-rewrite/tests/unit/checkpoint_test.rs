@@ -85,7 +85,10 @@ fn worktree_adapter_creates_finds_and_resets_checkpoint_commits() {
         .expect("find checkpoint");
     assert_eq!(found_sha.as_deref(), Some(checkpoint_sha.as_str()));
 
-    let commit_message = run_git(tmp.path(), &["show", "--quiet", "--format=%B", &checkpoint_sha]);
+    let commit_message = run_git(
+        tmp.path(),
+        &["show", "--quiet", "--format=%B", &checkpoint_sha],
+    );
     assert_eq!(
         commit_message,
         checkpoint_commit_message(&project_id, &run_id, StageId::Implementation, 1, 1)
@@ -105,5 +108,53 @@ fn worktree_adapter_creates_finds_and_resets_checkpoint_commits() {
     assert_eq!(
         fs::read_to_string(tmp.path().join("README.md")).expect("read README"),
         "checkpointed content\n"
+    );
+}
+
+#[test]
+fn worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits() {
+    let tmp = init_repo();
+    let adapter = WorktreeAdapter;
+    let project_id = ProjectId::new("checkpoint-proj").expect("project id");
+    let run_id = RunId::new("run-checkpoint").expect("run id");
+
+    fs::create_dir_all(tmp.path().join(".ralph-burning/projects/demo"))
+        .expect("create runtime workspace");
+    fs::write(
+        tmp.path().join(".ralph-burning/projects/demo/run.json"),
+        "{\"status\":\"running\"}\n",
+    )
+    .expect("write runtime snapshot");
+    fs::write(tmp.path().join("README.md"), "checkpointed content\n").expect("update README");
+
+    // Simulate a caller that already staged the runtime workspace before the
+    // checkpoint adapter runs. The checkpoint commit must still exclude it.
+    run_git(tmp.path(), &["add", "-A"]);
+
+    let checkpoint_sha = adapter
+        .create_checkpoint(
+            tmp.path(),
+            &project_id,
+            &run_id,
+            StageId::Implementation,
+            1,
+            1,
+        )
+        .expect("create checkpoint");
+
+    let tree = run_git(
+        tmp.path(),
+        &["ls-tree", "-r", "--name-only", checkpoint_sha.as_str()],
+    );
+    assert!(tree.lines().any(|line| line == "README.md"));
+    assert!(
+        !tree.lines().any(|line| line.starts_with(".ralph-burning/")),
+        "checkpoint commit should exclude runtime workspace files, got:\n{tree}"
+    );
+
+    assert_eq!(
+        fs::read_to_string(tmp.path().join(".ralph-burning/projects/demo/run.json"))
+            .expect("read runtime snapshot"),
+        "{\"status\":\"running\"}\n"
     );
 }

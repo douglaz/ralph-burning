@@ -265,22 +265,19 @@ pub async fn run_pre_commit_checks(
 
     // cargo fmt --check
     if pre_commit_fmt && has_cargo_toml {
-        let fmt_result =
-            run_single_command("cargo fmt --check", repo_root, timeout).await;
+        let fmt_result = run_single_command("cargo fmt --check", repo_root, timeout).await;
         if !fmt_result.passed && pre_commit_fmt_auto_fix {
             // Record the original failure.
             let original_failure = fmt_result;
             results.push(original_failure);
 
             // Attempt auto-fix.
-            let fix_result =
-                run_single_command("cargo fmt", repo_root, timeout).await;
+            let fix_result = run_single_command("cargo fmt", repo_root, timeout).await;
             let fix_passed = fix_result.passed;
             results.push(fix_result);
 
             // Rerun check.
-            let recheck_result =
-                run_single_command("cargo fmt --check", repo_root, timeout).await;
+            let recheck_result = run_single_command("cargo fmt --check", repo_root, timeout).await;
             let recheck_passed = recheck_result.passed;
             results.push(recheck_result);
 
@@ -328,8 +325,7 @@ pub async fn run_pre_commit_checks(
 
     // nix build
     if pre_commit_nix_build {
-        let nix_result =
-            run_single_command("nix build", repo_root, timeout).await;
+        let nix_result = run_single_command("nix build", repo_root, timeout).await;
         if !nix_result.passed {
             group_passed = false;
         }
@@ -352,7 +348,12 @@ pub fn render_validation_group(result: &ValidationGroupResult) -> String {
 
     let mut out = String::new();
     let status = if result.passed { "PASSED" } else { "FAILED" };
-    writeln!(out, "# Local Validation: {} ({})", result.group_name, status).unwrap();
+    writeln!(
+        out,
+        "# Local Validation: {} ({})",
+        result.group_name, status
+    )
+    .unwrap();
     writeln!(out).unwrap();
 
     if result.commands.is_empty() {

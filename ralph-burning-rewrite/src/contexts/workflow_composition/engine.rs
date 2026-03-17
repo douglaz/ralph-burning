@@ -42,8 +42,8 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
-use super::completion;
 use super::checkpoints::VcsCheckpointPort;
+use super::completion;
 use super::contracts::{self, ValidatedBundle};
 use super::drift::{self, PromptChangeResumeDecision};
 use super::final_review;
@@ -2527,17 +2527,15 @@ where
             );
 
             let commands = match stage_id {
-                StageId::DocsValidation => effective_config.validation_policy().docs_commands.clone(),
+                StageId::DocsValidation => {
+                    effective_config.validation_policy().docs_commands.clone()
+                }
                 StageId::CiValidation => effective_config.validation_policy().ci_commands.clone(),
                 _ => vec![],
             };
 
-            let (validation_payload, group_result) = validation::run_local_validation(
-                stage_id,
-                &commands,
-                &project_root,
-            )
-            .await;
+            let (validation_payload, group_result) =
+                validation::run_local_validation(stage_id, &commands, &project_root).await;
 
             // Persist local validation evidence as supporting records.
             let record_base = history_record_base_id(
@@ -2665,9 +2663,14 @@ where
                             .await;
                         }
 
-                        let next_stage_index = stage_index_for(stage_plan, semantics.execution_stage)?;
+                        let next_stage_index =
+                            stage_index_for(stage_plan, semantics.execution_stage)?;
                         let next_cursor = cursor.advance_cycle(semantics.execution_stage)?;
-                        record_cycle_advance(snapshot, next_cursor.cycle, semantics.execution_stage);
+                        record_cycle_advance(
+                            snapshot,
+                            next_cursor.cycle,
+                            semantics.execution_stage,
+                        );
                         *seq += 1;
                         let cycle_advanced = journal::cycle_advanced_event(
                             *seq,
@@ -2898,12 +2901,13 @@ where
         // ── Standard flow: inject local validation evidence into review context ──
 
         if stage_id == StageId::Review || stage_id == StageId::Qa {
-            let standard_commands = effective_config.validation_policy().standard_commands.clone();
-            if let Some(group_result) = validation::run_standard_validation_evidence(
-                &standard_commands,
-                &project_root,
-            )
-            .await
+            let standard_commands = effective_config
+                .validation_policy()
+                .standard_commands
+                .clone();
+            if let Some(group_result) =
+                validation::run_standard_validation_evidence(&standard_commands, &project_root)
+                    .await
             {
                 let record_base = history_record_base_id(
                     run_id,
@@ -2987,13 +2991,11 @@ where
             retry_policy,
             cancellation_token.clone(),
             origin,
-            execution_context
-                .as_ref()
-                .filter(|_| {
-                    stage_id == semantics.execution_stage
-                        || stage_id == StageId::Review
-                        || stage_id == StageId::Qa
-                }),
+            execution_context.as_ref().filter(|_| {
+                stage_id == semantics.execution_stage
+                    || stage_id == StageId::Review
+                    || stage_id == StageId::Qa
+            }),
             planning_amendments
                 .as_deref()
                 .filter(|_| stage_id == semantics.planning_stage),
@@ -3104,60 +3106,60 @@ where
 
                         // Only persist evidence and check results when commands actually ran.
                         if !pre_commit_result.commands.is_empty() {
-                        let record_base = history_record_base_id(
-                            run_id,
-                            stage_id,
-                            &cursor,
-                            snapshot.rollback_point_meta.rollback_count,
-                        );
-                        // Persist pre-commit evidence regardless of pass/fail outcome.
-                        // Failure invariant: if persistence fails, the run must not
-                        // advance past the pre-transition stage boundary.
-                        if let Err(error) = validation::persist_pre_commit_evidence(
-                            artifact_write,
-                            log_write,
-                            base_dir,
-                            project_id,
-                            stage_id,
-                            &cursor,
-                            &pre_commit_result,
-                            &record_base,
-                        ) {
-                            return fail_run_result(
-                                &AppError::StageCommitFailed {
-                                    stage_id,
-                                    details: format!(
-                                        "failed to persist pre-commit evidence for {}: {}",
-                                        stage_id.as_str(),
-                                        error,
-                                    ),
-                                },
-                                stage_id,
+                            let record_base = history_record_base_id(
                                 run_id,
-                                seq,
-                                snapshot,
-                                journal_store,
-                                run_snapshot_write,
+                                stage_id,
+                                &cursor,
+                                snapshot.rollback_point_meta.rollback_count,
+                            );
+                            // Persist pre-commit evidence regardless of pass/fail outcome.
+                            // Failure invariant: if persistence fails, the run must not
+                            // advance past the pre-transition stage boundary.
+                            if let Err(error) = validation::persist_pre_commit_evidence(
+                                artifact_write,
+                                log_write,
                                 base_dir,
                                 project_id,
-                                origin,
-                            )
-                            .await;
-                        }
-
-                        if !pre_commit_result.passed {
-                            // Pre-commit failure: invalidate reviewer approval,
-                            // return to implementation remediation.
-                            // Failure invariant: only reviewer approval is cleared;
-                            // all other durable history remains unchanged.
-
-                            let current = current_active_run(snapshot)?;
-                            let next_iteration =
-                                current.review_iterations_current_cycle.saturating_add(1);
-                            let max_iterations =
-                                effective_config.run_policy().max_review_iterations;
-                            if next_iteration > max_iterations {
+                                stage_id,
+                                &cursor,
+                                &pre_commit_result,
+                                &record_base,
+                            ) {
                                 return fail_run_result(
+                                    &AppError::StageCommitFailed {
+                                        stage_id,
+                                        details: format!(
+                                            "failed to persist pre-commit evidence for {}: {}",
+                                            stage_id.as_str(),
+                                            error,
+                                        ),
+                                    },
+                                    stage_id,
+                                    run_id,
+                                    seq,
+                                    snapshot,
+                                    journal_store,
+                                    run_snapshot_write,
+                                    base_dir,
+                                    project_id,
+                                    origin,
+                                )
+                                .await;
+                            }
+
+                            if !pre_commit_result.passed {
+                                // Pre-commit failure: invalidate reviewer approval,
+                                // return to implementation remediation.
+                                // Failure invariant: only reviewer approval is cleared;
+                                // all other durable history remains unchanged.
+
+                                let current = current_active_run(snapshot)?;
+                                let next_iteration =
+                                    current.review_iterations_current_cycle.saturating_add(1);
+                                let max_iterations =
+                                    effective_config.run_policy().max_review_iterations;
+                                if next_iteration > max_iterations {
+                                    return fail_run_result(
                                     &AppError::StageCommitFailed {
                                         stage_id,
                                         details: format!(
@@ -3176,62 +3178,61 @@ where
                                     origin,
                                 )
                                 .await;
-                            }
+                                }
 
-                            let next_cycle =
-                                cursor.cycle.checked_add(1).ok_or_else(|| {
+                                let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
                                     AppError::StageCursorOverflow {
                                         field: "cycle",
                                         value: cursor.cycle,
                                     }
                                 })?;
-                            if next_cycle > retry_policy.max_remediation_cycles() {
-                                return fail_run_result(
-                                    &AppError::RemediationExhausted {
-                                        cycle: next_cycle,
-                                        max: retry_policy.max_remediation_cycles(),
-                                    },
-                                    stage_id,
-                                    run_id,
-                                    seq,
+                                if next_cycle > retry_policy.max_remediation_cycles() {
+                                    return fail_run_result(
+                                        &AppError::RemediationExhausted {
+                                            cycle: next_cycle,
+                                            max: retry_policy.max_remediation_cycles(),
+                                        },
+                                        stage_id,
+                                        run_id,
+                                        seq,
+                                        snapshot,
+                                        journal_store,
+                                        run_snapshot_write,
+                                        base_dir,
+                                        project_id,
+                                        origin,
+                                    )
+                                    .await;
+                                }
+
+                                let next_stage_index =
+                                    stage_index_for(stage_plan, semantics.execution_stage)?;
+                                let next_cursor =
+                                    cursor.advance_cycle(semantics.execution_stage)?;
+                                record_cycle_advance(
                                     snapshot,
-                                    journal_store,
-                                    run_snapshot_write,
+                                    next_cursor.cycle,
+                                    semantics.execution_stage,
+                                );
+                                *seq += 1;
+                                let cycle_advanced = journal::cycle_advanced_event(
+                                    *seq,
+                                    Utc::now(),
+                                    run_id,
+                                    stage_id,
+                                    cursor.cycle,
+                                    next_cursor.cycle,
+                                    semantics.execution_stage,
+                                );
+                                let cycle_advanced_line =
+                                    journal::serialize_event(&cycle_advanced)?;
+                                if let Err(error) = journal_store.append_event(
                                     base_dir,
                                     project_id,
-                                    origin,
-                                )
-                                .await;
-                            }
-
-                            let next_stage_index =
-                                stage_index_for(stage_plan, semantics.execution_stage)?;
-                            let next_cursor =
-                                cursor.advance_cycle(semantics.execution_stage)?;
-                            record_cycle_advance(
-                                snapshot,
-                                next_cursor.cycle,
-                                semantics.execution_stage,
-                            );
-                            *seq += 1;
-                            let cycle_advanced = journal::cycle_advanced_event(
-                                *seq,
-                                Utc::now(),
-                                run_id,
-                                stage_id,
-                                cursor.cycle,
-                                next_cursor.cycle,
-                                semantics.execution_stage,
-                            );
-                            let cycle_advanced_line =
-                                journal::serialize_event(&cycle_advanced)?;
-                            if let Err(error) = journal_store.append_event(
-                                base_dir,
-                                project_id,
-                                &cycle_advanced_line,
-                            ) {
-                                *seq -= 1;
-                                return fail_run_result(
+                                    &cycle_advanced_line,
+                                ) {
+                                    *seq -= 1;
+                                    return fail_run_result(
                                     &AppError::StageCommitFailed {
                                         stage_id,
                                         details: format!(
@@ -3251,88 +3252,86 @@ where
                                     origin,
                                 )
                                 .await;
-                            }
+                                }
 
-                            let final_review_restart_count = {
-                                let current = current_active_run(snapshot)?;
-                                current.final_review_restart_count
-                            };
-                            snapshot.status = RunStatus::Running;
-                            snapshot.active_run = Some(reset_cycle_active_run(
-                                snapshot,
-                                run_id,
-                                next_cursor.clone(),
-                                project_prompt_hash(&project_root, prompt_reference)?,
-                                0,
-                                0,
-                                final_review_restart_count,
-                                None,
-                            )?);
-                            snapshot.status_summary = format!(
-                                "running: pre-commit remediation cycle {} -> {}",
-                                next_cursor.cycle,
-                                next_cursor.stage.display_name()
-                            );
-                            if let Err(error) = run_snapshot_write
-                                .write_run_snapshot(base_dir, project_id, snapshot)
-                            {
-                                return fail_run_result(
-                                    &AppError::StageCommitFailed {
-                                        stage_id,
-                                        details: format!(
+                                let final_review_restart_count = {
+                                    let current = current_active_run(snapshot)?;
+                                    current.final_review_restart_count
+                                };
+                                snapshot.status = RunStatus::Running;
+                                snapshot.active_run = Some(reset_cycle_active_run(
+                                    snapshot,
+                                    run_id,
+                                    next_cursor.clone(),
+                                    project_prompt_hash(&project_root, prompt_reference)?,
+                                    0,
+                                    0,
+                                    final_review_restart_count,
+                                    None,
+                                )?);
+                                snapshot.status_summary = format!(
+                                    "running: pre-commit remediation cycle {} -> {}",
+                                    next_cursor.cycle,
+                                    next_cursor.stage.display_name()
+                                );
+                                if let Err(error) = run_snapshot_write
+                                    .write_run_snapshot(base_dir, project_id, snapshot)
+                                {
+                                    return fail_run_result(
+                                        &AppError::StageCommitFailed {
+                                            stage_id,
+                                            details: format!(
                                             "failed to persist pre-commit remediation cursor: {}",
                                             error
                                         ),
-                                    },
-                                    stage_id,
+                                        },
+                                        stage_id,
+                                        run_id,
+                                        seq,
+                                        snapshot,
+                                        journal_store,
+                                        run_snapshot_write,
+                                        base_dir,
+                                        project_id,
+                                        origin,
+                                    )
+                                    .await;
+                                }
+                                if let Err(error) = persist_rollback_point(
+                                    rollback_store,
+                                    journal_store,
+                                    log_write,
+                                    checkpoint_port,
+                                    base_dir,
+                                    project_id,
                                     run_id,
                                     seq,
                                     snapshot,
-                                    journal_store,
-                                    run_snapshot_write,
-                                    base_dir,
-                                    project_id,
-                                    origin,
-                                )
-                                .await;
-                            }
-                            if let Err(error) = persist_rollback_point(
-                                rollback_store,
-                                journal_store,
-                                log_write,
-                                checkpoint_port,
-                                base_dir,
-                                project_id,
-                                run_id,
-                                seq,
-                                snapshot,
-                                stage_id,
-                                cursor.cycle,
-                            ) {
-                                return checkpoint_failure_result(
-                                    error,
                                     stage_id,
-                                    run_id,
-                                    seq,
-                                    snapshot,
-                                    journal_store,
-                                    run_snapshot_write,
-                                    base_dir,
-                                    project_id,
-                                    origin,
-                                )
-                                .await;
-                            }
+                                    cursor.cycle,
+                                ) {
+                                    return checkpoint_failure_result(
+                                        error,
+                                        stage_id,
+                                        run_id,
+                                        seq,
+                                        snapshot,
+                                        journal_store,
+                                        run_snapshot_write,
+                                        base_dir,
+                                        project_id,
+                                        origin,
+                                    )
+                                    .await;
+                                }
 
-                            execution_context = Some(
-                                validation::pre_commit_remediation_context(
-                                    &pre_commit_result,
-                                ),
-                            );
-                            stage_index = next_stage_index;
-                            cursor = next_cursor;
-                            continue;
-                        }
+                                execution_context = Some(
+                                    validation::pre_commit_remediation_context(&pre_commit_result),
+                                );
+                                stage_index = next_stage_index;
+                                cursor = next_cursor;
+                                continue;
+                            }
                         } // end: if !pre_commit_result.commands.is_empty()
                     }
                 }
@@ -5212,11 +5211,13 @@ fn derive_resume_execution_context(
             ),
         })?;
     let payload: StagePayload =
-        serde_json::from_value(payload_record.payload.clone()).map_err(|error| AppError::ResumeFailed {
-            reason: format!(
-                "failed to parse remediation payload '{}' during resume: {}",
-                payload_id, error
-            ),
+        serde_json::from_value(payload_record.payload.clone()).map_err(|error| {
+            AppError::ResumeFailed {
+                reason: format!(
+                    "failed to parse remediation payload '{}' during resume: {}",
+                    payload_id, error
+                ),
+            }
         })?;
 
     match payload {
@@ -5295,8 +5296,8 @@ fn derive_remediation_from_pre_commit_evidence(
         });
     };
 
-    let group_result: ValidationGroupResult =
-        serde_json::from_value(record.payload.clone()).map_err(|error| AppError::ResumeFailed {
+    let group_result: ValidationGroupResult = serde_json::from_value(record.payload.clone())
+        .map_err(|error| AppError::ResumeFailed {
             reason: format!(
                 "failed to parse pre-commit evidence payload '{}' during resume: {}",
                 record.payload_id, error

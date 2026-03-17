@@ -41,7 +41,12 @@ pub fn checkpoint_subject(
     cycle: u32,
     completion_round: u32,
 ) -> String {
-    checkpoint_subject_parts(project_id.as_str(), stage_id.as_str(), cycle, completion_round)
+    checkpoint_subject_parts(
+        project_id.as_str(),
+        stage_id.as_str(),
+        cycle,
+        completion_round,
+    )
 }
 
 pub fn checkpoint_body(
@@ -85,17 +90,18 @@ pub fn parse_checkpoint_commit_message(message: &str) -> Option<CheckpointMessag
     let project_id = lines[2].strip_prefix("RB-Project: ")?.to_owned();
     let run_id = lines[3].strip_prefix("RB-Run: ")?.to_owned();
     let stage_id = lines[4].strip_prefix("RB-Stage: ")?.to_owned();
-    let cycle = lines[5]
-        .strip_prefix("RB-Cycle: ")?
-        .parse::<u32>()
-        .ok()?;
+    let cycle = lines[5].strip_prefix("RB-Cycle: ")?.parse::<u32>().ok()?;
     let completion_round = lines[6]
         .strip_prefix("RB-Completion-Round: ")?
         .parse::<u32>()
         .ok()?;
 
-    let expected_subject =
-        checkpoint_subject_parts(project_id.as_str(), stage_id.as_str(), cycle, completion_round);
+    let expected_subject = checkpoint_subject_parts(
+        project_id.as_str(),
+        stage_id.as_str(),
+        cycle,
+        completion_round,
+    );
     if lines[0] != expected_subject {
         return None;
     }
