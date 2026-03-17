@@ -7,12 +7,13 @@ use crate::adapters::github::{GithubIssue, GithubPort};
 use crate::shared::domain::FlowPreset;
 use crate::shared::error::AppResult;
 
-use super::model::{DaemonTask, GithubTaskMeta, WatchedIssueMeta};
+use super::lease_service::{LeaseService, ReleaseMode};
+use super::model::{DaemonTask, GithubTaskMeta, TaskStatus, WatchedIssueMeta};
 use super::repo_registry::{label_for_status, RepoRegistration, LABEL_VOCABULARY};
 use super::routing::RoutingEngine;
 use super::task_service::DaemonTaskService;
 use super::watcher;
-use super::DaemonStorePort;
+use super::{DaemonStorePort, WorktreePort};
 
 /// Extract an explicit command from issue comments or body.
 ///
@@ -102,6 +103,7 @@ pub fn build_github_meta(
 pub async fn poll_and_ingest_repo<G: GithubPort>(
     github: &G,
     store: &dyn DaemonStorePort,
+    worktree: &dyn WorktreePort,
     base_dir: &Path,
     registration: &RepoRegistration,
     routing_engine: &RoutingEngine,
@@ -148,7 +150,7 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                 let cmd_trimmed = cmd.trim();
                 if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
                     handle_explicit_command(
-                        github, store, base_dir, registration, issue, cmd_trimmed,
+                        github, store, worktree, base_dir, registration, issue, cmd_trimmed,
                     )
                     .await?;
                 }
@@ -192,7 +194,7 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             let cmd_trimmed = cmd.trim();
             if cmd_trimmed == "/rb retry" || cmd_trimmed == "/rb abort" {
                 handle_explicit_command(
-                    github, store, base_dir, registration, issue, cmd_trimmed,
+                    github, store, worktree, base_dir, registration, issue, cmd_trimmed,
                 )
                 .await?;
                 continue; // Don't create a new task
@@ -257,10 +259,12 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
 }
 
 /// Handle an explicit `/rb retry` or `/rb abort` command on an issue,
-/// mutate the durable task state, and reconcile the GitHub label.
+/// mutate the durable task state, clean up retained leases/worktrees,
+/// and reconcile the GitHub label.
 async fn handle_explicit_command<G: GithubPort>(
     github: &G,
     store: &dyn DaemonStorePort,
+    worktree: &dyn WorktreePort,
     base_dir: &Path,
     registration: &RepoRegistration,
     issue: &GithubIssue,
@@ -277,9 +281,28 @@ async fn handle_explicit_command<G: GithubPort>(
     };
 
     if cmd == "/rb retry" {
-        if task.status == super::model::TaskStatus::Failed
-            || task.status == super::model::TaskStatus::Aborted
+        if task.status == TaskStatus::Failed
+            || task.status == TaskStatus::Aborted
         {
+            // If the task retains a lease from partial cleanup, attempt
+            // cleanup before retry so retry_task() doesn't reject it.
+            if let Some(ref lid) = task.lease_id {
+                if let Ok(lease) = store.read_lease(base_dir, lid) {
+                    let result = LeaseService::release(
+                        store, worktree, base_dir, &registration.repo_root,
+                        &lease, ReleaseMode::Idempotent,
+                    );
+                    if let Ok(ref r) = result {
+                        if r.resources_released {
+                            let _ = DaemonTaskService::clear_lease_reference(
+                                store, base_dir, &task.task_id,
+                            );
+                        }
+                    }
+                    // If cleanup failed, retry_task() will reject with
+                    // LeaseCleanupPartialFailure — caller propagates the error.
+                }
+            }
             let retried = DaemonTaskService::retry_task(store, base_dir, &task.task_id)?;
             // Reconcile label: retried task is Pending → rb:ready
             // Mark label_dirty on failure so reconcile can repair.
@@ -290,7 +313,34 @@ async fn handle_explicit_command<G: GithubPort>(
         }
     } else if cmd == "/rb abort" {
         if !task.status.is_terminal() {
+            let original_status = task.status;
             DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
+
+            // Clean up lease/worktree for Claimed/Active tasks (same as
+            // the CLI abort path) to prevent stranding live resources.
+            if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
+                if let Some(ref lid) = task.lease_id {
+                    if let Ok(lease) = store.read_lease(base_dir, lid) {
+                        let result = LeaseService::release(
+                            store, worktree, base_dir, &registration.repo_root,
+                            &lease, ReleaseMode::Idempotent,
+                        );
+                        match result {
+                            Ok(ref r) if r.resources_released => {
+                                let _ = DaemonTaskService::clear_lease_reference(
+                                    store, base_dir, &task.task_id,
+                                );
+                            }
+                            _ => {
+                                // Partial cleanup: lease reference preserved for
+                                // reconcile. This is not fatal — the task is already
+                                // aborted and the resources remain discoverable.
+                            }
+                        }
+                    }
+                }
+            }
+
             let aborted = store.read_task(base_dir, &task.task_id)?;
             // Reconcile label: Aborted → rb:failed
             // Mark label_dirty on failure so reconcile can repair.

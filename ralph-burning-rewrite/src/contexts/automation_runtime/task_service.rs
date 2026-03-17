@@ -442,10 +442,18 @@ impl DaemonTaskService {
             });
         }
 
+        // Reject retry if the task still holds a lease reference — the
+        // caller must clean up the lease/worktree first (via explicit
+        // release or reconcile) to prevent stranding live resources.
+        if task.lease_id.is_some() {
+            return Err(AppError::LeaseCleanupPartialFailure {
+                task_id: task.task_id.clone(),
+            });
+        }
+
         task.transition_to(TaskStatus::Pending, Utc::now())?;
         task.attempt_count += 1;
         task.clear_failure();
-        task.clear_lease();
         store.write_task(base_dir, &task)?;
         Ok(task)
     }
@@ -471,10 +479,13 @@ impl DaemonTaskService {
             });
         }
 
-        // Release the lease if present before reverting to Pending.
+        // Release the lease if present. Only revert to Pending and clear
+        // the lease reference after cleanup positively succeeds; otherwise
+        // keep the task in its current state with lease preserved so the
+        // resources remain visible for later repair (reconcile or Phase 0).
         if let Some(ref lid) = task.lease_id {
             if let Ok(lease) = store.read_lease(base_dir, lid) {
-                let _ = LeaseService::release(
+                let result = LeaseService::release(
                     store,
                     worktree,
                     base_dir,
@@ -482,6 +493,21 @@ impl DaemonTaskService {
                     &lease,
                     ReleaseMode::Idempotent,
                 );
+                match result {
+                    Ok(ref r) if r.resources_released => {
+                        // All sub-steps succeeded — safe to proceed with revert.
+                    }
+                    Ok(_) => {
+                        // Partial cleanup: some resources remain. Preserve task
+                        // state and lease ownership for later repair.
+                        return Err(AppError::LeaseCleanupPartialFailure {
+                            task_id: task_id.to_owned(),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
             }
         }
 

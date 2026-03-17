@@ -130,12 +130,18 @@ Feature: GitHub Adapter and Multi-Repo Daemon Parity
     And the task remains terminal with label_dirty = true for Phase 0 repair
 
   # daemon.tasks.label_failure_quarantine_and_recovery
-  Scenario: Label-sync failure quarantines repo and Phase 0 recovers the task
+  Scenario: Label-sync failure quarantines repo and Phase 0 recovers truthfully
     Given a claimed daemon task with label_dirty = true and a lease in "acme/widgets"
-    When Phase 0 repairs the label and reverts the task
+    When Phase 0 repairs the label and cleanup positively succeeds
     Then the task status is "pending" with lease cleared
     And the task can be re-processed by Phase 3 in the same cycle
+    Given a claimed daemon task with label_dirty = true and partial cleanup in "acme/widgets"
+    When Phase 0 attempts revert but cleanup is partial
+    Then the task stays claimed with lease ownership preserved
     Given a completed daemon task with label_dirty = true and unreleased lease in "acme/widgets"
     When Phase 0 repairs the label
     Then the dirty flag is cleared and the lease reference remains for explicit release
     And revert_to_pending_for_recovery rejects terminal tasks
+    Given a failed daemon task with a retained lease reference
+    When retry is attempted without prior cleanup
+    Then retry is rejected and the task remains failed with lease preserved

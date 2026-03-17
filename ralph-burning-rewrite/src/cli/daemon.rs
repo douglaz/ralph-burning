@@ -392,6 +392,28 @@ async fn handle_retry_by_issue(
                 reason: format!("no task found for {repo_slug}#{issue_number}"),
             })?;
 
+    // If the task retains a lease from partial cleanup, attempt cleanup
+    // before retry so retry_task() doesn't reject it.
+    if let Some(ref lid) = task.lease_id {
+        let worktree = WorktreeAdapter;
+        let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
+        if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
+            let result = LeaseService::release(
+                &store, &worktree, &daemon_dir, &checkout,
+                &lease, ReleaseMode::Idempotent,
+            );
+            if let Ok(ref r) = result {
+                if r.resources_released {
+                    let _ = DaemonTaskService::clear_lease_reference(
+                        &store, &daemon_dir, &task.task_id,
+                    );
+                }
+            }
+            // If cleanup failed, retry_task() will reject with
+            // LeaseCleanupPartialFailure — the user must reconcile first.
+        }
+    }
+
     let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
 
     // Sync GitHub label: retried task is Pending → rb:ready

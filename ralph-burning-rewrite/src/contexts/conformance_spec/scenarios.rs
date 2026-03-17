@@ -12348,7 +12348,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
     // Loop-level test: verifies that a label-sync failure during
     // process_task_multi_repo quarantines the repo (no further mutations)
     // and that Phase 0 in the next cycle recovers the task by repairing
-    // the label and reverting non-terminal tasks to Pending.
+    // the label and reverting non-terminal tasks to Pending — but only
+    // when lease cleanup positively succeeds. If cleanup is partial, the
+    // task must stay in its current state with lease ownership preserved.
     // -----------------------------------------------------------------------
     reg!(m, "daemon.tasks.label_failure_quarantine_and_recovery", || {
         use crate::adapters::fs::FsDataDirDaemonStore;
@@ -12358,7 +12360,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout};
         use crate::contexts::automation_runtime::task_service::DaemonTaskService;
         use crate::contexts::automation_runtime::DaemonStorePort;
-        use crate::shared::domain::FlowPreset;
+        use crate::shared::domain::{FlowPreset, ProjectId};
 
         let ws = TempWorkspace::new()?;
         let data_dir = ws.path().join("daemon-data");
@@ -12369,9 +12371,9 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         let store = FsDataDirDaemonStore;
         let now = chrono::Utc::now();
 
-        // --- Scenario A: Claimed task with label_dirty (simulates label-sync
-        // failure right after claim). The quarantine contract says no further
-        // mutations occurred in the failing cycle. ---
+        // --- Scenario A: Claimed task with label_dirty where cleanup succeeds.
+        // The stub returns Removed (positive cleanup), the writer lock exists
+        // and is released, so resources_released = true and the revert proceeds. ---
         let claimed_task = DaemonTask {
             task_id: "gh-quarantine-claimed-300".to_owned(),
             issue_ref: "acme/widgets#300".to_owned(),
@@ -12414,16 +12416,121 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("expected label_dirty=true".to_owned());
         }
 
-        // Simulate Phase 0 recovery: revert_to_pending_for_recovery
-        // (In production, Phase 0 repairs the label first via sync_label_for_task,
-        // then reverts the task. We test the revert path directly since we can't
-        // inject a mock GitHub adapter here.)
         DaemonTaskService::clear_label_dirty(&store, &daemon_dir, "gh-quarantine-claimed-300")
             .map_err(|e| e.to_string())?;
 
-        // Create a minimal stub worktree adapter for the revert
-        struct StubWorktree;
-        impl crate::contexts::automation_runtime::WorktreePort for StubWorktree {
+        // Stub worktree adapter that returns Removed (positive cleanup)
+        struct SuccessWorktree;
+        impl crate::contexts::automation_runtime::WorktreePort for SuccessWorktree {
+            fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+                base_dir.join("worktrees").join(task_id)
+            }
+            fn branch_name(&self, task_id: &str) -> String {
+                format!("rb/{task_id}")
+            }
+            fn create_worktree(
+                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
+                _branch_name: &str, _task_id: &str,
+            ) -> crate::shared::error::AppResult<()> { Ok(()) }
+            fn remove_worktree(
+                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
+                _task_id: &str,
+            ) -> crate::shared::error::AppResult<crate::contexts::automation_runtime::WorktreeCleanupOutcome> {
+                Ok(crate::contexts::automation_runtime::WorktreeCleanupOutcome::Removed)
+            }
+            fn rebase_onto_default_branch(
+                &self, _repo_root: &std::path::Path, _worktree_path: &std::path::Path,
+                _branch_name: &str,
+            ) -> crate::shared::error::AppResult<()> { Ok(()) }
+        }
+        let success_wt = SuccessWorktree;
+
+        // Create lease file and writer lock so all release sub-steps succeed
+        let lease = WorktreeLease {
+            lease_id: "lease-300".to_owned(),
+            task_id: "gh-quarantine-claimed-300".to_owned(),
+            project_id: "proj-300".to_owned(),
+            worktree_path: ws.path().join("worktrees/task-300"),
+            branch_name: "rb/300-proj-300".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        store.write_lease(&daemon_dir, &lease)
+            .map_err(|e| e.to_string())?;
+        let proj_300 = ProjectId::new("proj-300".to_owned())
+            .map_err(|e| e.to_string())?;
+        store.acquire_writer_lock(&daemon_dir, &proj_300, "lease-300")
+            .map_err(|e| e.to_string())?;
+
+        let reverted = DaemonTaskService::revert_to_pending_for_recovery(
+            &store, &success_wt, &daemon_dir, ws.path(), "gh-quarantine-claimed-300",
+        ).map_err(|e| e.to_string())?;
+
+        if reverted.status != TaskStatus::Pending {
+            return Err(format!(
+                "expected reverted task to be pending, got {}",
+                reverted.status
+            ));
+        }
+        if reverted.lease_id.is_some() {
+            return Err("expected lease_id cleared after successful revert".to_owned());
+        }
+        if reverted.label_dirty {
+            return Err("expected label_dirty=false after revert (cleared before revert)".to_owned());
+        }
+
+        // --- Scenario A2: Claimed task with label_dirty where cleanup is
+        // partial (stub returns AlreadyAbsent). revert_to_pending_for_recovery
+        // must preserve the task state and lease ownership. ---
+        let claimed_task_partial = DaemonTask {
+            task_id: "gh-quarantine-claimed-302".to_owned(),
+            issue_ref: "acme/widgets#302".to_owned(),
+            project_id: "proj-302".to_owned(),
+            project_name: Some("Quarantine partial cleanup test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Claimed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: Some("lease-302".to_owned()),
+            failure_class: None,
+            failure_message: None,
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(302),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: true,
+        };
+        store
+            .create_task(&daemon_dir, &claimed_task_partial)
+            .map_err(|e| e.to_string())?;
+
+        let lease_302 = WorktreeLease {
+            lease_id: "lease-302".to_owned(),
+            task_id: "gh-quarantine-claimed-302".to_owned(),
+            project_id: "proj-302".to_owned(),
+            worktree_path: ws.path().join("worktrees/task-302"),
+            branch_name: "rb/302-proj-302".to_owned(),
+            acquired_at: now,
+            ttl_seconds: 300,
+            last_heartbeat: now,
+        };
+        store.write_lease(&daemon_dir, &lease_302)
+            .map_err(|e| e.to_string())?;
+
+        // Stub that returns AlreadyAbsent — simulates partial cleanup
+        struct PartialWorktree;
+        impl crate::contexts::automation_runtime::WorktreePort for PartialWorktree {
             fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
                 base_dir.join("worktrees").join(task_id)
             }
@@ -12445,42 +12552,33 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 _branch_name: &str,
             ) -> crate::shared::error::AppResult<()> { Ok(()) }
         }
-        let stub_wt = StubWorktree;
+        let partial_wt = PartialWorktree;
 
-        // We need to create a lease file so the revert can release it
-        let lease = WorktreeLease {
-            lease_id: "lease-300".to_owned(),
-            task_id: "gh-quarantine-claimed-300".to_owned(),
-            project_id: "proj-300".to_owned(),
-            worktree_path: ws.path().join("worktrees/task-300"),
-            branch_name: "rb/300-proj-300".to_owned(),
-            acquired_at: now,
-            ttl_seconds: 300,
-            last_heartbeat: now,
-        };
-        store.write_lease(&daemon_dir, &lease)
+        let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
+            &store, &partial_wt, &daemon_dir, ws.path(), "gh-quarantine-claimed-302",
+        );
+        if revert_result.is_ok() {
+            return Err(
+                "revert_to_pending_for_recovery should fail when cleanup is partial".to_owned(),
+            );
+        }
+        // Verify task preserved its state and lease
+        let preserved = store.read_task(&daemon_dir, "gh-quarantine-claimed-302")
             .map_err(|e| e.to_string())?;
-
-        let reverted = DaemonTaskService::revert_to_pending_for_recovery(
-            &store, &stub_wt, &daemon_dir, ws.path(), "gh-quarantine-claimed-300",
-        ).map_err(|e| e.to_string())?;
-
-        if reverted.status != TaskStatus::Pending {
+        if preserved.status != TaskStatus::Claimed {
             return Err(format!(
-                "expected reverted task to be pending, got {}",
-                reverted.status
+                "expected claimed preserved after partial cleanup, got {}",
+                preserved.status
             ));
         }
-        if reverted.lease_id.is_some() {
-            return Err("expected lease_id cleared after revert".to_owned());
-        }
-        if reverted.label_dirty {
-            return Err("expected label_dirty=false after revert (cleared before revert)".to_owned());
+        if preserved.lease_id.as_deref() != Some("lease-302") {
+            return Err("expected lease_id preserved after partial cleanup".to_owned());
         }
 
         // --- Scenario B: Completed task with label_dirty and unreleased lease
         // (simulates terminal label-sync failure that quarantined before
-        // lease release). Phase 0 should release the lease. ---
+        // lease release). Phase 0 should attempt release — and the lease
+        // reference must be preserved until explicit release succeeds. ---
         let completed_task = DaemonTask {
             task_id: "gh-quarantine-completed-301".to_owned(),
             issue_ref: "acme/widgets#301".to_owned(),
@@ -12561,10 +12659,65 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // --- Scenario C: revert_to_pending_for_recovery must reject terminal tasks ---
         let revert_result = DaemonTaskService::revert_to_pending_for_recovery(
-            &store, &stub_wt, &daemon_dir, ws.path(), "gh-quarantine-completed-301",
+            &store, &partial_wt, &daemon_dir, ws.path(), "gh-quarantine-completed-301",
         );
         if revert_result.is_ok() {
             return Err("revert_to_pending_for_recovery should reject terminal tasks".to_owned());
+        }
+
+        // --- Scenario D: retry_task must reject tasks that still hold a lease
+        // reference (from partial cleanup / quarantined failure). ---
+        let failed_with_lease = DaemonTask {
+            task_id: "gh-retry-retained-303".to_owned(),
+            issue_ref: "acme/widgets#303".to_owned(),
+            project_id: "proj-303".to_owned(),
+            project_name: Some("Retry retained lease test".to_owned()),
+            prompt: None,
+            routing_command: None,
+            routing_labels: vec![],
+            resolved_flow: Some(FlowPreset::Standard),
+            routing_source: Some(RoutingSource::DefaultFlow),
+            routing_warnings: vec![],
+            status: TaskStatus::Failed,
+            created_at: now,
+            updated_at: now,
+            attempt_count: 1,
+            lease_id: Some("lease-303".to_owned()),
+            failure_class: Some("test".to_owned()),
+            failure_message: Some("simulated failure".to_owned()),
+            dispatch_mode: DispatchMode::Workflow,
+            source_revision: None,
+            requirements_run_id: None,
+            repo_slug: Some("acme/widgets".to_owned()),
+            issue_number: Some(303),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
+        };
+        store
+            .create_task(&daemon_dir, &failed_with_lease)
+            .map_err(|e| e.to_string())?;
+
+        let retry_result = DaemonTaskService::retry_task(
+            &store, &daemon_dir, "gh-retry-retained-303",
+        );
+        if retry_result.is_ok() {
+            return Err(
+                "retry_task should reject tasks that still hold a lease reference".to_owned(),
+            );
+        }
+        // Verify task preserved its failed state
+        let still_failed = store.read_task(&daemon_dir, "gh-retry-retained-303")
+            .map_err(|e| e.to_string())?;
+        if still_failed.status != TaskStatus::Failed {
+            return Err(format!(
+                "expected task to remain failed after rejected retry, got {}",
+                still_failed.status
+            ));
+        }
+        if still_failed.lease_id.as_deref() != Some("lease-303") {
+            return Err("expected lease_id preserved after rejected retry".to_owned());
         }
 
         Ok(())

@@ -275,7 +275,11 @@ where
             // A GitHub label failure during repair quarantines this repo for the
             // rest of the cycle, consistent with multi-repo failure isolation.
             //
-            // After successful label repair:
+            // After successful label repair AND successful cleanup/revert,
+            // clear `label_dirty`. If label sync succeeds but cleanup fails,
+            // keep `label_dirty` so Phase 0 retries on the next cycle (the
+            // re-sync is idempotent and harmless).
+            //
             // - Terminal tasks with unreleased leases get their leases released
             //   (deferred from the previous cycle's quarantine).
             // - Non-terminal tasks (Claimed/Active) are reverted to Pending so
@@ -285,35 +289,66 @@ where
                 for dirty_task in tasks.iter().filter(|t| t.label_dirty) {
                     match github_intake::sync_label_for_task(github, dirty_task).await {
                         Ok(()) => {
-                            let _ = DaemonTaskService::clear_label_dirty(
-                                self.store,
-                                &daemon_dir,
-                                &dirty_task.task_id,
-                            );
-                            // Terminal tasks: release deferred lease from quarantined cycle.
                             if dirty_task.is_terminal() {
+                                // Terminal tasks: release deferred lease, then clear dirty.
                                 if let Some(ref lid) = dirty_task.lease_id {
                                     if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
-                                        let _ = self.release_task_lease(
+                                        match self.release_task_lease(
                                             &daemon_dir, checkout, &dirty_task.task_id, &lease,
+                                        ) {
+                                            Ok(()) => {
+                                                let _ = DaemonTaskService::clear_label_dirty(
+                                                    self.store, &daemon_dir, &dirty_task.task_id,
+                                                );
+                                            }
+                                            Err(e) => {
+                                                // Partial cleanup: keep label_dirty so Phase 0
+                                                // retries cleanup on the next cycle.
+                                                eprintln!(
+                                                    "daemon: deferred lease release failed for terminal task '{}' in {}: {e}",
+                                                    dirty_task.task_id, reg.repo_slug
+                                                );
+                                            }
+                                        }
+                                    } else {
+                                        // Lease file not found — nothing to release.
+                                        let _ = DaemonTaskService::clear_label_dirty(
+                                            self.store, &daemon_dir, &dirty_task.task_id,
                                         );
                                     }
+                                } else {
+                                    // No lease reference — nothing to release.
+                                    let _ = DaemonTaskService::clear_label_dirty(
+                                        self.store, &daemon_dir, &dirty_task.task_id,
+                                    );
                                 }
-                            }
-                            // Non-terminal tasks (Claimed/Active): revert to Pending
-                            // so Phase 3 can re-process them in this cycle.
-                            if !dirty_task.is_terminal() {
-                                if let Ok(reverted) = DaemonTaskService::revert_to_pending_for_recovery(
+                            } else {
+                                // Non-terminal tasks (Claimed/Active): revert to Pending
+                                // so Phase 3 can re-process them in this cycle.
+                                match DaemonTaskService::revert_to_pending_for_recovery(
                                     self.store,
                                     self.worktree,
                                     &daemon_dir,
                                     checkout,
                                     &dirty_task.task_id,
                                 ) {
-                                    eprintln!(
-                                        "daemon: reverted interrupted task '{}' to pending in {}",
-                                        reverted.task_id, reg.repo_slug
-                                    );
+                                    Ok(reverted) => {
+                                        let _ = DaemonTaskService::clear_label_dirty(
+                                            self.store, &daemon_dir, &reverted.task_id,
+                                        );
+                                        eprintln!(
+                                            "daemon: reverted interrupted task '{}' to pending in {}",
+                                            reverted.task_id, reg.repo_slug
+                                        );
+                                    }
+                                    Err(e) => {
+                                        // Revert failed (lease cleanup partial): keep
+                                        // label_dirty for the next Phase 0 cycle.
+                                        eprintln!(
+                                            "daemon: revert failed for task '{}' in {}: {e}",
+                                            dirty_task.task_id, reg.repo_slug
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -337,6 +372,7 @@ where
             if let Err(e) = github_intake::poll_and_ingest_repo(
                 github,
                 self.store,
+                self.worktree,
                 &daemon_dir,
                 reg,
                 &self.routing_engine,
