@@ -141,6 +141,12 @@ fn requirements_contract_for_label(label: &str) -> Option<RequirementsContract> 
         "requirements_draft" => RequirementsStageId::RequirementsDraft,
         "requirements_review" => RequirementsStageId::RequirementsReview,
         "project_seed" => RequirementsStageId::ProjectSeed,
+        "ideation" => RequirementsStageId::Ideation,
+        "research" => RequirementsStageId::Research,
+        "synthesis" => RequirementsStageId::Synthesis,
+        "implementation_spec" => RequirementsStageId::ImplementationSpec,
+        "gap_analysis" => RequirementsStageId::GapAnalysis,
+        "validation" => RequirementsStageId::Validation,
         _ => return None,
     };
 
@@ -149,6 +155,12 @@ fn requirements_contract_for_label(label: &str) -> Option<RequirementsContract> 
         RequirementsStageId::RequirementsDraft => RequirementsContract::draft(),
         RequirementsStageId::RequirementsReview => RequirementsContract::review(),
         RequirementsStageId::ProjectSeed => RequirementsContract::seed(),
+        RequirementsStageId::Ideation => RequirementsContract::ideation(),
+        RequirementsStageId::Research => RequirementsContract::research(),
+        RequirementsStageId::Synthesis => RequirementsContract::synthesis(),
+        RequirementsStageId::ImplementationSpec => RequirementsContract::implementation_spec(),
+        RequirementsStageId::GapAnalysis => RequirementsContract::gap_analysis(),
+        RequirementsStageId::Validation => RequirementsContract::validation(),
     })
 }
 

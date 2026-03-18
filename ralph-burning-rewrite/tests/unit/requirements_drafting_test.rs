@@ -560,12 +560,14 @@ fn render_project_seed_produces_markdown_with_project_details_and_suggested_comm
     use ralph_burning::shared::domain::FlowPreset;
 
     let payload = ProjectSeedPayload {
+        version: 2,
         project_id: "cache-layer".to_owned(),
         project_name: "Cache Layer".to_owned(),
         flow: FlowPreset::Standard,
         prompt_body: "Implement the caching layer.".to_owned(),
         handoff_summary: "Ready for implementation.".to_owned(),
         follow_ups: vec![],
+        source: None,
     };
 
     let md = renderers::render_project_seed(&payload);
@@ -2490,4 +2492,401 @@ mod daemon_handoff {
         assert_eq!(RequirementsStatus::Drafting, loaded.status);
         assert_eq!("test idea", loaded.idea);
     }
+}
+
+// ── Slice 1: Full-mode stage contract tests ─────────────────────────────────
+
+#[test]
+fn parity_slice1_ideation_contract_validates_and_renders() {
+    let raw = json!({
+        "themes": ["API design", "Performance"],
+        "key_concepts": ["REST", "GraphQL"],
+        "initial_scope": "Build a REST API with caching layer.",
+        "open_questions": ["Which caching strategy?"]
+    });
+
+    let contract = RequirementsContract::ideation();
+    let bundle = contract.evaluate(&raw).expect("ideation should validate");
+    assert!(bundle.artifact.contains("# Ideation"));
+    assert!(bundle.artifact.contains("API design"));
+    assert!(bundle.artifact.contains("Build a REST API"));
+}
+
+#[test]
+fn parity_slice1_ideation_rejects_empty_themes() {
+    let raw = json!({
+        "themes": [],
+        "key_concepts": [],
+        "initial_scope": "Some scope",
+        "open_questions": []
+    });
+
+    let contract = RequirementsContract::ideation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("themes"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_research_contract_validates_and_renders() {
+    let raw = json!({
+        "findings": [{
+            "area": "Security",
+            "summary": "OAuth2 is recommended",
+            "relevance": "Directly relevant"
+        }],
+        "constraints_discovered": ["Must use TLS"],
+        "prior_art": ["Project Alpha"],
+        "technical_context": "Node.js with Express backend."
+    });
+
+    let contract = RequirementsContract::research();
+    let bundle = contract.evaluate(&raw).expect("research should validate");
+    assert!(bundle.artifact.contains("# Research"));
+    assert!(bundle.artifact.contains("Security"));
+    assert!(bundle.artifact.contains("Node.js with Express"));
+}
+
+#[test]
+fn parity_slice1_research_rejects_empty_technical_context() {
+    let raw = json!({
+        "findings": [],
+        "constraints_discovered": [],
+        "prior_art": [],
+        "technical_context": "   "
+    });
+
+    let contract = RequirementsContract::research();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_synthesis_contract_validates_and_renders() {
+    let raw = json!({
+        "problem_summary": "Build a REST API",
+        "goals": ["Fast responses"],
+        "non_goals": [],
+        "constraints": [],
+        "acceptance_criteria": ["200ms p99 latency"],
+        "risks_or_open_questions": [],
+        "recommended_flow": "standard"
+    });
+
+    let contract = RequirementsContract::synthesis();
+    let bundle = contract.evaluate(&raw).expect("synthesis should validate");
+    assert!(bundle.artifact.contains("# Synthesis"));
+    assert!(bundle.artifact.contains("Build a REST API"));
+}
+
+#[test]
+fn parity_slice1_implementation_spec_contract_validates_and_renders() {
+    let raw = json!({
+        "architecture_overview": "Microservice architecture with API gateway.",
+        "components": [{
+            "name": "API Gateway",
+            "responsibility": "Route requests",
+            "interfaces": ["HTTP /api/v1"]
+        }],
+        "integration_points": ["Database"],
+        "migration_notes": []
+    });
+
+    let contract = RequirementsContract::implementation_spec();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("implementation_spec should validate");
+    assert!(bundle.artifact.contains("# Implementation Spec"));
+    assert!(bundle.artifact.contains("API Gateway"));
+}
+
+#[test]
+fn parity_slice1_implementation_spec_rejects_empty_components() {
+    let raw = json!({
+        "architecture_overview": "Some architecture",
+        "components": [],
+        "integration_points": [],
+        "migration_notes": []
+    });
+
+    let contract = RequirementsContract::implementation_spec();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_gap_analysis_contract_validates_and_renders() {
+    let raw = json!({
+        "gaps": [{
+            "area": "Authentication",
+            "description": "No auth specified",
+            "severity": "high",
+            "suggested_resolution": "Add OAuth2"
+        }],
+        "coverage_assessment": "Most areas covered except auth.",
+        "blocking_gaps": ["Authentication"]
+    });
+
+    let contract = RequirementsContract::gap_analysis();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("gap_analysis should validate");
+    assert!(bundle.artifact.contains("# Gap Analysis"));
+    assert!(bundle.artifact.contains("Authentication"));
+}
+
+#[test]
+fn parity_slice1_validation_pass_contract_validates() {
+    let raw = json!({
+        "outcome": "pass",
+        "evidence": ["All requirements covered"],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let bundle = contract.evaluate(&raw).expect("validation pass should validate");
+    assert!(bundle.artifact.contains("# Validation"));
+    assert!(bundle.artifact.contains("**pass**"));
+}
+
+#[test]
+fn parity_slice1_validation_needs_questions_requires_missing_info() {
+    let raw = json!({
+        "outcome": "needs_questions",
+        "evidence": [],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("missing_information"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_validation_fail_requires_blocking_issues() {
+    let raw = json!({
+        "outcome": "fail",
+        "evidence": [],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_versioned_seed_includes_version_and_source() {
+    use ralph_burning::contexts::requirements_drafting::model::{
+        ProjectSeedPayload, SeedSourceMetadata, PROJECT_SEED_VERSION,
+    };
+    use ralph_burning::shared::domain::FlowPreset;
+
+    let payload = ProjectSeedPayload {
+        version: PROJECT_SEED_VERSION,
+        project_id: "test-proj".to_owned(),
+        project_name: "Test Project".to_owned(),
+        flow: FlowPreset::Standard,
+        prompt_body: "Build the thing.".to_owned(),
+        handoff_summary: "Ready.".to_owned(),
+        follow_ups: vec![],
+        source: Some(SeedSourceMetadata {
+            mode: RequirementsMode::Draft,
+            run_id: "req-20260318-120000".to_owned(),
+            question_rounds: 1,
+            quick_revisions: None,
+        }),
+    };
+
+    let md = renderers::render_project_seed(&payload);
+    assert!(md.contains(&format!("- **Version:** {PROJECT_SEED_VERSION}")));
+    assert!(md.contains("- **Mode:** draft"));
+    assert!(md.contains("- **Run ID:** req-20260318-120000"));
+}
+
+#[test]
+fn parity_slice1_seed_version_1_accepted_by_contract() {
+    let raw = json!({
+        "version": 1,
+        "project_id": "legacy-proj",
+        "project_name": "Legacy Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let contract = RequirementsContract::seed();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_ok(), "version 1 seed should be accepted");
+}
+
+#[test]
+fn parity_slice1_unsupported_seed_version_rejected() {
+    let raw = json!({
+        "version": 99,
+        "project_id": "bad-proj",
+        "project_name": "Bad Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let contract = RequirementsContract::seed();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("unsupported seed version"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_cache_key_deterministic() {
+    use ralph_burning::contexts::requirements_drafting::model::{
+        compute_stage_cache_key, FullModeStage,
+    };
+
+    let key1 = compute_stage_cache_key(FullModeStage::Ideation, &["idea text"]);
+    let key2 = compute_stage_cache_key(FullModeStage::Ideation, &["idea text"]);
+    assert_eq!(key1, key2, "same inputs should produce same cache key");
+
+    let key3 = compute_stage_cache_key(FullModeStage::Ideation, &["different text"]);
+    assert_ne!(key1, key3, "different inputs should produce different keys");
+
+    let key4 = compute_stage_cache_key(FullModeStage::Research, &["idea text"]);
+    assert_ne!(key1, key4, "different stages should produce different keys");
+}
+
+#[test]
+fn parity_slice1_full_mode_stage_pipeline_order() {
+    use ralph_burning::contexts::requirements_drafting::model::FullModeStage;
+
+    let order = FullModeStage::pipeline_order();
+    assert_eq!(order.len(), 7);
+    assert_eq!(order[0], FullModeStage::Ideation);
+    assert_eq!(order[1], FullModeStage::Research);
+    assert_eq!(order[2], FullModeStage::Synthesis);
+    assert_eq!(order[3], FullModeStage::ImplementationSpec);
+    assert_eq!(order[4], FullModeStage::GapAnalysis);
+    assert_eq!(order[5], FullModeStage::Validation);
+    assert_eq!(order[6], FullModeStage::ProjectSeed);
+}
+
+#[test]
+fn parity_slice1_question_round_invalidation_preserves_ideation_and_research() {
+    use ralph_burning::contexts::requirements_drafting::model::FullModeStage;
+
+    let invalidated = FullModeStage::question_round_invalidated();
+    // Should NOT include ideation or research
+    assert!(!invalidated.contains(&FullModeStage::Ideation));
+    assert!(!invalidated.contains(&FullModeStage::Research));
+    // Should include synthesis and everything downstream
+    assert!(invalidated.contains(&FullModeStage::Synthesis));
+    assert!(invalidated.contains(&FullModeStage::ImplementationSpec));
+    assert!(invalidated.contains(&FullModeStage::GapAnalysis));
+    assert!(invalidated.contains(&FullModeStage::Validation));
+    assert!(invalidated.contains(&FullModeStage::ProjectSeed));
+}
+
+#[test]
+fn parity_slice1_committed_stage_entry_serialization() {
+    use ralph_burning::contexts::requirements_drafting::model::CommittedStageEntry;
+
+    let entry = CommittedStageEntry {
+        payload_id: "req-001-ideation-1".to_owned(),
+        artifact_id: "req-001-ideation-art-1".to_owned(),
+        cache_key: Some("abc123".to_owned()),
+    };
+
+    let json = serde_json::to_value(&entry).expect("serialize");
+    let roundtripped: CommittedStageEntry =
+        serde_json::from_value(json).expect("deserialize");
+    assert_eq!(entry, roundtripped);
+}
+
+#[test]
+fn parity_slice1_run_state_new_fields_default_correctly() {
+    let now = Utc::now();
+    let run = RequirementsRun::new_draft("req-test".to_owned(), "idea".to_owned(), now);
+    assert!(run.current_stage.is_none());
+    assert!(run.committed_stages.is_empty());
+    assert_eq!(run.quick_revision_count, 0);
+    assert!(!run.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_run_state_new_fields_serialize_with_defaults() {
+    let now = Utc::now();
+    let run = RequirementsRun::new_draft("req-test".to_owned(), "idea".to_owned(), now);
+
+    // Serialize and deserialize - new fields with defaults should round-trip
+    let json = serde_json::to_string(&run).expect("serialize");
+    let parsed: RequirementsRun = serde_json::from_str(&json).expect("deserialize");
+    assert!(parsed.current_stage.is_none());
+    assert!(parsed.committed_stages.is_empty());
+    assert_eq!(parsed.quick_revision_count, 0);
+    assert!(!parsed.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_backward_compat_run_json_without_new_fields() {
+    // Simulate a run.json from before Slice 1 (no new fields)
+    let old_json = json!({
+        "run_id": "req-old",
+        "idea": "old idea",
+        "mode": "draft",
+        "status": "completed",
+        "question_round": 1,
+        "latest_question_set_id": null,
+        "latest_draft_id": "req-old-draft-1",
+        "latest_review_id": "req-old-review-1",
+        "latest_seed_id": "req-old-seed-1",
+        "recommended_flow": "standard",
+        "created_at": "2026-03-18T10:00:00Z",
+        "updated_at": "2026-03-18T10:05:00Z",
+        "status_summary": "completed"
+    });
+
+    let run: RequirementsRun = serde_json::from_value(old_json).expect("deserialize old format");
+    assert!(run.current_stage.is_none());
+    assert!(run.committed_stages.is_empty());
+    assert_eq!(run.quick_revision_count, 0);
+    assert!(!run.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_seed_without_version_defaults_to_1() {
+    use ralph_burning::contexts::requirements_drafting::model::ProjectSeedPayload;
+
+    let old_seed_json = json!({
+        "project_id": "old-proj",
+        "project_name": "Old Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let seed: ProjectSeedPayload =
+        serde_json::from_value(old_seed_json).expect("deserialize old seed");
+    assert_eq!(seed.version, 1, "missing version should default to 1");
+    assert!(seed.source.is_none());
 }

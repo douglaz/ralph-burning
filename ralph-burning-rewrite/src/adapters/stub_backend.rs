@@ -720,12 +720,65 @@ fn canned_requirements_payload(label: &str) -> serde_json::Value {
         })
     } else if label.contains("project_seed") {
         json!({
+            "version": 2,
             "project_id": "stub-project",
             "project_name": "Stub Project",
             "flow": "standard",
             "prompt_body": "Stub prompt body for the project.",
             "handoff_summary": "Stub handoff summary.",
             "follow_ups": []
+        })
+    } else if label.contains("ideation") {
+        json!({
+            "themes": ["Core feature delivery"],
+            "key_concepts": ["Structured pipeline"],
+            "initial_scope": "Stub ideation scope for the project.",
+            "open_questions": []
+        })
+    } else if label.contains("research") {
+        json!({
+            "findings": [{
+                "area": "Technical context",
+                "summary": "Stub research finding",
+                "relevance": "Directly relevant"
+            }],
+            "constraints_discovered": [],
+            "prior_art": [],
+            "technical_context": "Stub technical context for research."
+        })
+    } else if label.contains("synthesis") {
+        json!({
+            "problem_summary": "Stub synthesis summary",
+            "goals": ["Deliver the feature"],
+            "non_goals": [],
+            "constraints": [],
+            "acceptance_criteria": ["Feature works as specified"],
+            "risks_or_open_questions": [],
+            "recommended_flow": "standard"
+        })
+    } else if label.contains("implementation_spec") {
+        json!({
+            "architecture_overview": "Stub architecture overview.",
+            "components": [{
+                "name": "Core",
+                "responsibility": "Main component",
+                "interfaces": ["public API"]
+            }],
+            "integration_points": [],
+            "migration_notes": []
+        })
+    } else if label.contains("gap_analysis") {
+        json!({
+            "gaps": [],
+            "coverage_assessment": "Stub coverage assessment — no gaps found.",
+            "blocking_gaps": []
+        })
+    } else if label.contains("validation") {
+        json!({
+            "outcome": "pass",
+            "evidence": ["Stub validation evidence"],
+            "blocking_issues": [],
+            "missing_information": []
         })
     } else {
         json!({

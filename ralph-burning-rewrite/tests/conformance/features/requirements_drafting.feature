@@ -290,3 +290,61 @@ Feature: Requirements Drafting and Project Seed Handoff
     And the seed project.json contains the fake-binary project_id "daemon-proc-proj"
     And the seed project.json contains the fake-binary prompt_body "Build daemon feature."
     And the task dispatch mode transitioned to Workflow
+
+  # ── Parity Slice 1 – Full Requirements and PRD Parity ────────────────────
+
+  # parity_slice1_full_mode_staged_happy_path
+  Scenario: Full-mode draft runs all seven stages to completion
+    Given a workspace with an initialized project
+    When the user runs "requirements draft --idea 'Full pipeline test'"
+    And the backend returns empty questions at the question_set stage
+    Then the run status is "completed"
+    And committed_stages contains ideation, research, synthesis, implementation_spec, gap_analysis, validation, project_seed
+    And the seed project.json contains version 2
+
+  # parity_slice1_cache_reuse_on_resume
+  Scenario: Resumed full-mode draft reuses cached stages
+    Given a completed full-mode requirements run
+    When the same run is resumed with matching upstream outputs
+    Then previously committed stages are reused via cache key match
+    And the run.json last_transition_cached is true for reused stages
+
+  # parity_slice1_question_round_invalidates_downstream
+  Scenario: Validation question round invalidates synthesis and downstream
+    Given a full-mode requirements run at the validation stage
+    When validation returns "needs_questions" outcome
+    Then a question round is opened with the missing information
+    And committed stages for synthesis, implementation_spec, gap_analysis, and validation are cleared
+    And ideation and research committed stages are preserved
+
+  # parity_slice1_quick_mode_revision_loop
+  Scenario: Quick-mode revision loop terminates on approval
+    Given a workspace with an initialized project
+    When the user runs "requirements quick --idea 'Quick revision test'"
+    And the reviewer returns "request_changes" once then "approved"
+    Then the run status is "completed"
+    And quick_revision_count is 1
+    And seed files are written to the run directory
+
+  # parity_slice1_quick_mode_max_revisions
+  Scenario: Quick-mode revision loop fails at MAX_QUICK_REVISIONS
+    Given a workspace with an initialized project
+    When the user runs "requirements quick --idea 'Revision limit test'"
+    And the reviewer returns "request_changes" five times
+    Then the run status is "failed"
+    And quick_revision_count is 5
+
+  # parity_slice1_versioned_seed_output
+  Scenario: Project seed carries version 2 and source metadata
+    Given a completed full-mode requirements run
+    When the seed project.json is read
+    Then version is 2
+    And source.mode is "full"
+    And source.committed_stages lists the seven full-mode stages
+
+  # parity_slice1_show_stage_progress
+  Scenario: Show displays stage-aware progress for full-mode run
+    Given a completed full-mode requirements run
+    When the user runs "requirements show <run-id>"
+    Then the output includes "Completed Stages:"
+    And the output includes "Current Stage:" or all stages are committed

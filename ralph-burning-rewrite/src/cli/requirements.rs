@@ -56,6 +56,22 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             println!("Mode:             {}", result.run.mode);
             println!("Status:           {}", result.run.status);
             println!("Question Round:   {}", result.run.question_round);
+
+            // Stage-aware progress for full mode
+            if let Some(ref stage) = result.run.current_stage {
+                println!("Current Stage:    {}", stage.display_name());
+            }
+            if !result.run.committed_stages.is_empty() {
+                let stages: Vec<&str> = result.run.committed_stages.keys().map(|s| s.as_str()).collect();
+                println!("Completed Stages: {}", stages.join(", "));
+            }
+            if result.run.quick_revision_count > 0 {
+                println!("Quick Revisions:  {}", result.run.quick_revision_count);
+            }
+            if result.run.last_transition_cached {
+                println!("Last Transition:  cached (reused)");
+            }
+
             if let Some(ref summary) = result.failure_summary {
                 println!("Last Failure:     {summary}");
             }

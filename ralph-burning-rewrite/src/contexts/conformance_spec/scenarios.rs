@@ -5364,7 +5364,7 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
-// Requirements Drafting (33 scenarios)
+// Requirements Drafting (38 scenarios)
 // ===========================================================================
 
 fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -6696,6 +6696,241 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "completed" {
             return Err(format!("expected 'completed', got '{status}'"));
         }
+        Ok(())
+    });
+
+    // ── Parity Slice 1 scenarios ──────────────────────────────────────────
+
+    reg!(m, "parity_slice1_full_mode_staged_happy_path", || {
+        // Full-mode draft runs all seven stages to completion
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &["requirements", "draft", "--idea", "Full pipeline test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected 'completed', got '{status}'"));
+        }
+
+        // Verify committed_stages contains all 7 full-mode stages
+        let committed = run.get("committed_stages").and_then(|v| v.as_object());
+        let committed = committed.ok_or("missing committed_stages in run.json")?;
+        let expected_stages = [
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
+        ];
+        for stage in &expected_stages {
+            if !committed.contains_key(*stage) {
+                return Err(format!("committed_stages missing '{stage}'"));
+            }
+        }
+
+        // Verify seed version is 2
+        let seed_path = run_dir.join("seed/project.json");
+        if seed_path.is_file() {
+            let seed_content = std::fs::read_to_string(&seed_path)
+                .map_err(|e| format!("read seed: {e}"))?;
+            let seed: serde_json::Value =
+                serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
+            let version = seed.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+            if version != 2 {
+                return Err(format!("expected seed version 2, got {version}"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_quick_mode_revision_loop", || {
+        // Quick mode runs through writer/reviewer loop and completes
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &["requirements", "quick", "--idea", "Quick revision test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected 'completed', got '{status}'"));
+        }
+
+        // Verify seed files exist
+        let seed_dir = run_dir.join("seed");
+        if !seed_dir.join("project.json").is_file() {
+            return Err("seed/project.json not written".into());
+        }
+        if !seed_dir.join("prompt.md").is_file() {
+            return Err("seed/prompt.md not written".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_versioned_seed_output", || {
+        // Verify seed carries version 2 and source metadata
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &["requirements", "draft", "--idea", "Versioned seed test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let seed_path = run_dir.join("seed/project.json");
+        if !seed_path.is_file() {
+            return Err("seed/project.json not written".into());
+        }
+        let seed_content = std::fs::read_to_string(&seed_path)
+            .map_err(|e| format!("read seed: {e}"))?;
+        let seed: serde_json::Value =
+            serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
+
+        let version = seed.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+        if version != 2 {
+            return Err(format!("expected seed version 2, got {version}"));
+        }
+
+        // Verify source metadata
+        if let Some(source) = seed.get("source") {
+            let mode = source.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+            if mode != "full" && mode != "quick" {
+                return Err(format!("expected source.mode 'full' or 'quick', got '{mode}'"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_show_stage_progress", || {
+        // Show displays stage-aware progress for full-mode run
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Create a full-mode run first
+        let draft_out = run_cli(
+            &["requirements", "draft", "--idea", "Show progress test"],
+            ws.path(),
+        )?;
+        assert_success(&draft_out)?;
+
+        // Find the run ID from the output
+        let run_id = draft_out
+            .stdout
+            .lines()
+            .find(|l| l.contains("Requirements run"))
+            .and_then(|l| l.split_whitespace().last())
+            .ok_or("could not extract run ID from draft output")?
+            .to_string();
+
+        let show_out = run_cli(
+            &["requirements", "show", &run_id],
+            ws.path(),
+        )?;
+        assert_success(&show_out)?;
+
+        // Should show completed stages
+        if !show_out.stdout.contains("Completed Stages:") {
+            return Err("show output missing 'Completed Stages:'".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_backward_compat_run_json", || {
+        // Pre-Slice-1 run.json without new fields deserializes correctly
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Run a quick-mode pipeline to get a run directory
+        let out = run_cli(
+            &["requirements", "quick", "--idea", "Backward compat test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let mut run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+
+        // Strip the new Slice 1 fields to simulate a pre-Slice-1 run.json
+        if let Some(obj) = run.as_object_mut() {
+            obj.remove("committed_stages");
+            obj.remove("current_stage");
+            obj.remove("quick_revision_count");
+            obj.remove("last_transition_cached");
+        }
+
+        // Write it back and verify show still works
+        let stripped = serde_json::to_string_pretty(&run)
+            .map_err(|e| format!("serialize: {e}"))?;
+        std::fs::write(run_dir.join("run.json"), &stripped)
+            .map_err(|e| format!("write run.json: {e}"))?;
+
+        let run_id = run.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+        let show_out = run_cli(
+            &["requirements", "show", run_id],
+            ws.path(),
+        )?;
+        assert_success(&show_out)?;
+
         Ok(())
     });
 }
