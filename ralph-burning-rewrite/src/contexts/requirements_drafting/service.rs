@@ -374,6 +374,13 @@ where
             for stage in FullModeStage::question_round_invalidated() {
                 run.committed_stages.remove(stage.as_str());
             }
+            // Recompute current_stage from surviving committed stages so it
+            // does not reference a stage that was just invalidated.
+            run.current_stage = FullModeStage::pipeline_order()
+                .iter()
+                .rev()
+                .find(|s| run.committed_stages.contains_key(s.as_str()))
+                .copied();
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, run_id, &run)?;
 
@@ -425,6 +432,7 @@ where
         let ideation_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Ideation, &ideation_cache_key)
         {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -433,6 +441,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -503,6 +512,7 @@ where
         let research_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Research, &research_cache_key)
         {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -511,6 +521,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -580,6 +591,7 @@ where
         let synthesis_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Synthesis, &synthesis_cache_key)
         {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -588,6 +600,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -666,6 +679,7 @@ where
             FullModeStage::ImplementationSpec,
             &impl_spec_cache_key,
         ) {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -674,6 +688,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -743,6 +758,7 @@ where
         let gap_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::GapAnalysis, &gap_cache_key)
         {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -751,6 +767,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -820,6 +837,7 @@ where
         if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Validation, &validation_cache_key)
         {
+            let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
                 seq,
@@ -828,6 +846,7 @@ where
                 run,
             );
             if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                run.last_transition_cached = prior_last_transition_cached;
                 self.fail_run(
                     base_dir,
                     run,
@@ -1175,6 +1194,7 @@ where
             .rev()
             .find(|s| run.committed_stages.contains_key(s.as_str()))
             .copied();
+        let prior_last_transition_cached = run.last_transition_cached;
 
         run.committed_stages.insert(
             stage.as_str().to_owned(),
@@ -1205,6 +1225,7 @@ where
             );
             run.committed_stages.remove(stage.as_str());
             run.current_stage = prior_current_stage;
+            run.last_transition_cached = prior_last_transition_cached;
             run.recommended_flow = prior_recommended_flow;
             self.fail_run(
                 base_dir,
@@ -1431,7 +1452,10 @@ where
                         .await;
                 }
                 RequirementsReviewOutcome::RequestChanges => {
-                    // Request changes — revise the draft
+                    // Request changes — revise the draft.
+                    // Snapshot quick_revision_count before mutation so we can
+                    // restore it if the RevisionRequested journal append fails.
+                    let prior_quick_revision_count = run.quick_revision_count;
                     revision += 1;
                     run.quick_revision_count = revision;
 
@@ -1458,6 +1482,9 @@ where
                         .store
                         .append_journal_event(base_dir, &run_id, &rev_event)
                     {
+                        // Restore quick_revision_count so canonical state
+                        // reflects the last committed ReviewCompleted boundary.
+                        run.quick_revision_count = prior_quick_revision_count;
                         self.fail_run(
                             base_dir,
                             run,

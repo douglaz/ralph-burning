@@ -131,6 +131,28 @@ Fixed: updated `docs/requirements.md` from "is reached" to "the revision count e
 - Registry drift check — passed
 - 3 new tests added: `answers_submitted_journal_failure_restores_question_boundary`, `question_round_opened_journal_failure_restores_pre_question_state`, `stage_completed_journal_failure_restores_current_stage_and_recommended_flow`
 
+## Review Response (Iteration 5)
+
+### Required Change 1: Quick-mode revision-request rollback
+Fixed: `quick_revision_count` is now snapshot before the `RevisionRequested` journal append and restored on failure, so canonical state reflects the last committed `ReviewCompleted` boundary rather than the failed revision attempt.
+
+### Required Change 2: Full-mode cached-resume state fidelity
+Fixed two sub-issues:
+- After answer-boundary invalidation, `current_stage` is now recomputed from the surviving committed stages in pipeline order (or cleared if none remain), preventing stale references to invalidated stages.
+- `last_transition_cached` is now snapshot/restored in all 6 `StageReused` journal failure paths and in the `StageCompleted` journal failure rollback in `commit_full_mode_stage`.
+
+### Recommended 1: Regression coverage
+Added 3 new tests:
+- `revision_requested_journal_failure_restores_quick_revision_count` — verifies `quick_revision_count` is restored to 0 when `RevisionRequested` journal fails
+- `answer_boundary_recomputes_current_stage_after_invalidation` — verifies `current_stage` doesn't reference an invalidated stage after answer-boundary processing
+- Extended `stage_completed_journal_failure_restores_current_stage_and_recommended_flow` to also assert `last_transition_cached` restoration
+
+### Test Results (Iteration 5)
+- `cargo check` — clean (both production and test-stub builds)
+- `cargo test --features test-stub --test unit` — 88 requirements tests passed, 0 failed
+- `cargo test --features test-stub --test cli requirements_show` — 2 passed, 0 failed
+- Registry drift check — passed
+
 ## Remaining Known Gaps
 
 - None within the Slice 1 acceptance scope

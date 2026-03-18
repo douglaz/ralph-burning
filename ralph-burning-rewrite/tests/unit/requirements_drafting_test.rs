@@ -2675,6 +2675,13 @@ mod service_integration {
                 run.committed_stages.contains_key("research"),
                 "research should survive synthesis rollback"
             );
+            // last_transition_cached should be restored to the value it had
+            // before the synthesis StageCompleted attempt (false, since
+            // research was a fresh execution that set it to false).
+            assert!(
+                !run.last_transition_cached,
+                "last_transition_cached should be restored to prior value after StageCompleted rollback"
+            );
         }
 
         /// Journal append failure at revision_completed on the 1st revision must
@@ -2728,6 +2735,156 @@ mod service_integration {
                 run.recommended_flow.is_some(),
                 "prior recommended_flow should be restored on revision journal failure"
             );
+        }
+
+        /// Journal append failure at revision_requested must restore
+        /// quick_revision_count to the prior committed review boundary value.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (request_changes), call 4 = RevisionRequested (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn revision_requested_journal_failure_restores_quick_revision_count() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to return request_changes so the revision loop triggers
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 4th journal call = RevisionRequested
+            let store = FailingJournalRequirementsStore::new(4);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test revision_requested failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on revision_requested journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // quick_revision_count should be restored to 0 (pre-revision value),
+            // not left at 1 from the failed revision attempt.
+            assert_eq!(
+                run.quick_revision_count, 0,
+                "quick_revision_count should be restored to pre-revision value on RevisionRequested journal failure"
+            );
+        }
+
+        /// After answering questions, the post-answer invalidation must recompute
+        /// current_stage from the surviving committed stages. If current_stage
+        /// was pointing at a stage that got invalidated (e.g. validation),
+        /// it must be updated to the latest surviving stage (e.g. research).
+        /// This verifies the fix for Required Change 2a from review iteration 5.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn answer_boundary_recomputes_current_stage_after_invalidation() {
+            std::env::set_var("EDITOR", "true");
+
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Phase 1: run draft() to reach awaiting_answers
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let now = deterministic_now();
+            let run_id = service
+                .draft(temp_dir.path(), "Test current_stage recomputation", now)
+                .await
+                .expect("draft should succeed (to reach awaiting_answers)");
+
+            // Verify we reached awaiting_answers with all stages committed
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run");
+            assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+            // Before answering, ideation and research should be committed
+            assert!(
+                run.committed_stages.contains_key("ideation"),
+                "ideation should be committed before answer"
+            );
+            assert!(
+                run.committed_stages.contains_key("research"),
+                "research should be committed before answer"
+            );
+
+            // Write answers file
+            let answers_path = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id)
+                .join("answers.toml");
+            std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+            // Phase 2: call answer(). After AnswersSubmitted, synthesis+downstream
+            // are invalidated. The pipeline reruns all stages (since answers change
+            // the base context, cache keys don't match). We let the run fail on
+            // 2nd journal call (1st StageCompleted after AnswersSubmitted) to
+            // verify that current_stage was properly recomputed post-invalidation.
+            let adapter2 = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service2 =
+                AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+            // Fail on 2nd call = StageCompleted(ideation) after AnswersSubmitted
+            let store2 = FailingJournalRequirementsStore::new(2);
+            let service2 = RequirementsService::new(agent_service2, store2);
+
+            let result = service2.answer(temp_dir.path(), &run_id).await;
+            assert!(
+                result.is_err(),
+                "answer should fail on StageCompleted journal failure"
+            );
+
+            // Verify current_stage was recomputed after invalidation: it should
+            // NOT reference a stage that was invalidated (synthesis or later).
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run after failure");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // current_stage should not be a downstream-invalidated stage
+            if let Some(stage) = run.current_stage {
+                assert!(
+                    stage != FullModeStage::Synthesis
+                        && stage != FullModeStage::ImplementationSpec
+                        && stage != FullModeStage::GapAnalysis
+                        && stage != FullModeStage::Validation,
+                    "current_stage should not reference an invalidated stage after answer-boundary recomputation, got {:?}",
+                    stage
+                );
+            }
         }
     }
 }
