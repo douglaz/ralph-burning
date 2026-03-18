@@ -534,7 +534,10 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
             }
         }
 
-        // Repair GitHub labels for tasks with label_dirty = true
+        // Repair GitHub labels for tasks with label_dirty = true,
+        // and also recover stuck tasks (revert Claimed/Active to Pending
+        // so they re-enter the pending queue, or release worktrees for
+        // terminal tasks).
         if let Some(ref gh) = github_client {
             if let Ok(tasks) = store.list_tasks(&daemon_dir) {
                 for task in tasks.iter().filter(|t| t.label_dirty) {
@@ -549,6 +552,19 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
                                 &daemon_dir,
                                 &task.task_id,
                             );
+                            // Phase-0 recovery: revert stuck Claimed/Active
+                            // tasks back to Pending so daemon picks them up
+                            // again on the next cycle.
+                            if matches!(
+                                task.status.as_str(),
+                                "claimed" | "active"
+                            ) {
+                                let _ = DaemonTaskService::revert_to_pending_for_recovery(
+                                    &store,
+                                    &daemon_dir,
+                                    &task.task_id,
+                                );
+                            }
                             total_label_repaired += 1;
                             println!(
                                 "  {owner}/{repo_name}: repaired label for task {}",

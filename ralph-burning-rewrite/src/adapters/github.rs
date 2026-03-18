@@ -124,47 +124,57 @@ impl GithubClient {
 
     // ── Issues ────────────────────────────────────────────────────────
 
-    /// Poll candidate issues with a specific label.
+    /// Poll all candidate issues with a specific label (paginated).
     pub async fn poll_candidate_issues(
         &self,
         owner: &str,
         repo: &str,
         label: &str,
     ) -> AppResult<Vec<GithubIssue>> {
-        let url = self.api_url(&format!(
-            "/repos/{owner}/{repo}/issues?labels={label}&state=open&sort=created&direction=asc"
-        ));
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: e.to_string(),
-            })?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to poll issues: {status} {text}"),
-            });
-        }
-
-        let issues: Vec<GithubIssue> =
-            resp.json()
+        let mut all_issues = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let url = self.api_url(&format!(
+                "/repos/{owner}/{repo}/issues?labels={label}&state=open&sort=created&direction=asc&per_page=100&page={page}"
+            ));
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .send()
                 .await
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
-                    details: format!("failed to parse issues response: {e}"),
+                    details: e.to_string(),
                 })?;
 
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to poll issues: {status} {text}"),
+                });
+            }
+
+            let issues: Vec<GithubIssue> =
+                resp.json()
+                    .await
+                    .map_err(|e| AppError::BackendUnavailable {
+                        backend: "github".to_owned(),
+                        details: format!("failed to parse issues response: {e}"),
+                    })?;
+            let is_last_page = issues.len() < 100;
+            all_issues.extend(issues);
+            if is_last_page {
+                break;
+            }
+            page += 1;
+        }
+
         // Filter out pull requests (GitHub API returns PRs as issues too)
-        Ok(issues
+        Ok(all_issues
             .into_iter()
             .filter(|i| i.pull_request.is_none())
             .collect())
@@ -427,73 +437,102 @@ impl GithubClient {
     // ── Pull Requests ─────────────────────────────────────────────────
 
     /// Fetch PR review comments (inline code comments).
+    /// Fetch all PR review comments (paginated).
     pub async fn fetch_pr_review_comments(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Vec<GithubComment>> {
-        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}/comments"));
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: e.to_string(),
-            })?;
+        let mut all = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let url = self.api_url(&format!(
+                "/repos/{owner}/{repo}/pulls/{pr_number}/comments?per_page=100&page={page}"
+            ));
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: e.to_string(),
+                })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to fetch PR review comments: {status} {text}"),
-            });
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to fetch PR review comments: {status} {text}"),
+                });
+            }
+
+            let comments: Vec<GithubComment> =
+                resp.json().await.map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse PR review comments: {e}"),
+                })?;
+            let is_last_page = comments.len() < 100;
+            all.extend(comments);
+            if is_last_page {
+                break;
+            }
+            page += 1;
         }
-
-        resp.json().await.map_err(|e| AppError::BackendUnavailable {
-            backend: "github".to_owned(),
-            details: format!("failed to parse PR review comments: {e}"),
-        })
+        Ok(all)
     }
 
-    /// Fetch PR review summaries.
+    /// Fetch all PR review summaries (paginated).
     pub async fn fetch_pr_reviews(
         &self,
         owner: &str,
         repo: &str,
         pr_number: u64,
     ) -> AppResult<Vec<GithubReview>> {
-        let url = self.api_url(&format!("/repos/{owner}/{repo}/pulls/{pr_number}/reviews"));
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: e.to_string(),
-            })?;
+        let mut all = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let url = self.api_url(&format!(
+                "/repos/{owner}/{repo}/pulls/{pr_number}/reviews?per_page=100&page={page}"
+            ));
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: e.to_string(),
+                })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to fetch PR reviews: {status} {text}"),
-            });
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to fetch PR reviews: {status} {text}"),
+                });
+            }
+
+            let reviews: Vec<GithubReview> =
+                resp.json().await.map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse PR reviews: {e}"),
+                })?;
+            let is_last_page = reviews.len() < 100;
+            all.extend(reviews);
+            if is_last_page {
+                break;
+            }
+            page += 1;
         }
-
-        resp.json().await.map_err(|e| AppError::BackendUnavailable {
-            backend: "github".to_owned(),
-            details: format!("failed to parse PR reviews: {e}"),
-        })
+        Ok(all)
     }
 
     /// Create a draft pull request.

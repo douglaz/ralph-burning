@@ -562,8 +562,21 @@ where
         // Requirements dispatch before claiming lease/worktree
         match task.dispatch_mode {
             DispatchMode::RequirementsQuick => {
-                self.handle_requirements_quick(store_dir, repo_root, task, &effective_config)
-                    .await?;
+                if let Err(e) = self
+                    .handle_requirements_quick(store_dir, repo_root, task, &effective_config)
+                    .await
+                {
+                    // Mark label dirty so daemon reconcile can repair the
+                    // GitHub label — the task is already marked Failed by
+                    // handle_requirements_quick, but the issue still shows
+                    // rb:ready without this.
+                    let _ = DaemonTaskService::set_label_dirty(
+                        self.store,
+                        store_dir,
+                        &task.task_id,
+                    );
+                    return Err(e);
+                }
             }
             DispatchMode::RequirementsDraft => {
                 return self

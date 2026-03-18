@@ -145,10 +145,26 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                     );
                     e
                 })?;
-            let comment_bodies: Vec<String> = raw_comments.iter().map(|c| c.body.clone()).collect();
+            // Only consider comments newer than the stored cursor to avoid
+            // replaying already-processed /rb retry and /rb abort commands.
+            let last_seen = DaemonTaskService::find_task_by_issue(
+                store,
+                base_dir,
+                &registration.repo_slug,
+                issue.number,
+            )
+            .ok()
+            .flatten()
+            .and_then(|t| t.last_seen_comment_id)
+            .unwrap_or(0);
+            let new_comment_bodies: Vec<String> = raw_comments
+                .iter()
+                .filter(|c| c.id > last_seen)
+                .map(|c| c.body.clone())
+                .collect();
 
             let routing_command =
-                extract_command(issue.body.as_deref().unwrap_or(""), &comment_bodies);
+                extract_command(issue.body.as_deref().unwrap_or(""), &new_comment_bodies);
 
             // Update dedup cursor on the existing task regardless of command
             let max_comment_id = raw_comments.iter().map(|c| c.id).max();
