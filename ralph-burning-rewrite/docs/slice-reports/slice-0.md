@@ -10,15 +10,16 @@
 - `FinalReviewPanelResolution` now includes a resolved `planner` target, and final-review execution/snapshotting use that single resolved value end to end
 - Process-backend availability now distinguishes missing binaries from binaries found on `PATH` without execute permission, returning actionable `BackendUnavailable` detail
 - Process-backend cancel/timeout cleanup now uses an in-process POSIX signal API (`nix::sys::signal::kill`) instead of shelling out to the `kill` binary
+- Shared run preflight now resolves and validates real prompt-review, completion, and final-review panel members before `run start` or `run resume` can mutate run state
 
 ## Tests Run
 - `cargo check`
-- `cargo test --features test-stub`
+- `target/debug/ralph-burning conformance run`
 
 ## Results
 - `cargo check` passed
-- `cargo test --features test-stub` passed: 46 library tests, 110 CLI tests including `conformance_full_suite_passes`, 582 unit tests; 0 failures, 1 ignored
-- Added `tests/conformance/features/p0_hardening.feature` and registered all `parity_slice0_*` executors in the conformance registry
+- `target/debug/ralph-burning conformance run` passed: 310 scenarios selected, 310 passed, 0 failed
+- Added `tests/conformance/features/p0_hardening.feature` coverage for shared panel preflight and updated existing panel conformance expectations to match the corrected preflight timing
 
 ## Remaining Known Gaps
 - None within the Slice 0 acceptance scope

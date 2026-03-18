@@ -9131,10 +9131,12 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
 
-        // Verify the run failed.
+        // Verify preflight rejected the run before execution started.
         let snapshot = read_run_snapshot(&ws, "pr-min-rev")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
-            return Err("expected failed status for min_reviewers enforcement".to_owned());
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
+            return Err(
+                "expected not_started status for min_reviewers preflight enforcement".to_owned(),
+            );
         }
         // stderr should reference insufficient panel members.
         if !out.stderr.contains("insufficient") && !out.stderr.contains("min_reviewers") {
@@ -9672,9 +9674,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cp-req-fail")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
             return Err(
-                "expected failed status when required completion backend is unavailable".to_owned(),
+                "expected not_started status when completion preflight rejects an unavailable required backend".to_owned(),
             );
         }
 
@@ -9806,8 +9808,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cp-min-comp")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
-            return Err("expected failed status for insufficient min_completers".to_owned());
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
+            return Err(
+                "expected not_started status for insufficient min_completers preflight rejection"
+                    .to_owned(),
+            );
         }
         Ok(())
     });
@@ -10203,7 +10208,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
-// Slice 0 Hardening (7 scenarios)
+// Slice 0 Hardening (8 scenarios)
 // ===========================================================================
 
 fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -10432,6 +10437,67 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
 
             Ok(())
         })
+    });
+
+    reg!(m, "parity_slice0_panel_preflight_required_member", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "slice0-panel-preflight", "standard")?;
+
+        let arbiter_out = run_cli(
+            &[
+                "config",
+                "set",
+                "final_review.arbiter_backend",
+                "openrouter",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&arbiter_out)?;
+
+        let start_out = run_cli(&["run", "start"], ws.path())?;
+        assert_failure(&start_out)?;
+        if !start_out.stderr.contains("preflight") {
+            return Err(format!(
+                "expected start failure to come from preflight, got: {}",
+                start_out.stderr
+            ));
+        }
+        if !start_out.stderr.contains("final_review") || !start_out.stderr.contains("arbiter") {
+            return Err(format!(
+                "expected final-review arbiter preflight error, got: {}",
+                start_out.stderr
+            ));
+        }
+
+        let snapshot = read_run_snapshot(&ws, "slice0-panel-preflight")?;
+        if snapshot.get("status").and_then(|value| value.as_str()) != Some("not_started") {
+            return Err(format!(
+                "preflight failure must leave snapshot at not_started, got {:?}",
+                snapshot.get("status")
+            ));
+        }
+        if snapshot
+            .get("active_run")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err("preflight failure must not create an active_run".to_owned());
+        }
+
+        let events = read_journal(&ws, "slice0-panel-preflight")?;
+        let appended_run_events = events.iter().filter(|event| {
+            matches!(
+                event.get("event_type").and_then(|value| value.as_str()),
+                Some("run_started" | "stage_entered" | "stage_completed" | "run_failed")
+            )
+        });
+        if appended_run_events.count() != 0 {
+            return Err(format!(
+                "preflight failure must not append run events, got {:?}",
+                events
+            ));
+        }
+
+        Ok(())
     });
 
     reg!(m, "parity_slice0_final_review_planner_in_snapshot", || {

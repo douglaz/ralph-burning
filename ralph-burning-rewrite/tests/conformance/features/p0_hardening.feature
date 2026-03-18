@@ -26,6 +26,12 @@ Feature: Slice 0 hardening and sign-off
     When the invocation times out
     Then timeout cleanup removes the child process and clears active state
 
+  @parity_slice0_panel_preflight_required_member
+  Scenario: Panel preflight rejects an unavailable required final-review arbiter
+    Given the final-review arbiter backend is configured to an unavailable required target
+    When run start executes shared preflight
+    Then the command fails before execution with a final-review arbiter preflight error
+
   @parity_slice0_final_review_planner_in_snapshot
   Scenario: Final-review resolution snapshots include the planner target
     Given a run fails during final review after the panel is resolved

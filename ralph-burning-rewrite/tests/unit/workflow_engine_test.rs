@@ -1656,24 +1656,62 @@ fn resolve_stage_plan_produces_correct_targets() {
 
 #[tokio::test]
 async fn preflight_check_succeeds_with_default_stub() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+    let config = EffectiveConfig::load(temp.path()).unwrap();
     let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
     let stages = engine::standard_stage_plan(true);
     let plan = engine::resolve_stage_plan(&stages, &resolver, None).unwrap();
 
     let adapter = StubBackendAdapter::default();
-    let result = engine::preflight_check(&adapter, &plan).await;
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn preflight_check_fails_with_unavailable_backend() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+    let config = EffectiveConfig::load(temp.path()).unwrap();
     let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
     let stages = engine::standard_stage_plan(true);
     let plan = engine::resolve_stage_plan(&stages, &resolver, None).unwrap();
 
     let adapter = StubBackendAdapter::default().unavailable();
-    let result = engine::preflight_check(&adapter, &plan).await;
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn preflight_check_validates_final_review_planner_member() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+
+    let workspace_toml = temp.path().join(".ralph-burning/workspace.toml");
+    let content = fs::read_to_string(&workspace_toml).unwrap();
+    let patched = if content.contains("[workflow]") {
+        content.replace("[workflow]", "[workflow]\nplanner_backend = \"openrouter\"")
+    } else {
+        format!("{content}\n[workflow]\nplanner_backend = \"openrouter\"\n")
+    };
+    fs::write(&workspace_toml, patched).unwrap();
+
+    let config = EffectiveConfig::load(temp.path()).unwrap();
+    let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
+    let plan = engine::resolve_stage_plan(&[StageId::FinalReview], &resolver, None).unwrap();
+
+    let adapter = StubBackendAdapter::default();
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
+    match result {
+        Err(AppError::PreflightFailed { stage_id, details }) => {
+            assert_eq!(stage_id, StageId::FinalReview);
+            assert!(
+                details.contains("planner"),
+                "expected planner-specific preflight failure, got: {details}"
+            );
+        }
+        other => panic!("expected planner preflight failure, got: {other:?}"),
+    }
 }
 
 // ── Failing-port tests: journal-append and snapshot-write errors ─────────

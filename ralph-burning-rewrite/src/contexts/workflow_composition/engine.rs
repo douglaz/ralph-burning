@@ -12,7 +12,10 @@ use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
-use crate::contexts::agent_execution::policy::BackendPolicyService;
+use crate::contexts::agent_execution::policy::{
+    BackendPolicyService, FinalReviewPanelResolution, PromptReviewPanelResolution,
+    ResolvedPanelMember,
+};
 use crate::contexts::agent_execution::service::{
     AgentExecutionPort, BackendSelectionConfig, RawOutputPort,
 };
@@ -217,30 +220,255 @@ fn resolve_stage_plan_for_cycle(
 /// Local-validation stages are skipped since they run commands locally.
 pub async fn preflight_check<A: AgentExecutionPort>(
     adapter: &A,
+    effective_config: &EffectiveConfig,
+    cycle: u32,
     plan: &[StagePlan],
 ) -> AppResult<()> {
     for entry in plan {
         if entry.stage_id.is_local_validation() {
             continue;
         }
-        adapter
-            .check_capability(
-                &entry.target,
-                &InvocationContract::Stage(entry.contract.clone()),
-            )
-            .await
-            .map_err(|e| AppError::PreflightFailed {
-                stage_id: entry.stage_id,
-                details: e.to_string(),
-            })?;
-        adapter
-            .check_availability(&entry.target)
-            .await
-            .map_err(|e| AppError::PreflightFailed {
-                stage_id: entry.stage_id,
-                details: e.to_string(),
-            })?;
+        match entry.stage_id {
+            StageId::PromptReview => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = resolve_prompt_review_panel_for_preflight(&policy, cycle)?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "refiner",
+                    &panel.refiner,
+                    "prompt-review refiner",
+                )
+                .await?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "validator",
+                    "prompt_review",
+                    "prompt-review validator",
+                    &panel.validators,
+                    effective_config.prompt_review_policy().min_reviewers,
+                )
+                .await?;
+            }
+            StageId::CompletionPanel => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = policy.resolve_completion_panel(cycle).map_err(|error| {
+                    AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: format!("completion panel resolution failed: {error}"),
+                    }
+                })?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "completer",
+                    "completion",
+                    "completion completer",
+                    &panel.completers,
+                    effective_config.completion_policy().min_completers,
+                )
+                .await?;
+            }
+            StageId::FinalReview => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = resolve_final_review_panel_for_preflight(&policy, cycle)?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "planner",
+                    &panel.planner,
+                    "final-review planner",
+                )
+                .await?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "arbiter",
+                    &panel.arbiter,
+                    "final-review arbiter",
+                )
+                .await?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "reviewer",
+                    "final_review",
+                    "final-review reviewer",
+                    &panel.reviewers,
+                    effective_config.final_review_policy().min_reviewers,
+                )
+                .await?;
+            }
+            _ => {
+                adapter
+                    .check_capability(
+                        &entry.target,
+                        &InvocationContract::Stage(entry.contract.clone()),
+                    )
+                    .await
+                    .map_err(|e| AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: e.to_string(),
+                    })?;
+                adapter
+                    .check_availability(&entry.target)
+                    .await
+                    .map_err(|e| AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: e.to_string(),
+                    })?;
+            }
+        }
     }
+    Ok(())
+}
+
+fn resolve_prompt_review_panel_for_preflight(
+    policy: &BackendPolicyService<'_>,
+    cycle: u32,
+) -> AppResult<PromptReviewPanelResolution> {
+    let refiner = policy
+        .resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::PromptReview,
+            details: format!("required prompt-review refiner resolution failed: {error}"),
+        })?;
+    let mut panel =
+        policy
+            .resolve_prompt_review_panel(cycle)
+            .map_err(|error| AppError::PreflightFailed {
+                stage_id: StageId::PromptReview,
+                details: format!("prompt-review validator resolution failed: {error}"),
+            })?;
+    panel.refiner = refiner;
+    Ok(panel)
+}
+
+fn resolve_final_review_panel_for_preflight(
+    policy: &BackendPolicyService<'_>,
+    cycle: u32,
+) -> AppResult<FinalReviewPanelResolution> {
+    let planner = policy
+        .resolve_role_target(BackendPolicyRole::Planner, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::FinalReview,
+            details: format!("required final-review planner resolution failed: {error}"),
+        })?;
+    let arbiter = policy
+        .resolve_role_target(BackendPolicyRole::Arbiter, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::FinalReview,
+            details: format!("required final-review arbiter resolution failed: {error}"),
+        })?;
+    let mut panel =
+        policy
+            .resolve_final_review_panel(cycle)
+            .map_err(|error| AppError::PreflightFailed {
+                stage_id: StageId::FinalReview,
+                details: format!("final-review reviewer resolution failed: {error}"),
+            })?;
+    panel.planner = planner;
+    panel.arbiter = arbiter;
+    Ok(panel)
+}
+
+async fn preflight_required_panel_target<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    target: &ResolvedBackendTarget,
+    member_name: &str,
+) -> AppResult<()> {
+    let contract = InvocationContract::Panel {
+        stage_id,
+        role: role.to_owned(),
+    };
+    adapter
+        .check_capability(target, &contract)
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!(
+                "required {member_name} failed capability preflight for '{}': {error}",
+                contract.label()
+            ),
+        })?;
+    adapter
+        .check_availability(target)
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!("required {member_name} failed availability preflight: {error}"),
+        })?;
+    Ok(())
+}
+
+async fn preflight_panel_members<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    panel_name: &'static str,
+    member_name: &str,
+    members: &[ResolvedPanelMember],
+    minimum: usize,
+) -> AppResult<()> {
+    let mut available_members = 0usize;
+
+    for member in members {
+        let contract = InvocationContract::Panel {
+            stage_id,
+            role: role.to_owned(),
+        };
+        let required_prefix = if member.required {
+            "required"
+        } else {
+            "optional"
+        };
+
+        match adapter.check_capability(&member.target, &contract).await {
+            Ok(()) => {}
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed capability preflight for '{}': {error}",
+                            contract.label()
+                        ),
+                    });
+                }
+                continue;
+            }
+        }
+
+        match adapter.check_availability(&member.target).await {
+            Ok(()) => available_members += 1,
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed availability preflight: {error}",
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    if available_members < minimum {
+        return Err(AppError::PreflightFailed {
+            stage_id,
+            details: AppError::InsufficientPanelMembers {
+                panel: panel_name.to_owned(),
+                resolved: available_members,
+                minimum,
+            }
+            .to_string(),
+        });
+    }
+
     Ok(())
 }
 
@@ -610,7 +838,7 @@ where
     let semantics = flow_semantics(preset);
     let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let stage_plan = resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, 1)?;
-    preflight_check(agent_service.adapter(), &stage_plan).await?;
+    preflight_check(agent_service.adapter(), effective_config, 1, &stage_plan).await?;
 
     let run_id = generate_run_id()?;
     let now = Utc::now();
@@ -1178,6 +1406,8 @@ where
 
     preflight_check(
         agent_service.adapter(),
+        effective_config,
+        resume_state.cursor.cycle,
         &stage_plan[resume_state.stage_index..],
     )
     .await
