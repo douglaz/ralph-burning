@@ -665,8 +665,8 @@ async fn handle_amend_list() -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
 
-    let amendment_queue = FsAmendmentQueueStore;
-    let amendments = service::list_amendments(&amendment_queue, &current_dir, &project_id)?;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let amendments = service::list_amendments(&run_snapshot_read, &current_dir, &project_id)?;
 
     if amendments.is_empty() {
         println!("No pending amendments.");
@@ -679,7 +679,7 @@ async fn handle_amend_list() -> AppResult<()> {
             "  {} [{}] dedup={} {}",
             amendment.amendment_id,
             amendment.source,
-            &amendment.dedup_key[..amendment.dedup_key.len().min(12)],
+            amendment.dedup_key,
             body_preview
         );
     }

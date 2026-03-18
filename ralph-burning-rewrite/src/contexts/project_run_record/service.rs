@@ -846,13 +846,14 @@ pub fn add_manual_amendment(
     Ok(AmendmentAddResult::Created { amendment_id })
 }
 
-/// List pending amendments for a project.
+/// List pending amendments for a project from the canonical run.json snapshot.
 pub fn list_amendments(
-    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<Vec<QueuedAmendment>> {
-    amendment_queue.list_pending_amendments(base_dir, project_id)
+    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(snapshot.amendment_queue.pending)
 }
 
 /// Remove a single pending amendment by ID. Updates both disk and run.json.
@@ -935,6 +936,7 @@ pub fn clear_amendments(
 /// Writes each amendment durably, emits journal events, syncs the canonical
 /// snapshot, and reopens the project if it is completed. This is the shared
 /// path that both manual and automated amendment intake converge on.
+/// Returns the IDs of amendments that were actually staged (after dedup).
 pub fn stage_amendment_batch(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -944,15 +946,15 @@ pub fn stage_amendment_batch(
     base_dir: &Path,
     project_id: &ProjectId,
     amendments: &[QueuedAmendment],
-) -> AppResult<usize> {
+) -> AppResult<Vec<String>> {
     if amendments.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
 
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
     let events = journal_port.read_journal(base_dir, project_id)?;
     let mut seq = journal::last_sequence(&events);
-    let mut staged_count = 0usize;
+    let mut staged_ids = Vec::new();
 
     for amendment in amendments {
         // Dedup check against pending queue (disk).
@@ -983,11 +985,11 @@ pub fn stage_amendment_batch(
 
         // Sync canonical snapshot.
         snapshot.amendment_queue.pending.push(amendment.clone());
-        staged_count += 1;
+        staged_ids.push(amendment.amendment_id.clone());
     }
 
-    if staged_count == 0 {
-        return Ok(0);
+    if staged_ids.is_empty() {
+        return Ok(Vec::new());
     }
 
     // If the project is completed, reopen it with pending amendments.
@@ -1004,7 +1006,7 @@ pub fn stage_amendment_batch(
         run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
     }
 
-    Ok(staged_count)
+    Ok(staged_ids)
 }
 
 /// Reopen a completed project to paused state with an interrupted run pointing

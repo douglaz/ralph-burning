@@ -205,18 +205,28 @@ impl JournalStorePort for FakeJournalStore {
 
 struct FakeRunSnapshotStore {
     has_active_run: bool,
+    custom_snapshot: Option<RunSnapshot>,
 }
 
 impl FakeRunSnapshotStore {
     fn no_run() -> Self {
         Self {
             has_active_run: false,
+            custom_snapshot: None,
         }
     }
 
     fn active_run() -> Self {
         Self {
             has_active_run: true,
+            custom_snapshot: None,
+        }
+    }
+
+    fn with_snapshot(snapshot: RunSnapshot) -> Self {
+        Self {
+            has_active_run: false,
+            custom_snapshot: Some(snapshot),
         }
     }
 }
@@ -227,6 +237,9 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
         _base_dir: &Path,
         _project_id: &ProjectId,
     ) -> AppResult<RunSnapshot> {
+        if let Some(ref snap) = self.custom_snapshot {
+            return Ok(snap.clone());
+        }
         if self.has_active_run {
             Ok(RunSnapshot {
                 active_run: Some(ActiveRun {
@@ -1766,36 +1779,39 @@ fn add_manual_amendment_dedup_normalizes_whitespace() {
 
 #[test]
 fn list_amendments_empty_returns_empty() {
-    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::list_amendments(&queue, &base, &pid).unwrap();
+    let result = service::list_amendments(&run_store, &base, &pid).unwrap();
     assert!(result.is_empty());
 }
 
 #[test]
 fn list_amendments_returns_all_pending() {
-    let queue = FakeAmendmentQueue::empty();
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
-    let journal = FakeJournalStore;
-    let project_store = FakeProjectStore::with_existing(&["alpha"]);
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
-        &base, &pid, "fix bug A",
-    )
-    .unwrap();
-    service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
-        &base, &pid, "fix bug B",
-    )
-    .unwrap();
+    // Build a snapshot with two pending amendments in the canonical queue.
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    for (id, body) in &[("manual-1", "fix bug A"), ("manual-2", "fix bug B")] {
+        let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+        snapshot.amendment_queue.pending.push(QueuedAmendment {
+            amendment_id: id.to_string(),
+            source_stage: ralph_burning::shared::domain::StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: body.to_string(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: source.clone(),
+            dedup_key,
+        });
+    }
 
-    let result = service::list_amendments(&queue, &base, &pid).unwrap();
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let result = service::list_amendments(&run_store, &base, &pid).unwrap();
     assert_eq!(result.len(), 2);
 }
 

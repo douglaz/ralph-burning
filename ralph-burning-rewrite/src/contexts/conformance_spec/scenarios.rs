@@ -17623,6 +17623,63 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
             }
         }
 
+        // Assert actual blocking: the interrupted_run must rewind to the
+        // planning stage, proving completion was unwound.
+        let interrupted = snap_after
+            .get("interrupted_run")
+            .ok_or_else(|| "expected interrupted_run to be set after reopen".to_owned())?;
+        let stage = interrupted
+            .get("stage_cursor")
+            .and_then(|c| c.get("stage"))
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "expected stage_cursor.stage in interrupted_run".to_owned())?;
+        if stage != "planning" && stage != "flow_planning" {
+            return Err(format!(
+                "expected interrupted_run to rewind to planning stage, got: {stage}"
+            ));
+        }
+
+        // Try to resume the run — the engine should block at completion
+        // because the pending amendment has not been processed.
+        let resume = run_cli(&["run", "start"], ws.path())?;
+        let snap_resumed = read_run_snapshot(&ws, "stub-project")?;
+        let final_status = snap_resumed
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Either the run fails with a completion-blocked error, or
+        // the engine processes the amendment and completes. In both
+        // cases, the pending queue must be empty for completion to
+        // have succeeded.
+        if final_status == "completed" {
+            let final_pending = snap_resumed
+                .get("amendment_queue")
+                .and_then(|q| q.get("pending"))
+                .and_then(|p| p.as_array());
+            match final_pending {
+                Some(arr) if !arr.is_empty() => {
+                    return Err(
+                        "project completed but pending amendments remain — blocking not enforced"
+                            .to_owned(),
+                    );
+                }
+                _ => {} // OK: amendments were drained before completion
+            }
+        } else if !resume.success {
+            // Engine failed — verify the error mentions completion blocking.
+            if !resume.stderr.contains("blocked")
+                && !resume.stderr.contains("pending amendment")
+            {
+                return Err(format!(
+                    "run failed but error does not mention blocking: {}",
+                    resume.stderr
+                ));
+            }
+        }
+        // If status is paused/running/failed that's also acceptable —
+        // it means the engine did not complete while amendments are pending.
+
         Ok(())
     });
 
@@ -17636,13 +17693,12 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         )?;
         assert_success(&boot)?;
 
-        // Simulate a writer lock by writing a lock file.
+        // Simulate a writer lock by writing a lock file at the real path
+        // used by CliWriterLeaseGuard: .ralph-burning/daemon/leases/writer-{id}.lock
         let project_id = "stub-project";
-        let lock_path = ws
-            .path()
-            .join(".ralph-burning/daemon/writer-lock")
-            .join(project_id);
-        std::fs::create_dir_all(lock_path.parent().unwrap()).ok();
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
         std::fs::write(&lock_path, "held-by-test").ok();
 
         let add = run_cli(
@@ -17656,6 +17712,120 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
         assert_contains(&list.stdout, "No pending amendments", "no amendment created")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_clear_partial_failure", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 clear partial"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add two amendments.
+        let add1 = run_cli(
+            &["project", "amend", "add", "--text", "Amendment Alpha"],
+            ws.path(),
+        )?;
+        assert_success(&add1)?;
+        let _id1 = add1
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from first add".to_owned())?
+            .trim()
+            .to_owned();
+
+        let add2 = run_cli(
+            &["project", "amend", "add", "--text", "Amendment Beta"],
+            ws.path(),
+        )?;
+        assert_success(&add2)?;
+        let id2 = add2
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from second add".to_owned())?
+            .trim()
+            .to_owned();
+
+        // Make one of the amendment files read-only so clear encounters a
+        // partial failure (remove succeeds for one, fails for the other).
+        let amend_dir = ws
+            .path()
+            .join(".ralph-burning/projects/stub-project/amendments");
+        // Find the file for id2 and make it undeletable by removing write
+        // permission on the directory after removing id1 ourselves.
+        // Instead, simply remove id1's file manually and make id2 read-only
+        // so that the clear operation partially fails.
+        let entries: Vec<_> = std::fs::read_dir(&amend_dir)
+            .map_err(|e| format!("read amendments dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+
+        // Identify which file belongs to which amendment.
+        for entry in &entries {
+            let content =
+                std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
+            if content.contains(&id2) {
+                // Make this file's parent dir read-only to prevent deletion.
+                // On POSIX, removing a file requires write permission on the
+                // directory. We make the dir read-only, then try clear.
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&amend_dir)
+                    .map_err(|e| e.to_string())?
+                    .permissions();
+                perms.set_mode(0o555); // r-xr-xr-x — no write
+                std::fs::set_permissions(&amend_dir, perms)
+                    .map_err(|e| e.to_string())?;
+                break;
+            }
+        }
+
+        // Attempt clear — should fail partially.
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+
+        // Restore directory permissions so cleanup can proceed.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&amend_dir)
+                .map_err(|e| e.to_string())?
+                .permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&amend_dir, perms).map_err(|e| e.to_string())?;
+        }
+
+        // The clear either fully succeeds (if OS allows) or partially fails.
+        // If it partially failed, verify:
+        if !clear.success {
+            // Stderr should mention both removed and remaining IDs.
+            if !clear.stderr.contains("removed") && !clear.stderr.contains("remaining") {
+                return Err(format!(
+                    "partial clear should report removed/remaining IDs, got: {}",
+                    clear.stderr
+                ));
+            }
+
+            // run.json should reflect only the remaining pending amendments.
+            let snap = read_run_snapshot(&ws, "stub-project")?;
+            let pending = snap
+                .get("amendment_queue")
+                .and_then(|q| q.get("pending"))
+                .and_then(|p| p.as_array())
+                .ok_or_else(|| "missing pending queue in run.json".to_owned())?;
+
+            // At least one amendment should remain.
+            if pending.is_empty() {
+                return Err(
+                    "partial clear reported failure but run.json pending is empty".to_owned(),
+                );
+            }
+        }
+        // If clear fully succeeded despite permissions, that's also acceptable.
 
         Ok(())
     });

@@ -5511,7 +5511,7 @@ fn project_amend_add_text_succeeds_and_prints_id() {
 
     assert!(output.status.success(), "amend add should succeed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.trim().starts_with("manual-"), "should print amendment_id starting with 'manual-', got: {stdout}");
+    assert!(stdout.contains("Amendment: manual-"), "should print 'Amendment: <id>' starting with 'manual-', got: {stdout}");
 }
 
 #[test]
@@ -5531,7 +5531,7 @@ fn project_amend_add_file_succeeds() {
 
     assert!(output.status.success(), "amend add --file should succeed: {}", String::from_utf8_lossy(&output.stderr));
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.trim().starts_with("manual-"), "should print amendment_id");
+    assert!(stdout.contains("Amendment: manual-"), "should print 'Amendment: <id>', got: {stdout}");
 }
 
 #[test]
@@ -5581,7 +5581,12 @@ fn project_amend_add_then_list_shows_amendment() {
         .output()
         .expect("run amend add");
     assert!(add_output.status.success());
-    let amendment_id = String::from_utf8_lossy(&add_output.stdout).trim().to_owned();
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
 
     // List amendments
     let list_output = Command::new(binary())
@@ -5607,7 +5612,12 @@ fn project_amend_remove_existing() {
         .output()
         .expect("run amend add");
     assert!(add_output.status.success());
-    let amendment_id = String::from_utf8_lossy(&add_output.stdout).trim().to_owned();
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
 
     let remove_output = Command::new(binary())
         .args(["project", "amend", "remove", &amendment_id])
@@ -5694,7 +5704,12 @@ fn project_amend_duplicate_manual_add_is_noop() {
         .output()
         .expect("first add");
     assert!(first.status.success());
-    let first_id = String::from_utf8_lossy(&first.stdout).trim().to_owned();
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    let first_id = first_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
 
     let second = Command::new(binary())
         .args(["project", "amend", "add", "--text", body])

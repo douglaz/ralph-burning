@@ -154,7 +154,7 @@ where
 
         // Route through the shared amendment staging service for consistent
         // dedup, journal persistence, snapshot sync, and completed-project reopen.
-        let staged_count = if !amendments.is_empty() {
+        let staged_ids = if !amendments.is_empty() {
             let project_id = ProjectId::new(task.project_id.clone())?;
             record_service::stage_amendment_batch(
                 self.amendment_queue,
@@ -167,8 +167,9 @@ where
                 &amendments,
             )?
         } else {
-            0
+            Vec::new()
         };
+        let staged_count = staged_ids.len();
 
         // Check if the project was reopened (task was completed + amendments staged).
         let mut reopened_project = false;
@@ -206,8 +207,8 @@ where
                 super::model::DaemonJournalEventType::AmendmentsStaged,
                 json!({
                     "task_id": task.task_id,
-                    "count": amendments.len(),
-                    "amendment_ids": amendments.iter().map(|a| a.amendment_id.as_str()).collect::<Vec<_>>(),
+                    "count": staged_count,
+                    "amendment_ids": staged_ids,
                 }),
             )?;
         }

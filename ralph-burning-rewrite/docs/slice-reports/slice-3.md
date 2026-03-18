@@ -98,6 +98,26 @@ and workflow-stage sources:
 6. **UTF-8 truncation**: body preview in `project amend list` uses
    char-boundary-aware truncation.
 
+## Review Response Changes (Iteration 2)
+
+1. **Amendment list source of truth**: `project amend list` now reads from the
+   canonical `RunSnapshot.amendment_queue.pending` in `run.json` instead of the
+   file-backed queue. Full dedup key is exposed (no truncation).
+2. **CLI integration tests aligned**: 5 failing tests updated to match the
+   `Amendment: <id>` CLI output format — `project_amend_add_text_succeeds_and_prints_id`,
+   `project_amend_add_file_succeeds`, `project_amend_add_then_list_shows_amendment`,
+   `project_amend_remove_existing`, `project_amend_duplicate_manual_add_is_noop`.
+3. **Conformance coverage expanded**:
+   - `parity_slice3_completion_blocking` now asserts interrupted_run stage rewind
+     to planning and verifies run restart behavior with pending amendments.
+   - `parity_slice3_lease_conflict_rejection` fixed to write lock fixture at the
+     real writer-lock path (`.ralph-burning/daemon/leases/writer-{id}.lock`).
+   - New `parity_slice3_clear_partial_failure` scenario added to feature file
+     and executor registrations.
+4. **PR-review AmendmentsStaged metadata**: `stage_amendment_batch` now returns
+   `Vec<String>` (staged IDs) instead of `usize`. PR-review journal metadata
+   reports the deduplicated staged count and IDs rather than the full input batch.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

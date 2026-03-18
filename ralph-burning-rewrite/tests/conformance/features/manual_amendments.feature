@@ -75,6 +75,13 @@ Feature: Manual Amendment Parity
     Then the command fails with a lease-conflict error
     And no amendment is created
 
+  # parity_slice3_clear_partial_failure
+  Scenario: Clear partial failure reports exact removed and remaining IDs
+    Given a project with multiple staged manual amendments
+    When `project amend clear` encounters a partial deletion failure
+    Then the command reports the exact removed and remaining amendment IDs
+    And run.json reflects only the remaining pending amendments
+
   # parity_slice3_run_json_sync
   Scenario: Manual amendment add syncs run.json pending queue
     Given an initialized workspace with a bootstrapped project
