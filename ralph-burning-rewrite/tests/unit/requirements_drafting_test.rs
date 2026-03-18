@@ -681,24 +681,46 @@ mod service_integration {
         assert!(result.seed_prompt_path.is_some());
     }
 
+    /// Helper: build a stub adapter that triggers a question round via
+    /// validation returning `needs_questions` on the first call, then `pass`
+    /// on subsequent calls. Returns the given questions from question_set.
+    fn stub_with_validation_questions(questions: serde_json::Value) -> StubBackendAdapter {
+        StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Stub validation needs more info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Additional context required"]
+                    }),
+                    json!({
+                        "outcome": "pass",
+                        "evidence": ["Stub validation passes after answers"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                ],
+            )
+            .with_label_payload("requirements:question_set", questions)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn draft_with_questions_transitions_to_awaiting_answers() {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "Test question?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Test question?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -764,20 +786,17 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Set up a draft run with one question
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        // Set up a draft run with one question via validation needs_questions
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -818,19 +837,16 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "Required question?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Required question?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -963,20 +979,17 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Create a draft run that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        // Create a draft run that transitions to awaiting_answers via validation
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1051,19 +1064,16 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1216,25 +1226,22 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    },
-                    {
-                        "id": "q2",
-                        "prompt": "What language?",
-                        "rationale": "Testing",
-                        "required": false
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                },
+                {
+                    "id": "q2",
+                    "prompt": "What language?",
+                    "rationale": "Testing",
+                    "required": false
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1306,19 +1313,16 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1419,54 +1423,63 @@ mod service_integration {
         );
     }
 
-    /// Regression: draft-mode runs with empty questions must still persist
-    /// `latest_question_set_id` and a QuestionsGenerated journal entry.
+    /// Full-mode draft pipeline completes all seven stages when validation
+    /// passes, recording stage completion in committed_stages and journal.
     #[tokio::test(flavor = "multi_thread")]
-    async fn draft_with_empty_questions_persists_question_set_id_and_journal_event() {
+    async fn draft_full_mode_records_committed_stages_and_journal_events() {
         use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Default stub returns empty questions for question_set
+        // Default stub returns pass for validation — no question round
         let adapter = StubBackendAdapter::default();
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Empty questions regression test", now)
+            .draft(temp_dir.path(), "Full mode stages test", now)
             .await
             .expect("draft should succeed");
 
-        // Check run.json has latest_question_set_id set
         let store = FsRequirementsStore;
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         assert_eq!(run.status, RequirementsStatus::Completed);
-        assert!(
-            run.latest_question_set_id.is_some(),
-            "empty-question run must still persist latest_question_set_id in run.json"
-        );
 
-        // Check journal has QuestionsGenerated event
+        // Verify all seven full-mode stages are committed
+        let expected_stages = [
+            "ideation", "research", "synthesis", "implementation_spec",
+            "gap_analysis", "validation", "project_seed",
+        ];
+        for stage in &expected_stages {
+            assert!(
+                run.committed_stages.contains_key(*stage),
+                "committed_stages should contain '{stage}'"
+            );
+        }
+
+        // Check journal has StageCompleted events
         let journal = store
             .read_journal(temp_dir.path(), &run_id)
             .expect("read journal");
-        let has_qs_event = journal
+        let stage_completed_count = journal
             .iter()
-            .any(|e| e.event_type == RequirementsJournalEventType::QuestionsGenerated);
+            .filter(|e| e.event_type == RequirementsJournalEventType::StageCompleted)
+            .count();
         assert!(
-            has_qs_event,
-            "empty-question run must have QuestionsGenerated event in journal"
+            stage_completed_count >= 6,
+            "journal should have StageCompleted events for ideation through validation, got {stage_completed_count}"
         );
     }
 
-    /// Regression: when answers advance the run to question round 2, draft and
-    /// review history IDs must use the incremented round instead of `-1`.
+    /// Full-mode answer re-runs the pipeline from synthesis when the question
+    /// round advances. Ideation and research are reused from cache; synthesis
+    /// and downstream produce new stage payloads at the incremented round.
     #[tokio::test(flavor = "multi_thread")]
-    async fn answer_uses_round_two_ids_for_draft_and_review_history() {
+    async fn answer_reruns_full_mode_pipeline_with_cache_reuse() {
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
         std::env::set_var("EDITOR", "true");
@@ -1474,27 +1487,33 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Round-aware history IDs", now)
+            .draft(temp_dir.path(), "Round-aware full-mode answer", now)
             .await
             .expect("draft should succeed");
+
+        // Verify awaiting answers state — ideation and research committed,
+        // synthesis and downstream cleared by question round.
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+        assert!(run.committed_stages.contains_key("ideation"));
+        assert!(run.committed_stages.contains_key("research"));
+        assert!(!run.committed_stages.contains_key("synthesis"));
 
         let answers_path = temp_dir
             .path()
@@ -1508,53 +1527,36 @@ mod service_integration {
             .await
             .expect("answer should succeed");
 
-        let store = FsRequirementsStore;
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
-        let run_dir = temp_dir
-            .path()
-            .join(".ralph-burning/requirements")
-            .join(&run_id);
 
         assert_eq!(run.status, RequirementsStatus::Completed);
         assert_eq!(run.question_round, 2);
         assert_eq!(run.latest_question_set_id, Some(format!("{run_id}-qs-1")));
-        assert_eq!(run.latest_draft_id, Some(format!("{run_id}-draft-2")));
-        assert_eq!(run.latest_review_id, Some(format!("{run_id}-review-2")));
+
+        // All seven stages should be committed after answer completes
+        let expected_stages = [
+            "ideation", "research", "synthesis", "implementation_spec",
+            "gap_analysis", "validation", "project_seed",
+        ];
+        for stage in &expected_stages {
+            assert!(
+                run.committed_stages.contains_key(*stage),
+                "committed_stages should contain '{stage}' after answer"
+            );
+        }
+
+        // Seed files should exist
+        let run_dir = temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id);
         assert!(
-            run_dir
-                .join(format!("history/payloads/{run_id}-draft-2.json"))
-                .exists(),
-            "round-2 draft payload should exist"
+            run_dir.join("seed/project.json").exists(),
+            "seed/project.json should exist after answer completes"
         );
         assert!(
-            run_dir
-                .join(format!("history/artifacts/{run_id}-draft-art-2.md"))
-                .exists(),
-            "round-2 draft artifact should exist"
-        );
-        assert!(
-            run_dir
-                .join(format!("history/payloads/{run_id}-review-2.json"))
-                .exists(),
-            "round-2 review payload should exist"
-        );
-        assert!(
-            run_dir
-                .join(format!("history/artifacts/{run_id}-review-art-2.md"))
-                .exists(),
-            "round-2 review artifact should exist"
-        );
-        assert!(
-            !run_dir
-                .join(format!("history/payloads/{run_id}-draft-1.json"))
-                .exists(),
-            "round-2 answer path should not reuse round-1 draft payload IDs"
-        );
-        assert!(
-            !run_dir
-                .join(format!("history/payloads/{run_id}-review-1.json"))
-                .exists(),
-            "round-2 answer path should not reuse round-1 review payload IDs"
+            run_dir.join("seed/prompt.md").exists(),
+            "seed/prompt.md should exist after answer completes"
         );
     }
 
@@ -1572,19 +1574,16 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1672,19 +1671,16 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What language?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What language?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1804,27 +1800,24 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "team-name",
-                        "prompt": "What is the team's \"official\" name?\nInclude the division.",
-                        "rationale": "Needed for project naming.\nSee policy doc\\appendix.",
-                        "required": true,
-                        "suggested_default": "Engineering \"Platform\"\nTeam"
-                    },
-                    {
-                        "id": "api_version",
-                        "prompt": "Which API version? (e.g. v2\\v3)",
-                        "rationale": "Determines compat",
-                        "required": false,
-                        "suggested_default": "v2"
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "team-name",
+                    "prompt": "What is the team's \"official\" name?\nInclude the division.",
+                    "rationale": "Needed for project naming.\nSee policy doc\\appendix.",
+                    "required": true,
+                    "suggested_default": "Engineering \"Platform\"\nTeam"
+                },
+                {
+                    "id": "api_version",
+                    "prompt": "Which API version? (e.g. v2\\v3)",
+                    "rationale": "Determines compat",
+                    "required": false,
+                    "suggested_default": "v2"
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 

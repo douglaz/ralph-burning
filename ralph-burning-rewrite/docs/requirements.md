@@ -46,7 +46,7 @@ The `quick_revision_count` field in `run.json` tracks how many revisions were pe
 
 The project seed (`seed/project.json`) carries a `version` field:
 
-- **v2** (current): includes `source` metadata with mode, committed stages, and timing
+- **v2** (current): includes `source` metadata with `mode`, `run_id`, `question_rounds`, and `quick_revisions` (quick mode only)
 - **v1**: supported for backward compatibility (no source metadata)
 - Unsupported versions are rejected at contract validation
 

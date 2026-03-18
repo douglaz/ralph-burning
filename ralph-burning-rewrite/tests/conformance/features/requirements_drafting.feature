@@ -339,8 +339,8 @@ Feature: Requirements Drafting and Project Seed Handoff
     Given a completed full-mode requirements run
     When the seed project.json is read
     Then version is 2
-    And source.mode is "full"
-    And source.committed_stages lists the seven full-mode stages
+    And source.mode is "draft"
+    And source.run_id matches the requirements run ID
 
   # parity_slice1_show_stage_progress
   Scenario: Show displays stage-aware progress for full-mode run
@@ -348,3 +348,9 @@ Feature: Requirements Drafting and Project Seed Handoff
     When the user runs "requirements show <run-id>"
     Then the output includes "Completed Stages:"
     And the output includes "Current Stage:" or all stages are committed
+
+  # parity_slice1_backward_compat_run_json
+  Scenario: Pre-Slice-1 run.json without new fields deserializes correctly
+    Given a completed requirements run with Slice 1 fields present
+    When the Slice 1 fields are stripped from run.json
+    Then "requirements show" still works correctly

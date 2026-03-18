@@ -940,6 +940,12 @@ where
             return Err(e);
         }
 
+        // Invalidate synthesis and downstream committed stages before pausing.
+        // Ideation and research survive; synthesis onwards must be rerun after answers.
+        for stage in FullModeStage::question_round_invalidated() {
+            run.committed_stages.remove(stage.as_str());
+        }
+
         run.question_round = question_round;
         run.latest_question_set_id = Some(payload_id.clone());
         run.updated_at = Utc::now();
@@ -1573,7 +1579,13 @@ where
                 &seed_payload_id,
                 &seed_artifact_id,
             );
+            // Restore canonical state to the last successful pre-seed boundary.
             run.latest_seed_id = None;
+            run.committed_stages.remove(FullModeStage::ProjectSeed.as_str());
+            if run.mode == super::model::RequirementsMode::Draft {
+                // Reset current_stage to validation (last successful stage before seed).
+                run.current_stage = Some(FullModeStage::Validation);
+            }
             self.fail_run(
                 base_dir,
                 run,

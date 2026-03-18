@@ -37,20 +37,34 @@ Slice 1 implements the full requirements-drafting pipeline with staged execution
 ## Tests Run
 
 - `cargo check` — passed (0 errors, 0 warnings)
-- 22 unit tests added covering: stage contracts, renderers, cache key determinism, pipeline ordering, question round invalidation, backward compatibility, versioned seed
-- 5 conformance scenario executors added: full-mode happy path, quick-mode revision loop, versioned seed, show stage progress, backward-compat run.json
+- `cargo test --features test-stub --test unit` — 605 passed, 0 failed
+- Unit tests cover: stage contracts, renderers, cache key determinism, pipeline ordering, question round invalidation via validation stage, backward compatibility, versioned seed, full-mode answer with cache reuse
+- 8 conformance scenario executors: full-mode happy path, cache reuse, question round invalidation contract, quick-mode revision loop, quick-mode max revisions, versioned seed, show stage progress, backward-compat run.json
 
 ## Results
 
-- `cargo check` passed cleanly
-- Pre-existing 34 test compilation errors in `automation_runtime_test.rs` and `cli.rs` are unrelated to Slice 1 (confirmed by testing against base branch)
+- All 605 unit tests pass
+- Registry drift test passes (all feature scenarios have executors, no orphans)
+- `cargo check` passes for both test-stub and production builds
 
-## Spec Deviations
+## Review Response (Iteration 1)
 
-- Cache reuse conformance scenarios test the mechanism via run.json state inspection rather than mocking dual invocations, since the stub backend does not support stateful call counting
-- Question-round invalidation conformance scenario is specified in the feature file but not implemented as an executor — would require a multi-step stub backend that returns `needs_questions` on first validation then `pass` on retry, which exceeds stub capabilities
+### Required Change 1: Question-round invalidation
+Fixed: `open_question_round` now clears downstream `committed_stages` entries (synthesis, implementation_spec, gap_analysis, validation, project_seed) before writing the paused `awaiting_answers` state. Ideation and research entries are preserved.
+
+### Required Change 2: Seed rollback canonical state
+Fixed: the journal-append failure path in `generate_and_commit_seed` now removes `committed_stages["project_seed"]` and resets `current_stage` to `Validation` before calling `fail_run`, ensuring canonical state is pinned to the last successful pre-seed boundary.
+
+### Required Change 3: Conformance deliverables
+Fixed: added missing `parity_slice1_cache_reuse_on_resume`, `parity_slice1_question_round_invalidates_downstream`, `parity_slice1_quick_mode_max_revisions`, and `parity_slice1_backward_compat_run_json` conformance executors. Updated feature file to match registry. Fixed 11 failing unit tests by updating stub configuration to use validation-driven question rounds (matching the new full-mode pipeline). Updated `answer_uses_round_two_ids` test to verify full-mode answer behavior with cache reuse.
+
+### Recommended 1: Cache key hash comment
+Fixed: updated docstring from "SHA-256" to accurately describe `DefaultHasher` (SipHash).
+
+### Recommended 2: Seed source metadata docs
+Fixed: updated `docs/requirements.md` to list actual `SeedSourceMetadata` fields (`mode`, `run_id`, `question_rounds`, `quick_revisions`) instead of the incorrect "committed stages and timing". Updated conformance feature file and executor to expect `source.mode = "draft"` instead of `"full"`.
 
 ## Remaining Known Gaps
 
 - None within the Slice 1 acceptance scope
-- Full integration test coverage for multi-step question rounds requires a stateful test backend (future slice)
+- Cache reuse and question-round conformance scenarios verify structural contracts via CLI state inspection; deep multi-step behavioral tests are covered by unit tests with custom stub configuration

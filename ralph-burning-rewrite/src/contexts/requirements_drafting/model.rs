@@ -624,7 +624,8 @@ pub struct AnswerEntry {
 // ── Cache key computation ───────────────────────────────────────────────────
 
 /// Compute a deterministic cache key from stage input and upstream dependency outputs.
-/// Uses SHA-256 of the concatenated input components.
+/// Uses `DefaultHasher` (SipHash) for fast, collision-resistant hashing within a
+/// single process run. Not suitable for cross-process or persistent cache identity.
 pub fn compute_stage_cache_key(stage: FullModeStage, inputs: &[&str]) -> String {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
