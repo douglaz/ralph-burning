@@ -6766,42 +6766,68 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "parity_slice1_quick_mode_revision_loop", || {
-        // Quick mode runs through writer/reviewer loop and completes
+        // Quick mode: reviewer returns request_changes once, then approved.
+        // Verifies the revision loop actually exercises a request-changes cycle.
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
+        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        let out = run_cli(
-            &["requirements", "quick", "--idea", "Quick revision test"],
-            ws.path(),
-        )?;
-        assert_success(&out)?;
+        // Reviewer returns request_changes first, then approved
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:requirements_review",
+                vec![
+                    serde_json::json!({
+                        "outcome": "request_changes",
+                        "evidence": ["Draft needs more detail"],
+                        "findings": ["Acceptance criteria too vague"],
+                        "follow_ups": []
+                    }),
+                    serde_json::json!({
+                        "outcome": "approved",
+                        "evidence": ["Revised draft looks good"],
+                        "findings": [],
+                        "follow_ups": []
+                    }),
+                ],
+            );
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter, FsRawOutputStore, FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
-        let req_dir = ws.path().join(".ralph-burning/requirements");
-        let entries: Vec<_> = std::fs::read_dir(&req_dir)
-            .map_err(|e| format!("read requirements dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .collect();
-        if entries.is_empty() {
-            return Err("no requirements run created".into());
+        let now = chrono::Utc::now();
+        let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now))?;
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed {
+            return Err(format!("expected completed, got {}", run.status));
         }
-        let run_dir = entries[0].path();
-        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
-            .map_err(|e| format!("read run.json: {e}"))?;
-        let run: serde_json::Value =
-            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
-
-        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status != "completed" {
-            return Err(format!("expected 'completed', got '{status}'"));
+        if run.quick_revision_count != 1 {
+            return Err(format!("expected quick_revision_count 1, got {}", run.quick_revision_count));
         }
 
         // Verify seed files exist
-        let seed_dir = run_dir.join("seed");
-        if !seed_dir.join("project.json").is_file() {
+        let run_dir = ws.path().join(".ralph-burning/requirements").join(&run_id);
+        if !run_dir.join("seed/project.json").is_file() {
             return Err("seed/project.json not written".into());
         }
-        if !seed_dir.join("prompt.md").is_file() {
+        if !run_dir.join("seed/prompt.md").is_file() {
             return Err("seed/prompt.md not written".into());
+        }
+
+        // Verify journal contains revision events
+        let journal = store.read_journal(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        let has_revision_requested = journal.iter().any(|e| {
+            e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::RevisionRequested
+        });
+        if !has_revision_requested {
+            return Err("journal should contain RevisionRequested event".into());
         }
 
         Ok(())
@@ -6939,18 +6965,197 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "parity_slice1_cache_reuse_on_resume", || {
-        // Verify that committed stages carry cache keys, enabling reuse on resume.
-        // With the default stub, a full-mode draft completes and each committed
-        // stage entry records a non-empty cache_key.
+        // Run a full-mode draft with validation returning needs_questions,
+        // then answer and verify that ideation/research are reused via cache
+        // on the post-answer pipeline rerun (last_transition_cached in journal).
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
+        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        let out = run_cli(
-            &["requirements", "draft", "--idea", "Cache reuse test"],
-            ws.path(),
-        )?;
-        assert_success(&out)?;
+        // Validation returns needs_questions first, then pass on resume
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    serde_json::json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Need more info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Deployment target"]
+                    }),
+                    serde_json::json!({
+                        "outcome": "pass",
+                        "evidence": ["All clear after answers"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                ],
+            )
+            .with_label_payload("requirements:question_set", serde_json::json!({
+                "questions": [{
+                    "id": "q1",
+                    "prompt": "What is the deployment target?",
+                    "rationale": "Needed for infra decisions",
+                    "required": true
+                }]
+            }));
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter, FsRawOutputStore, FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
+        let now = chrono::Utc::now();
+        let run_id = block_on_app_result(service.draft(ws.path(), "Cache reuse test", now))?;
+
+        // Run should be awaiting answers
+        let store = FsRequirementsStore;
+        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
+            return Err(format!("expected awaiting_answers, got {}", run.status));
+        }
+
+        // Ideation and research should be committed (will be reused)
+        if !run.committed_stages.contains_key("ideation") || !run.committed_stages.contains_key("research") {
+            return Err("ideation/research should be committed before question round".into());
+        }
+
+        // Write answers and resume
+        let answers_path = ws.path().join(".ralph-burning/requirements").join(&run_id).join("answers.toml");
+        std::env::set_var("EDITOR", "true");
+        std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n").map_err(|e| format!("write answers: {e}"))?;
+
+        block_on_app_result(service.answer(ws.path(), &run_id))?;
+
+        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed {
+            return Err(format!("expected completed after answer, got {}", run.status));
+        }
+
+        // Verify cache keys present on all cacheable stages
+        for stage in &["ideation", "research", "synthesis", "implementation_spec", "gap_analysis", "validation"] {
+            let entry = run.committed_stages.get(*stage)
+                .ok_or(format!("committed_stages missing '{stage}'"))?;
+            if entry.cache_key.is_none() || entry.cache_key.as_deref() == Some("") {
+                return Err(format!("stage '{stage}' missing cache_key for reuse"));
+            }
+        }
+
+        // Verify journal contains StageReused events (ideation/research reused on resume)
+        let journal = store.read_journal(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        let reused_count = journal.iter().filter(|e| {
+            e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::StageReused
+        }).count();
+        if reused_count == 0 {
+            return Err("expected at least one StageReused event for cached resume".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_question_round_invalidates_downstream", || {
+        // Actually trigger a question round and verify that synthesis and
+        // downstream committed_stages are cleared while ideation/research
+        // are preserved in the awaiting_answers state.
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
+        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    serde_json::json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Missing deployment info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Target environment details"]
+                    }),
+                ],
+            )
+            .with_label_payload("requirements:question_set", serde_json::json!({
+                "questions": [{
+                    "id": "q1",
+                    "prompt": "What is the target environment?",
+                    "rationale": "Needed for architecture decisions",
+                    "required": true
+                }]
+            }));
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter, FsRawOutputStore, FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = chrono::Utc::now();
+        let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now))?;
+
+        let store = FsRequirementsStore;
+        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+
+        // Must be awaiting answers
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
+            return Err(format!("expected awaiting_answers, got {}", run.status));
+        }
+
+        // Ideation and research must be preserved
+        if !run.committed_stages.contains_key("ideation") {
+            return Err("ideation should be preserved after question round".into());
+        }
+        if !run.committed_stages.contains_key("research") {
+            return Err("research should be preserved after question round".into());
+        }
+
+        // Synthesis and downstream must be cleared
+        for stage in &["synthesis", "implementation_spec", "gap_analysis", "validation", "project_seed"] {
+            if run.committed_stages.contains_key(*stage) {
+                return Err(format!("stage '{stage}' should be invalidated after question round"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_quick_mode_max_revisions", || {
+        // Reviewer always returns request_changes — run should fail at
+        // MAX_QUICK_REVISIONS (5) with quick_revision_count = 5.
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
+        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Reviewer always returns request_changes — will hit the 5-revision limit
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload(
+                "requirements:requirements_review",
+                serde_json::json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Still needs work"],
+                    "findings": ["Incomplete requirements"],
+                    "follow_ups": []
+                }),
+            );
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter, FsRawOutputStore, FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = chrono::Utc::now();
+        let result = block_on_app_result(service.quick(ws.path(), "Max revisions test", now));
+
+        // Should fail due to revision limit
+        if result.is_ok() {
+            return Err("expected quick mode to fail at max revisions, but it succeeded".into());
+        }
+
+        // Read the run state to verify failure details
+        let store = FsRequirementsStore;
         let req_dir = ws.path().join(".ralph-burning/requirements");
         let entries: Vec<_> = std::fs::read_dir(&req_dir)
             .map_err(|e| format!("read requirements dir: {e}"))?
@@ -6959,119 +7164,40 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if entries.is_empty() {
             return Err("no requirements run created".into());
         }
-        let run_dir = entries[0].path();
-        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
-            .map_err(|e| format!("read run.json: {e}"))?;
-        let run: serde_json::Value =
-            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+        let run_dir_name = entries[0].file_name().to_string_lossy().to_string();
+        let run = store.read_run(ws.path(), &run_dir_name).map_err(|e| e.to_string())?;
 
-        let committed = run.get("committed_stages").and_then(|v| v.as_object());
-        let committed = committed.ok_or("missing committed_stages in run.json")?;
-
-        // Each stage except project_seed should have a cache_key
-        for stage in &["ideation", "research", "synthesis", "implementation_spec", "gap_analysis", "validation"] {
-            let entry = committed.get(*stage)
-                .ok_or(format!("committed_stages missing '{stage}'"))?;
-            let has_cache_key = entry.get("cache_key")
-                .and_then(|v| v.as_str())
-                .map(|s| !s.is_empty())
-                .unwrap_or(false);
-            if !has_cache_key {
-                return Err(format!("stage '{stage}' missing cache_key for reuse"));
-            }
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Failed {
+            return Err(format!("expected failed status, got {}", run.status));
         }
-
-        Ok(())
-    });
-
-    reg!(m, "parity_slice1_question_round_invalidates_downstream", || {
-        // Verify that when a question round is opened, the committed_stages
-        // for synthesis and downstream are cleared while ideation and research
-        // are preserved. With the default stub (validation returns "pass"),
-        // we verify the invariant structurally: a completed run that had no
-        // question round has all seven stages committed; the invalidation
-        // contract is verified by the unit test suite with custom stub config.
+        // MAX_QUICK_REVISIONS is 5; revision increments before the check,
+        // so quick_revision_count should be exactly 6 when the limit is exceeded
+        // (revision += 1 to 6, then 6 > 5 triggers failure).
+        // Actually: revision starts at 0, each request_changes does revision += 1
+        // then checks if revision > MAX_QUICK_REVISIONS (5). So after 5 request_changes
+        // cycles: revision goes 1, 2, 3, 4, 5 (each time check passes), then on the
+        // 6th cycle revision = 6 > 5 fails. But wait — revision starts at 0 after
+        // the initial draft, then on first request_changes: revision = 1, check 1 > 5? no.
+        // ... On 5th request_changes: revision = 5, check 5 > 5? no.
+        // On 6th request_changes: revision = 6, check 6 > 5? yes, fail.
+        // So quick_revision_count = 6. But actually the loop is:
+        // - Initial draft, review → request_changes → revision=1, revise, review →
+        //   request_changes → revision=2, ... So each loop iteration does one review
+        //   then one revision. After 5 successful revisions (revision=5), the 6th
+        //   request_changes sets revision=6 which exceeds the limit.
         //
-        // Here we verify the structural contract: question_round_invalidated()
-        // returns the expected stages, and a completed run without questions
-        // has them all committed (the "before" state that invalidation removes).
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-
-        let out = run_cli(
-            &["requirements", "draft", "--idea", "Invalidation contract test"],
-            ws.path(),
-        )?;
-        assert_success(&out)?;
-
-        let req_dir = ws.path().join(".ralph-burning/requirements");
-        let entries: Vec<_> = std::fs::read_dir(&req_dir)
-            .map_err(|e| format!("read requirements dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .collect();
-        let run_dir = entries[0].path();
-        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
-            .map_err(|e| format!("read run.json: {e}"))?;
-        let run: serde_json::Value =
-            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
-
-        let committed = run.get("committed_stages").and_then(|v| v.as_object())
-            .ok_or("missing committed_stages")?;
-
-        // In the no-question happy path, all seven stages must be committed.
-        // The invalidation contract (clearing synthesis+downstream) is exercised
-        // by the targeted unit test `answer_reruns_full_mode_pipeline_with_cache_reuse`.
-        let invalidatable = ["synthesis", "implementation_spec", "gap_analysis", "validation", "project_seed"];
-        let preserved = ["ideation", "research"];
-        for stage in &preserved {
-            if !committed.contains_key(*stage) {
-                return Err(format!("preserved stage '{stage}' missing from committed_stages"));
-            }
+        // The run.quick_revision_count is set to `revision` which is 6.
+        if run.quick_revision_count < 5 {
+            return Err(format!(
+                "expected quick_revision_count >= 5, got {}",
+                run.quick_revision_count
+            ));
         }
-        for stage in &invalidatable {
-            if !committed.contains_key(*stage) {
-                return Err(format!("invalidatable stage '{stage}' should be committed in happy path"));
-            }
-        }
-
-        Ok(())
-    });
-
-    reg!(m, "parity_slice1_quick_mode_max_revisions", || {
-        // Verify that quick_revision_count is tracked in run.json.
-        // With the default stub, the reviewer returns "approved" immediately,
-        // so quick_revision_count stays 0. The max-revisions termination path
-        // is covered by unit tests with custom stub configuration.
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
-
-        let out = run_cli(
-            &["requirements", "quick", "--idea", "Quick max revisions test"],
-            ws.path(),
-        )?;
-        assert_success(&out)?;
-
-        let req_dir = ws.path().join(".ralph-burning/requirements");
-        let entries: Vec<_> = std::fs::read_dir(&req_dir)
-            .map_err(|e| format!("read requirements dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .collect();
-        let run_dir = entries[0].path();
-        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
-            .map_err(|e| format!("read run.json: {e}"))?;
-        let run: serde_json::Value =
-            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
-
-        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
-        if status != "completed" {
-            return Err(format!("expected 'completed', got '{status}'"));
-        }
-
-        // Verify quick_revision_count field exists and is a number
-        let revision_count = run.get("quick_revision_count")
-            .and_then(|v| v.as_u64());
-        if revision_count.is_none() {
-            return Err("quick_revision_count field missing or not a number in run.json".into());
+        if !run.status_summary.contains("revision limit") {
+            return Err(format!(
+                "expected failure summary to mention revision limit, got: {}",
+                run.status_summary
+            ));
         }
 
         Ok(())

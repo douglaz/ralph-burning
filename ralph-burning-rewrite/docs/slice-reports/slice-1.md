@@ -64,7 +64,21 @@ Fixed: updated docstring from "SHA-256" to accurately describe `DefaultHasher` (
 ### Recommended 2: Seed source metadata docs
 Fixed: updated `docs/requirements.md` to list actual `SeedSourceMetadata` fields (`mode`, `run_id`, `question_rounds`, `quick_revisions`) instead of the incorrect "committed stages and timing". Updated conformance feature file and executor to expect `source.mode = "draft"` instead of `"full"`.
 
+## Review Response (Iteration 2)
+
+### Required Change 1: Question-round accounting
+Fixed: `question_round` now tracks completed rounds only. `open_question_round` no longer sets `run.question_round` — it uses the round number only as a local for naming suffixes. `answer()` increments `question_round` once per completed round. One question round now persists as `1` in both `run.json` and `seed/project.json`.
+
+### Required Change 2: Journal durability for Slice 1 transitions
+Fixed: `QuestionRoundOpened`, `RevisionRequested`, and `RevisionCompleted` journal appends are now durable — if they fail, canonical state is pinned to the last fully committed boundary and `fail_run` is called. `RevisionCompleted` failure also rolls back the revised draft payload/artifact pair.
+
+### Required Change 3: Conformance coverage
+Fixed: all four gap scenarios now exercise actual behaviors via in-process `RequirementsService` with custom stub configurations:
+- `parity_slice1_cache_reuse_on_resume` — triggers a question round, answers, and verifies `StageReused` journal events for cached ideation/research
+- `parity_slice1_question_round_invalidates_downstream` — triggers validation `needs_questions`, verifies synthesis+downstream cleared and ideation/research preserved
+- `parity_slice1_quick_mode_revision_loop` — reviewer returns `request_changes` once then `approved`, verifies `quick_revision_count = 1` and `RevisionRequested` in journal
+- `parity_slice1_quick_mode_max_revisions` — reviewer always returns `request_changes`, verifies run fails with revision limit message and `quick_revision_count >= 5`
+
 ## Remaining Known Gaps
 
 - None within the Slice 1 acceptance scope
-- Cache reuse and question-round conformance scenarios verify structural contracts via CLI state inspection; deep multi-step behavioral tests are covered by unit tests with custom stub configuration

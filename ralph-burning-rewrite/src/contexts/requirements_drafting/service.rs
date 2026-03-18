@@ -946,7 +946,8 @@ where
             run.committed_stages.remove(stage.as_str());
         }
 
-        run.question_round = question_round;
+        // Do NOT set run.question_round here — it tracks completed rounds,
+        // and this round is only completed when `answer()` increments it.
         run.latest_question_set_id = Some(payload_id.clone());
         run.updated_at = Utc::now();
         self.store.write_run(base_dir, &run_id, run)?;
@@ -957,9 +958,19 @@ where
             RequirementsJournalEventType::QuestionRoundOpened,
             run,
         );
-        let _ = self
+        if let Err(e) = self
             .store
-            .append_journal_event(base_dir, &run_id, &qs_event);
+            .append_journal_event(base_dir, &run_id, &qs_event)
+        {
+            self.fail_run(
+                base_dir,
+                run,
+                seq,
+                &format!("journal append failed for question_round_opened: {e}"),
+            )
+            .await?;
+            return Err(e);
+        }
         seq += 1;
 
         let question_count = qs.questions.len() as u32;
@@ -1322,16 +1333,27 @@ where
                         });
                     }
 
-                    // Journal the revision request
+                    // Journal the revision request — must succeed to maintain
+                    // the rollback invariant for Slice 1 transitions.
                     let rev_event = journal_event(
                         seq,
                         Utc::now(),
                         RequirementsJournalEventType::RevisionRequested,
                         run,
                     );
-                    let _ = self
+                    if let Err(e) = self
                         .store
-                        .append_journal_event(base_dir, &run_id, &rev_event);
+                        .append_journal_event(base_dir, &run_id, &rev_event)
+                    {
+                        self.fail_run(
+                            base_dir,
+                            run,
+                            seq,
+                            &format!("journal append failed for revision_requested: {e}"),
+                        )
+                        .await?;
+                        return Err(e);
+                    }
                     seq += 1;
 
                     // Generate revised draft with feedback
@@ -1403,9 +1425,28 @@ where
                         RequirementsJournalEventType::RevisionCompleted,
                         run,
                     );
-                    let _ = self
+                    if let Err(e) = self
                         .store
-                        .append_journal_event(base_dir, &run_id, &rev_complete);
+                        .append_journal_event(base_dir, &run_id, &rev_complete)
+                    {
+                        // Roll back the revised draft
+                        let _ = self.store.remove_payload_artifact_pair(
+                            base_dir,
+                            &run_id,
+                            &revised_payload_id,
+                            &revised_artifact_id,
+                        );
+                        run.latest_draft_id = None;
+                        run.recommended_flow = None;
+                        self.fail_run(
+                            base_dir,
+                            run,
+                            seq,
+                            &format!("journal append failed for revision_completed: {e}"),
+                        )
+                        .await?;
+                        return Err(e);
+                    }
                     seq += 1;
 
                     last_draft_artifact = revised.artifact.clone();

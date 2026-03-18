@@ -1530,7 +1530,8 @@ mod service_integration {
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         assert_eq!(run.status, RequirementsStatus::Completed);
-        assert_eq!(run.question_round, 2);
+        // question_round tracks completed rounds: 1 round opened + answered = 1
+        assert_eq!(run.question_round, 1);
         assert_eq!(run.latest_question_set_id, Some(format!("{run_id}-qs-1")));
 
         // All seven stages should be committed after answer completes
@@ -1617,7 +1618,7 @@ mod service_integration {
 
         // Transition to failed state (simulating draft generation failure)
         run.status = RequirementsStatus::Failed;
-        run.question_round = 2;
+        run.question_round = 1;
         run.status_summary = "failed: draft generation error after answers".to_owned();
         run.updated_at = chrono::Utc::now();
         store
@@ -1700,8 +1701,8 @@ mod service_integration {
         // Simulate: run progressed past answers, draft was committed, then
         // the run failed during review.
         run.status = RequirementsStatus::Failed;
-        run.latest_draft_id = Some(format!("{run_id}-draft-2"));
-        run.question_round = 2;
+        run.latest_draft_id = Some(format!("{run_id}-draft-1"));
+        run.question_round = 1;
         run.status_summary = "failed: review error after draft".to_owned();
         run.updated_at = chrono::Utc::now();
         store
