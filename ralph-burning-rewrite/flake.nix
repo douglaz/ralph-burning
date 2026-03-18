@@ -33,7 +33,7 @@
         };
 
         staticPackage = pkgs.pkgsStatic.rustPlatform.buildRustPackage (commonArgs // {
-          doCheck = false;
+          cargoTestFlags = [ "--features" "test-stub" ];
           postInstall = ''
             echo "verifying static linkage..."
             file_output="$(${pkgs.file}/bin/file "$out/bin/ralph-burning")"
@@ -46,7 +46,7 @@
         });
 
         dynamicPackage = pkgs.rustPlatform.buildRustPackage (commonArgs // {
-          doCheck = false;
+          cargoTestFlags = [ "--features" "test-stub" ];
         });
       in
       {
