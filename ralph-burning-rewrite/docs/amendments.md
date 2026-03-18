@@ -40,25 +40,53 @@ service automatically:
 
 This ensures the project is picked up on the next resume cycle.
 
+## Canonical state sync
+
+All amendment mutations (add, remove, clear, reopen) update both durable
+amendment files on disk **and** the `amendment_queue.pending` array in
+`run.json`. This ensures `run.json` is always the canonical source of truth
+for pending amendments, and that completion gating, resume reconciliation,
+and snapshot queries all see a consistent view.
+
+## Shared staging service
+
+Both manual and automated (PR-review) amendment intake converge on the same
+shared staging service (`stage_amendment_batch` / `add_manual_amendment`),
+ensuring consistent behavior for:
+- Dedup handling
+- Journal persistence
+- Snapshot sync
+- Completed-project reopen
+
 ## Lease conflict protection
 
-Manual amendments are rejected with `AmendmentLeaseConflict` if the project's
-run status is `Running`. This prevents data races between the CLI and an
-in-flight workflow execution.
+Manual amendments are rejected with `AmendmentLeaseConflict` if a writer
+lease is held on the project. The CLI acquires an RAII writer lease before
+performing any mutation, preventing races between concurrent CLI invocations
+and in-flight workflow execution.
 
 ## Journal events
 
-Every manual amendment emits an `amendment_queued` journal event with:
+Every amendment (manual and automated) emits an `amendment_queued` journal
+event with:
 - `amendment_id`
-- `source` ("manual")
+- `source` (e.g. "manual", "pr_review", "workflow_stage")
 - `dedup_key`
 - `body`
+
+## CLI output
+
+`project amend list` surfaces per-amendment metadata including the amendment
+ID, source type, a truncated dedup key, and a UTF-8-safe body preview.
+
+On partial `clear` failure, the CLI reports the exact removed and remaining
+amendment IDs.
 
 ## Error conditions
 
 | Error                      | When                                      |
 |----------------------------|-------------------------------------------|
-| `AmendmentLeaseConflict`   | Project is currently running               |
+| `AmendmentLeaseConflict`   | Writer lease is held on the project        |
 | `DuplicateAmendment`       | Same dedup_key already pending (soft)      |
 | `AmendmentNotFound`        | Remove targets a nonexistent amendment     |
 | `AmendmentClearPartial`    | Some files failed to delete during clear   |

@@ -1821,7 +1821,16 @@ fn remove_amendment_succeeds_for_existing() {
         _ => panic!("expected Created"),
     };
 
-    let remove_result = service::remove_amendment(&queue, &base, &pid, &amendment_id);
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write_rm = FakeRunSnapshotWriteStore::new();
+    let remove_result = service::remove_amendment(
+        &queue,
+        &run_store,
+        &run_write_rm,
+        &base,
+        &pid,
+        &amendment_id,
+    );
     assert!(remove_result.is_ok());
     assert!(queue.amendments.borrow().is_empty());
 }
@@ -1832,7 +1841,9 @@ fn remove_amendment_fails_for_missing() {
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::remove_amendment(&queue, &base, &pid, "nonexistent");
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let result = service::remove_amendment(&queue, &run_store, &run_write, &base, &pid, "nonexistent");
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -1845,10 +1856,12 @@ fn remove_amendment_fails_for_missing() {
 #[test]
 fn clear_amendments_empty_returns_empty() {
     let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::clear_amendments(&queue, &base, &pid).unwrap();
+    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid).unwrap();
     assert!(result.is_empty());
 }
 
@@ -1873,7 +1886,7 @@ fn clear_amendments_removes_all() {
     )
     .unwrap();
 
-    let removed = service::clear_amendments(&queue, &base, &pid).unwrap();
+    let removed = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid).unwrap();
     assert_eq!(removed.len(), 2);
     assert!(queue.amendments.borrow().is_empty());
 }
@@ -1905,10 +1918,12 @@ fn clear_amendments_partial_failure_reports_remaining() {
         },
     ];
     let queue = FailingRemoveAmendmentQueue::with(amendments);
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::clear_amendments(&queue, &base, &pid);
+    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid);
     assert!(result.is_err());
     match result.unwrap_err() {
         AppError::AmendmentClearPartial {

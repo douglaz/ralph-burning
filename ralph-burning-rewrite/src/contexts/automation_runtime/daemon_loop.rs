@@ -2032,6 +2032,7 @@ where
             self.run_snapshot_read,
             self.run_snapshot_write,
             self.amendment_queue,
+            self.journal_store,
             github,
         );
         let tasks = DaemonTaskService::list_tasks(self.store, store_dir)?;

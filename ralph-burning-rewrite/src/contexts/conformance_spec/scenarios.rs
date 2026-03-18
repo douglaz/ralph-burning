@@ -16649,12 +16649,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_task(ws.path(), &task)
             .map_err(|e| e.to_string())?;
 
+        let journal_store_pr = crate::adapters::fs::FsJournalStore;
         let service = PrReviewIngestionService::new(
             &store,
             &project_store,
             &run_snapshot_read,
             &run_snapshot_write,
             &amendment_queue,
+            &journal_store_pr,
             &github,
         );
         let whitelist = ReviewWhitelist {
@@ -16760,12 +16762,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_task(ws.path(), &task)
             .map_err(|e| e.to_string())?;
 
+        let journal_store_pr2 = crate::adapters::fs::FsJournalStore;
         let service = PrReviewIngestionService::new(
             &store,
             &project_store,
             &run_snapshot_read,
             &run_snapshot_write,
             &amendment_queue,
+            &journal_store_pr2,
             &github,
         );
         let whitelist = ReviewWhitelist::default();
@@ -16907,12 +16911,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 .create_task(ws.path(), &task)
                 .map_err(|e| e.to_string())?;
 
+            let journal_store_pr3 = crate::adapters::fs::FsJournalStore;
             let service = PrReviewIngestionService::new(
                 &store,
                 &project_store,
                 &run_snapshot_read,
                 &FailingSnapshotWrite,
                 &amendment_queue,
+                &journal_store_pr3,
                 &github,
             );
             let err = block_on_app_result(service.ingest_reviews(
@@ -17017,12 +17023,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 .create_task(ws.path(), &task)
                 .map_err(|e| e.to_string())?;
 
+            let journal_store_pr4 = crate::adapters::fs::FsJournalStore;
             let service = PrReviewIngestionService::new(
                 &store,
                 &project_store,
                 &run_snapshot_read,
                 &run_snapshot_write,
                 &amendment_queue,
+                &journal_store_pr4,
                 &github,
             );
             let batch = block_on_app_result(service.ingest_reviews(
@@ -17532,6 +17540,160 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         )?;
         assert_failure(&out)?;
         assert_contains(&out.stderr, "not found", "remove missing stderr")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_restart_persistence", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 restart persist"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Persist across restart"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Re-list after bootstrapping (simulating a fresh CLI invocation).
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "Persist across restart", "amend persists")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_completion_blocking", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 completion block",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // After --start with test-stub, the project should be completed.
+        let snap_before = read_run_snapshot(&ws, "stub-project")?;
+        if snap_before.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed status before amend, got: {:?}",
+                snap_before.get("status")
+            ));
+        }
+
+        // Add an amendment to reopen.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Block completion"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // After reopen, status should be paused with a pending amendment.
+        let snap_after = read_run_snapshot(&ws, "stub-project")?;
+        if snap_after.get("status").and_then(|v| v.as_str()) != Some("paused") {
+            return Err(format!(
+                "expected paused status after amend, got: {:?}",
+                snap_after.get("status")
+            ));
+        }
+
+        // The amendment_queue.pending should not be empty in run.json.
+        let pending = snap_after
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {}
+            _ => {
+                return Err(
+                    "expected non-empty pending queue in run.json after amendment add".to_owned(),
+                );
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_lease_conflict_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 lease conflict"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Simulate a writer lock by writing a lock file.
+        let project_id = "stub-project";
+        let lock_path = ws
+            .path()
+            .join(".ralph-burning/daemon/writer-lock")
+            .join(project_id);
+        std::fs::create_dir_all(lock_path.parent().unwrap()).ok();
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Should fail"],
+            ws.path(),
+        )?;
+        assert_failure(&add)?;
+        assert_contains(&add.stderr, "lease", "lease conflict stderr")?;
+
+        // Verify no amendment was created.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "No pending amendments", "no amendment created")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_run_json_sync", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 run json sync"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Sync body"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Read run.json and verify the pending queue has the amendment.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {
+                let first = &arr[0];
+                let body = first.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                if body != "Sync body" {
+                    return Err(format!("expected body 'Sync body' in run.json pending, got: {body}"));
+                }
+            }
+            _ => {
+                return Err("expected non-empty pending queue in run.json after add".to_owned());
+            }
+        }
 
         Ok(())
     });

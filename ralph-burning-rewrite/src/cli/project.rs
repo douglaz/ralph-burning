@@ -603,24 +603,26 @@ async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
         });
     }
 
-    // Check for CLI writer lease conflict by trying to acquire/release the lock.
+    // Acquire an RAII writer lease to prevent races between the lease check
+    // and the actual mutation.
     let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
         Arc::new(FsDaemonStore);
-    {
-        let test_lease_id = format!("amend-probe-{}", uuid::Uuid::new_v4());
-        match daemon_store.acquire_writer_lock(&current_dir, &project_id, &test_lease_id) {
-            Ok(()) => {
-                // Lock acquired — no one else holds it. Release immediately.
-                let _ = daemon_store.release_writer_lock(&current_dir, &project_id, &test_lease_id);
-            }
-            Err(AppError::ProjectWriterLockHeld { .. }) => {
-                return Err(AppError::AmendmentLeaseConflict {
-                    project_id: project_id.to_string(),
-                });
-            }
-            Err(other) => return Err(other),
+    let lock_guard = match CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        &current_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    ) {
+        Ok(guard) => guard,
+        Err(AppError::ProjectWriterLockHeld { .. })
+        | Err(AppError::AcquisitionRollbackFailed { .. }) => {
+            return Err(AppError::AmendmentLeaseConflict {
+                project_id: project_id.to_string(),
+            });
         }
-    }
+        Err(other) => return Err(other),
+    };
 
     let amendment_queue = FsAmendmentQueueStore;
     let run_snapshot_read = FsRunSnapshotStore;
@@ -628,7 +630,7 @@ async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
     let journal_store = FsJournalStore;
     let project_store = FsProjectStore;
 
-    match service::add_manual_amendment(
+    let result = service::add_manual_amendment(
         &amendment_queue,
         &run_snapshot_read,
         &run_snapshot_write,
@@ -637,9 +639,14 @@ async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
         &current_dir,
         &project_id,
         &body,
-    )? {
+    )?;
+
+    // Release the writer lease before printing output.
+    let _ = lock_guard.close();
+
+    match result {
         service::AmendmentAddResult::Created { amendment_id } => {
-            println!("{}", amendment_id);
+            println!("Amendment: {}", amendment_id);
         }
         service::AmendmentAddResult::Duplicate { amendment_id } => {
             println!(
@@ -667,15 +674,12 @@ async fn handle_amend_list() -> AppResult<()> {
     }
 
     for amendment in &amendments {
-        let body_preview = if amendment.body.len() > 80 {
-            format!("{}...", &amendment.body[..77])
-        } else {
-            amendment.body.clone()
-        };
+        let body_preview = truncate_utf8(&amendment.body, 80);
         println!(
-            "  {} [{}] {}",
+            "  {} [{}] dedup={} {}",
             amendment.amendment_id,
             amendment.source,
+            &amendment.dedup_key[..amendment.dedup_key.len().min(12)],
             body_preview
         );
     }
@@ -690,7 +694,16 @@ async fn handle_amend_remove(id: String) -> AppResult<()> {
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
 
     let amendment_queue = FsAmendmentQueueStore;
-    service::remove_amendment(&amendment_queue, &current_dir, &project_id, &id)?;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    service::remove_amendment(
+        &amendment_queue,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &current_dir,
+        &project_id,
+        &id,
+    )?;
 
     println!("Removed amendment '{}'", id);
     Ok(())
@@ -703,13 +716,60 @@ async fn handle_amend_clear() -> AppResult<()> {
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
 
     let amendment_queue = FsAmendmentQueueStore;
-    let removed = service::clear_amendments(&amendment_queue, &current_dir, &project_id)?;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let result = service::clear_amendments(
+        &amendment_queue,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &current_dir,
+        &project_id,
+    );
 
-    if removed.is_empty() {
-        println!("No pending amendments to clear.");
-    } else {
-        println!("Cleared {} amendment(s).", removed.len());
+    match result {
+        Ok(removed) => {
+            if removed.is_empty() {
+                println!("No pending amendments to clear.");
+            } else {
+                println!("Cleared {} amendment(s).", removed.len());
+                for id in &removed {
+                    println!("  removed: {}", id);
+                }
+            }
+        }
+        Err(AppError::AmendmentClearPartial {
+            removed,
+            remaining,
+            ..
+        }) => {
+            eprintln!("Partial clear failure:");
+            for id in &removed {
+                eprintln!("  removed: {}", id);
+            }
+            for id in &remaining {
+                eprintln!("  remaining: {}", id);
+            }
+            return Err(AppError::AmendmentClearPartial {
+                removed_count: removed.len(),
+                total: removed.len() + remaining.len(),
+                removed,
+                remaining,
+            });
+        }
+        Err(other) => return Err(other),
     }
 
     Ok(())
+}
+
+/// UTF-8-safe body truncation. Truncates at a char boundary and appends "..."
+/// if the body is longer than `max_chars`.
+fn truncate_utf8(s: &str, max_chars: usize) -> String {
+    let char_count = s.chars().count();
+    if char_count <= max_chars {
+        s.to_owned()
+    } else {
+        let truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
+        format!("{truncated}...")
+    }
 }

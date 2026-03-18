@@ -751,7 +751,7 @@ pub enum AmendmentAddResult {
 }
 
 /// Add a manual amendment. Performs dedup check, writes durably, emits a journal
-/// event, and reopens completed projects.
+/// event, syncs the canonical snapshot, and reopens completed projects.
 pub fn add_manual_amendment(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -762,7 +762,7 @@ pub fn add_manual_amendment(
     project_id: &ProjectId,
     body: &str,
 ) -> AppResult<AmendmentAddResult> {
-    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
 
     // Reject while a run is actively writing.
     if snapshot.status == RunStatus::Running {
@@ -825,15 +825,22 @@ pub fn add_manual_amendment(
         return Err(journal_err);
     }
 
-    // If the project is completed, reopen it.
+    // Sync canonical snapshot: add the amendment to run.json pending queue.
+    snapshot.amendment_queue.pending.push(amendment.clone());
+
+    // If the project is completed, reopen it with the pending amendment
+    // already reflected in the snapshot.
     if snapshot.status == RunStatus::Completed {
-        reopen_completed_project(
-            run_port,
+        reopen_completed_project_with_snapshot(
             run_write_port,
             project_store,
             base_dir,
             project_id,
+            &mut snapshot,
         )?;
+    } else {
+        // Persist the updated snapshot with the new pending amendment.
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
     }
 
     Ok(AmendmentAddResult::Created { amendment_id })
@@ -848,9 +855,11 @@ pub fn list_amendments(
     amendment_queue.list_pending_amendments(base_dir, project_id)
 }
 
-/// Remove a single pending amendment by ID.
+/// Remove a single pending amendment by ID. Updates both disk and run.json.
 pub fn remove_amendment(
     amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
     base_dir: &Path,
     project_id: &ProjectId,
     amendment_id: &str,
@@ -862,13 +871,25 @@ pub fn remove_amendment(
             amendment_id: amendment_id.to_owned(),
         });
     }
-    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)
+    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)?;
+
+    // Sync canonical snapshot: remove from run.json pending queue.
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    snapshot
+        .amendment_queue
+        .pending
+        .retain(|a| a.amendment_id != amendment_id);
+    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    Ok(())
 }
 
 /// Clear all pending amendments. Returns removed and remaining IDs.
 /// On partial failure, reports exactly which amendments were removed and which remain.
+/// Both disk and run.json are kept in sync.
 pub fn clear_amendments(
     amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<Vec<String>> {
@@ -888,6 +909,16 @@ pub fn clear_amendments(
         }
     }
 
+    // Sync canonical snapshot: keep only remaining IDs in run.json.
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    let remaining_set: std::collections::HashSet<&str> =
+        remaining.iter().map(|s| s.as_str()).collect();
+    snapshot
+        .amendment_queue
+        .pending
+        .retain(|a| remaining_set.contains(a.amendment_id.as_str()));
+    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+
     if !remaining.is_empty() {
         return Err(AppError::AmendmentClearPartial {
             removed_count: removed.len(),
@@ -900,8 +931,88 @@ pub fn clear_amendments(
     Ok(removed)
 }
 
+/// Stage a batch of amendments from an automated source (e.g. PR-review).
+/// Writes each amendment durably, emits journal events, syncs the canonical
+/// snapshot, and reopens the project if it is completed. This is the shared
+/// path that both manual and automated amendment intake converge on.
+pub fn stage_amendment_batch(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    journal_port: &dyn JournalStorePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendments: &[QueuedAmendment],
+) -> AppResult<usize> {
+    if amendments.is_empty() {
+        return Ok(0);
+    }
+
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    let events = journal_port.read_journal(base_dir, project_id)?;
+    let mut seq = journal::last_sequence(&events);
+    let mut staged_count = 0usize;
+
+    for amendment in amendments {
+        // Dedup check against pending queue (disk).
+        let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+        if pending.iter().any(|a| a.dedup_key == amendment.dedup_key) {
+            continue;
+        }
+
+        // Write durable amendment file.
+        amendment_queue.write_amendment(base_dir, project_id, amendment)?;
+
+        // Emit journal event.
+        seq += 1;
+        let journal_event = journal::amendment_queued_manual_event(
+            seq,
+            amendment.created_at,
+            &amendment.amendment_id,
+            &amendment.body,
+            amendment.source.as_str(),
+            &amendment.dedup_key,
+        );
+        let line = journal::serialize_event(&journal_event)?;
+        if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &line) {
+            // Roll back the amendment file on journal failure.
+            let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment.amendment_id);
+            return Err(journal_err);
+        }
+
+        // Sync canonical snapshot.
+        snapshot.amendment_queue.pending.push(amendment.clone());
+        staged_count += 1;
+    }
+
+    if staged_count == 0 {
+        return Ok(0);
+    }
+
+    // If the project is completed, reopen it with pending amendments.
+    if snapshot.status == RunStatus::Completed {
+        reopen_completed_project_with_snapshot(
+            run_write_port,
+            project_store,
+            base_dir,
+            project_id,
+            &mut snapshot,
+        )?;
+    } else {
+        // Persist the updated snapshot.
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    }
+
+    Ok(staged_count)
+}
+
 /// Reopen a completed project to paused state with an interrupted run pointing
 /// at the flow planning stage. Shared between manual and PR-review amendment paths.
+///
+/// Reads the current snapshot from disk. If the caller already holds a modified
+/// snapshot (e.g. with a pending amendment already added), use
+/// `reopen_completed_project_with_snapshot` instead.
 pub fn reopen_completed_project(
     run_port: &dyn RunSnapshotPort,
     run_write_port: &dyn RunSnapshotWritePort,
@@ -909,8 +1020,26 @@ pub fn reopen_completed_project(
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<()> {
-    let record = project_store.read_project_record(base_dir, project_id)?;
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    reopen_completed_project_with_snapshot(
+        run_write_port,
+        project_store,
+        base_dir,
+        project_id,
+        &mut snapshot,
+    )
+}
+
+/// Reopen a completed project using an already-loaded (possibly modified) snapshot.
+/// The snapshot is mutated in place and persisted atomically.
+pub fn reopen_completed_project_with_snapshot(
+    run_write_port: &dyn RunSnapshotWritePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+) -> AppResult<()> {
+    let record = project_store.read_project_record(base_dir, project_id)?;
 
     if snapshot.status != RunStatus::Completed {
         return Ok(());
@@ -948,7 +1077,7 @@ pub fn reopen_completed_project(
     snapshot.status = RunStatus::Paused;
     snapshot.status_summary = "paused: amendments staged".to_owned();
 
-    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    run_write_port.write_run_snapshot(base_dir, project_id, snapshot)?;
     Ok(())
 }
 

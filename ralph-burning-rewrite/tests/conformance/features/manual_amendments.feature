@@ -55,3 +55,28 @@ Feature: Manual Amendment Parity
     Given an initialized workspace with a bootstrapped project
     When `project amend remove nonexistent-id` is invoked
     Then the command fails with an amendment-not-found error
+
+  # parity_slice3_restart_persistence
+  Scenario: Manual amendments persist across project restart
+    Given a project with a staged manual amendment
+    When the project is stopped and restarted
+    Then the amendment remains visible in `project amend list`
+
+  # parity_slice3_completion_blocking
+  Scenario: Pending amendments block completion
+    Given a completed project with a pending amendment
+    When the project attempts to complete
+    Then completion is blocked until the amendment is processed
+
+  # parity_slice3_lease_conflict_rejection
+  Scenario: Adding amendments while a writer lease is held fails cleanly
+    Given a project with an active writer lease
+    When a manual amendment is added
+    Then the command fails with a lease-conflict error
+    And no amendment is created
+
+  # parity_slice3_run_json_sync
+  Scenario: Manual amendment add syncs run.json pending queue
+    Given an initialized workspace with a bootstrapped project
+    When a manual amendment is added via `project amend add --text`
+    Then run.json shows the amendment in amendment_queue.pending

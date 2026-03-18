@@ -24,10 +24,19 @@ and workflow-stage sources:
 - New `amendment_queued_manual_event` builder for manual amendments (no `run_id`)
 - New error variants: `DuplicateAmendment`, `AmendmentNotFound`,
   `AmendmentLeaseConflict`, `AmendmentClearPartial`
-- `reopen_completed_project()` extracted to shared service function used by both
-  manual and PR-review paths
+- `reopen_completed_project()` / `reopen_completed_project_with_snapshot()`
+  extracted to shared service function used by both manual and PR-review paths
+- `stage_amendment_batch()` shared service for batch amendment intake
+- `remove_amendment()` and `clear_amendments()` now accept run snapshot ports
+  and sync `run.json` atomically with disk
 - `planning_stage_for_flow()` moved to service.rs (was duplicated in pr_review.rs)
 - `FileSystem::project_root` visibility changed to `pub(crate)`
+- PR-review ingestion service now takes a `JournalStorePort` and routes through
+  shared staging service for consistent dedup, journal, and snapshot handling
+- CLI `project amend add` uses RAII writer lease instead of probe-and-release
+- CLI `project amend list` surfaces dedup_key metadata per amendment
+- CLI `project amend clear` reports exact removed/remaining IDs on partial failure
+- CLI body truncation uses char-aware logic (UTF-8 safe)
 
 ## Files Modified
 
@@ -38,7 +47,7 @@ and workflow-stage sources:
 - `src/cli/project.rs` — CLI subcommands
 - `src/contexts/automation_runtime/pr_review.rs` — migrated to shared service
 - `src/contexts/workflow_composition/engine.rs` — source/dedup_key fields
-- `src/contexts/conformance_spec/scenarios.rs` — 8 conformance scenarios
+- `src/contexts/conformance_spec/scenarios.rs` — 12 conformance scenarios
 - `src/adapters/fs.rs` — `project_root` visibility
 - `tests/unit/project_run_record_test.rs` — 20 new unit tests
 - `tests/cli.rs` — 12 new CLI integration tests
@@ -58,7 +67,7 @@ and workflow-stage sources:
 - `cargo test --features test-stub --test unit add_manual_amendment` — unit tests
 - `cargo test --features test-stub --test unit clear_amendments` — unit tests
 - `cargo test --features test-stub --test cli project_amend` — CLI tests
-- 8 conformance scenarios (`parity_slice3_*`)
+- 12 conformance scenarios (`parity_slice3_*`)
 
 ## Results
 
@@ -67,7 +76,27 @@ and workflow-stage sources:
   backwards-compatible deserialization, and all service operations passed
 - 12 CLI integration tests covering add/list/remove/clear, duplicate detection,
   completed-project reopen, journal recording, and lease conflict rejection passed
-- 8 conformance scenarios passed
+- 12 conformance scenarios (8 original + 4 new: restart persistence,
+  completion blocking, lease-conflict rejection, run.json sync)
+
+## Review Response Changes (Iteration 1)
+
+1. **Canonical amendment state**: `add_manual_amendment`, `remove_amendment`,
+   `clear_amendments`, and `reopen_completed_project` now update
+   `snapshot.amendment_queue.pending` in `run.json` atomically.
+2. **PR-review staging parity**: PR-review ingestion routed through shared
+   `stage_amendment_batch` service for consistent dedup, journal, snapshot,
+   and reopen behavior.
+3. **Operator-facing CLI contract**: `project amend list` surfaces `dedup_key`
+   metadata; partial `clear` reports exact removed/remaining IDs; body
+   truncation is UTF-8 safe.
+4. **Conformance deliverables**: 4 new scenarios added (restart persistence,
+   completion blocking, lease-conflict rejection, run.json sync); executor
+   assertions aligned with `Amendment: <id>` CLI output format.
+5. **RAII writer lease**: `project amend add` acquires a real RAII writer lease
+   instead of probe-and-release.
+6. **UTF-8 truncation**: body preview in `project amend list` uses
+   char-boundary-aware truncation.
 
 ## Remaining Known Gaps
 

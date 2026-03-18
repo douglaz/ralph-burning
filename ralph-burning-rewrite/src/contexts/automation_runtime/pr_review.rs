@@ -12,7 +12,8 @@ use crate::contexts::automation_runtime::{
 };
 use crate::contexts::project_run_record::model::QueuedAmendment;
 use crate::contexts::project_run_record::service::{
-    AmendmentQueuePort, ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    self as record_service, AmendmentQueuePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
+    RunSnapshotWritePort,
 };
 use crate::shared::domain::{ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
@@ -61,6 +62,7 @@ pub struct PrReviewIngestionService<'a, G> {
     run_snapshot_read: &'a dyn RunSnapshotPort,
     run_snapshot_write: &'a dyn RunSnapshotWritePort,
     amendment_queue: &'a dyn AmendmentQueuePort,
+    journal_store: &'a dyn JournalStorePort,
     github: &'a G,
 }
 
@@ -71,6 +73,7 @@ impl<'a, G> PrReviewIngestionService<'a, G> {
         run_snapshot_read: &'a dyn RunSnapshotPort,
         run_snapshot_write: &'a dyn RunSnapshotWritePort,
         amendment_queue: &'a dyn AmendmentQueuePort,
+        journal_store: &'a dyn JournalStorePort,
         github: &'a G,
     ) -> Self {
         Self {
@@ -79,6 +82,7 @@ impl<'a, G> PrReviewIngestionService<'a, G> {
             run_snapshot_read,
             run_snapshot_write,
             amendment_queue,
+            journal_store,
             github,
         }
     }
@@ -147,13 +151,33 @@ where
             .collect::<Vec<_>>();
         let accepted = self.filter_by_whitelist(items, whitelist);
         let amendments = self.convert_to_amendments(workspace_dir, &task, &accepted)?;
-        if !amendments.is_empty() {
-            self.stage_amendments(workspace_dir, &task, &amendments)?;
-        }
 
+        // Route through the shared amendment staging service for consistent
+        // dedup, journal persistence, snapshot sync, and completed-project reopen.
+        let staged_count = if !amendments.is_empty() {
+            let project_id = ProjectId::new(task.project_id.clone())?;
+            record_service::stage_amendment_batch(
+                self.amendment_queue,
+                self.run_snapshot_read,
+                self.run_snapshot_write,
+                self.journal_store,
+                self.project_store,
+                workspace_dir,
+                &project_id,
+                &amendments,
+            )?
+        } else {
+            0
+        };
+
+        // Check if the project was reopened (task was completed + amendments staged).
         let mut reopened_project = false;
-        if task.status == TaskStatus::Completed && !amendments.is_empty() {
-            self.reopen_completed_project(workspace_dir, &mut task)?;
+        if task.status == TaskStatus::Completed && staged_count > 0 {
+            // The shared service already reopened the project; just update task state.
+            task.status = TaskStatus::Pending;
+            task.failure_class = None;
+            task.failure_message = None;
+            task.updated_at = Utc::now();
             reopened_project = true;
         }
 
@@ -170,12 +194,12 @@ where
                 "task_id": task.task_id,
                 "pr_url": pr_url,
                 "accepted_count": accepted.len(),
-                "staged_count": amendments.len(),
+                "staged_count": staged_count,
                 "last_seen_comment_id": next_comment_cursor,
                 "last_seen_review_id": next_review_cursor,
             }),
         )?;
-        if !amendments.is_empty() {
+        if staged_count > 0 {
             DaemonTaskService::append_journal_event(
                 self.store,
                 daemon_dir,
@@ -201,7 +225,7 @@ where
         }
 
         Ok(IngestedReviewBatch {
-            staged_count: amendments.len(),
+            staged_count,
             reopened_project,
             last_seen_comment_id: next_comment_cursor,
             last_seen_review_id: next_review_cursor,
@@ -310,39 +334,6 @@ where
                 }
             })
             .collect())
-    }
-
-    fn stage_amendments(
-        &self,
-        base_dir: &Path,
-        task: &DaemonTask,
-        amendments: &[QueuedAmendment],
-    ) -> AppResult<()> {
-        let project_id = ProjectId::new(task.project_id.clone())?;
-        for amendment in amendments {
-            self.amendment_queue
-                .write_amendment(base_dir, &project_id, amendment)?;
-        }
-        Ok(())
-    }
-
-    fn reopen_completed_project(&self, base_dir: &Path, task: &mut DaemonTask) -> AppResult<()> {
-        let project_id = ProjectId::new(task.project_id.clone())?;
-
-        // Use shared reopen service for consistency with manual amendment path.
-        crate::contexts::project_run_record::service::reopen_completed_project(
-            self.run_snapshot_read,
-            self.run_snapshot_write,
-            self.project_store,
-            base_dir,
-            &project_id,
-        )?;
-
-        task.status = TaskStatus::Pending;
-        task.failure_class = None;
-        task.failure_message = None;
-        task.updated_at = Utc::now();
-        Ok(())
     }
 
     fn ensure_not_cancelled(&self, cancel: &CancellationToken) -> AppResult<()> {
