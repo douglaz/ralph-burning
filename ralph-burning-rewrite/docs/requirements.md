@@ -37,7 +37,7 @@ Quick mode skips the staged pipeline and runs a writer/reviewer revision loop:
 1. An initial draft is generated
 2. A reviewer evaluates the draft
 3. If the reviewer returns `request_changes`, the draft is revised with the feedback
-4. Steps 2–3 repeat until the reviewer approves or `MAX_QUICK_REVISIONS` (5) is reached
+4. Steps 2–3 repeat until the reviewer approves or the revision count exceeds `MAX_QUICK_REVISIONS` (5)
 5. On approval, a project seed is generated
 
 The `quick_revision_count` field in `run.json` tracks how many revisions were performed.

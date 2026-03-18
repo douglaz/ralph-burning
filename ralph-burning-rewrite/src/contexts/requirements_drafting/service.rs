@@ -315,6 +315,11 @@ where
         let answers_raw = self.store.read_answers_toml(base_dir, run_id)?;
         let answers = parse_and_validate_answers(&answers_raw, base_dir, run_id, &self.store)?;
 
+        // Snapshot pre-answer state so we can restore on journal failure.
+        let pre_answer_question_round = run.question_round;
+        let pre_answer_status = run.status;
+        let pre_answer_summary = run.status_summary.clone();
+
         // Persist answers.json
         self.store.write_answers_json(base_dir, run_id, &answers)?;
 
@@ -339,6 +344,18 @@ where
             &run,
         );
         if let Err(e) = self.store.append_journal_event(base_dir, run_id, &event) {
+            // Restore pre-answer question boundary so the run remains resumable.
+            // Remove the non-durable answers.json so answers_already_durably_stored()
+            // does not treat a failed journal append as a crossed boundary.
+            run.question_round = pre_answer_question_round;
+            run.status = pre_answer_status;
+            run.status_summary = pre_answer_summary;
+            // Best-effort removal of the non-durable answers.json; the answers
+            // template (answers.toml) remains so the operator can retry.
+            let empty_answers = PersistedAnswers { answers: vec![] };
+            let _ = self
+                .store
+                .write_answers_json(base_dir, run_id, &empty_answers);
             self.fail_run(
                 base_dir,
                 &mut run,
@@ -472,6 +489,7 @@ where
                 &bundle,
                 &ideation_cache_key,
                 &mut seq,
+                run.recommended_flow,
             )
             .await?;
             artifact_text
@@ -548,6 +566,7 @@ where
                 &bundle,
                 &research_cache_key,
                 &mut seq,
+                run.recommended_flow,
             )
             .await?;
             artifact_text
@@ -617,6 +636,8 @@ where
                 }
             };
 
+            // Capture recommended_flow before synthesis mutates it, for rollback.
+            let pre_synthesis_flow = run.recommended_flow;
             if let RequirementsPayload::Synthesis(ref sp) = bundle.payload {
                 run.recommended_flow = Some(sp.recommended_flow);
             }
@@ -629,6 +650,7 @@ where
                 &bundle,
                 &synthesis_cache_key,
                 &mut seq,
+                pre_synthesis_flow,
             )
             .await?;
             artifact_text
@@ -707,6 +729,7 @@ where
                 &bundle,
                 &impl_spec_cache_key,
                 &mut seq,
+                run.recommended_flow,
             )
             .await?;
             artifact_text
@@ -783,6 +806,7 @@ where
                 &bundle,
                 &gap_cache_key,
                 &mut seq,
+                run.recommended_flow,
             )
             .await?;
             artifact_text
@@ -894,6 +918,7 @@ where
                 &bundle,
                 &validation_cache_key,
                 &mut seq,
+                run.recommended_flow,
             )
             .await?;
 
@@ -994,6 +1019,10 @@ where
             return Err(e);
         }
 
+        // Snapshot pre-question state for rollback on journal failure.
+        let pre_question_committed_stages = run.committed_stages.clone();
+        let pre_question_latest_qs_id = run.latest_question_set_id.clone();
+
         // Invalidate synthesis and downstream committed stages before pausing.
         // Ideation and research survive; synthesis onwards must be rerun after answers.
         for stage in FullModeStage::question_round_invalidated() {
@@ -1016,6 +1045,16 @@ where
             .store
             .append_journal_event(base_dir, &run_id, &qs_event)
         {
+            // Restore pre-question state: committed_stages and latest_question_set_id.
+            run.committed_stages = pre_question_committed_stages;
+            run.latest_question_set_id = pre_question_latest_qs_id;
+            // Remove the non-durable question-set payload/artifact pair.
+            let _ = self.store.remove_payload_artifact_pair(
+                base_dir,
+                &run_id,
+                &payload_id,
+                &artifact_id,
+            );
             self.fail_run(
                 base_dir,
                 run,
@@ -1078,6 +1117,11 @@ where
     }
 
     /// Commit a full-mode stage payload/artifact pair and record in run state.
+    ///
+    /// `prior_recommended_flow` is the value of `run.recommended_flow` before
+    /// the pipeline block that calls this method made any mutations. If the
+    /// journal append fails, this value is restored so `run.json` reflects
+    /// only the last durable stage.
     async fn commit_full_mode_stage(
         &self,
         base_dir: &Path,
@@ -1086,6 +1130,7 @@ where
         bundle: &RequirementsValidatedBundle,
         cache_key: &str,
         seq: &mut u64,
+        prior_recommended_flow: Option<FlowPreset>,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let round = effective_question_round(run);
@@ -1120,6 +1165,17 @@ where
             return Err(e);
         }
 
+        // Snapshot pre-stage run state for rollback on journal failure.
+        // Note: the pipeline code may have already advanced current_stage
+        // before calling this method, so we derive the prior current_stage
+        // from committed_stages (which still reflects the last durable
+        // boundary) rather than from run.current_stage.
+        let prior_current_stage = FullModeStage::pipeline_order()
+            .iter()
+            .rev()
+            .find(|s| run.committed_stages.contains_key(s.as_str()))
+            .copied();
+
         run.committed_stages.insert(
             stage.as_str().to_owned(),
             CommittedStageEntry {
@@ -1140,7 +1196,7 @@ where
             run,
         );
         if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
-            // Roll back the stage commitment
+            // Roll back the full stage commitment including run state fields.
             let _ = self.store.remove_payload_artifact_pair(
                 base_dir,
                 &run_id,
@@ -1148,6 +1204,8 @@ where
                 &artifact_id,
             );
             run.committed_stages.remove(stage.as_str());
+            run.current_stage = prior_current_stage;
+            run.recommended_flow = prior_recommended_flow;
             self.fail_run(
                 base_dir,
                 run,

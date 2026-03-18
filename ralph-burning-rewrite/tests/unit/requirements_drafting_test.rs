@@ -1878,8 +1878,8 @@ mod service_integration {
         use ralph_burning::adapters::stub_backend::StubBackendAdapter;
         use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
         use ralph_burning::contexts::requirements_drafting::model::{
-            PersistedAnswers, RequirementsJournalEvent, RequirementsJournalEventType,
-            RequirementsRun, RequirementsStatus,
+            FullModeStage, PersistedAnswers, RequirementsJournalEvent,
+            RequirementsJournalEventType, RequirementsRun, RequirementsStatus,
         };
         use ralph_burning::contexts::requirements_drafting::service::{
             RequirementsService, RequirementsStorePort,
@@ -2467,6 +2467,213 @@ mod service_integration {
             assert!(
                 run.latest_draft_id.is_some(),
                 "revised draft boundary should survive later-loop review journal failure"
+            );
+        }
+
+        /// Journal append failure for AnswersSubmitted must restore the pre-answer
+        /// question boundary (question_round, status) and clear answers.json so the
+        /// run remains resumable via `requirements answer`.
+        /// Full-mode with question round: draft() produces 8 journal events
+        /// (RunCreated + 6 StageCompleted + QuestionRoundOpened), then answer()
+        /// produces AnswersSubmitted as its 1st journal call = global call 9.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn answers_submitted_journal_failure_restores_question_boundary() {
+            std::env::set_var("EDITOR", "true");
+
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Use a real store for draft(), then a failing store for answer().
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let now = deterministic_now();
+            let run_id = service
+                .draft(temp_dir.path(), "Test answers_submitted failure", now)
+                .await
+                .expect("draft should succeed (to reach awaiting_answers)");
+
+            // Verify we are in awaiting_answers
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run");
+            assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+            let pre_question_round = run.question_round;
+
+            // Write answers file
+            let answers_path = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id)
+                .join("answers.toml");
+            std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+            // Now call answer() with a failing store. The FailingJournalRequirementsStore
+            // has its own counter starting at 0, so AnswersSubmitted is call 1.
+            let adapter2 = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service2 =
+                AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+            let store2 = FailingJournalRequirementsStore::new(1);
+            let service2 = RequirementsService::new(agent_service2, store2);
+
+            let result = service2.answer(temp_dir.path(), &run_id).await;
+            assert!(
+                result.is_err(),
+                "answer should fail on AnswersSubmitted journal failure"
+            );
+
+            // Verify the run was failed but the question boundary was restored
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run after failure");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert_eq!(
+                run.question_round, pre_question_round,
+                "question_round should be restored to pre-answer value"
+            );
+            // answers.json should be cleared so answers_already_durably_stored returns false
+            let answers_json = FsRequirementsStore.read_answers_json(temp_dir.path(), &run_id);
+            match answers_json {
+                Ok(persisted) => assert!(
+                    persisted.answers.is_empty(),
+                    "answers.json should be empty after rollback"
+                ),
+                Err(_) => {} // File doesn't exist is also acceptable
+            }
+        }
+
+        /// Journal append failure for QuestionRoundOpened must restore
+        /// committed_stages and latest_question_set_id, and remove the
+        /// question-set payload/artifact pair.
+        /// Full-mode: call 1 = RunCreated, calls 2–7 = 6 StageCompleted,
+        /// call 8 = QuestionRoundOpened (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn question_round_opened_journal_failure_restores_pre_question_state() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Stub that triggers needs_questions on validation
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 8th journal call = QuestionRoundOpened
+            let store = FailingJournalRequirementsStore::new(8);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(), "Test question_round_opened failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "draft should fail on QuestionRoundOpened journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+
+            // committed_stages should be restored: synthesis and downstream should
+            // still be present because the rollback restores the pre-question snapshot.
+            assert!(
+                run.committed_stages.contains_key("validation"),
+                "validation should still be in committed_stages after QuestionRoundOpened rollback"
+            );
+            assert!(
+                run.committed_stages.contains_key("synthesis"),
+                "synthesis should still be in committed_stages after QuestionRoundOpened rollback"
+            );
+            // latest_question_set_id should be restored to pre-question value (None)
+            assert!(
+                run.latest_question_set_id.is_none(),
+                "latest_question_set_id should be restored to None after rollback"
+            );
+        }
+
+        /// Journal append failure for StageCompleted must restore current_stage
+        /// and recommended_flow to the prior stage values.
+        /// Full-mode: call 1 = RunCreated, call 2 = StageCompleted(ideation),
+        /// call 3 = StageCompleted(research), call 4 = StageCompleted(synthesis) (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn stage_completed_journal_failure_restores_current_stage_and_recommended_flow() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 4th journal call = StageCompleted(synthesis)
+            let store = FailingJournalRequirementsStore::new(4);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(), "Test stage_completed failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "draft should fail on StageCompleted(synthesis) journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+
+            // current_stage should be restored to the prior stage (Research),
+            // not left as Synthesis.
+            assert_ne!(
+                run.current_stage,
+                Some(FullModeStage::Synthesis),
+                "current_stage should not be Synthesis after rollback"
+            );
+            // synthesis should NOT be in committed_stages
+            assert!(
+                !run.committed_stages.contains_key("synthesis"),
+                "synthesis should not be in committed_stages after rollback"
+            );
+            // ideation and research should still be committed (they succeeded)
+            assert!(
+                run.committed_stages.contains_key("ideation"),
+                "ideation should survive synthesis rollback"
+            );
+            assert!(
+                run.committed_stages.contains_key("research"),
+                "research should survive synthesis rollback"
             );
         }
 

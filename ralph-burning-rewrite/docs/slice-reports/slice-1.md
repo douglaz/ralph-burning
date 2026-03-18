@@ -4,6 +4,16 @@
 
 Slice 1 implements the full requirements-drafting pipeline with staged execution, cache-keyed reuse, conditional question gating, quick-mode revision loop, versioned project seed, and stage-aware CLI output.
 
+## Legacy References Consulted
+
+The following old-`ralph` code, docs, and tests under `multibackend-orchestration/` were used as the parity reference for this slice (paths from `rb.md` architecture overview):
+
+- `src/prd/pipeline.rs` — staged PRD pipeline: ideation, research, synthesis, implementation spec, gap analysis, validation, and seed generation stages; cache-keyed resume; conditional question round gating
+- `src/prd/quick.rs` — quick PRD writer/reviewer revision loop, structured revision feedback, approval-based termination, bounded revision limit
+- `src/daemon/interactive_prd.rs` — interactive PRD issue workflow: question round pause/resume, answer ingestion, stage rerun after answers
+- `src/validate/` — conformance suite exercising staged happy path, cache reuse, question round end-to-end, quick revision loop, versioned seed output
+- `rb.md` (lines 101–103, 153–155) — architecture overview documenting PRD pipeline structure, quick-PRD contracts, and caching behavior
+
 ## Contracts Changed
 
 - `RequirementsRun` extended with: `current_stage`, `committed_stages` (BTreeMap), `quick_revision_count`, `last_transition_cached` — all `#[serde(default)]` for backward compatibility
@@ -97,6 +107,29 @@ Fixed: updated `requirements_drafting.feature` max-revision scenario text from "
 - `cargo check --features test-stub` — clean
 - `cargo test --features test-stub --test unit` — 607 passed, 0 failed (1 ignored)
 - Registry drift check — passed
+
+## Review Response (Iteration 4)
+
+### Required Change 1: Answer-boundary rollback
+Fixed: on `AnswersSubmitted` journal append failure, `answer()` now restores the pre-answer `question_round`, `status`, and `status_summary`, and clears `answers.json` so `answers_already_durably_stored()` does not treat the failed run as having crossed the answer boundary. The run remains resumable via `requirements answer`.
+
+### Required Change 2: Question-round open rollback
+Fixed: on `QuestionRoundOpened` journal append failure, `open_question_round()` now restores `committed_stages` and `latest_question_set_id` from a pre-question snapshot, and removes the non-durable question-set payload/artifact pair before failing.
+
+### Required Change 3: Full-mode stage rollback
+Fixed: `commit_full_mode_stage()` now derives the prior `current_stage` from the last committed stage in pipeline order (rather than snapshotting `run.current_stage` which was already advanced by the pipeline code) and accepts `prior_recommended_flow` as a parameter. On `StageCompleted` journal failure, both fields are restored so `run.json` reflects only the last durable stage. The synthesis stage block captures `run.recommended_flow` before mutating it and passes the pre-mutation value.
+
+### Required Change 4: Slice report legacy references
+Added: documented the exact legacy `prd`/`quick-prd` references consulted from old-`ralph` under `multibackend-orchestration/`: `src/prd/pipeline.rs`, `src/prd/quick.rs`, `src/daemon/interactive_prd.rs`, `src/validate/`, and `rb.md` architecture overview.
+
+### Recommended 1: MAX_QUICK_REVISIONS docs alignment
+Fixed: updated `docs/requirements.md` from "is reached" to "the revision count exceeds `MAX_QUICK_REVISIONS` (5)", matching the `revision > MAX_QUICK_REVISIONS` code behavior.
+
+### Test Results (Iteration 4)
+- `cargo check` — clean (both production and test-stub builds)
+- `cargo test --features test-stub --test unit` — 610 passed, 0 failed (1 ignored)
+- Registry drift check — passed
+- 3 new tests added: `answers_submitted_journal_failure_restores_question_boundary`, `question_round_opened_journal_failure_restores_pre_question_state`, `stage_completed_journal_failure_restores_current_stage_and_recommended_flow`
 
 ## Remaining Known Gaps
 
