@@ -175,7 +175,6 @@ pub async fn execute_final_review_panel<A, R, S>(
     run_id: &RunId,
     cursor: &StageCursor,
     panel: &FinalReviewPanelResolution,
-    planner_target: &ResolvedBackendTarget,
     min_reviewers: usize,
     consensus_threshold: f64,
     max_restarts: u32,
@@ -316,7 +315,7 @@ where
         run_id,
         stage_id,
         cursor,
-        planner_target,
+        &panel.planner,
         BackendRole::Planner,
         "planner",
         "voter",
@@ -339,16 +338,16 @@ where
     let planner_votes: FinalReviewVotePayload =
         serde_json::from_value(planner_vote_payload.clone()).map_err(|e| {
             AppError::InvocationFailed {
-                backend: planner_target.backend.family.to_string(),
+                backend: panel.planner.backend.family.to_string(),
                 contract_id: "final_review:voter".to_owned(),
                 failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
                 details: format!("planner positions schema validation failed: {e}"),
             }
         })?;
-    validate_vote_payload(&planner_votes, &amendments, planner_target)?;
+    validate_vote_payload(&planner_votes, &amendments, &panel.planner)?;
     let planner_producer = RecordProducer::Agent {
-        backend_family: planner_target.backend.family.to_string(),
-        model_id: planner_target.model.model_id.clone(),
+        backend_family: panel.planner.backend.family.to_string(),
+        model_id: panel.planner.model.model_id.clone(),
     };
     let planner_artifact = renderers::render_final_review_vote(
         "Final Review Planner Positions",
@@ -1237,8 +1236,8 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
-        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
         let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -1269,7 +1268,6 @@ mod tests {
             &run_id,
             &cursor,
             &panel,
-            &planner_target,
             2,
             0.66,
             2,
@@ -1315,8 +1313,8 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review-vote-failure").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
-        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
         let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
@@ -1347,7 +1345,6 @@ mod tests {
             &run_id,
             &cursor,
             &panel,
-            &planner_target,
             2,
             0.66,
             2,

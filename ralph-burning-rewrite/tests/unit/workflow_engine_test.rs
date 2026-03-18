@@ -31,7 +31,9 @@ use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
-use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, RunId, StageId};
+use ralph_burning::shared::domain::{
+    BackendFamily, FailureClass, FlowPreset, ProjectId, RunId, StageId,
+};
 use ralph_burning::shared::error::{AppError, AppResult};
 
 const JOURNAL_APPEND_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER";
@@ -184,6 +186,36 @@ fn role_mapping_is_deterministic() {
     assert_eq!(
         engine::role_for_stage(StageId::FinalReview),
         BackendRole::CompletionJudge
+    );
+}
+
+#[test]
+fn final_review_planner_drift_is_detected_without_breaking_old_snapshots() {
+    use ralph_burning::contexts::agent_execution::policy::ResolvedPanelMember;
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+
+    let reviewers = [ResolvedPanelMember {
+        target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-model"),
+        required: true,
+    }];
+    let arbiter = ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-model");
+    let planner_a = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a");
+    let planner_b = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-b");
+
+    let original =
+        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_a, &arbiter);
+    let drifted =
+        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_b, &arbiter);
+    assert!(
+        engine::resolution_has_drifted(&original, &drifted),
+        "planner changes must trigger final-review drift"
+    );
+
+    let mut legacy_snapshot = original.clone();
+    legacy_snapshot.final_review_planner = None;
+    assert!(
+        !engine::resolution_has_drifted(&legacy_snapshot, &original),
+        "old snapshots without planner baselines must not false-positive on resume"
     );
 }
 

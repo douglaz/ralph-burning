@@ -140,6 +140,9 @@ pub struct StageResolutionSnapshot {
     /// Ordered panel members for final-review reviewers.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub final_review_reviewers: Vec<ResolvedTargetRecord>,
+    /// The final-review planner target.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_review_planner: Option<ResolvedTargetRecord>,
     /// The final-review arbiter target.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub final_review_arbiter: Option<ResolvedTargetRecord>,

@@ -55,7 +55,31 @@ impl ManagedChild {
             return Ok(());
         };
 
-        send_signal(pid, "-TERM")
+        #[cfg(unix)]
+        {
+            let pid = i32::try_from(pid).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("process id {pid} exceeds libc::pid_t range"),
+                )
+            })?;
+            return match nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGTERM,
+            ) {
+                Ok(()) => Ok(()),
+                Err(nix::errno::Errno::ESRCH) => Ok(()),
+                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+            };
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "SIGTERM delivery requires unix",
+            ))
+        }
     }
 
     async fn send_sigkill(&self) -> std::io::Result<()> {
@@ -63,7 +87,31 @@ impl ManagedChild {
             return Ok(());
         };
 
-        send_signal(pid, "-KILL")
+        #[cfg(unix)]
+        {
+            let pid = i32::try_from(pid).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("process id {pid} exceeds libc::pid_t range"),
+                )
+            })?;
+            return match nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            ) {
+                Ok(()) => Ok(()),
+                Err(nix::errno::Errno::ESRCH) => Ok(()),
+                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+            };
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "SIGKILL delivery requires unix",
+            ))
+        }
     }
 
     async fn wait(&self) -> std::io::Result<ExitStatus> {
@@ -590,23 +638,56 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         let path_entries = std::env::var_os("PATH")
             .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
             .unwrap_or_default();
-        let binary_on_path = path_entries
+
+        #[cfg(unix)]
+        let mut non_executable_candidate = None;
+
+        for candidate in path_entries
             .into_iter()
             .map(|entry| entry.join(binary_name))
-            .any(|candidate| {
-                std::fs::metadata(candidate)
-                    .map(|metadata| metadata.is_file())
-                    .unwrap_or(false)
-            });
+        {
+            let Ok(metadata) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
 
-        if binary_on_path {
-            Ok(())
-        } else {
-            Err(AppError::BackendUnavailable {
-                backend: backend.backend.family.to_string(),
-                details: format!("required binary '{binary_name}' was not found on PATH"),
-            })
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
+
+                if non_executable_candidate.is_none() {
+                    non_executable_candidate = Some(candidate);
+                }
+                continue;
+            }
+
+            #[cfg(not(unix))]
+            {
+                return Ok(());
+            }
         }
+
+        #[cfg(unix)]
+        if let Some(candidate) = non_executable_candidate {
+            return Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: format!(
+                    "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
+                    candidate.display()
+                ),
+            });
+        }
+
+        Err(AppError::BackendUnavailable {
+            backend: backend.backend.family.to_string(),
+            details: format!("required binary '{binary_name}' was not found on PATH"),
+        })
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
@@ -669,31 +750,6 @@ struct ChildOutput {
     status: ExitStatus,
     stdout: Vec<u8>,
     stderr: Vec<u8>,
-}
-
-fn send_signal(pid: u32, signal: &str) -> std::io::Result<()> {
-    let output = std::process::Command::new("kill")
-        .arg(signal)
-        .arg(pid.to_string())
-        .output()?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("No such process") {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            if stderr.trim().is_empty() {
-                format!("kill {signal} {pid} exited with status {}", output.status)
-            } else {
-                stderr.trim().to_owned()
-            },
-        ))
-    }
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {

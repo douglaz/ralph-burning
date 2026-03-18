@@ -1091,6 +1091,17 @@ where
                 let min_reviewers = effective_config.final_review_policy().min_reviewers;
                 agent_service
                     .adapter()
+                    .check_availability(&panel.planner)
+                    .await
+                    .map_err(|_| AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "required final-review planner ({}) unavailable on resume",
+                            panel.planner.backend.family,
+                        ),
+                    })?;
+                agent_service
+                    .adapter()
                     .check_availability(&panel.arbiter)
                     .await
                     .map_err(|_| AppError::ResumeDriftFailure {
@@ -1131,7 +1142,12 @@ where
                     });
                 }
                 panel.reviewers = available;
-                build_final_review_snapshot(current_stage, &panel.reviewers, &panel.arbiter)
+                build_final_review_snapshot(
+                    current_stage,
+                    &panel.reviewers,
+                    &panel.planner,
+                    &panel.arbiter,
+                )
             }
             _ => {
                 let target =
@@ -6031,13 +6047,12 @@ where
     let consensus_threshold = effective_config.final_review_policy().consensus_threshold;
     let max_restarts = effective_config.final_review_policy().max_restarts;
 
-    let planner_target = policy.resolve_role_target(BackendPolicyRole::Planner, cursor.cycle)?;
     agent_service
         .adapter()
-        .check_availability(&planner_target)
+        .check_availability(&panel.planner)
         .await
         .map_err(|error| AppError::BackendUnavailable {
-            backend: planner_target.backend.family.to_string(),
+            backend: panel.planner.backend.family.to_string(),
             details: format!("required final-review planner unavailable: {error}"),
         })?;
     agent_service
@@ -6073,9 +6088,10 @@ where
     }
     panel.reviewers = available_reviewers;
 
-    let resolution = build_final_review_snapshot(stage_id, &panel.reviewers, &panel.arbiter);
+    let resolution =
+        build_final_review_snapshot(stage_id, &panel.reviewers, &panel.planner, &panel.arbiter);
     let planner_timeout =
-        policy.timeout_for_role(planner_target.backend.family, BackendPolicyRole::Planner);
+        policy.timeout_for_role(panel.planner.backend.family, BackendPolicyRole::Planner);
     let reviewer_timeout_for_backend = |family: BackendFamily| -> Duration {
         policy.timeout_for_role(family, BackendPolicyRole::FinalReviewer)
     };
@@ -6134,7 +6150,6 @@ where
         run_id,
         cursor,
         &panel,
-        &planner_target,
         min_reviewers,
         consensus_threshold,
         max_restarts,
@@ -6354,6 +6369,7 @@ pub fn build_single_target_snapshot(
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6375,6 +6391,7 @@ pub fn build_prompt_review_snapshot(
         prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6395,6 +6412,7 @@ pub fn build_completion_snapshot(
             .map(|m| resolved_target_to_record(&m.target))
             .collect(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6403,6 +6421,7 @@ pub fn build_completion_snapshot(
 pub fn build_final_review_snapshot(
     stage_id: StageId,
     reviewers: &[crate::contexts::agent_execution::policy::ResolvedPanelMember],
+    planner: &ResolvedBackendTarget,
     arbiter: &ResolvedBackendTarget,
 ) -> StageResolutionSnapshot {
     StageResolutionSnapshot {
@@ -6416,6 +6435,7 @@ pub fn build_final_review_snapshot(
             .iter()
             .map(|member| resolved_target_to_record(&member.target))
             .collect(),
+        final_review_planner: Some(resolved_target_to_record(planner)),
         final_review_arbiter: Some(resolved_target_to_record(arbiter)),
     }
 }
@@ -6453,6 +6473,11 @@ pub fn resolution_has_drifted(
         || old.prompt_review_refiner != new.prompt_review_refiner
         || old.completion_completers != new.completion_completers
         || old.final_review_reviewers != new.final_review_reviewers
+        || match (&old.final_review_planner, &new.final_review_planner) {
+            (Some(old_planner), Some(new_planner)) => old_planner != new_planner,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
         || old.final_review_arbiter != new.final_review_arbiter
 }
 
@@ -6506,6 +6531,12 @@ pub fn drift_still_satisfies_requirements(
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
                     details: "re-resolved final-review panel has no arbiter".to_owned(),
+                });
+            }
+            if new_snapshot.final_review_planner.is_none() {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: "re-resolved final-review panel has no planner".to_owned(),
                 });
             }
         }

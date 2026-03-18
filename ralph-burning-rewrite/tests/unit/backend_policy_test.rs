@@ -282,6 +282,28 @@ fn completion_panel_defaults_to_opposite_family_when_backends_are_unset() {
 }
 
 #[test]
+fn final_review_panel_resolution_includes_planner_target() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+
+    assert_eq!(BackendFamily::Claude, panel.planner.backend.family);
+    assert!(
+        !panel.reviewers.is_empty(),
+        "final-review reviewers should resolve"
+    );
+    assert_eq!(BackendFamily::Claude, panel.arbiter.backend.family);
+}
+
+#[test]
 fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());

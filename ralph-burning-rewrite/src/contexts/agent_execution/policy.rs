@@ -30,6 +30,7 @@ pub struct PromptReviewPanelResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalReviewPanelResolution {
+    pub planner: ResolvedBackendTarget,
     pub reviewers: Vec<ResolvedPanelMember>,
     pub arbiter: ResolvedBackendTarget,
 }
@@ -121,6 +122,7 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     pub fn resolve_final_review_panel(&self, cycle: u32) -> AppResult<FinalReviewPanelResolution> {
+        let planner = self.resolve_role_target(BackendPolicyRole::Planner, cycle)?;
         let reviewers = self.resolve_panel_backends(
             &self.config.final_review_policy().backends,
             self.config.final_review_policy().min_reviewers,
@@ -135,7 +137,11 @@ impl<'a> BackendPolicyService<'a> {
             .transpose()?
             .unwrap_or(self.resolve_role_target(BackendPolicyRole::Arbiter, cycle)?);
 
-        Ok(FinalReviewPanelResolution { reviewers, arbiter })
+        Ok(FinalReviewPanelResolution {
+            planner,
+            reviewers,
+            arbiter,
+        })
     }
 
     pub fn timeout_for_role(&self, backend: BackendFamily, role: BackendPolicyRole) -> Duration {

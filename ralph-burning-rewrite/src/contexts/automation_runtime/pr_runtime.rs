@@ -130,9 +130,7 @@ where
         if let Some(pr_number) = parse_pr_number(&pr_url) {
             if let Ok(pr_state) = self.github.fetch_pr_state(owner, repo, pr_number).await {
                 self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
-                if pr_state.state.eq_ignore_ascii_case("open")
-                    && pr_state.draft.unwrap_or(false)
-                {
+                if pr_state.state.eq_ignore_ascii_case("open") && pr_state.draft.unwrap_or(false) {
                     self.github
                         .mark_pr_ready(owner, repo, pr_number)
                         .await

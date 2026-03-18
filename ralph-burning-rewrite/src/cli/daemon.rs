@@ -555,10 +555,7 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
                             // Phase-0 recovery: revert stuck Claimed/Active
                             // tasks back to Pending so daemon picks them up
                             // again on the next cycle.
-                            if matches!(
-                                task.status.as_str(),
-                                "claimed" | "active"
-                            ) {
+                            if matches!(task.status.as_str(), "claimed" | "active") {
                                 let _ = DaemonTaskService::revert_to_pending_for_recovery(
                                     &store,
                                     &worktree,

@@ -99,6 +99,21 @@ where
     }
 }
 
+fn block_on_result<F, T>(future: F) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("build tokio runtime: {e}"))?;
+        runtime.block_on(future)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // In-process daemon iteration helper (test-only)
 //
@@ -536,6 +551,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
     register_workflow_panels(&mut m);
+    register_p0_hardening(&mut m);
     register_workflow_slice5(&mut m);
     register_validation_slice6(&mut m);
     register_daemon_github(&mut m);
@@ -7399,6 +7415,72 @@ fn prepare_scenario_project_root(workspace_root: &Path) -> Result<PathBuf, Strin
     Ok(project_root)
 }
 
+#[cfg(unix)]
+fn write_script_with_mode(path: &Path, contents: &str, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, contents).map_err(|e| format!("write script {}: {e}", path.display()))?;
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|e| format!("stat script {}: {e}", path.display()))?
+        .permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|e| format!("chmod script {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_script_with_mode(path: &Path, contents: &str, _mode: u32) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| format!("write script {}: {e}", path.display()))
+}
+
+fn process_is_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+
+    let Some((_, rest)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+
+    !rest.starts_with('Z')
+}
+
+fn build_process_backend_request(
+    project_root: &Path,
+    invocation_id: &str,
+    timeout: std::time::Duration,
+) -> crate::contexts::agent_execution::model::InvocationRequest {
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::contexts::workflow_composition::contracts::contract_for_stage;
+    use crate::shared::domain::{
+        BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+    };
+
+    InvocationRequest {
+        invocation_id: invocation_id.to_owned(),
+        project_root: project_root.to_path_buf(),
+        working_dir: project_root.to_path_buf(),
+        contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+        role: BackendRole::Planner,
+        resolved_target: ResolvedBackendTarget::new(
+            BackendFamily::Claude,
+            BackendFamily::Claude.default_model_id(),
+        ),
+        payload: InvocationPayload {
+            prompt: "Conformance process-backend prompt".to_owned(),
+            context: serde_json::json!({"scenario": invocation_id}),
+        },
+        timeout,
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    }
+}
+
 fn read_scenario_http_request(
     stream: &mut std::net::TcpStream,
 ) -> Result<ScenarioRecordedRequest, String> {
@@ -10121,6 +10203,436 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
+// Slice 0 Hardening (7 scenarios)
+// ===========================================================================
+
+fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
+    use crate::adapters::fs::{FsRawOutputStore, FsSessionStore};
+    use crate::adapters::github::{GithubClient, GithubClientConfig};
+    use crate::adapters::process_backend::ProcessBackendAdapter;
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::service::{AgentExecutionPort, AgentExecutionService};
+    use crate::contexts::workflow_composition::engine::{
+        build_final_review_snapshot, resolution_has_drifted,
+    };
+    use crate::shared::domain::{BackendFamily, ResolvedBackendTarget, StageId};
+    use crate::shared::error::AppError;
+
+    reg!(m, "parity_slice0_executable_permission_required", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let binary_path = bin_dir.join("claude");
+        write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o644)?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let adapter = ProcessBackendAdapter::new();
+            let target = ResolvedBackendTarget::new(
+                BackendFamily::Claude,
+                BackendFamily::Claude.default_model_id(),
+            );
+            match adapter.check_availability(&target).await {
+                Err(AppError::BackendUnavailable { details, .. }) => {
+                    if !details.contains(&binary_path.display().to_string()) {
+                        return Err(format!(
+                            "expected permission error to mention {}, got: {details}",
+                            binary_path.display()
+                        ));
+                    }
+                    if !details.contains("not executable") {
+                        return Err(format!(
+                            "expected permission error to explain executability, got: {details}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(other) => Err(format!(
+                    "expected BackendUnavailable for non-executable binary, got: {other}"
+                )),
+                Ok(()) => Err("non-executable binary should not pass availability".to_owned()),
+            }
+        })
+    });
+
+    reg!(m, "parity_slice0_permission_check_success", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let binary_path = bin_dir.join("claude");
+        write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o755)?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let adapter = ProcessBackendAdapter::new();
+            let target = ResolvedBackendTarget::new(
+                BackendFamily::Claude,
+                BackendFamily::Claude.default_model_id(),
+            );
+            adapter
+                .check_availability(&target)
+                .await
+                .map_err(|e| format!("expected executable binary to pass availability: {e}"))
+        })
+    });
+
+    reg!(m, "parity_slice0_cancel_no_orphans", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let pid_file = ws.path().join("cancel-child.pid");
+        let term_file = ws.path().join("cancel-child.term");
+        write_script_with_mode(
+            &bin_dir.join("claude"),
+            &format!(
+                "#!/bin/sh\ntrap 'echo term > \"{}\"; exit 0' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                term_file.display(),
+                pid_file.display()
+            ),
+            0o755,
+        )?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            std::fs::create_dir_all(project_root.join("runtime/temp"))
+                .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::new();
+            let request = build_process_backend_request(
+                &project_root,
+                "slice0-cancel-no-orphans",
+                std::time::Duration::from_secs(5),
+            );
+            let invocation_id = request.invocation_id.clone();
+            let adapter_clone = adapter.clone();
+            let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
+
+            for _ in 0..40 {
+                if pid_file.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !pid_file.exists() {
+                return Err("child pid file was not written before cancel".to_owned());
+            }
+
+            let pid: u32 = std::fs::read_to_string(&pid_file)
+                .map_err(|e| format!("read child pid: {e}"))?
+                .trim()
+                .parse()
+                .map_err(|e| format!("parse child pid: {e}"))?;
+            if !process_is_running(pid) {
+                return Err("child should be running before cancel".to_owned());
+            }
+
+            adapter
+                .cancel(&invocation_id)
+                .await
+                .map_err(|e| format!("cancel long-running child: {e}"))?;
+
+            for _ in 0..40 {
+                if !process_is_running(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if process_is_running(pid) {
+                return Err("child process remained running after cancel".to_owned());
+            }
+            if !term_file.is_file() {
+                return Err("expected SIGTERM marker file after cancel".to_owned());
+            }
+
+            let children = adapter.active_children.lock().await;
+            if children.contains_key(&invocation_id) {
+                return Err("active_children should be empty after cancel".to_owned());
+            }
+            drop(children);
+
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+                .await
+                .map_err(|_| "invoke task did not finish after cancel".to_owned())?;
+
+            Ok(())
+        })
+    });
+
+    reg!(m, "parity_slice0_timeout_cleanup", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let pid_file = ws.path().join("timeout-child.pid");
+        write_script_with_mode(
+            &bin_dir.join("claude"),
+            &format!(
+                "#!/bin/sh\ntrap '' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                pid_file.display()
+            ),
+            0o755,
+        )?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            std::fs::create_dir_all(project_root.join("runtime/temp"))
+                .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::new();
+            let service =
+                AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+            let request = build_process_backend_request(
+                &project_root,
+                "slice0-timeout-cleanup",
+                std::time::Duration::from_millis(100),
+            );
+            let invocation_id = request.invocation_id.clone();
+
+            match service.invoke(request).await {
+                Err(AppError::InvocationTimeout { .. }) => {}
+                Err(other) => return Err(format!("expected InvocationTimeout, got: {other}")),
+                Ok(_) => return Err("timeout scenario should not succeed".to_owned()),
+            }
+
+            for _ in 0..20 {
+                if pid_file.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !pid_file.exists() {
+                return Err("timed-out child did not record a pid".to_owned());
+            }
+
+            let pid: u32 = std::fs::read_to_string(&pid_file)
+                .map_err(|e| format!("read timed-out child pid: {e}"))?
+                .trim()
+                .parse()
+                .map_err(|e| format!("parse timed-out child pid: {e}"))?;
+
+            for _ in 0..40 {
+                if !process_is_running(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if process_is_running(pid) {
+                return Err("timed-out child process remained running after cleanup".to_owned());
+            }
+
+            let children = adapter.active_children.lock().await;
+            if children.contains_key(&invocation_id) {
+                return Err("active_children should be empty after timeout cleanup".to_owned());
+            }
+
+            Ok(())
+        })
+    });
+
+    reg!(m, "parity_slice0_final_review_planner_in_snapshot", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "slice0-final-review-snapshot", "standard")?;
+
+        let out = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
+        )?;
+        assert_failure(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "slice0-final-review-snapshot")?;
+        let resolution = snapshot
+            .get("last_stage_resolution_snapshot")
+            .ok_or_else(|| {
+                "missing last_stage_resolution_snapshot after final-review failure".to_owned()
+            })?;
+        if resolution.get("stage_id").and_then(|v| v.as_str()) != Some("final_review") {
+            return Err(format!(
+                "expected final_review snapshot, got {:?}",
+                resolution.get("stage_id")
+            ));
+        }
+
+        let planner = resolution
+            .get("final_review_planner")
+            .ok_or_else(|| "final_review_planner missing from saved snapshot".to_owned())?;
+        if planner
+            .get("backend_family")
+            .and_then(|v| v.as_str())
+            .is_none()
+            || planner.get("model_id").and_then(|v| v.as_str()).is_none()
+        {
+            return Err(format!(
+                "final_review_planner must include backend_family and model_id, got {planner}"
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "parity_slice0_final_review_planner_drift_detected",
+        || {
+            let reviewers = vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1"),
+                    required: true,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2"),
+                    required: true,
+                },
+            ];
+            let arbiter = ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter");
+            let old_snapshot = build_final_review_snapshot(
+                StageId::FinalReview,
+                &reviewers,
+                &ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a"),
+                &arbiter,
+            );
+            let new_snapshot = build_final_review_snapshot(
+                StageId::FinalReview,
+                &reviewers,
+                &ResolvedBackendTarget::new(BackendFamily::Codex, "planner-b"),
+                &arbiter,
+            );
+            if !resolution_has_drifted(&old_snapshot, &new_snapshot) {
+                return Err("planner-only final-review drift should be detected".to_owned());
+            }
+
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "slice0-final-review-drift", "standard")?;
+
+            let arbiter_out = run_cli(
+                &["config", "set", "final_review.arbiter_backend", "claude"],
+                ws.path(),
+            )?;
+            assert_success(&arbiter_out)?;
+
+            let start_out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
+            )?;
+            assert_failure(&start_out)?;
+
+            let planner_out = run_cli(
+                &["config", "set", "workflow.planner_backend", "codex"],
+                ws.path(),
+            )?;
+            assert_success(&planner_out)?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_success(&resume_out)?;
+
+            let events = read_journal(&ws, "slice0-final-review-drift")?;
+            let warning_event = events
+                .iter()
+                .find(|event| {
+                    event.get("event_type").and_then(|value| value.as_str())
+                        == Some("durable_warning")
+                        && event
+                            .get("details")
+                            .and_then(|details| details.get("stage_id"))
+                            .and_then(|value| value.as_str())
+                            == Some("final_review")
+                })
+                .ok_or_else(|| {
+                    "expected durable_warning event for final-review planner drift".to_owned()
+                })?;
+
+            let warning_details = warning_event
+                .get("details")
+                .and_then(|details| details.get("details"))
+                .ok_or_else(|| "durable_warning missing nested resolution details".to_owned())?;
+            let old_resolution = warning_details
+                .get("old_resolution")
+                .ok_or_else(|| "durable_warning missing old_resolution".to_owned())?;
+            let new_resolution = warning_details
+                .get("new_resolution")
+                .ok_or_else(|| "durable_warning missing new_resolution".to_owned())?;
+
+            let old_planner = old_resolution
+                .get("final_review_planner")
+                .ok_or_else(|| "old_resolution missing final_review_planner".to_owned())?;
+            let new_planner = new_resolution
+                .get("final_review_planner")
+                .ok_or_else(|| "new_resolution missing final_review_planner".to_owned())?;
+            if old_planner == new_planner {
+                return Err(
+                    "expected planner drift warning to show changed planner resolution".to_owned(),
+                );
+            }
+            if old_resolution.get("final_review_arbiter")
+                != new_resolution.get("final_review_arbiter")
+            {
+                return Err(
+                    "arbiter should remain stable in planner-only drift scenario".to_owned(),
+                );
+            }
+            if old_resolution.get("final_review_reviewers")
+                != new_resolution.get("final_review_reviewers")
+            {
+                return Err(
+                    "reviewers should remain stable in planner-only drift scenario".to_owned(),
+                );
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "parity_slice0_ref_encoding_reserved_chars", || {
+        let base_ref = "release/%base";
+        let head_ref = "feature/%head/with/slash";
+        let expected_path =
+            "/repos/acme/widgets/compare/release%2F%25base...feature%2F%25head%2Fwith%2Fslash";
+
+        block_on_result(async {
+            let server = ScenarioHttpServer::start(vec![ScenarioHttpResponse::json(
+                200,
+                serde_json::json!({
+                    "ahead_by": 1,
+                    "behind_by": 0,
+                    "status": "ahead"
+                }),
+            )])?;
+            let client = GithubClient::new(GithubClientConfig {
+                token: "test-token".to_owned(),
+                api_base_url: server.base_url.clone(),
+            });
+
+            let ahead = client
+                .is_branch_ahead("acme", "widgets", base_ref, head_ref)
+                .await
+                .map_err(|e| format!("compare refs: {e}"))?;
+            if !ahead {
+                return Err("expected compare response to report branch ahead".to_owned());
+            }
+
+            let requests = server.requests()?;
+            let request = requests
+                .first()
+                .ok_or_else(|| "expected recorded compare request".to_owned())?;
+            if request.path != expected_path {
+                return Err(format!(
+                    "expected compare request path {expected_path}, got {}",
+                    request.path
+                ));
+            }
+
+            Ok(())
+        })
+    });
+}
+
+// ===========================================================================
 // Backend Stub Gating (1 scenario)
 // ===========================================================================
 
@@ -10147,7 +10659,8 @@ fn register_backend_stub(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !stdout.contains("running 1 test")
-            || !stdout.contains("build_backend_adapter_rejects_stub_when_test_stub_feature_disabled")
+            || !stdout
+                .contains("build_backend_adapter_rejects_stub_when_test_stub_feature_disabled")
         {
             return Err(format!(
                 "expected targeted no-feature test to execute exactly once\nstdout:\n{}\nstderr:\n{}",
