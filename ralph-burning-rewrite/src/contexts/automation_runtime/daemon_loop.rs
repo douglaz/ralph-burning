@@ -570,7 +570,7 @@ where
                     // GitHub label — the task is already marked Failed by
                     // handle_requirements_quick, but the issue still shows
                     // rb:ready without this.
-                    let _ = DaemonTaskService::set_label_dirty(
+                    let _ = DaemonTaskService::mark_label_dirty(
                         self.store,
                         store_dir,
                         &task.task_id,

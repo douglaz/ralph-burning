@@ -141,8 +141,12 @@ impl OpenRouterBackendAdapter {
                 }
             ],
             "response_format": {
-                "type": "json_object",
-                "json_schema": request.contract.json_schema_value(),
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "stage_output",
+                    "strict": true,
+                    "schema": request.contract.json_schema_value(),
+                }
             }
         })
     }

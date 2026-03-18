@@ -166,15 +166,7 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
             let routing_command =
                 extract_command(issue.body.as_deref().unwrap_or(""), &new_comment_bodies);
 
-            // Update dedup cursor on the existing task regardless of command
             let max_comment_id = raw_comments.iter().map(|c| c.id).max();
-            update_task_cursor(
-                store,
-                base_dir,
-                &registration.repo_slug,
-                issue.number,
-                max_comment_id,
-            );
 
             if let Some(ref cmd) = routing_command {
                 let cmd_trimmed = cmd.trim();
@@ -191,6 +183,16 @@ pub async fn poll_and_ingest_repo<G: GithubPort>(
                     .await?;
                 }
             }
+
+            // Advance cursor only after command handling succeeds — if the
+            // command fails, we want to retry it on the next poll cycle.
+            update_task_cursor(
+                store,
+                base_dir,
+                &registration.repo_slug,
+                issue.number,
+                max_comment_id,
+            );
         }
     }
 

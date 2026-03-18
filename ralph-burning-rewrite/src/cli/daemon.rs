@@ -561,7 +561,9 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
                             ) {
                                 let _ = DaemonTaskService::revert_to_pending_for_recovery(
                                     &store,
+                                    &worktree,
                                     &daemon_dir,
+                                    &checkout,
                                     &task.task_id,
                                 );
                             }
