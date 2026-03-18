@@ -1,3 +1,27 @@
+---
+artifact: prompt-review
+project: parity-plan
+backend: codex
+role: prompt_reviewer
+created_at: 2026-03-18T19:09:33Z
+---
+
+Reviewing the prompt for execution ambiguity and missing contracts first, then I’ll rewrite it into an implementation-ready version with clearer scope, dependencies, acceptance rules, and testing expectations.
+The rewrite is tightening three weak spots from the original: measurable parity definition, fixed contract/CLI decisions before coding, and explicit test gates per slice so loops can stop claiming “parity” based on partial behavior.
+# Prompt Review
+
+## Issues Found
+- `Practical feature parity`, `production-trustworthy`, `parity-quality`, and `sufficiently for replacement` are subjective; without measurable success criteria, different implementation loops can stop at different quality bars.
+- Several interfaces are only described as `recommended`, `optional`, or `if still required`; that leaves CLI shape and scope open to reinterpretation, which creates drift across slices.
+- The prompt does not require a baseline comparison against old `ralph` code, tests, docs, or help output; agents lack an authoritative reference for edge cases and failure behavior.
+- Shared contracts such as `ProjectSeed`, amendment metadata, JSON DTOs, backend diagnostics, and template resolution are called out but not enforced as phase gates; parallel work can start before boundaries are stable.
+- Acceptance criteria mention conformance cases but not scenario naming, fixtures, expected outputs, or verification commands; this weakens testability and sign-off.
+- Manual smoke tests list areas to exercise but not setup, supported environments, or expected outcomes; failures may be environmental rather than product regressions.
+- The prompt does not define what to do when old `ralph` behavior is missing, conflicting, or incompatible with the new architecture; agents may silently invent product behavior.
+- Several slices combine contract design, CLI design, runtime behavior, and UX in one unit; without a standard per-slice deliverable template, “done” can mean partially implemented.
+- Docs updates are only required when CLI behavior changes, but a safe cutover also needs operator-facing behavior docs and migration/sign-off artifacts.
+
+## Refined Prompt
 **`ralph-burning` Feature Parity Implementation Prompt**
 
 ### Objective
