@@ -127,6 +127,21 @@ pub enum AppError {
     RemediationExhausted { cycle: u32, max: u32 },
     #[error("amendment queue error: {details}")]
     AmendmentQueueError { details: String },
+    #[error("duplicate amendment: existing amendment '{amendment_id}' has the same content")]
+    DuplicateAmendment { amendment_id: String },
+    #[error("amendment not found: '{amendment_id}'")]
+    AmendmentNotFound { amendment_id: String },
+    #[error(
+        "cannot modify amendments for project '{project_id}': a writer lease is currently held"
+    )]
+    AmendmentLeaseConflict { project_id: String },
+    #[error("amendment clear partially failed: removed {removed_count} of {total} amendments")]
+    AmendmentClearPartial {
+        removed: Vec<String>,
+        remaining: Vec<String>,
+        removed_count: usize,
+        total: usize,
+    },
     #[error("completion blocked: {details}")]
     CompletionBlocked { details: String },
     #[error("completion guard snapshot commit failed: {details}")]

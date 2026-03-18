@@ -200,6 +200,33 @@ pub struct RollbackPointMeta {
     pub rollback_count: u32,
 }
 
+/// Source of an amendment for metadata and dedup purposes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AmendmentSource {
+    Manual,
+    PrReview,
+    IssueCommand,
+    WorkflowStage,
+}
+
+impl AmendmentSource {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::PrReview => "pr_review",
+            Self::IssueCommand => "issue_command",
+            Self::WorkflowStage => "workflow_stage",
+        }
+    }
+}
+
+impl std::fmt::Display for AmendmentSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// A typed queued amendment record for durable persistence.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct QueuedAmendment {
@@ -213,6 +240,30 @@ pub struct QueuedAmendment {
     /// share a `created_at` timestamp; `batch_sequence` distinguishes their order.
     #[serde(default)]
     pub batch_sequence: u32,
+    /// Tracks the origin of this amendment for dedup and metadata purposes.
+    #[serde(default = "default_amendment_source")]
+    pub source: AmendmentSource,
+    /// Deterministic dedup key. Two amendments with the same dedup_key are considered
+    /// duplicates. For manual amendments this is derived from normalized body + source.
+    #[serde(default)]
+    pub dedup_key: String,
+}
+
+fn default_amendment_source() -> AmendmentSource {
+    AmendmentSource::WorkflowStage
+}
+
+impl QueuedAmendment {
+    /// Compute a deterministic dedup key from source and normalized body.
+    pub fn compute_dedup_key(source: &AmendmentSource, body: &str) -> String {
+        use sha2::{Digest, Sha256};
+        let normalized = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let mut hasher = Sha256::new();
+        hasher.update(source.as_str().as_bytes());
+        hasher.update(b":");
+        hasher.update(normalized.as_bytes());
+        format!("{:x}", hasher.finalize())
+    }
 }
 
 /// Amendment queue state tracked in the canonical run snapshot.

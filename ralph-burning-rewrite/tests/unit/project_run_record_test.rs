@@ -4,6 +4,7 @@ use std::path::Path;
 use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::model::*;
+use ralph_burning::contexts::project_run_record::service;
 use ralph_burning::contexts::project_run_record::service::*;
 use ralph_burning::contexts::requirements_drafting::service::SeedHandoff;
 use ralph_burning::shared::domain::{FlowPreset, ProjectId};
@@ -1356,4 +1357,570 @@ fn payload_record_defaults_from_legacy_json() {
     assert_eq!(record.record_kind, RecordKind::StagePrimary);
     assert!(record.producer.is_none());
     assert_eq!(record.completion_round, 1); // default_completion_round returns 1
+}
+
+// ── Amendment Service Unit Tests ──────────────────────────────────────────
+
+use ralph_burning::contexts::project_run_record::model::{AmendmentSource, QueuedAmendment};
+use ralph_burning::shared::domain::StageId;
+
+// -- Fake AmendmentQueuePort for service tests --
+
+struct FakeAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FakeAmendmentQueue {
+    fn empty() -> Self {
+        Self {
+            amendments: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FakeAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+struct FailingRemoveAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FailingRemoveAmendmentQueue {
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailingRemoveAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment_id: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated remove failure",
+        )))
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+// -- Fake RunSnapshotWritePort --
+
+struct FakeRunSnapshotWriteStore {
+    written: RefCell<Option<RunSnapshot>>,
+}
+
+impl FakeRunSnapshotWriteStore {
+    fn new() -> Self {
+        Self {
+            written: RefCell::new(None),
+        }
+    }
+
+    fn written_snapshot(&self) -> Option<RunSnapshot> {
+        self.written.borrow().clone()
+    }
+}
+
+impl RunSnapshotWritePort for FakeRunSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        self.written.replace(Some(snapshot.clone()));
+        Ok(())
+    }
+}
+
+// -- Dedup key determinism tests --
+
+#[test]
+fn dedup_key_is_deterministic_for_same_input() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    assert_eq!(key1, key2);
+}
+
+#[test]
+fn dedup_key_normalizes_whitespace() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix  the\n bug");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    assert_eq!(key1, key2);
+}
+
+#[test]
+fn dedup_key_differs_by_source() {
+    let manual = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    let pr = QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "fix the bug");
+    assert_ne!(manual, pr);
+}
+
+#[test]
+fn dedup_key_differs_by_body() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix bug A");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix bug B");
+    assert_ne!(key1, key2);
+}
+
+#[test]
+fn dedup_key_is_sha256_hex() {
+    let key = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test");
+    assert_eq!(key.len(), 64); // SHA-256 produces 64 hex chars
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+// -- AmendmentSource serialization tests --
+
+#[test]
+fn amendment_source_serializes_to_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::Manual).unwrap(),
+        "\"manual\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::PrReview).unwrap(),
+        "\"pr_review\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::IssueCommand).unwrap(),
+        "\"issue_command\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::WorkflowStage).unwrap(),
+        "\"workflow_stage\""
+    );
+}
+
+#[test]
+fn amendment_source_round_trips() {
+    for source in &[
+        AmendmentSource::Manual,
+        AmendmentSource::PrReview,
+        AmendmentSource::IssueCommand,
+        AmendmentSource::WorkflowStage,
+    ] {
+        let json = serde_json::to_string(source).unwrap();
+        let deserialized: AmendmentSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(source, &deserialized);
+    }
+}
+
+#[test]
+fn amendment_source_display_matches_as_str() {
+    assert_eq!(format!("{}", AmendmentSource::Manual), "manual");
+    assert_eq!(format!("{}", AmendmentSource::PrReview), "pr_review");
+    assert_eq!(format!("{}", AmendmentSource::IssueCommand), "issue_command");
+    assert_eq!(format!("{}", AmendmentSource::WorkflowStage), "workflow_stage");
+}
+
+// -- QueuedAmendment backwards-compat deserialization --
+
+#[test]
+fn queued_amendment_defaults_source_to_workflow_stage_on_missing() {
+    let json = r#"{
+        "amendment_id": "legacy-1",
+        "source_stage": "qa",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "fix the thing",
+        "created_at": "2026-03-18T00:00:00Z"
+    }"#;
+    let amendment: QueuedAmendment = serde_json::from_str(json).unwrap();
+    assert_eq!(amendment.source, AmendmentSource::WorkflowStage);
+    assert_eq!(amendment.dedup_key, ""); // default empty string
+}
+
+// -- add_manual_amendment service tests --
+
+#[test]
+fn add_manual_amendment_creates_and_returns_id() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    assert!(result.is_ok());
+    match result.unwrap() {
+        service::AmendmentAddResult::Created { amendment_id } => {
+            assert!(amendment_id.starts_with("manual-"));
+        }
+        service::AmendmentAddResult::Duplicate { .. } => {
+            panic!("expected Created, got Duplicate");
+        }
+    }
+
+    // The amendment should be in the queue.
+    let pending = queue.amendments.borrow();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].body, "fix the bug");
+    assert_eq!(pending[0].source, AmendmentSource::Manual);
+    assert!(!pending[0].dedup_key.is_empty());
+}
+
+#[test]
+fn add_manual_amendment_rejects_running_project() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::active_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::AmendmentLeaseConflict { .. }
+    ));
+}
+
+#[test]
+fn add_manual_amendment_deduplicates() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // First add
+    let first = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+    assert!(matches!(first, service::AmendmentAddResult::Created { .. }));
+
+    // Second add with same body
+    let second = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+    assert!(matches!(second, service::AmendmentAddResult::Duplicate { .. }));
+
+    // Only one amendment should be on disk
+    assert_eq!(queue.amendments.borrow().len(), 1);
+}
+
+#[test]
+fn add_manual_amendment_dedup_normalizes_whitespace() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix  the\nbug",
+    )
+    .unwrap();
+
+    let second = service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix the bug",
+    )
+    .unwrap();
+
+    assert!(matches!(second, service::AmendmentAddResult::Duplicate { .. }));
+}
+
+// -- list_amendments service tests --
+
+#[test]
+fn list_amendments_empty_returns_empty() {
+    let queue = FakeAmendmentQueue::empty();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::list_amendments(&queue, &base, &pid).unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn list_amendments_returns_all_pending() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix bug A",
+    )
+    .unwrap();
+    service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix bug B",
+    )
+    .unwrap();
+
+    let result = service::list_amendments(&queue, &base, &pid).unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+// -- remove_amendment service tests --
+
+#[test]
+fn remove_amendment_succeeds_for_existing() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix bug",
+    )
+    .unwrap();
+    let amendment_id = match result {
+        service::AmendmentAddResult::Created { amendment_id } => amendment_id,
+        _ => panic!("expected Created"),
+    };
+
+    let remove_result = service::remove_amendment(&queue, &base, &pid, &amendment_id);
+    assert!(remove_result.is_ok());
+    assert!(queue.amendments.borrow().is_empty());
+}
+
+#[test]
+fn remove_amendment_fails_for_missing() {
+    let queue = FakeAmendmentQueue::empty();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::remove_amendment(&queue, &base, &pid, "nonexistent");
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::AmendmentNotFound { .. }
+    ));
+}
+
+// -- clear_amendments service tests --
+
+#[test]
+fn clear_amendments_empty_returns_empty() {
+    let queue = FakeAmendmentQueue::empty();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &base, &pid).unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn clear_amendments_removes_all() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix A",
+    )
+    .unwrap();
+    service::add_manual_amendment(
+        &queue, &run_store, &run_write, &journal, &project_store,
+        &base, &pid, "fix B",
+    )
+    .unwrap();
+
+    let removed = service::clear_amendments(&queue, &base, &pid).unwrap();
+    assert_eq!(removed.len(), 2);
+    assert!(queue.amendments.borrow().is_empty());
+}
+
+#[test]
+fn clear_amendments_partial_failure_reports_remaining() {
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "amend-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix A".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+        },
+        QueuedAmendment {
+            amendment_id: "amend-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix B".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+        },
+    ];
+    let queue = FailingRemoveAmendmentQueue::with(amendments);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &base, &pid);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::AmendmentClearPartial {
+            removed_count,
+            total,
+            remaining,
+            ..
+        } => {
+            assert_eq!(removed_count, 0);
+            assert_eq!(total, 2);
+            assert_eq!(remaining.len(), 2);
+        }
+        other => panic!("expected AmendmentClearPartial, got: {other}"),
+    }
 }

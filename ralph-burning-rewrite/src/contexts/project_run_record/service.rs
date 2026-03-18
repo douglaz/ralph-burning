@@ -5,14 +5,14 @@ use chrono::{DateTime, Utc};
 use crate::adapters::fs::FileSystem;
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
-use crate::shared::domain::{FlowPreset, ProjectId, StageId};
+use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 use super::journal;
 use super::model::{
-    ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, ProjectDetail, ProjectListEntry,
-    ProjectRecord, ProjectStatusSummary, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
-    SessionStore,
+    ActiveRun, AmendmentSource, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
+    ProjectDetail, ProjectListEntry, ProjectRecord, ProjectStatusSummary, QueuedAmendment,
+    RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry, SessionStore,
 };
 use super::queries::{self, RunHistoryView, RunStatusView, RunTailView};
 
@@ -737,4 +737,226 @@ fn rollback_created_sequence_for(events: &[JournalEvent], rollback_id: &str) -> 
                 rollback_id
             ),
         })
+}
+
+// ── Shared Amendment Service ──────────────────────────────────────────────
+
+/// Result of staging a manual amendment.
+#[derive(Debug)]
+pub enum AmendmentAddResult {
+    /// A new amendment was created.
+    Created { amendment_id: String },
+    /// An existing amendment with the same dedup key was found.
+    Duplicate { amendment_id: String },
+}
+
+/// Add a manual amendment. Performs dedup check, writes durably, emits a journal
+/// event, and reopens completed projects.
+pub fn add_manual_amendment(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    journal_port: &dyn JournalStorePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    body: &str,
+) -> AppResult<AmendmentAddResult> {
+    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
+    let source = AmendmentSource::Manual;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+
+    // Dedup check against pending amendments on disk.
+    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+    if let Some(existing) = pending.iter().find(|a| a.dedup_key == dedup_key) {
+        return Ok(AmendmentAddResult::Duplicate {
+            amendment_id: existing.amendment_id.clone(),
+        });
+    }
+
+    let now = Utc::now();
+    let amendment_id = format!("manual-{}", uuid::Uuid::new_v4());
+
+    let current_cycle = snapshot
+        .cycle_history
+        .last()
+        .map(|entry| entry.cycle)
+        .unwrap_or(1);
+    let completion_round = snapshot.completion_rounds.max(1);
+
+    let amendment = QueuedAmendment {
+        amendment_id: amendment_id.clone(),
+        source_stage: StageId::Planning,
+        source_cycle: current_cycle,
+        source_completion_round: completion_round,
+        body: body.to_owned(),
+        created_at: now,
+        batch_sequence: 0,
+        source,
+        dedup_key: dedup_key.clone(),
+    };
+
+    // Write durable amendment file.
+    amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
+
+    // Emit journal event.
+    let events = journal_port.read_journal(base_dir, project_id)?;
+    let seq = journal::last_sequence(&events) + 1;
+    let journal_event = journal::amendment_queued_manual_event(
+        seq,
+        now,
+        &amendment_id,
+        body,
+        "manual",
+        &dedup_key,
+    );
+    let line = journal::serialize_event(&journal_event)?;
+    if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &line) {
+        // Roll back the amendment file on journal failure.
+        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        return Err(journal_err);
+    }
+
+    // If the project is completed, reopen it.
+    if snapshot.status == RunStatus::Completed {
+        reopen_completed_project(
+            run_port,
+            run_write_port,
+            project_store,
+            base_dir,
+            project_id,
+        )?;
+    }
+
+    Ok(AmendmentAddResult::Created { amendment_id })
+}
+
+/// List pending amendments for a project.
+pub fn list_amendments(
+    amendment_queue: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<QueuedAmendment>> {
+    amendment_queue.list_pending_amendments(base_dir, project_id)
+}
+
+/// Remove a single pending amendment by ID.
+pub fn remove_amendment(
+    amendment_queue: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendment_id: &str,
+) -> AppResult<()> {
+    // Verify the amendment exists before removing.
+    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+    if !pending.iter().any(|a| a.amendment_id == amendment_id) {
+        return Err(AppError::AmendmentNotFound {
+            amendment_id: amendment_id.to_owned(),
+        });
+    }
+    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)
+}
+
+/// Clear all pending amendments. Returns removed and remaining IDs.
+/// On partial failure, reports exactly which amendments were removed and which remain.
+pub fn clear_amendments(
+    amendment_queue: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<String>> {
+    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total = pending.len();
+    let mut removed = Vec::new();
+    let mut remaining = Vec::new();
+
+    for amendment in &pending {
+        match amendment_queue.remove_amendment(base_dir, project_id, &amendment.amendment_id) {
+            Ok(()) => removed.push(amendment.amendment_id.clone()),
+            Err(_) => remaining.push(amendment.amendment_id.clone()),
+        }
+    }
+
+    if !remaining.is_empty() {
+        return Err(AppError::AmendmentClearPartial {
+            removed_count: removed.len(),
+            total,
+            removed,
+            remaining,
+        });
+    }
+
+    Ok(removed)
+}
+
+/// Reopen a completed project to paused state with an interrupted run pointing
+/// at the flow planning stage. Shared between manual and PR-review amendment paths.
+pub fn reopen_completed_project(
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    let record = project_store.read_project_record(base_dir, project_id)?;
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    if snapshot.status != RunStatus::Completed {
+        return Ok(());
+    }
+
+    let planning_stage = planning_stage_for_flow(record.flow);
+    let current_cycle = snapshot
+        .cycle_history
+        .last()
+        .map(|entry| entry.cycle)
+        .unwrap_or(1);
+    let completion_round = snapshot.completion_rounds.max(1);
+
+    let project_root = FileSystem::project_root(base_dir, project_id);
+    let prompt_path = project_root.join(&record.prompt_reference);
+    let prompt_contents =
+        std::fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
+            file: prompt_path.display().to_string(),
+            details: format!("failed to read prompt for project reopen: {error}"),
+        })?;
+    let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
+
+    snapshot.interrupted_run = Some(ActiveRun {
+        run_id: format!("reopen-{}", project_id.as_str()),
+        stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, completion_round)?,
+        started_at: Utc::now(),
+        prompt_hash_at_cycle_start: prompt_hash.clone(),
+        prompt_hash_at_stage_start: prompt_hash,
+        qa_iterations_current_cycle: 0,
+        review_iterations_current_cycle: 0,
+        final_review_restart_count: 0,
+        stage_resolution_snapshot: snapshot.last_stage_resolution_snapshot.clone(),
+    });
+    snapshot.active_run = None;
+    snapshot.status = RunStatus::Paused;
+    snapshot.status_summary = "paused: amendments staged".to_owned();
+
+    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    Ok(())
+}
+
+fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
+    match flow {
+        FlowPreset::Standard => StageId::Planning,
+        FlowPreset::QuickDev => StageId::PlanAndImplement,
+        FlowPreset::DocsChange => StageId::DocsPlan,
+        FlowPreset::CiImprovement => StageId::CiPlan,
+    }
 }

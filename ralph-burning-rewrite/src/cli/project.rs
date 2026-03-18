@@ -41,6 +41,35 @@ pub enum ProjectSubcommand {
     List,
     Show { id: Option<String> },
     Delete { id: String },
+    Amend(AmendCommand),
+}
+
+#[derive(Debug, Args)]
+pub struct AmendCommand {
+    #[command(subcommand)]
+    pub command: AmendSubcommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum AmendSubcommand {
+    Add(AmendAddArgs),
+    List,
+    Remove { id: String },
+    Clear,
+}
+
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("amend_input")
+        .required(true)
+        .multiple(false)
+        .args(["text", "file"])
+))]
+pub struct AmendAddArgs {
+    #[arg(long, group = "amend_input")]
+    pub text: Option<String>,
+    #[arg(long, group = "amend_input")]
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -98,6 +127,7 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
         ProjectSubcommand::List => handle_list().await,
         ProjectSubcommand::Show { id } => handle_show(id).await,
         ProjectSubcommand::Delete { id } => handle_delete(id).await,
+        ProjectSubcommand::Amend(amend) => handle_amend(amend).await,
     }
 }
 
@@ -528,4 +558,158 @@ async fn start_created_project(base_dir: &Path, project_id: &ProjectId) -> AppRe
             Err(error)
         }
     }
+}
+
+async fn handle_amend(amend: AmendCommand) -> AppResult<()> {
+    match amend.command {
+        AmendSubcommand::Add(args) => handle_amend_add(args).await,
+        AmendSubcommand::List => handle_amend_list().await,
+        AmendSubcommand::Remove { id } => handle_amend_remove(id).await,
+        AmendSubcommand::Clear => handle_amend_clear().await,
+    }
+}
+
+async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let body = match (&args.text, &args.file) {
+        (Some(text), None) => text.clone(),
+        (None, Some(path)) => {
+            let resolved = if path.is_absolute() {
+                path.clone()
+            } else {
+                current_dir.join(path)
+            };
+            std::fs::read_to_string(&resolved).map_err(|error| {
+                AppError::Io(std::io::Error::new(
+                    error.kind(),
+                    format!(
+                        "failed to read amendment file '{}': {}",
+                        resolved.display(),
+                        error
+                    ),
+                ))
+            })?
+        }
+        _ => unreachable!("clap should enforce exactly one input"),
+    };
+
+    if body.trim().is_empty() {
+        return Err(AppError::AmendmentQueueError {
+            details: "amendment body is empty".to_owned(),
+        });
+    }
+
+    // Check for CLI writer lease conflict by trying to acquire/release the lock.
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    {
+        let test_lease_id = format!("amend-probe-{}", uuid::Uuid::new_v4());
+        match daemon_store.acquire_writer_lock(&current_dir, &project_id, &test_lease_id) {
+            Ok(()) => {
+                // Lock acquired — no one else holds it. Release immediately.
+                let _ = daemon_store.release_writer_lock(&current_dir, &project_id, &test_lease_id);
+            }
+            Err(AppError::ProjectWriterLockHeld { .. }) => {
+                return Err(AppError::AmendmentLeaseConflict {
+                    project_id: project_id.to_string(),
+                });
+            }
+            Err(other) => return Err(other),
+        }
+    }
+
+    let amendment_queue = FsAmendmentQueueStore;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let project_store = FsProjectStore;
+
+    match service::add_manual_amendment(
+        &amendment_queue,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &project_store,
+        &current_dir,
+        &project_id,
+        &body,
+    )? {
+        service::AmendmentAddResult::Created { amendment_id } => {
+            println!("{}", amendment_id);
+        }
+        service::AmendmentAddResult::Duplicate { amendment_id } => {
+            println!(
+                "Duplicate amendment: existing amendment '{}' has the same content",
+                amendment_id
+            );
+        }
+    }
+
+    Ok(())
+}
+
+async fn handle_amend_list() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let amendment_queue = FsAmendmentQueueStore;
+    let amendments = service::list_amendments(&amendment_queue, &current_dir, &project_id)?;
+
+    if amendments.is_empty() {
+        println!("No pending amendments.");
+        return Ok(());
+    }
+
+    for amendment in &amendments {
+        let body_preview = if amendment.body.len() > 80 {
+            format!("{}...", &amendment.body[..77])
+        } else {
+            amendment.body.clone()
+        };
+        println!(
+            "  {} [{}] {}",
+            amendment.amendment_id,
+            amendment.source,
+            body_preview
+        );
+    }
+
+    Ok(())
+}
+
+async fn handle_amend_remove(id: String) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let amendment_queue = FsAmendmentQueueStore;
+    service::remove_amendment(&amendment_queue, &current_dir, &project_id, &id)?;
+
+    println!("Removed amendment '{}'", id);
+    Ok(())
+}
+
+async fn handle_amend_clear() -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    let amendment_queue = FsAmendmentQueueStore;
+    let removed = service::clear_amendments(&amendment_queue, &current_dir, &project_id)?;
+
+    if removed.is_empty() {
+        println!("No pending amendments to clear.");
+    } else {
+        println!("Cleared {} amendment(s).", removed.len());
+    }
+
+    Ok(())
 }

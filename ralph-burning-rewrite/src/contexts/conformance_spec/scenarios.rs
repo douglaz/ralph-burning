@@ -600,6 +600,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_workflow_slice5(&mut m);
     register_validation_slice6(&mut m);
     register_daemon_github(&mut m);
+    register_manual_amendments_slice3(&mut m);
 
     m
 }
@@ -11892,6 +11893,11 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 body: "Implement the final amendment.".to_owned(),
                 created_at: chrono::Utc::now(),
                 batch_sequence: 1,
+                source: crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                dedup_key: crate::contexts::project_run_record::model::QueuedAmendment::compute_dedup_key(
+                    &crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                    "Implement the final amendment.",
+                ),
             };
             crate::adapters::fs::FsAmendmentQueueStore
                 .write_amendment(ws.path(), &pid, &amendment)
@@ -17265,6 +17271,267 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         ) {
             return Err(format!("expected timeout classification, got {outcome:?}"));
         }
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Slice 3 – Manual Amendment Parity (8 scenarios)
+// ===========================================================================
+
+fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice3_manual_add", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 manual add"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(
+            &["project", "amend", "add", "--text", "Fix the login bug"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Amendment:", "stdout")?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "Fix the login bug", "amend list")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_list_empty", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 list empty"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "No pending amendments", "amend list empty")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_remove", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 remove"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add_out = run_cli(
+            &["project", "amend", "add", "--text", "Fix remove target"],
+            ws.path(),
+        )?;
+        assert_success(&add_out)?;
+
+        // Extract amendment ID from output.
+        let id = add_out
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from add output".to_owned())?
+            .trim()
+            .to_owned();
+
+        let rm = run_cli(&["project", "amend", "remove", &id], ws.path())?;
+        assert_success(&rm)?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "No pending amendments", "amend list after remove")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_clear", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 clear"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        run_cli(
+            &["project", "amend", "add", "--text", "Fix A"],
+            ws.path(),
+        )?;
+        run_cli(
+            &["project", "amend", "add", "--text", "Fix B"],
+            ws.path(),
+        )?;
+
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+        assert_success(&clear)?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "No pending amendments", "amend list after clear")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_duplicate_manual_add", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 duplicate"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let first = run_cli(
+            &["project", "amend", "add", "--text", "duplicate body"],
+            ws.path(),
+        )?;
+        assert_success(&first)?;
+
+        let second = run_cli(
+            &["project", "amend", "add", "--text", "duplicate body"],
+            ws.path(),
+        )?;
+        assert_success(&second)?;
+        assert_contains(&second.stdout, "Duplicate", "duplicate output")?;
+
+        // Should still only have one amendment.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        let count = list
+            .stdout
+            .lines()
+            .filter(|line| line.contains("duplicate body"))
+            .count();
+        if count != 1 {
+            return Err(format!("expected 1 amendment, found {count}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_completed_project_reopen", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 reopen",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // With test-stub, --start runs the full workflow to completion.
+        let snap_before = read_run_snapshot(&ws, "stub-project")?;
+        if snap_before.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed status before amend, got: {:?}",
+                snap_before.get("status")
+            ));
+        }
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Post-completion fix"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        let snap_after = read_run_snapshot(&ws, "stub-project")?;
+        if snap_after.get("status").and_then(|v| v.as_str()) != Some("paused") {
+            return Err(format!(
+                "expected paused status after amend, got: {:?}",
+                snap_after.get("status")
+            ));
+        }
+        if snap_after.get("interrupted_run").is_none()
+            || snap_after
+                .get("interrupted_run")
+                .and_then(|v| v.as_null())
+                .is_some()
+        {
+            return Err("expected interrupted_run to be set after reopen".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_journal_records_manual_event", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 journal"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Journal test body"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        let journal = read_journal(&ws, "stub-project")?;
+        let amendment_event = journal
+            .iter()
+            .find(|e| {
+                e.get("event_type")
+                    .and_then(|v| v.as_str())
+                    == Some("amendment_queued")
+            })
+            .ok_or_else(|| "missing amendment_queued event in journal".to_owned())?;
+
+        let details = amendment_event
+            .get("details")
+            .ok_or_else(|| "amendment_queued event missing details".to_owned())?;
+        if details.get("source").and_then(|v| v.as_str()) != Some("manual") {
+            return Err(format!(
+                "expected source=manual, got: {:?}",
+                details.get("source")
+            ));
+        }
+        if details.get("dedup_key").and_then(|v| v.as_str()).is_none() {
+            return Err("amendment_queued event missing dedup_key".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_remove_missing_fails", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 missing remove"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(
+            &["project", "amend", "remove", "nonexistent-amendment-id"],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "not found", "remove missing stderr")?;
 
         Ok(())
     });

@@ -2516,6 +2516,8 @@ where
                             &amendment.amendment_id,
                             amendment.source_stage,
                             &amendment.body,
+                            amendment.source.as_str(),
+                            &amendment.dedup_key,
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -3645,6 +3647,8 @@ where
                             &amendment.amendment_id,
                             amendment.source_stage,
                             &amendment.body,
+                            amendment.source.as_str(),
+                            &amendment.dedup_key,
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -5059,20 +5063,26 @@ fn build_queued_amendments(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| QueuedAmendment {
-            amendment_id: format!(
-                "{}-{}-cr{}-amd{}",
-                run_id.as_str(),
-                source_stage.as_str(),
+        .map(|(idx, body)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            QueuedAmendment {
+                amendment_id: format!(
+                    "{}-{}-cr{}-amd{}",
+                    run_id.as_str(),
+                    source_stage.as_str(),
+                    source_completion_round,
+                    idx + 1
+                ),
+                source_stage,
+                source_cycle,
                 source_completion_round,
-                idx + 1
-            ),
-            source_stage,
-            source_cycle,
-            source_completion_round,
-            body: body.clone(),
-            created_at: now,
-            batch_sequence: (idx + 1) as u32,
+                body: body.clone(),
+                created_at: now,
+                batch_sequence: (idx + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect()
 }
@@ -5088,21 +5098,27 @@ fn build_recorded_follow_ups(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| QueuedAmendment {
-            amendment_id: format!(
-                "{}-{}-c{}-cr{}-follow-up{}",
-                run_id.as_str(),
-                source_stage.as_str(),
+        .map(|(idx, body)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            QueuedAmendment {
+                amendment_id: format!(
+                    "{}-{}-c{}-cr{}-follow-up{}",
+                    run_id.as_str(),
+                    source_stage.as_str(),
+                    source_cycle,
+                    source_completion_round,
+                    idx + 1
+                ),
+                source_stage,
                 source_cycle,
                 source_completion_round,
-                idx + 1
-            ),
-            source_stage,
-            source_cycle,
-            source_completion_round,
-            body: body.clone(),
-            created_at: now,
-            batch_sequence: (idx + 1) as u32,
+                body: body.clone(),
+                created_at: now,
+                batch_sequence: (idx + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect()
 }
@@ -6417,14 +6433,20 @@ where
         .final_accepted_amendments
         .iter()
         .enumerate()
-        .map(|(index, amendment)| QueuedAmendment {
-            amendment_id: amendment.amendment_id.clone(),
-            source_stage: stage_id,
-            source_cycle: cursor.cycle,
-            source_completion_round: cursor.completion_round,
-            body: amendment.normalized_body.clone(),
-            created_at: Utc::now(),
-            batch_sequence: (index + 1) as u32,
+        .map(|(index, amendment)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, &amendment.normalized_body);
+            QueuedAmendment {
+                amendment_id: amendment.amendment_id.clone(),
+                source_stage: stage_id,
+                source_cycle: cursor.cycle,
+                source_completion_round: cursor.completion_round,
+                body: amendment.normalized_body.clone(),
+                created_at: Utc::now(),
+                batch_sequence: (index + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect::<Vec<_>>();
 

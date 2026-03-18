@@ -5494,3 +5494,300 @@ fn conformance_full_suite_passes() {
         "no scenarios should fail, got: {stderr}"
     );
 }
+
+// ── Slice 3: Manual Amendment CLI Tests ───────────────────────────────────
+
+#[test]
+fn project_amend_add_text_succeeds_and_prints_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Fix the widget alignment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+
+    assert!(output.status.success(), "amend add should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.trim().starts_with("manual-"), "should print amendment_id starting with 'manual-', got: {stdout}");
+}
+
+#[test]
+fn project_amend_add_file_succeeds() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let amendment_file = temp_dir.path().join("amendment.md");
+    fs::write(&amendment_file, "# Amendment\nPlease fix the button color.").expect("write amendment file");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--file", "amendment.md"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add --file");
+
+    assert!(output.status.success(), "amend add --file should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.trim().starts_with("manual-"), "should print amendment_id");
+}
+
+#[test]
+fn project_amend_add_rejects_empty_body() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "  "])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add empty");
+
+    assert!(!output.status.success(), "amend add with empty text should fail");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("empty"), "should mention empty body: {stderr}");
+}
+
+#[test]
+fn project_amend_list_empty() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No pending amendments"), "should say no pending: {stdout}");
+}
+
+#[test]
+fn project_amend_add_then_list_shows_amendment() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Fix the UI alignment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let amendment_id = String::from_utf8_lossy(&add_output.stdout).trim().to_owned();
+
+    // List amendments
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    assert!(list_output.status.success());
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(stdout.contains(&amendment_id), "list should contain amendment id: {stdout}");
+    assert!(stdout.contains("[manual]"), "list should show [manual] source: {stdout}");
+}
+
+#[test]
+fn project_amend_remove_existing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Fix something"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let amendment_id = String::from_utf8_lossy(&add_output.stdout).trim().to_owned();
+
+    let remove_output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove");
+    assert!(remove_output.status.success());
+    let stdout = String::from_utf8_lossy(&remove_output.stdout);
+    assert!(stdout.contains("Removed"), "should confirm removal: {stdout}");
+
+    // Verify it's gone
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    assert!(list_output.status.success());
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(stdout.contains("No pending amendments"), "should be empty after remove: {stdout}");
+}
+
+#[test]
+fn project_amend_remove_missing_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", "nonexistent-id"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove missing");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("not found"), "should mention not found: {stderr}");
+}
+
+#[test]
+fn project_amend_clear_removes_all() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add two amendments
+    for body in &["Fix A", "Fix B"] {
+        let output = Command::new(binary())
+            .args(["project", "amend", "add", "--text", body])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("run amend add");
+        assert!(output.status.success());
+    }
+
+    let clear_output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend clear");
+    assert!(clear_output.status.success());
+    let stdout = String::from_utf8_lossy(&clear_output.stdout);
+    assert!(stdout.contains("Cleared 2"), "should clear 2 amendments: {stdout}");
+
+    // Verify empty
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(stdout.contains("No pending amendments"), "should be empty after clear");
+}
+
+#[test]
+fn project_amend_duplicate_manual_add_is_noop() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let body = "Exact same amendment text";
+
+    let first = Command::new(binary())
+        .args(["project", "amend", "add", "--text", body])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("first add");
+    assert!(first.status.success());
+    let first_id = String::from_utf8_lossy(&first.stdout).trim().to_owned();
+
+    let second = Command::new(binary())
+        .args(["project", "amend", "add", "--text", body])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("second add");
+    assert!(second.status.success());
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(second_stdout.contains("Duplicate"), "should report duplicate: {second_stdout}");
+    assert!(second_stdout.contains(&first_id), "should reference original id: {second_stdout}");
+
+    // Only one amendment should exist
+    let list = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("list");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let count = stdout.lines().filter(|l| l.contains("manual-")).count();
+    assert_eq!(count, 1, "should have exactly 1 amendment after dup add: {stdout}");
+}
+
+#[test]
+fn project_amend_add_reopens_completed_project() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Set project to completed state
+    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"planning","started_at":"2026-03-11T19:00:00Z","completed_at":"2026-03-11T19:10:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    ).expect("write completed run.json");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Post-completion fix"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add on completed");
+    assert!(output.status.success(), "should succeed: {}", String::from_utf8_lossy(&output.stderr));
+
+    // Verify the project is now paused
+    let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
+    let snapshot: serde_json::Value = serde_json::from_str(&run_json).expect("parse run.json");
+    assert_eq!(snapshot["status"], "paused", "project should be paused after reopen");
+    assert!(snapshot["interrupted_run"].is_object(), "should have interrupted_run");
+}
+
+#[test]
+fn project_amend_add_journal_records_event() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Journal test amendment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(output.status.success());
+
+    let journal = fs::read_to_string(
+        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
+    ).expect("read journal");
+    let last_line = journal.lines().last().expect("journal has lines");
+    let event: serde_json::Value = serde_json::from_str(last_line).expect("parse event");
+    assert_eq!(event["event_type"], "amendment_queued");
+    assert_eq!(event["details"]["source"], "manual");
+    assert!(event["details"]["dedup_key"].is_string(), "should have dedup_key");
+    assert!(event["details"]["amendment_id"].is_string(), "should have amendment_id");
+}
+
+#[test]
+fn project_amend_add_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "fake-lease-id",
+    ).expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Should be rejected"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+}

@@ -81,6 +81,8 @@ fn project_created_event(project_id: &ProjectId) -> JournalEvent {
 }
 
 fn amendment(body: &str) -> QueuedAmendment {
+    let source = ralph_burning::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
     QueuedAmendment {
         amendment_id: format!("amd-{}", body.replace(' ', "-")),
         source_stage: StageId::Review,
@@ -89,6 +91,8 @@ fn amendment(body: &str) -> QueuedAmendment {
         body: body.to_owned(),
         created_at: Utc::now(),
         batch_sequence: 1,
+        source,
+        dedup_key,
     }
 }
 

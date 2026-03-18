@@ -361,7 +361,7 @@ impl FileSystem {
         Self::workspace_root_path(base_dir).join("daemon")
     }
 
-    fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+    pub(crate) fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         Self::workspace_root_path(base_dir)
             .join(PROJECTS_DIR)
             .join(project_id.as_str())
