@@ -705,9 +705,11 @@ mod tests {
         let body = requests[0].json_body();
         assert_eq!(body["model"], json!("anthropic/claude-3.5-sonnet"));
         assert_eq!(body["messages"].as_array().expect("messages").len(), 2);
-        assert_eq!(body["response_format"]["type"], json!("json_object"));
+        assert_eq!(body["response_format"]["type"], json!("json_schema"));
+        assert_eq!(body["response_format"]["json_schema"]["name"], json!("stage_output"));
+        assert_eq!(body["response_format"]["json_schema"]["strict"], json!(true));
         assert_eq!(
-            body["response_format"]["json_schema"],
+            body["response_format"]["json_schema"]["schema"],
             request.contract.json_schema_value()
         );
         clear_openrouter_env();
