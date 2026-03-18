@@ -79,6 +79,25 @@ Fixed: all four gap scenarios now exercise actual behaviors via in-process `Requ
 - `parity_slice1_quick_mode_revision_loop` — reviewer returns `request_changes` once then `approved`, verifies `quick_revision_count = 1` and `RevisionRequested` in journal
 - `parity_slice1_quick_mode_max_revisions` — reviewer always returns `request_changes`, verifies run fails with revision limit message and `quick_revision_count >= 5`
 
+## Review Response (Iteration 3)
+
+### Required Change 1: Stage-reuse journal durability
+Fixed: all 6 `StageReused` journal appends in `run_full_mode_pipeline` (ideation, research, synthesis, implementation_spec, gap_analysis, validation) now fail the run on append error instead of silently continuing via `let _ =`. Each uses `fail_run` and returns the error, keeping canonical state pinned to the last fully committed stage.
+
+### Required Change 2: Quick-mode rollback state restoration
+Fixed: review and revision rollback paths now save prior committed IDs before overwriting and restore them on journal failure:
+- `ReviewCompleted` rollback restores `latest_review_id` to the prior committed review (instead of clearing to `None`)
+- `RevisionCompleted` rollback restores `latest_draft_id` and `recommended_flow` to prior committed values (instead of clearing to `None`)
+Added 2 new tests: `later_loop_review_journal_failure_restores_prior_review_id` and `revision_completed_journal_failure_restores_prior_draft_id`.
+
+### Recommended 1: Max-revision conformance text
+Fixed: updated `requirements_drafting.feature` max-revision scenario text from "five times" / count `5` to "always returns request_changes" / count `6`, matching the implemented `revision > MAX_QUICK_REVISIONS` behavior documented in `scenarios.rs`.
+
+### Test Results (Iteration 3)
+- `cargo check --features test-stub` — clean
+- `cargo test --features test-stub --test unit` — 607 passed, 0 failed (1 ignored)
+- Registry drift check — passed
+
 ## Remaining Known Gaps
 
 - None within the Slice 1 acceptance scope

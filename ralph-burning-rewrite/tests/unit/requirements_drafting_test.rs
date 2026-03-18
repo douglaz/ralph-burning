@@ -1871,7 +1871,7 @@ mod service_integration {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         use chrono::{TimeZone, Utc};
-        use serde_json::Value;
+        use serde_json::{json, Value};
         use tempfile::tempdir;
 
         use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
@@ -2412,6 +2412,114 @@ mod service_integration {
             assert!(
                 !has_completed,
                 "RunCompleted event should NOT exist (best-effort failure)"
+            );
+        }
+
+        /// Journal append failure at review_completed on a LATER revision loop
+        /// (2nd review after a successful revision cycle) must restore the prior
+        /// committed review ID, not clear it to None.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (1st review, request_changes), call 4 = RevisionRequested,
+        /// call 5 = RevisionCompleted, call 6 = ReviewCompleted (2nd review, FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn later_loop_review_journal_failure_restores_prior_review_id() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to always return request_changes so the revision loop runs
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 6th journal call = 2nd ReviewCompleted
+            let store = FailingJournalRequirementsStore::new(6);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test later review_completed failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on 2nd review_completed journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // The prior review (from the 1st loop iteration) was successfully committed,
+            // so latest_review_id should be restored to that ID, not cleared to None.
+            assert!(
+                run.latest_review_id.is_some(),
+                "prior committed review ID should be restored on later-loop review journal failure"
+            );
+            // The revised draft (from the 1st revision) was also committed successfully.
+            assert!(
+                run.latest_draft_id.is_some(),
+                "revised draft boundary should survive later-loop review journal failure"
+            );
+        }
+
+        /// Journal append failure at revision_completed on the 1st revision must
+        /// restore the prior committed draft ID (the initial draft), not clear it.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (request_changes), call 4 = RevisionRequested,
+        /// call 5 = RevisionCompleted (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn revision_completed_journal_failure_restores_prior_draft_id() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to always return request_changes
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 5th journal call = RevisionCompleted
+            let store = FailingJournalRequirementsStore::new(5);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test revision_completed failure", now)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on revision_completed journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // The initial draft was committed before the revision attempt,
+            // so latest_draft_id should be restored to the initial draft's ID.
+            assert!(
+                run.latest_draft_id.is_some(),
+                "prior committed draft ID should be restored on revision journal failure"
+            );
+            assert!(
+                run.recommended_flow.is_some(),
+                "prior recommended_flow should be restored on revision journal failure"
             );
         }
     }

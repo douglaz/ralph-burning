@@ -330,9 +330,9 @@ Feature: Requirements Drafting and Project Seed Handoff
   Scenario: Quick-mode revision loop fails at MAX_QUICK_REVISIONS
     Given a workspace with an initialized project
     When the user runs "requirements quick --idea 'Revision limit test'"
-    And the reviewer returns "request_changes" five times
+    And the reviewer always returns "request_changes"
     Then the run status is "failed"
-    And quick_revision_count is 5
+    And quick_revision_count is 6
 
   # parity_slice1_versioned_seed_output
   Scenario: Project seed carries version 2 and source metadata

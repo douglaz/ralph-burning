@@ -415,7 +415,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (ideation): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
             // Read the cached payload to get the artifact text
             let payload_json = self
@@ -483,7 +492,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (research): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
             let payload_json = self
                 .store
@@ -550,7 +568,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (synthesis): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
             let payload_json = self
                 .store
@@ -624,7 +651,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (implementation_spec): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
             let payload_json = self
                 .store
@@ -691,7 +727,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (gap_analysis): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
             let payload_json = self
                 .store
@@ -758,7 +803,16 @@ where
                 RequirementsJournalEventType::StageReused,
                 run,
             );
-            let _ = self.store.append_journal_event(base_dir, &run_id, &event);
+            if let Err(e) = self.store.append_journal_event(base_dir, &run_id, &event) {
+                self.fail_run(
+                    base_dir,
+                    run,
+                    seq,
+                    &format!("journal append failed for stage_reused (validation): {e}"),
+                )
+                .await?;
+                return Err(e);
+            }
             seq += 1;
 
             // Still need to check cached validation outcome
@@ -1266,6 +1320,7 @@ where
                 return Err(e);
             }
 
+            let prior_review_id = run.latest_review_id.clone();
             run.latest_review_id = Some(review_payload_id.clone());
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
@@ -1283,7 +1338,7 @@ where
                     &review_payload_id,
                     &review_artifact_id,
                 );
-                run.latest_review_id = None;
+                run.latest_review_id = prior_review_id;
                 self.fail_run(
                     base_dir,
                     run,
@@ -1412,6 +1467,8 @@ where
                         return Err(e);
                     }
 
+                    let prior_draft_id = run.latest_draft_id.clone();
+                    let prior_recommended_flow = run.recommended_flow;
                     run.latest_draft_id = Some(revised_payload_id.clone());
                     run.recommended_flow = Some(revised_payload.recommended_flow);
                     run.status_summary =
@@ -1436,8 +1493,8 @@ where
                             &revised_payload_id,
                             &revised_artifact_id,
                         );
-                        run.latest_draft_id = None;
-                        run.recommended_flow = None;
+                        run.latest_draft_id = prior_draft_id;
+                        run.recommended_flow = prior_recommended_flow;
                         self.fail_run(
                             base_dir,
                             run,
