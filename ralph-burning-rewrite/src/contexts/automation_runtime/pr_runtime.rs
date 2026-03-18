@@ -132,12 +132,14 @@ where
                 self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
                 if pr_state.state.eq_ignore_ascii_case("open")
                     && pr_state.draft.unwrap_or(false)
-                    && self
-                        .github
+                {
+                    self.github
                         .mark_pr_ready(owner, repo, pr_number)
                         .await
-                        .is_ok()
-                {
+                        .map_err(|e| AppError::BackendUnavailable {
+                            backend: "github".to_owned(),
+                            details: format!("failed to promote draft PR #{pr_number}: {e}"),
+                        })?;
                     DaemonTaskService::append_journal_event(
                         self.store,
                         base_dir,

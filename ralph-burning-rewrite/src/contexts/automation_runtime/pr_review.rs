@@ -255,6 +255,13 @@ where
             if review.id <= last_seen_review_id {
                 continue;
             }
+            // Skip approval-only reviews — only COMMENTED and CHANGES_REQUESTED
+            // states should create amendments. An APPROVED review with text like
+            // "LGTM" should not reopen a completed task.
+            if review.state.eq_ignore_ascii_case("APPROVED")
+            {
+                continue;
+            }
             let item = ReviewItem::Review(review);
             if seen.insert(item.key()) {
                 items.push(item);

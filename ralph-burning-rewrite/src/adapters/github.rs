@@ -326,41 +326,53 @@ impl GithubClient {
 
     // ── Comments ──────────────────────────────────────────────────────
 
-    /// Fetch comments on an issue.
+    /// Fetch all comments on an issue (paginated).
     pub async fn fetch_issue_comments(
         &self,
         owner: &str,
         repo: &str,
         issue_number: u64,
     ) -> AppResult<Vec<GithubComment>> {
-        let url = self.api_url(&format!(
-            "/repos/{owner}/{repo}/issues/{issue_number}/comments"
-        ));
-        let resp = self
-            .http
-            .get(&url)
-            .header("Authorization", self.auth_header())
-            .header("Accept", "application/vnd.github+json")
-            .send()
-            .await
-            .map_err(|e| AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: e.to_string(),
-            })?;
+        let mut all_comments = Vec::new();
+        let mut page = 1u32;
+        loop {
+            let url = self.api_url(&format!(
+                "/repos/{owner}/{repo}/issues/{issue_number}/comments?per_page=100&page={page}"
+            ));
+            let resp = self
+                .http
+                .get(&url)
+                .header("Authorization", self.auth_header())
+                .header("Accept", "application/vnd.github+json")
+                .send()
+                .await
+                .map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: e.to_string(),
+                })?;
 
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(AppError::BackendUnavailable {
-                backend: "github".to_owned(),
-                details: format!("failed to fetch issue comments: {status} {text}"),
-            });
+            if !resp.status().is_success() {
+                let status = resp.status();
+                let text = resp.text().await.unwrap_or_default();
+                return Err(AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to fetch issue comments: {status} {text}"),
+                });
+            }
+
+            let comments: Vec<GithubComment> =
+                resp.json().await.map_err(|e| AppError::BackendUnavailable {
+                    backend: "github".to_owned(),
+                    details: format!("failed to parse comments: {e}"),
+                })?;
+            let is_last_page = comments.len() < 100;
+            all_comments.extend(comments);
+            if is_last_page {
+                break;
+            }
+            page += 1;
         }
-
-        resp.json().await.map_err(|e| AppError::BackendUnavailable {
-            backend: "github".to_owned(),
-            details: format!("failed to parse comments: {e}"),
-        })
+        Ok(all_comments)
     }
 
     /// Post an idempotent comment (checks for existing comment with same marker).
