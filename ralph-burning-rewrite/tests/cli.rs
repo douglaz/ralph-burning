@@ -76,6 +76,24 @@ fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     .expect("write active-project");
 }
 
+fn requirements_run_ids(base_dir: &std::path::Path) -> Vec<String> {
+    let req_dir = base_dir.join(".ralph-burning/requirements");
+    let mut run_ids: Vec<String> = fs::read_dir(&req_dir)
+        .expect("read requirements dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false))
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    run_ids.sort();
+    run_ids
+}
+
+fn only_requirements_run_id(base_dir: &std::path::Path) -> String {
+    let run_ids = requirements_run_ids(base_dir);
+    assert_eq!(run_ids.len(), 1, "expected exactly one requirements run");
+    run_ids[0].clone()
+}
+
 fn write_editor_script(
     base_dir: &std::path::Path,
     name: &str,
@@ -1481,6 +1499,272 @@ fn project_create_does_not_set_active_project() {
         .path()
         .join(".ralph-burning/active-project")
         .exists());
+}
+
+#[test]
+fn project_create_from_requirements_creates_project_and_selects_it() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let quick = Command::new(binary())
+        .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements quick");
+    assert!(
+        quick.status.success(),
+        "requirements quick should succeed: {}",
+        String::from_utf8_lossy(&quick.stderr)
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", &run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from requirements");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "create from requirements should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Project: stub-project (active)"));
+    assert!(stdout.contains("Flow: standard"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "stub-project"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/stub-project/prompt.md")
+        )
+        .expect("read project prompt"),
+        "Stub prompt body for the project."
+    );
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/journal.ndjson"),
+    )
+    .expect("read project journal");
+    assert!(journal.contains("\"source\":\"requirements\""));
+    assert!(journal.contains(&format!("\"requirements_run_id\":\"{run_id}\"")));
+}
+
+#[test]
+fn project_create_from_requirements_fails_for_missing_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", "missing-run"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from missing run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requirements run not found"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/missing-run")
+        .exists());
+}
+
+#[test]
+fn project_create_from_requirements_fails_for_incomplete_run() {
+    let temp_dir = initialize_workspace_fixture();
+    let run_id = "req-incomplete";
+    let run_root = temp_dir
+        .path()
+        .join(".ralph-burning/requirements")
+        .join(run_id);
+    fs::create_dir_all(&run_root).expect("create requirements run dir");
+    fs::write(
+        run_root.join("run.json"),
+        serde_json::json!({
+            "run_id": run_id,
+            "idea": "Pending requirements",
+            "mode": "draft",
+            "status": "awaiting_answers",
+            "question_round": 0,
+            "latest_question_set_id": null,
+            "latest_draft_id": null,
+            "latest_review_id": null,
+            "latest_seed_id": null,
+            "pending_question_count": 1,
+            "recommended_flow": null,
+            "created_at": "2026-03-18T22:00:00Z",
+            "updated_at": "2026-03-18T22:00:00Z",
+            "status_summary": "awaiting answers",
+            "current_stage": null,
+            "committed_stages": {},
+            "quick_revision_count": 0,
+            "last_transition_cached": false,
+            "failure_summary": null
+        })
+        .to_string(),
+    )
+    .expect("write incomplete run");
+
+    select_active_project_fixture(temp_dir.path(), "existing");
+    create_project_fixture(temp_dir.path(), "existing");
+
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", run_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from incomplete run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expected 'completed'"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "existing"
+    );
+    assert_eq!(
+        fs::read_dir(temp_dir.path().join(".ralph-burning/projects"))
+            .expect("read projects dir")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn project_bootstrap_from_idea_creates_project_and_selects_it() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "standard",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap");
+
+    assert!(
+        output.status.success(),
+        "bootstrap should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "stub-project"
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+    assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
+}
+
+#[test]
+fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
+    let temp_dir = initialize_workspace_fixture();
+    let idea_file = temp_dir.path().join("idea.md");
+    fs::write(&idea_file, "Build quick-dev flow from file input").expect("write idea file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-file",
+            idea_file.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
+            "--start",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from file");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --from-file --start should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        !run_json.contains("\"status\":\"not_started\""),
+        "bootstrap --start should advance the run, got: {run_json}"
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    assert!(requirements_run.contains("Build quick-dev flow from file input"));
+}
+
+#[test]
+fn project_bootstrap_fails_for_invalid_flow_before_creating_requirements_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "invalid-flow",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap invalid flow");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown flow preset"));
+
+    let requirements_dir = temp_dir.path().join(".ralph-burning/requirements");
+    assert_eq!(
+        fs::read_dir(&requirements_dir)
+            .expect("read requirements dir")
+            .count(),
+        0,
+        "invalid flow should fail before requirements quick creates a run"
+    );
 }
 
 // ── Project List ──

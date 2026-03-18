@@ -44,6 +44,9 @@ pub trait RequirementsStorePort {
     fn create_run_dir(&self, base_dir: &Path, run_id: &str) -> AppResult<()>;
     fn write_run(&self, base_dir: &Path, run_id: &str, run: &RequirementsRun) -> AppResult<()>;
     fn read_run(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsRun>;
+    fn list_requirements_run_ids(&self, _base_dir: &Path) -> AppResult<Vec<String>> {
+        Ok(Vec::new())
+    }
     fn append_journal_event(
         &self,
         base_dir: &Path,
@@ -456,12 +459,10 @@ where
             let payload_json = self
                 .store
                 .read_payload(base_dir, &run_id, &cached.payload_id)?;
-            let ideation: super::model::IdeationPayload =
-                serde_json::from_value(payload_json).map_err(|e| {
-                    AppError::InvalidRequirementsState {
-                        run_id: run_id.clone(),
-                        details: format!("corrupt cached ideation payload: {e}"),
-                    }
+            let ideation: super::model::IdeationPayload = serde_json::from_value(payload_json)
+                .map_err(|e| AppError::InvalidRequirementsState {
+                    run_id: run_id.clone(),
+                    details: format!("corrupt cached ideation payload: {e}"),
                 })?;
             renderers::render_ideation(&ideation)
         } else {
@@ -535,12 +536,10 @@ where
             let payload_json = self
                 .store
                 .read_payload(base_dir, &run_id, &cached.payload_id)?;
-            let research: super::model::ResearchPayload =
-                serde_json::from_value(payload_json).map_err(|e| {
-                    AppError::InvalidRequirementsState {
-                        run_id: run_id.clone(),
-                        details: format!("corrupt cached research payload: {e}"),
-                    }
+            let research: super::model::ResearchPayload = serde_json::from_value(payload_json)
+                .map_err(|e| AppError::InvalidRequirementsState {
+                    run_id: run_id.clone(),
+                    details: format!("corrupt cached research payload: {e}"),
                 })?;
             renderers::render_research(&research)
         } else {
@@ -614,12 +613,10 @@ where
             let payload_json = self
                 .store
                 .read_payload(base_dir, &run_id, &cached.payload_id)?;
-            let synthesis: super::model::SynthesisPayload =
-                serde_json::from_value(payload_json).map_err(|e| {
-                    AppError::InvalidRequirementsState {
-                        run_id: run_id.clone(),
-                        details: format!("corrupt cached synthesis payload: {e}"),
-                    }
+            let synthesis: super::model::SynthesisPayload = serde_json::from_value(payload_json)
+                .map_err(|e| AppError::InvalidRequirementsState {
+                    run_id: run_id.clone(),
+                    details: format!("corrupt cached synthesis payload: {e}"),
                 })?;
             run.recommended_flow = Some(synthesis.recommended_flow);
             renderers::render_synthesis(&synthesis)
@@ -674,11 +671,9 @@ where
             FullModeStage::ImplementationSpec,
             &[&synthesis_artifact],
         );
-        let impl_spec_artifact = if let Some(cached) = self.try_reuse_stage(
-            run,
-            FullModeStage::ImplementationSpec,
-            &impl_spec_cache_key,
-        ) {
+        let impl_spec_artifact = if let Some(cached) =
+            self.try_reuse_stage(run, FullModeStage::ImplementationSpec, &impl_spec_cache_key)
+        {
             let prior_last_transition_cached = run.last_transition_cached;
             run.last_transition_cached = true;
             let event = journal_event(
@@ -781,12 +776,10 @@ where
             let payload_json = self
                 .store
                 .read_payload(base_dir, &run_id, &cached.payload_id)?;
-            let gap: super::model::GapAnalysisPayload =
-                serde_json::from_value(payload_json).map_err(|e| {
-                    AppError::InvalidRequirementsState {
-                        run_id: run_id.clone(),
-                        details: format!("corrupt cached gap_analysis payload: {e}"),
-                    }
+            let gap: super::model::GapAnalysisPayload = serde_json::from_value(payload_json)
+                .map_err(|e| AppError::InvalidRequirementsState {
+                    run_id: run_id.clone(),
+                    details: format!("corrupt cached gap_analysis payload: {e}"),
                 })?;
             renderers::render_gap_analysis(&gap)
         } else {
@@ -862,12 +855,10 @@ where
             let payload_json = self
                 .store
                 .read_payload(base_dir, &run_id, &cached.payload_id)?;
-            let validation: super::model::ValidationPayload =
-                serde_json::from_value(payload_json).map_err(|e| {
-                    AppError::InvalidRequirementsState {
-                        run_id: run_id.clone(),
-                        details: format!("corrupt cached validation payload: {e}"),
-                    }
+            let validation: super::model::ValidationPayload = serde_json::from_value(payload_json)
+                .map_err(|e| AppError::InvalidRequirementsState {
+                    run_id: run_id.clone(),
+                    details: format!("corrupt cached validation payload: {e}"),
                 })?;
             match validation.outcome {
                 ValidationOutcome::NeedsQuestions => {
@@ -951,10 +942,7 @@ where
                     let RequirementsPayload::Validation(ref v) = bundle.payload else {
                         unreachable!()
                     };
-                    let msg = format!(
-                        "validation failed: {}",
-                        v.blocking_issues.join("; ")
-                    );
+                    let msg = format!("validation failed: {}", v.blocking_issues.join("; "));
                     self.fail_run(base_dir, run, seq, &msg).await?;
                     return Err(AppError::InvalidRequirementsState {
                         run_id: run_id.clone(),
@@ -1028,13 +1016,8 @@ where
             &artifact_id,
             &bundle.artifact,
         ) {
-            self.fail_run(
-                base_dir,
-                run,
-                seq,
-                &format!("question persistence: {e}"),
-            )
-            .await?;
+            self.fail_run(base_dir, run, seq, &format!("question persistence: {e}"))
+                .await?;
             return Err(e);
         }
 
@@ -1100,7 +1083,9 @@ where
             .await?;
             return Err(AppError::InvalidRequirementsState {
                 run_id: run_id.clone(),
-                details: "validation requires missing information but no questions could be generated".to_owned(),
+                details:
+                    "validation requires missing information but no questions could be generated"
+                        .to_owned(),
             });
         }
 
@@ -1356,9 +1341,8 @@ where
         // Revision loop: review → possibly revise → review again
         loop {
             // Review the current draft
-            let review_prompt = format!(
-                "Review the following requirements draft:\n\n{last_draft_artifact}"
-            );
+            let review_prompt =
+                format!("Review the following requirements draft:\n\n{last_draft_artifact}");
             let review_result = self
                 .invoke_stage(
                     &run_root,
@@ -1528,8 +1512,7 @@ where
                     let RequirementsPayload::Draft(ref revised_payload) = revised.payload else {
                         unreachable!();
                     };
-                    let revised_payload_id =
-                        format!("{run_id}-draft-{question_round}-r{revision}");
+                    let revised_payload_id = format!("{run_id}-draft-{question_round}-r{revision}");
                     let revised_artifact_id =
                         format!("{run_id}-draft-art-{question_round}-r{revision}");
                     let revised_json = serde_json::to_value(revised_payload)?;
@@ -1567,9 +1550,9 @@ where
                         RequirementsJournalEventType::RevisionCompleted,
                         run,
                     );
-                    if let Err(e) = self
-                        .store
-                        .append_journal_event(base_dir, &run_id, &rev_complete)
+                    if let Err(e) =
+                        self.store
+                            .append_journal_event(base_dir, &run_id, &rev_complete)
                     {
                         // Roll back the revised draft
                         let _ = self.store.remove_payload_artifact_pair(
@@ -1593,7 +1576,7 @@ where
 
                     last_draft_artifact = revised.artifact.clone();
                     let _ = &revised; // consumed
-                    // Continue loop for re-review
+                                      // Continue loop for re-review
                 }
                 RequirementsReviewOutcome::Rejected => {
                     let msg = format!(
@@ -1764,7 +1747,8 @@ where
             );
             // Restore canonical state to the last successful pre-seed boundary.
             run.latest_seed_id = None;
-            run.committed_stages.remove(FullModeStage::ProjectSeed.as_str());
+            run.committed_stages
+                .remove(FullModeStage::ProjectSeed.as_str());
             if run.mode == super::model::RequirementsMode::Draft {
                 // Reset current_stage to validation (last successful stage before seed).
                 run.current_stage = Some(FullModeStage::Validation);
@@ -1985,6 +1969,7 @@ pub fn extract_seed_handoff(
     let seed_prompt_path = store.seed_prompt_path(base_dir, run_id);
 
     Ok(SeedHandoff {
+        requirements_run_id: run_id.to_owned(),
         project_id: seed.project_id,
         project_name: seed.project_name,
         flow: seed.flow,
@@ -1997,6 +1982,7 @@ pub fn extract_seed_handoff(
 /// Seed handoff data extracted from a completed requirements run.
 #[derive(Debug, Clone)]
 pub struct SeedHandoff {
+    pub requirements_run_id: String,
     pub project_id: String,
     pub project_name: String,
     pub flow: FlowPreset,
@@ -2167,10 +2153,7 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
                     if text.trim().is_empty() {
                         return Err(AppError::AnswerValidationFailed {
                             run_id: run_id.to_owned(),
-                            details: format!(
-                                "required question '{}' has an empty answer",
-                                q.id
-                            ),
+                            details: format!("required question '{}' has an empty answer", q.id),
                         });
                     }
                 }

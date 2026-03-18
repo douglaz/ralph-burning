@@ -2139,6 +2139,31 @@ impl RequirementsStorePort for FsRequirementsStore {
         }
     }
 
+    fn list_requirements_run_ids(&self, base_dir: &Path) -> AppResult<Vec<String>> {
+        let requirements_dir = requirements_root(base_dir);
+        if !requirements_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut run_ids = Vec::new();
+        for entry in fs::read_dir(&requirements_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let run_id = name.to_string_lossy();
+            if run_id.starts_with('.') || !entry.path().join("run.json").is_file() {
+                continue;
+            }
+            run_ids.push(run_id.to_string());
+        }
+
+        run_ids.sort();
+        Ok(run_ids)
+    }
+
     fn append_journal_event(
         &self,
         base_dir: &Path,
@@ -2382,9 +2407,11 @@ impl RequirementsStorePort for FsRequirementsStore {
 }
 
 fn requirements_run_root(base_dir: &Path, run_id: &str) -> PathBuf {
-    FileSystem::workspace_root_path(base_dir)
-        .join(REQUIREMENTS_DIR)
-        .join(run_id)
+    requirements_root(base_dir).join(run_id)
+}
+
+fn requirements_root(base_dir: &Path) -> PathBuf {
+    FileSystem::workspace_root_path(base_dir).join(REQUIREMENTS_DIR)
 }
 
 #[cfg(test)]

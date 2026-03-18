@@ -1,9 +1,11 @@
+use std::cell::RefCell;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service::*;
+use ralph_burning::contexts::requirements_drafting::service::SeedHandoff;
 use ralph_burning::shared::domain::{FlowPreset, ProjectId};
 use ralph_burning::shared::error::{AppError, AppResult};
 
@@ -24,6 +26,103 @@ impl FakeProjectStore {
         Self {
             existing_ids: ids.iter().map(|s| s.to_string()).collect(),
         }
+    }
+}
+
+#[derive(Clone)]
+struct CapturedProjectCreate {
+    record: ProjectRecord,
+    prompt_contents: String,
+    initial_journal_line: String,
+    run_snapshot: RunSnapshot,
+}
+
+struct RecordingProjectStore {
+    existing_ids: Vec<String>,
+    captured: RefCell<Option<CapturedProjectCreate>>,
+}
+
+impl RecordingProjectStore {
+    fn empty() -> Self {
+        Self {
+            existing_ids: Vec::new(),
+            captured: RefCell::new(None),
+        }
+    }
+
+    fn with_existing(ids: &[&str]) -> Self {
+        Self {
+            existing_ids: ids.iter().map(|id| id.to_string()).collect(),
+            captured: RefCell::new(None),
+        }
+    }
+
+    fn captured(&self) -> CapturedProjectCreate {
+        self.captured
+            .borrow()
+            .clone()
+            .expect("project creation should be captured")
+    }
+}
+
+impl ProjectStorePort for RecordingProjectStore {
+    fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+        Ok(self.existing_ids.contains(&project_id.to_string()))
+    }
+
+    fn read_project_record(
+        &self,
+        _base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ProjectRecord> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(make_project_record(project_id.as_str()))
+    }
+
+    fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+        self.existing_ids
+            .iter()
+            .map(|id| ProjectId::new(id.as_str()))
+            .collect()
+    }
+
+    fn stage_delete(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn commit_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn rollback_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn create_project_atomic(
+        &self,
+        _base_dir: &Path,
+        record: &ProjectRecord,
+        prompt_contents: &str,
+        run_snapshot: &RunSnapshot,
+        initial_journal_line: &str,
+        _sessions: &SessionStore,
+    ) -> AppResult<()> {
+        self.captured.replace(Some(CapturedProjectCreate {
+            record: record.clone(),
+            prompt_contents: prompt_contents.to_owned(),
+            initial_journal_line: initial_journal_line.to_owned(),
+            run_snapshot: run_snapshot.clone(),
+        }));
+        Ok(())
     }
 }
 
@@ -220,6 +319,22 @@ fn dummy_base_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp/test")
 }
 
+fn make_seed_handoff(
+    project_id: &str,
+    flow: FlowPreset,
+    recommended_flow: Option<FlowPreset>,
+) -> SeedHandoff {
+    SeedHandoff {
+        requirements_run_id: "req-20260318-220000".to_owned(),
+        project_id: project_id.to_owned(),
+        project_name: format!("Project {project_id}"),
+        flow,
+        prompt_body: "# Seed prompt\nUse the payload body.".to_owned(),
+        prompt_path: std::path::PathBuf::from("/tmp/requirements/seed/prompt.md"),
+        recommended_flow,
+    }
+}
+
 // ── Domain Tests ──
 
 #[test]
@@ -299,6 +414,139 @@ fn create_project_fails_on_duplicate_id() {
         result.unwrap_err(),
         AppError::DuplicateProject { .. }
     ));
+}
+
+#[test]
+fn create_project_from_seed_uses_seed_flow_without_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-alpha",
+        FlowPreset::Standard,
+        Some(FlowPreset::QuickDev),
+    );
+
+    let record = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "seed-alpha");
+    assert_eq!(record.flow, FlowPreset::Standard);
+    assert_eq!(captured.record.flow, FlowPreset::Standard);
+    assert_eq!(captured.record.prompt_reference, "prompt.md");
+    assert_eq!(captured.run_snapshot.status, RunStatus::NotStarted);
+}
+
+#[test]
+fn create_project_from_seed_applies_flow_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-override",
+        FlowPreset::Standard,
+        Some(FlowPreset::QuickDev),
+    );
+
+    let record = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        Some(FlowPreset::QuickDev),
+        test_timestamp(),
+    )
+    .expect("create project from seed with override");
+
+    let captured = store.captured();
+    assert_eq!(record.flow, FlowPreset::QuickDev);
+    assert_eq!(captured.record.flow, FlowPreset::QuickDev);
+
+    let event: JournalEvent =
+        serde_json::from_str(&captured.initial_journal_line).expect("parse journal line");
+    assert_eq!(event.details["flow"], "quick_dev");
+    assert_eq!(event.details["seed_flow"], "standard");
+    assert_eq!(event.details["recommended_flow"], "quick_dev");
+}
+
+#[test]
+fn create_project_from_seed_writes_prompt_body_not_prompt_path_contents() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut handoff = make_seed_handoff("seed-prompt", FlowPreset::Standard, None);
+    handoff.prompt_body = "Prompt body from seed payload".to_owned();
+    handoff.prompt_path = std::path::PathBuf::from("/tmp/requirements/seed/other-prompt.md");
+
+    create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    assert_eq!(captured.prompt_contents, "Prompt body from seed payload");
+    assert_eq!(
+        captured.record.prompt_hash,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash("Prompt body from seed payload")
+    );
+}
+
+#[test]
+fn create_project_from_seed_journal_records_requirements_metadata() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-journal",
+        FlowPreset::DocsChange,
+        Some(FlowPreset::Standard),
+    );
+
+    create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    let event: JournalEvent =
+        serde_json::from_str(&captured.initial_journal_line).expect("parse journal line");
+    assert_eq!(event.event_type, JournalEventType::ProjectCreated);
+    assert_eq!(event.details["source"], "requirements");
+    assert_eq!(event.details["requirements_run_id"], "req-20260318-220000");
+    assert_eq!(event.details["flow"], "docs_change");
+}
+
+#[test]
+fn create_project_from_seed_rejects_duplicate_project_id() {
+    let store = RecordingProjectStore::with_existing(&["dup-seed"]);
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff("dup-seed", FlowPreset::Standard, None);
+
+    let error = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect_err("duplicate seed project should fail");
+
+    assert!(matches!(error, AppError::DuplicateProject { .. }));
 }
 
 #[test]

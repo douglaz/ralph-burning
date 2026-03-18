@@ -275,6 +275,50 @@ fn read_run_snapshot(ws: &TempWorkspace, project_id: &str) -> Result<serde_json:
     serde_json::from_str(&content).map_err(|e| format!("parse run.json: {e}"))
 }
 
+fn requirements_run_ids(ws: &TempWorkspace) -> Result<Vec<String>, String> {
+    let dir = ws.path().join(".ralph-burning/requirements");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut run_ids = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read requirements dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("read requirements dir entry: {e}"))?;
+        if entry
+            .file_type()
+            .map_err(|e| format!("read requirements dir type: {e}"))?
+            .is_dir()
+        {
+            run_ids.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    run_ids.sort();
+    Ok(run_ids)
+}
+
+fn only_requirements_run_id(ws: &TempWorkspace) -> Result<String, String> {
+    let run_ids = requirements_run_ids(ws)?;
+    if run_ids.len() != 1 {
+        return Err(format!(
+            "expected exactly one requirements run, found {}",
+            run_ids.len()
+        ));
+    }
+    Ok(run_ids[0].clone())
+}
+
+fn read_requirements_run_json(
+    ws: &TempWorkspace,
+    run_id: &str,
+) -> Result<serde_json::Value, String> {
+    let path = ws
+        .path()
+        .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("read requirements run.json: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("parse requirements run.json: {e}"))
+}
+
 fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
     let dir = ws.path().join(format!(
         ".ralph-burning/projects/{project_id}/history/payloads"
@@ -545,6 +589,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_run_rollback(&mut m);
     register_workflow_checkpoint(&mut m);
     register_requirements_drafting(&mut m);
+    register_bootstrap_slice2(&mut m);
     register_backend_requirements(&mut m);
     register_backend_openrouter(&mut m);
     register_daemon_lifecycle(&mut m);
@@ -6752,8 +6797,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // Verify seed version is 2
         let seed_path = run_dir.join("seed/project.json");
         if seed_path.is_file() {
-            let seed_content = std::fs::read_to_string(&seed_path)
-                .map_err(|e| format!("read seed: {e}"))?;
+            let seed_content =
+                std::fs::read_to_string(&seed_path).map_err(|e| format!("read seed: {e}"))?;
             let seed: serde_json::Value =
                 serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
             let version = seed.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -6768,34 +6813,37 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "parity_slice1_quick_mode_revision_loop", || {
         // Quick mode: reviewer returns request_changes once, then approved.
         // Verifies the revision loop actually exercises a request-changes cycle.
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
         use crate::adapters::stub_backend::StubBackendAdapter;
-        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
-        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
         // Reviewer returns request_changes first, then approved
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload_sequence(
-                "requirements:requirements_review",
-                vec![
-                    serde_json::json!({
-                        "outcome": "request_changes",
-                        "evidence": ["Draft needs more detail"],
-                        "findings": ["Acceptance criteria too vague"],
-                        "follow_ups": []
-                    }),
-                    serde_json::json!({
-                        "outcome": "approved",
-                        "evidence": ["Revised draft looks good"],
-                        "findings": [],
-                        "follow_ups": []
-                    }),
-                ],
-            );
+        let adapter = StubBackendAdapter::default().with_label_payload_sequence(
+            "requirements:requirements_review",
+            vec![
+                serde_json::json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Draft needs more detail"],
+                    "findings": ["Acceptance criteria too vague"],
+                    "follow_ups": []
+                }),
+                serde_json::json!({
+                    "outcome": "approved",
+                    "evidence": ["Revised draft looks good"],
+                    "findings": [],
+                    "follow_ups": []
+                }),
+            ],
+        );
         let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
-            adapter, FsRawOutputStore, FsSessionStore,
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
         );
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -6803,13 +6851,20 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now))?;
 
         let store = FsRequirementsStore;
-        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
 
-        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed {
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed
+        {
             return Err(format!("expected completed, got {}", run.status));
         }
         if run.quick_revision_count != 1 {
-            return Err(format!("expected quick_revision_count 1, got {}", run.quick_revision_count));
+            return Err(format!(
+                "expected quick_revision_count 1, got {}",
+                run.quick_revision_count
+            ));
         }
 
         // Verify seed files exist
@@ -6822,7 +6877,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify journal contains revision events
-        let journal = store.read_journal(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        let journal = store
+            .read_journal(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
         let has_revision_requested = journal.iter().any(|e| {
             e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::RevisionRequested
         });
@@ -6857,8 +6914,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if !seed_path.is_file() {
             return Err("seed/project.json not written".into());
         }
-        let seed_content = std::fs::read_to_string(&seed_path)
-            .map_err(|e| format!("read seed: {e}"))?;
+        let seed_content =
+            std::fs::read_to_string(&seed_path).map_err(|e| format!("read seed: {e}"))?;
         let seed: serde_json::Value =
             serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
 
@@ -6871,7 +6928,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let source = seed.get("source").ok_or("seed missing source metadata")?;
         let mode = source.get("mode").and_then(|v| v.as_str()).unwrap_or("");
         if mode != "draft" && mode != "quick" {
-            return Err(format!("expected source.mode 'draft' or 'quick', got '{mode}'"));
+            return Err(format!(
+                "expected source.mode 'draft' or 'quick', got '{mode}'"
+            ));
         }
         // Verify run_id is present
         let run_id_in_source = source.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
@@ -6903,10 +6962,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .ok_or("could not extract run ID from draft output")?
             .to_string();
 
-        let show_out = run_cli(
-            &["requirements", "show", &run_id],
-            ws.path(),
-        )?;
+        let show_out = run_cli(&["requirements", "show", &run_id], ws.path())?;
         assert_success(&show_out)?;
 
         // Should show completed stages
@@ -6949,16 +7005,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Write it back and verify show still works
-        let stripped = serde_json::to_string_pretty(&run)
-            .map_err(|e| format!("serialize: {e}"))?;
+        let stripped = serde_json::to_string_pretty(&run).map_err(|e| format!("serialize: {e}"))?;
         std::fs::write(run_dir.join("run.json"), &stripped)
             .map_err(|e| format!("write run.json: {e}"))?;
 
         let run_id = run.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
-        let show_out = run_cli(
-            &["requirements", "show", run_id],
-            ws.path(),
-        )?;
+        let show_out = run_cli(&["requirements", "show", run_id], ws.path())?;
         assert_success(&show_out)?;
 
         Ok(())
@@ -6968,9 +7020,11 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // Run a full-mode draft with validation returning needs_questions,
         // then answer and verify that ideation/research are reused via cache
         // on the post-answer pipeline rerun (last_transition_cached in journal).
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
         use crate::adapters::stub_backend::StubBackendAdapter;
-        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
-        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
@@ -6994,16 +7048,21 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
                     }),
                 ],
             )
-            .with_label_payload("requirements:question_set", serde_json::json!({
-                "questions": [{
-                    "id": "q1",
-                    "prompt": "What is the deployment target?",
-                    "rationale": "Needed for infra decisions",
-                    "required": true
-                }]
-            }));
+            .with_label_payload(
+                "requirements:question_set",
+                serde_json::json!({
+                    "questions": [{
+                        "id": "q1",
+                        "prompt": "What is the deployment target?",
+                        "rationale": "Needed for infra decisions",
+                        "required": true
+                    }]
+                }),
+            );
         let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
-            adapter, FsRawOutputStore, FsSessionStore,
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
         );
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -7012,31 +7071,58 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
 
         // Run should be awaiting answers
         let store = FsRequirementsStore;
-        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
-        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers
+        {
             return Err(format!("expected awaiting_answers, got {}", run.status));
         }
 
         // Ideation and research should be committed (will be reused)
-        if !run.committed_stages.contains_key("ideation") || !run.committed_stages.contains_key("research") {
+        if !run.committed_stages.contains_key("ideation")
+            || !run.committed_stages.contains_key("research")
+        {
             return Err("ideation/research should be committed before question round".into());
         }
 
         // Write answers and resume
-        let answers_path = ws.path().join(".ralph-burning/requirements").join(&run_id).join("answers.toml");
+        let answers_path = ws
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("answers.toml");
         std::env::set_var("EDITOR", "true");
-        std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n").map_err(|e| format!("write answers: {e}"))?;
+        std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
+            .map_err(|e| format!("write answers: {e}"))?;
 
         block_on_app_result(service.answer(ws.path(), &run_id))?;
 
-        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
-        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed {
-            return Err(format!("expected completed after answer, got {}", run.status));
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed
+        {
+            return Err(format!(
+                "expected completed after answer, got {}",
+                run.status
+            ));
         }
 
         // Verify cache keys present on all cacheable stages
-        for stage in &["ideation", "research", "synthesis", "implementation_spec", "gap_analysis", "validation"] {
-            let entry = run.committed_stages.get(*stage)
+        for stage in &[
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+        ] {
+            let entry = run
+                .committed_stages
+                .get(*stage)
                 .ok_or(format!("committed_stages missing '{stage}'"))?;
             if entry.cache_key.is_none() || entry.cache_key.as_deref() == Some("") {
                 return Err(format!("stage '{stage}' missing cache_key for reuse"));
@@ -7044,7 +7130,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify journal contains StageReused events (ideation/research reused on resume)
-        let journal = store.read_journal(ws.path(), &run_id).map_err(|e| e.to_string())?;
+        let journal = store
+            .read_journal(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
         let reused_count = journal.iter().filter(|e| {
             e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::StageReused
         }).count();
@@ -7055,94 +7143,116 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
-    reg!(m, "parity_slice1_question_round_invalidates_downstream", || {
-        // Actually trigger a question round and verify that synthesis and
-        // downstream committed_stages are cleared while ideation/research
-        // are preserved in the awaiting_answers state.
-        use crate::adapters::stub_backend::StubBackendAdapter;
-        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
-        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+    reg!(
+        m,
+        "parity_slice1_question_round_invalidates_downstream",
+        || {
+            // Actually trigger a question round and verify that synthesis and
+            // downstream committed_stages are cleared while ideation/research
+            // are preserved in the awaiting_answers state.
+            use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+            use crate::adapters::stub_backend::StubBackendAdapter;
+            use crate::contexts::requirements_drafting::service::{
+                RequirementsService, RequirementsStorePort,
+            };
 
-        let ws = TempWorkspace::new()?;
-        init_workspace(&ws)?;
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
 
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload_sequence(
-                "requirements:validation",
-                vec![
-                    serde_json::json!({
+            let adapter = StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "requirements:validation",
+                    vec![serde_json::json!({
                         "outcome": "needs_questions",
                         "evidence": ["Missing deployment info"],
                         "blocking_issues": [],
                         "missing_information": ["Target environment details"]
+                    })],
+                )
+                .with_label_payload(
+                    "requirements:question_set",
+                    serde_json::json!({
+                        "questions": [{
+                            "id": "q1",
+                            "prompt": "What is the target environment?",
+                            "rationale": "Needed for architecture decisions",
+                            "required": true
+                        }]
                     }),
-                ],
-            )
-            .with_label_payload("requirements:question_set", serde_json::json!({
-                "questions": [{
-                    "id": "q1",
-                    "prompt": "What is the target environment?",
-                    "rationale": "Needed for architecture decisions",
-                    "required": true
-                }]
-            }));
-        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
-            adapter, FsRawOutputStore, FsSessionStore,
-        );
-        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+                );
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter,
+                FsRawOutputStore,
+                FsSessionStore,
+            );
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
-        let now = chrono::Utc::now();
-        let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now))?;
+            let now = chrono::Utc::now();
+            let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now))?;
 
-        let store = FsRequirementsStore;
-        let run = store.read_run(ws.path(), &run_id).map_err(|e| e.to_string())?;
+            let store = FsRequirementsStore;
+            let run = store
+                .read_run(ws.path(), &run_id)
+                .map_err(|e| e.to_string())?;
 
-        // Must be awaiting answers
-        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
+            // Must be awaiting answers
+            if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
             return Err(format!("expected awaiting_answers, got {}", run.status));
         }
 
-        // Ideation and research must be preserved
-        if !run.committed_stages.contains_key("ideation") {
-            return Err("ideation should be preserved after question round".into());
-        }
-        if !run.committed_stages.contains_key("research") {
-            return Err("research should be preserved after question round".into());
-        }
-
-        // Synthesis and downstream must be cleared
-        for stage in &["synthesis", "implementation_spec", "gap_analysis", "validation", "project_seed"] {
-            if run.committed_stages.contains_key(*stage) {
-                return Err(format!("stage '{stage}' should be invalidated after question round"));
+            // Ideation and research must be preserved
+            if !run.committed_stages.contains_key("ideation") {
+                return Err("ideation should be preserved after question round".into());
             }
-        }
+            if !run.committed_stages.contains_key("research") {
+                return Err("research should be preserved after question round".into());
+            }
 
-        Ok(())
-    });
+            // Synthesis and downstream must be cleared
+            for stage in &[
+                "synthesis",
+                "implementation_spec",
+                "gap_analysis",
+                "validation",
+                "project_seed",
+            ] {
+                if run.committed_stages.contains_key(*stage) {
+                    return Err(format!(
+                        "stage '{stage}' should be invalidated after question round"
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    );
 
     reg!(m, "parity_slice1_quick_mode_max_revisions", || {
         // Reviewer always returns request_changes — run should fail at
         // MAX_QUICK_REVISIONS (5) with quick_revision_count = 5.
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
         use crate::adapters::stub_backend::StubBackendAdapter;
-        use crate::contexts::requirements_drafting::service::{RequirementsService, RequirementsStorePort};
-        use crate::adapters::fs::{FsRawOutputStore, FsSessionStore, FsRequirementsStore};
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
 
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
         // Reviewer always returns request_changes — will hit the 5-revision limit
-        let adapter = StubBackendAdapter::default()
-            .with_label_payload(
-                "requirements:requirements_review",
-                serde_json::json!({
-                    "outcome": "request_changes",
-                    "evidence": ["Still needs work"],
-                    "findings": ["Incomplete requirements"],
-                    "follow_ups": []
-                }),
-            );
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:requirements_review",
+            serde_json::json!({
+                "outcome": "request_changes",
+                "evidence": ["Still needs work"],
+                "findings": ["Incomplete requirements"],
+                "follow_ups": []
+            }),
+        );
         let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
-            adapter, FsRawOutputStore, FsSessionStore,
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
         );
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -7165,7 +7275,9 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("no requirements run created".into());
         }
         let run_dir_name = entries[0].file_name().to_string_lossy().to_string();
-        let run = store.read_run(ws.path(), &run_dir_name).map_err(|e| e.to_string())?;
+        let run = store
+            .read_run(ws.path(), &run_dir_name)
+            .map_err(|e| e.to_string())?;
 
         if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Failed {
             return Err(format!("expected failed status, got {}", run.status));
@@ -7199,6 +7311,378 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
                 run.status_summary
             ));
         }
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Slice 2 – Bootstrap and Auto Parity (8 scenarios)
+// ===========================================================================
+
+fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice2_create_from_requirements", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let quick = run_cli(
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Slice 2 create from requirements",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&quick)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let out = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
+
+        let project_toml = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/project.toml"),
+        )
+        .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "id = \"stub-project\"", "project.toml")?;
+        assert_contains(&project_toml, "name = \"Stub Project\"", "project.toml")?;
+        assert_contains(&project_toml, "flow = \"standard\"", "project.toml")?;
+        assert_contains(
+            &project_toml,
+            "prompt_reference = \"prompt.md\"",
+            "project.toml",
+        )?;
+
+        let prompt = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/prompt.md"),
+        )
+        .map_err(|e| format!("read prompt.md: {e}"))?;
+        if prompt != "Stub prompt body for the project." {
+            return Err(format!("unexpected prompt.md contents: {prompt}"));
+        }
+
+        let journal = read_journal(&ws, "stub-project")?;
+        let created = journal
+            .first()
+            .ok_or_else(|| "missing project_created event".to_owned())?;
+        if created
+            .get("details")
+            .and_then(|value| value.get("source"))
+            .and_then(|value| value.as_str())
+            != Some("requirements")
+        {
+            return Err("project_created event missing requirements source metadata".into());
+        }
+        if created
+            .get("details")
+            .and_then(|value| value.get("requirements_run_id"))
+            .and_then(|value| value.as_str())
+            != Some(run_id.as_str())
+        {
+            return Err("project_created event missing requirements_run_id".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_standard", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap standard project",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
+
+        let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+            .map_err(|e| format!("read active-project: {e}"))?;
+        if active.trim() != "stub-project" {
+            return Err(format!(
+                "expected active project stub-project, got {}",
+                active.trim()
+            ));
+        }
+
+        let run_ids = requirements_run_ids(&ws)?;
+        if run_ids.len() != 1 {
+            return Err(format!(
+                "expected 1 requirements run, got {}",
+                run_ids.len()
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_quick_dev", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap quick dev project",
+                "--flow",
+                "quick_dev",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let project_root = ws.path().join(".ralph-burning/projects/stub-project");
+        let project_toml = std::fs::read_to_string(project_root.join("project.toml"))
+            .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
+        for subdir in &[
+            "history/payloads",
+            "history/artifacts",
+            "runtime/logs",
+            "runtime/backend",
+            "runtime/temp",
+            "amendments",
+            "rollback",
+        ] {
+            if !project_root.join(subdir).is_dir() {
+                return Err(format!("missing project subdir {subdir}"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_with_start", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap and immediately start",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "stub-project")?;
+        if snapshot.get("status").and_then(|value| value.as_str()) == Some("not_started") {
+            return Err("bootstrap --start left run status at not_started".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_from_file", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let idea_path = ws.path().join("requirements-idea.md");
+        std::fs::write(&idea_path, "Bootstrap from file input")
+            .map_err(|e| format!("write idea file: {e}"))?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--from-file",
+                idea_path
+                    .to_str()
+                    .ok_or_else(|| "non-utf8 idea path".to_owned())?,
+                "--flow",
+                "quick_dev",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let run_json = read_requirements_run_json(&ws, &run_id)?;
+        if run_json.get("idea").and_then(|value| value.as_str())
+            != Some("Bootstrap from file input")
+        {
+            return Err("requirements quick did not use file contents as idea input".into());
+        }
+
+        let project_toml = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/project.toml"),
+        )
+        .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_failure_before_creation", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "keep-active", "standard");
+        std::fs::write(
+            ws.path().join(".ralph-burning/active-project"),
+            "keep-active\n",
+        )
+        .map_err(|e| format!("write active-project: {e}"))?;
+
+        let run_id = "req-awaiting";
+        let run_root = ws.path().join(".ralph-burning/requirements").join(run_id);
+        std::fs::create_dir_all(&run_root).map_err(|e| format!("create req dir: {e}"))?;
+        std::fs::write(
+            run_root.join("run.json"),
+            serde_json::json!({
+                "run_id": run_id,
+                "idea": "Incomplete requirements run",
+                "mode": "draft",
+                "status": "awaiting_answers",
+                "question_round": 0,
+                "latest_question_set_id": null,
+                "latest_draft_id": null,
+                "latest_review_id": null,
+                "latest_seed_id": null,
+                "pending_question_count": 1,
+                "recommended_flow": null,
+                "created_at": "2026-03-18T22:00:00Z",
+                "updated_at": "2026-03-18T22:00:00Z",
+                "status_summary": "awaiting answers",
+                "current_stage": null,
+                "committed_stages": {},
+                "quick_revision_count": 0,
+                "last_transition_cached": false
+            })
+            .to_string(),
+        )
+        .map_err(|e| format!("write incomplete run.json: {e}"))?;
+
+        let out = run_cli(
+            &["project", "create", "--from-requirements", run_id],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "expected 'completed'", "stderr")?;
+
+        let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+            .map_err(|e| format!("read active-project: {e}"))?;
+        if active.trim() != "keep-active" {
+            return Err(format!(
+                "active project changed unexpectedly to {}",
+                active.trim()
+            ));
+        }
+        if ws
+            .path()
+            .join(".ralph-burning/projects/stub-project")
+            .exists()
+        {
+            return Err("project directory should not exist after pre-creation failure".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "parity_slice2_failure_after_creation_before_start",
+        || {
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+
+            let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let original = std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?;
+            let mutated = format!(
+            "{original}\n[prompt_review]\nenabled = true\nmin_reviewers = 3\nvalidator_backends = [\"claude\", \"codex\"]\n"
+        );
+            std::fs::write(&workspace_toml, mutated)
+                .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+            let out = run_cli(
+                &[
+                    "project",
+                    "bootstrap",
+                    "--idea",
+                    "Bootstrap should fail at run start",
+                    "--start",
+                ],
+                ws.path(),
+            )?;
+            assert_failure(&out)?;
+            assert_contains(
+                &out.stderr,
+                "created successfully but run failed to start",
+                "stderr",
+            )?;
+
+            let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+                .map_err(|e| format!("read active-project: {e}"))?;
+            if active.trim() != "stub-project" {
+                return Err(format!(
+                    "expected stub-project active, got {}",
+                    active.trim()
+                ));
+            }
+            if !ws
+                .path()
+                .join(".ralph-burning/projects/stub-project/project.toml")
+                .is_file()
+            {
+                return Err("project should still exist after start failure".into());
+            }
+            let snapshot = read_run_snapshot(&ws, "stub-project")?;
+            if snapshot.get("status").and_then(|value| value.as_str()) != Some("not_started") {
+                return Err(format!(
+                    "expected not_started after preflight failure, got {:?}",
+                    snapshot.get("status")
+                ));
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "parity_slice2_duplicate_seed_project_id", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let quick = run_cli(
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Duplicate seed project test",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&quick)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let first = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_success(&first)?;
+
+        let second = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_failure(&second)?;
+        assert_contains(&second.stderr, "already exists", "stderr")?;
 
         Ok(())
     });

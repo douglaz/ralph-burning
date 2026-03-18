@@ -2,6 +2,8 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::adapters::fs::FileSystem;
+use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
 use crate::shared::domain::{FlowPreset, ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
@@ -209,6 +211,90 @@ pub fn create_project(
     base_dir: &Path,
     input: CreateProjectInput,
 ) -> AppResult<ProjectRecord> {
+    let initial_details = serde_json::json!({
+        "project_id": input.id.as_str(),
+        "flow": input.flow.as_str(),
+    });
+    create_project_with_initial_details(store, journal_store, base_dir, input, initial_details)
+}
+
+pub fn create_project_from_seed(
+    store: &dyn ProjectStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    handoff: SeedHandoff,
+    flow_override: Option<FlowPreset>,
+    created_at: DateTime<Utc>,
+) -> AppResult<ProjectRecord> {
+    let SeedHandoff {
+        requirements_run_id,
+        project_id,
+        project_name,
+        flow: seed_flow,
+        prompt_body,
+        prompt_path: _,
+        recommended_flow,
+    } = handoff;
+
+    let selected_flow = flow_override.unwrap_or(seed_flow);
+    let prompt_hash = FileSystem::prompt_hash(&prompt_body);
+    let project_id = ProjectId::new(project_id)?;
+
+    let mut initial_details = serde_json::Map::from_iter([
+        (
+            "project_id".to_owned(),
+            serde_json::Value::String(project_id.to_string()),
+        ),
+        (
+            "flow".to_owned(),
+            serde_json::Value::String(selected_flow.as_str().to_owned()),
+        ),
+        (
+            "source".to_owned(),
+            serde_json::Value::String("requirements".to_owned()),
+        ),
+        (
+            "requirements_run_id".to_owned(),
+            serde_json::Value::String(requirements_run_id),
+        ),
+        (
+            "seed_flow".to_owned(),
+            serde_json::Value::String(seed_flow.as_str().to_owned()),
+        ),
+    ]);
+    if let Some(flow) = recommended_flow {
+        initial_details.insert(
+            "recommended_flow".to_owned(),
+            serde_json::Value::String(flow.as_str().to_owned()),
+        );
+    }
+
+    let input = CreateProjectInput {
+        id: project_id,
+        name: project_name,
+        flow: selected_flow,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents: prompt_body,
+        prompt_hash,
+        created_at,
+    };
+
+    create_project_with_initial_details(
+        store,
+        journal_store,
+        base_dir,
+        input,
+        serde_json::Value::Object(initial_details),
+    )
+}
+
+fn create_project_with_initial_details(
+    store: &dyn ProjectStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    input: CreateProjectInput,
+    initial_details: serde_json::Value,
+) -> AppResult<ProjectRecord> {
     // Check for duplicate project ID
     if store.project_exists(base_dir, &input.id)? {
         return Err(AppError::DuplicateProject {
@@ -234,10 +320,7 @@ pub fn create_project(
         sequence: 1,
         timestamp: input.created_at,
         event_type: JournalEventType::ProjectCreated,
-        details: serde_json::json!({
-            "project_id": record.id.as_str(),
-            "flow": record.flow.as_str(),
-        }),
+        details: initial_details,
     };
     let journal_line = journal::serialize_event(&initial_event)?;
 

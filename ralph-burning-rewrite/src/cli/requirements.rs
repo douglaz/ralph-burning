@@ -62,7 +62,12 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
                 println!("Current Stage:    {}", stage.display_name());
             }
             if !result.run.committed_stages.is_empty() {
-                let stages: Vec<&str> = result.run.committed_stages.keys().map(|s| s.as_str()).collect();
+                let stages: Vec<&str> = result
+                    .run
+                    .committed_stages
+                    .keys()
+                    .map(|s| s.as_str())
+                    .collect();
                 println!("Completed Stages: {}", stages.join(", "));
             }
             if result.run.quick_revision_count > 0 {
@@ -83,24 +88,12 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             }
             if let Some(ref path) = result.seed_prompt_path {
                 println!("Seed Prompt:      {}", path.display());
-                // Read seed/project.json for the suggested create command
-                let seed_project_path = path.parent().unwrap().join("project.json");
-                if let Ok(raw) = std::fs::read_to_string(&seed_project_path) {
-                    if let Ok(seed) = serde_json::from_str::<
-                        crate::contexts::requirements_drafting::model::ProjectSeedPayload,
-                    >(&raw)
-                    {
-                        println!();
-                        println!("Suggested command:");
-                        println!(
-                            "  ralph-burning project create --id {} --name \"{}\" --flow {} --prompt {}",
-                            seed.project_id,
-                            seed.project_name,
-                            seed.flow,
-                            path.display()
-                        );
-                    }
-                }
+                println!();
+                println!("Suggested command:");
+                println!(
+                    "  ralph-burning project create --from-requirements {}",
+                    result.run.run_id
+                );
             }
         }
         RequirementsSubcommand::Answer { run_id } => {
