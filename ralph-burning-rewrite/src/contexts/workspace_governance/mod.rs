@@ -9,8 +9,8 @@ use crate::shared::domain::{ProjectId, WorkspaceConfig, CURRENT_WORKSPACE_VERSIO
 use crate::shared::error::{AppError, AppResult};
 
 pub use config::{
-    ConfigEntry, ConfigValue, ConfigValueSource, EffectiveConfig, DEFAULT_FLOW_PRESET,
-    DEFAULT_PROMPT_REVIEW_ENABLED,
+    CliBackendOverrides, ConfigEntry, ConfigValue, ConfigValueSource, EffectiveConfig,
+    DEFAULT_FLOW_PRESET, DEFAULT_PROMPT_REVIEW_ENABLED,
 };
 
 pub const WORKSPACE_DIR: &str = ".ralph-burning";

@@ -544,6 +544,10 @@ pub fn perform_rollback(
 
     let mut restored_snapshot = rollback_point.run_snapshot.clone();
     restored_snapshot.status = RunStatus::Paused;
+    restored_snapshot.interrupted_run = restored_snapshot
+        .active_run
+        .clone()
+        .or_else(|| restored_snapshot.interrupted_run.clone());
     restored_snapshot.active_run = None;
     restored_snapshot.rollback_point_meta.rollback_count =
         current_snapshot.rollback_point_meta.rollback_count + 1;

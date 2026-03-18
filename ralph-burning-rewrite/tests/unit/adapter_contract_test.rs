@@ -17,6 +17,7 @@ use ralph_burning::contexts::project_run_record::service::{
     ActiveProjectPort, ArtifactStorePort, JournalStorePort, ProjectStorePort,
     RollbackPointStorePort, RunSnapshotPort, RuntimeLogStorePort,
 };
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::shared::domain::{FlowPreset, ProjectId, StageId};
 use ralph_burning::shared::error::AppError;
 
@@ -539,6 +540,9 @@ fn artifact_store_round_trip_payload() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({"plan": "build it"}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let payload_json = serde_json::to_string_pretty(&payload).unwrap();
     fs::write(
@@ -567,6 +571,9 @@ fn artifact_store_round_trip_artifact() {
         stage_id: ralph_burning::shared::domain::StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning\nBuild it.".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let artifact_json = serde_json::to_string_pretty(&artifact).unwrap();
     fs::write(
@@ -794,6 +801,9 @@ fn payload_artifact_write_pair_round_trip() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({"plan": "test"}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let artifact = ArtifactRecord {
         artifact_id: "a1".to_owned(),
@@ -801,6 +811,9 @@ fn payload_artifact_write_pair_round_trip() {
         stage_id: ralph_burning::shared::domain::StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning\nTest.".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
 
     store
@@ -833,6 +846,9 @@ fn payload_artifact_remove_pair_removes_both_files() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({"plan": "test"}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let artifact = ArtifactRecord {
         artifact_id: "a1".to_owned(),
@@ -840,6 +856,9 @@ fn payload_artifact_remove_pair_removes_both_files() {
         stage_id: ralph_burning::shared::domain::StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning\nTest.".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
 
     store
@@ -889,6 +908,9 @@ fn payload_artifact_remove_pair_propagates_removal_error() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({"plan": "test"}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let artifact = ArtifactRecord {
         artifact_id: "a1".to_owned(),
@@ -896,6 +918,9 @@ fn payload_artifact_remove_pair_propagates_removal_error() {
         stage_id: ralph_burning::shared::domain::StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning\nTest.".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
 
     store
@@ -939,6 +964,9 @@ fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({"plan": "test"}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
     let artifact = ArtifactRecord {
         artifact_id: "a1".to_owned(),
@@ -946,6 +974,9 @@ fn payload_artifact_write_pair_cleans_up_on_artifact_failure() {
         stage_id: ralph_burning::shared::domain::StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning\nTest.".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     };
 
     // Make the artifacts directory a file so artifact write fails

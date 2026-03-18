@@ -83,16 +83,19 @@ fn resolve_active_project_rejects_path_like_pointer_values() {
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
+    let prompt_contents = "# Fixture prompt\n";
     // Write a complete canonical ProjectRecord so validation passes
     let project_toml = format!(
         r#"id = "{project_id}"
 name = "Fixture {project_id}"
 flow = "standard"
 prompt_reference = "prompt.md"
-prompt_hash = "0000000000000000"
+prompt_hash = "{}"
 created_at = "2026-03-11T19:00:00Z"
 status_summary = "created"
-"#
+"#,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents)
     );
     fs::write(project_root.join("project.toml"), project_toml).expect("write project");
+    fs::write(project_root.join("prompt.md"), prompt_contents).expect("write prompt");
 }

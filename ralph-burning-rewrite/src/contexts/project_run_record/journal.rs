@@ -361,6 +361,30 @@ pub fn rollback_performed_event(
     }
 }
 
+/// Build a `durable_warning` journal event for resume drift or other persistent warnings.
+pub fn durable_warning_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    warning_kind: &str,
+    message: &str,
+    details: serde_json::Value,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::DurableWarning,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "warning_kind": warning_kind,
+            "message": message,
+            "details": details,
+        }),
+    }
+}
+
 /// Build a `run_failed` journal event.
 pub fn run_failed_event(
     sequence: u64,

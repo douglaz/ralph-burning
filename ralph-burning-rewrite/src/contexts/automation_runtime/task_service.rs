@@ -82,6 +82,12 @@ impl DaemonTaskService {
             dispatch_mode: input.dispatch_mode,
             source_revision: input.source_revision,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         };
 
         store.create_task(base_dir, &task)?;
@@ -111,6 +117,8 @@ impl DaemonTaskService {
         task_id: &str,
         default_flow: FlowPreset,
         lease_ttl_seconds: u64,
+        worktree_path_override: Option<std::path::PathBuf>,
+        branch_name_override: Option<String>,
     ) -> AppResult<(DaemonTask, WorktreeLease)> {
         let mut task = store.read_task(base_dir, task_id)?;
         if task.status != TaskStatus::Pending {
@@ -144,6 +152,8 @@ impl DaemonTaskService {
             &task.task_id,
             &project_id,
             lease_ttl_seconds,
+            worktree_path_override,
+            branch_name_override,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {
@@ -424,7 +434,7 @@ impl DaemonTaskService {
         task_id: &str,
     ) -> AppResult<DaemonTask> {
         let mut task = store.read_task(base_dir, task_id)?;
-        if task.status != TaskStatus::Failed {
+        if task.status != TaskStatus::Failed && task.status != TaskStatus::Aborted {
             return Err(AppError::TaskStateTransitionInvalid {
                 task_id: task.task_id.clone(),
                 from: task.status.as_str().to_owned(),
@@ -432,12 +442,107 @@ impl DaemonTaskService {
             });
         }
 
+        // Reject retry if the task still holds a lease reference — the
+        // caller must clean up the lease/worktree first (via explicit
+        // release or reconcile) to prevent stranding live resources.
+        if task.lease_id.is_some() {
+            return Err(AppError::LeaseCleanupPartialFailure {
+                task_id: task.task_id.clone(),
+            });
+        }
+
         task.transition_to(TaskStatus::Pending, Utc::now())?;
         task.attempt_count += 1;
         task.clear_failure();
+        store.write_task(base_dir, &task)?;
+        Ok(task)
+    }
+
+    /// Recovery-only: revert a non-terminal task (Claimed/Active) back to
+    /// Pending so it can be re-processed by the daemon in the next cycle.
+    /// This is used by Phase 0 label repair to recover tasks that were
+    /// quarantined mid-processing due to a GitHub label-sync failure.
+    /// The associated lease is released and the task's lease reference cleared.
+    pub fn revert_to_pending_for_recovery(
+        store: &dyn DaemonStorePort,
+        worktree: &dyn WorktreePort,
+        base_dir: &Path,
+        repo_root: &Path,
+        task_id: &str,
+    ) -> AppResult<DaemonTask> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        if task.is_terminal() {
+            return Err(AppError::TaskStateTransitionInvalid {
+                task_id: task.task_id.clone(),
+                from: task.status.as_str().to_owned(),
+                to: "revert_to_pending".to_owned(),
+            });
+        }
+
+        // Release the lease if present. Only revert to Pending and clear
+        // the lease reference after cleanup positively succeeds; otherwise
+        // keep the task in its current state with lease preserved so the
+        // resources remain visible for later repair (reconcile or Phase 0).
+        if let Some(ref lid) = task.lease_id {
+            if let Ok(lease) = store.read_lease(base_dir, lid) {
+                let result = LeaseService::release(
+                    store,
+                    worktree,
+                    base_dir,
+                    repo_root,
+                    &lease,
+                    ReleaseMode::Idempotent,
+                );
+                match result {
+                    Ok(ref r) if r.resources_released => {
+                        // All sub-steps succeeded — safe to proceed with revert.
+                    }
+                    Ok(_) => {
+                        // Partial cleanup: some resources remain. Preserve task
+                        // state and lease ownership for later repair.
+                        return Err(AppError::LeaseCleanupPartialFailure {
+                            task_id: task_id.to_owned(),
+                        });
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // Directly set status to Pending (bypasses transition_to validation
+        // since Claimed → Pending is a recovery-only transition).
+        task.status = TaskStatus::Pending;
+        task.updated_at = Utc::now();
         task.clear_lease();
         store.write_task(base_dir, &task)?;
         Ok(task)
+    }
+
+    /// Find a task by repo_slug + issue_number. Returns the first non-terminal
+    /// match, or the most recent terminal match if no non-terminal exists.
+    pub fn find_task_by_issue(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        repo_slug: &str,
+        issue_number: u64,
+    ) -> AppResult<Option<DaemonTask>> {
+        let tasks = store.list_tasks(base_dir)?;
+        // Prefer non-terminal task for this issue
+        let non_terminal = tasks.iter().find(|t| {
+            t.repo_slug.as_deref() == Some(repo_slug)
+                && t.issue_number == Some(issue_number)
+                && !t.is_terminal()
+        });
+        if let Some(task) = non_terminal {
+            return Ok(Some(task.clone()));
+        }
+        // Fall back to most recent terminal task
+        let terminal = tasks.iter().rev().find(|t| {
+            t.repo_slug.as_deref() == Some(repo_slug) && t.issue_number == Some(issue_number)
+        });
+        Ok(terminal.cloned())
     }
 
     pub fn clear_lease_reference(
@@ -452,11 +557,46 @@ impl DaemonTaskService {
         Ok(task)
     }
 
+    /// Mark a task's GitHub status label as out-of-sync with durable state.
+    /// Called when `sync_label_for_task` fails so the mismatch is durable and
+    /// `daemon reconcile` can repair it later.
+    pub fn mark_label_dirty(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+    ) -> AppResult<()> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        task.label_dirty = true;
+        task.updated_at = Utc::now();
+        store.write_task(base_dir, &task)?;
+        Ok(())
+    }
+
+    /// Clear the label_dirty flag after a successful label re-sync.
+    pub fn clear_label_dirty(
+        store: &dyn DaemonStorePort,
+        base_dir: &Path,
+        task_id: &str,
+    ) -> AppResult<()> {
+        let mut task = store.read_task(base_dir, task_id)?;
+        if task.label_dirty {
+            task.label_dirty = false;
+            task.updated_at = Utc::now();
+            store.write_task(base_dir, &task)?;
+        }
+        Ok(())
+    }
+
     /// Create a task from a watched issue, enforcing idempotency by
     /// `(issue_ref, source_revision)`. If a non-terminal task already exists
     /// for the same issue_ref and source_revision, the call is a no-op.
     /// If a prior task for the same issue_ref is terminal and a newer
     /// source_revision appears, a fresh task may be created.
+    ///
+    /// If `github_meta` is provided, the GitHub-specific fields (`repo_slug`,
+    /// `issue_number`, `pr_url`, dedup cursors) are populated atomically on the
+    /// initial task record. This prevents a window where a persisted task lacks
+    /// GitHub metadata if a subsequent write fails.
     pub fn create_task_from_watched_issue(
         store: &dyn DaemonStorePort,
         base_dir: &Path,
@@ -464,6 +604,7 @@ impl DaemonTaskService {
         default_flow: FlowPreset,
         issue: &WatchedIssueMeta,
         dispatch_mode: DispatchMode,
+        github_meta: Option<&super::model::GithubTaskMeta>,
     ) -> AppResult<Option<DaemonTask>> {
         let issue_ref = normalize_required("issue_ref", &issue.issue_ref)?;
         let source_revision = normalize_required("source_revision", &issue.source_revision)?;
@@ -488,10 +629,10 @@ impl DaemonTaskService {
         // If the routing_command is a requirements command, don't pass it to flow
         // resolution — requirements commands are orthogonal to flow routing.
         // Flow precedence still applies via labels and repo default.
-        let flow_routing_cmd = issue
-            .routing_command
-            .as_deref()
-            .filter(|cmd| !super::watcher::is_requirements_command(cmd));
+        let flow_routing_cmd = issue.routing_command.as_deref().filter(|cmd| {
+            !super::watcher::is_requirements_command(cmd)
+                && !super::routing::RoutingEngine::is_daemon_command(cmd)
+        });
         let resolution =
             routing_engine.resolve_flow(flow_routing_cmd, &issue.labels, default_flow)?;
 
@@ -524,6 +665,12 @@ impl DaemonTaskService {
             dispatch_mode,
             source_revision: Some(source_revision),
             requirements_run_id: None,
+            repo_slug: github_meta.map(|m| m.repo_slug.clone()),
+            issue_number: github_meta.map(|m| m.issue_number),
+            pr_url: github_meta.and_then(|m| m.pr_url.clone()),
+            last_seen_comment_id: github_meta.and_then(|m| m.last_seen_comment_id),
+            last_seen_review_id: github_meta.and_then(|m| m.last_seen_review_id),
+            label_dirty: false,
         };
 
         store.create_task(base_dir, &task)?;

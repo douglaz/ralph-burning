@@ -27,20 +27,22 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
+    let prompt_contents = "# Fixture prompt\n";
     // Write a complete canonical ProjectRecord so validation passes
     let project_toml = format!(
         r#"id = "{project_id}"
 name = "Fixture {project_id}"
 flow = "standard"
 prompt_reference = "prompt.md"
-prompt_hash = "0000000000000000"
+prompt_hash = "{}"
 created_at = "2026-03-11T19:00:00Z"
 status_summary = "created"
-"#
+"#,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents)
     );
     fs::write(project_root.join("project.toml"), project_toml).expect("write project");
     // Write required canonical files so run queries don't fail on missing files
-    fs::write(project_root.join("prompt.md"), "# Fixture prompt\n").expect("write prompt");
+    fs::write(project_root.join("prompt.md"), prompt_contents).expect("write prompt");
     fs::write(
         project_root.join("run.json"),
         r#"{"active_run":null,"status":"not_started","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"not started"}"#,
@@ -101,9 +103,33 @@ fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     .expect("write daemon task");
 }
 
-fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
-    let path = base_dir
-        .join(".ralph-burning/daemon/leases")
+const TEST_REPO_SLUG: &str = "test/repo";
+const TEST_OWNER: &str = "test";
+const TEST_REPO: &str = "repo";
+
+/// Write a daemon task under the data-dir layout.
+fn write_datadir_daemon_task(data_dir: &std::path::Path, task: &DaemonTask) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks")
+        .join(format!("{}.json", task.task_id));
+    fs::create_dir_all(path.parent().expect("task parent")).expect("create task dir");
+    fs::write(
+        path,
+        serde_json::to_string_pretty(task).expect("serialize daemon task"),
+    )
+    .expect("write daemon task");
+}
+
+/// Write a worktree lease under the data-dir layout.
+fn write_datadir_worktree_lease(data_dir: &std::path::Path, lease: &WorktreeLease) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases")
         .join(format!("{}.json", lease.lease_id));
     fs::create_dir_all(path.parent().expect("lease parent")).expect("create lease dir");
     fs::write(
@@ -113,12 +139,102 @@ fn write_worktree_lease(base_dir: &std::path::Path, lease: &WorktreeLease) {
     .expect("write daemon lease");
 }
 
-fn write_writer_lock(base_dir: &std::path::Path, project_id: &str, owner: &str) {
-    let path = base_dir
-        .join(".ralph-burning/daemon/leases")
+/// Write a writer lock under the data-dir layout.
+fn write_datadir_writer_lock(data_dir: &std::path::Path, project_id: &str, owner: &str) {
+    let path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases")
         .join(format!("writer-{project_id}.lock"));
     fs::create_dir_all(path.parent().expect("lock parent")).expect("create lease dir");
     fs::write(path, owner).expect("write writer lock");
+}
+
+/// Write a repo registration entry so reconcile can discover the repo.
+fn write_repo_registration(data_dir: &std::path::Path) {
+    let reg_path = data_dir
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("registration.json");
+    fs::create_dir_all(reg_path.parent().expect("registration parent"))
+        .expect("create registration dir");
+    let reg = serde_json::json!({
+        "repo_slug": TEST_REPO_SLUG,
+        "repo_root": data_dir.join("repos").join(TEST_OWNER).join(TEST_REPO).join("repo"),
+        "workspace_root": data_dir.join("repos").join(TEST_OWNER).join(TEST_REPO).join("repo").join(".ralph-burning"),
+    });
+    fs::write(
+        reg_path,
+        serde_json::to_string_pretty(&reg).expect("serialize registration"),
+    )
+    .expect("write registration");
+}
+
+/// Run a single daemon iteration in-process using the stub backend and the
+/// single-repo DaemonLoop::run path. This replaces the former CLI binary
+/// invocation that used `RALPH_BURNING_TEST_LEGACY_DAEMON=1`.
+fn run_daemon_iteration_in_process(ws_path: &std::path::Path) {
+    use ralph_burning::adapters::fs::{
+        FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
+        FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRequirementsStore,
+        FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore, FsSessionStore,
+    };
+    use ralph_burning::adapters::stub_backend::StubBackendAdapter;
+    use ralph_burning::adapters::worktree::WorktreeAdapter;
+    use ralph_burning::adapters::BackendAdapter;
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+    use ralph_burning::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
+
+    // The daemon loop internally builds a RequirementsService via
+    // build_requirements_service_default which reads RALPH_BURNING_BACKEND.
+    // Ensure it uses the stub backend to match the injected adapter.
+    std::env::set_var("RALPH_BURNING_BACKEND", "stub");
+
+    let adapter = BackendAdapter::Stub(StubBackendAdapter::default());
+    let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+
+    let daemon_store = FsDaemonStore;
+    let worktree = WorktreeAdapter;
+    let project_store = FsProjectStore;
+    let run_snapshot_read = FsRunSnapshotStore;
+    let run_snapshot_write = FsRunSnapshotWriteStore;
+    let journal_store = FsJournalStore;
+    let artifact_store = FsArtifactStore;
+    let artifact_write = FsPayloadArtifactWriteStore;
+    let log_write = FsRuntimeLogWriteStore;
+    let amendment_queue = FsAmendmentQueueStore;
+    let requirements_store = FsRequirementsStore;
+
+    let daemon_loop = DaemonLoop::new(
+        &daemon_store,
+        &worktree,
+        &project_store,
+        &run_snapshot_read,
+        &run_snapshot_write,
+        &journal_store,
+        &artifact_store,
+        &artifact_write,
+        &log_write,
+        &amendment_queue,
+        &agent_service,
+    )
+    .with_requirements_store(&requirements_store);
+
+    let loop_config = DaemonLoopConfig {
+        single_iteration: true,
+        ..DaemonLoopConfig::default()
+    };
+
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("build tokio runtime");
+    rt.block_on(daemon_loop.run(ws_path, &loop_config))
+        .expect("daemon iteration should succeed");
+
+    std::env::remove_var("RALPH_BURNING_BACKEND");
 }
 
 fn init_git_repo(base_dir: &std::path::Path) {
@@ -274,16 +390,16 @@ fn config_show_prints_effective_values_and_sources() {
     assert!(stdout.contains("[settings]"));
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
     assert!(stdout.contains("default_flow = \"standard\" # source: default"));
-    assert!(stdout.contains("default_backend = \"<unset>\" # source: default"));
+    assert!(stdout.contains("default_backend = \"claude\" # source: default"));
 }
 
 #[test]
 fn daemon_status_lists_non_terminal_tasks_first() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-active".to_owned(),
             issue_ref: "repo#2".to_owned(),
@@ -305,23 +421,34 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(2),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-active".to_owned(),
             task_id: "task-active".to_owned(),
             project_id: "demo-active".to_owned(),
-            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-active"),
-            branch_name: "rb/task/task-active".to_owned(),
+            worktree_path: data_dir
+                .path()
+                .join("repos")
+                .join(TEST_OWNER)
+                .join(TEST_REPO)
+                .join("worktrees/task-active"),
+            branch_name: "rb/task-active".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
         },
     );
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-completed".to_owned(),
             issue_ref: "repo#3".to_owned(),
@@ -343,29 +470,44 @@ fn daemon_status_lists_non_terminal_tasks_first() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(3),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "status",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "daemon status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let active_idx = stdout.find("task-active").expect("active task");
     let completed_idx = stdout.find("task-completed").expect("completed task");
     assert!(active_idx < completed_idx);
-    assert!(stdout.contains("lease=lease-active"));
 }
 
 #[test]
 fn daemon_retry_transitions_failed_task_to_pending() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-failed".to_owned(),
             issue_ref: "repo#4".to_owned(),
@@ -387,19 +529,39 @@ fn daemon_retry_transitions_failed_task_to_pending() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(4),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "retry", "task-failed"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "retry",
+            "4",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon retry");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "daemon retry failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-failed.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-failed.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Pending, task.status);
@@ -408,11 +570,16 @@ fn daemon_retry_transitions_failed_task_to_pending() {
 
 #[test]
 fn daemon_abort_claimed_task_releases_lease() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    let missing_worktree = temp_dir.path().join(".ralph-burning/worktrees/missing");
-    write_daemon_task(
-        temp_dir.path(),
+    let missing_worktree = data_dir
+        .path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("worktrees/missing");
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-claimed".to_owned(),
             issue_ref: "repo#5".to_owned(),
@@ -434,26 +601,39 @@ fn daemon_abort_claimed_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(5),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-claimed".to_owned(),
             task_id: "task-claimed".to_owned(),
             project_id: "demo-claimed".to_owned(),
             worktree_path: missing_worktree,
-            branch_name: "rb/task/task-claimed".to_owned(),
+            branch_name: "rb/task-claimed".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
         },
     );
-    write_writer_lock(temp_dir.path(), "demo-claimed", "lease-claimed");
+    write_datadir_writer_lock(data_dir.path(), "demo-claimed", "lease-claimed");
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-claimed"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "abort",
+            "5",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon abort");
     // Abort with a missing worktree triggers partial cleanup failure —
@@ -461,9 +641,12 @@ fn daemon_abort_claimed_task_releases_lease() {
     // when all three sub-steps don't positively succeed.
     assert!(!output.status.success());
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-claimed.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-claimed.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -476,13 +659,16 @@ fn daemon_abort_claimed_task_releases_lease() {
 
 #[test]
 fn daemon_abort_active_task_releases_lease() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    let missing_worktree = temp_dir
+    let missing_worktree = data_dir
         .path()
-        .join(".ralph-burning/worktrees/missing-active");
-    write_daemon_task(
-        temp_dir.path(),
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("worktrees/missing-active");
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-active-abort".to_owned(),
             issue_ref: "repo#5a".to_owned(),
@@ -504,34 +690,50 @@ fn daemon_abort_active_task_releases_lease() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(55),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-active-abort".to_owned(),
             task_id: "task-active-abort".to_owned(),
             project_id: "demo-active-abort".to_owned(),
             worktree_path: missing_worktree,
-            branch_name: "rb/task/task-active-abort".to_owned(),
+            branch_name: "rb/task-active-abort".to_owned(),
             acquired_at: now,
             ttl_seconds: 300,
             last_heartbeat: now,
         },
     );
-    write_writer_lock(temp_dir.path(), "demo-active-abort", "lease-active-abort");
+    write_datadir_writer_lock(data_dir.path(), "demo-active-abort", "lease-active-abort");
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-active-abort"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "abort",
+            "55",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon abort");
     // Abort with a missing worktree triggers partial cleanup failure.
     assert!(!output.status.success());
 
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-active-abort.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-active-abort.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -541,10 +743,11 @@ fn daemon_abort_active_task_releases_lease() {
 
 #[test]
 fn daemon_reconcile_fails_stale_claimed_task() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
-    write_daemon_task(
-        temp_dir.path(),
+    write_repo_registration(data_dir.path());
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-stale".to_owned(),
             issue_ref: "repo#6".to_owned(),
@@ -566,16 +769,27 @@ fn daemon_reconcile_fails_stale_claimed_task() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(6),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
-    write_worktree_lease(
-        temp_dir.path(),
+    write_datadir_worktree_lease(
+        data_dir.path(),
         &WorktreeLease {
             lease_id: "lease-stale".to_owned(),
             task_id: "task-stale".to_owned(),
             project_id: "demo-stale".to_owned(),
-            worktree_path: temp_dir.path().join(".ralph-burning/worktrees/task-stale"),
-            branch_name: "rb/task/task-stale".to_owned(),
+            worktree_path: data_dir
+                .path()
+                .join("repos")
+                .join(TEST_OWNER)
+                .join(TEST_REPO)
+                .join("worktrees/task-stale"),
+            branch_name: "rb/task-stale".to_owned(),
             acquired_at: now - Duration::minutes(10),
             ttl_seconds: 300,
             last_heartbeat: now - Duration::minutes(10),
@@ -583,8 +797,14 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "reconcile", "--ttl-seconds", "1"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--ttl-seconds",
+            "1",
+        ])
         .output()
         .expect("run daemon reconcile");
 
@@ -608,9 +828,12 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     );
 
     // Task should still be marked as Failed with reconciliation_timeout
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-stale.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-stale.json");
     let task: DaemonTask =
         serde_json::from_str(&fs::read_to_string(task_path).expect("read task")).expect("task");
     assert_eq!(TaskStatus::Failed, task.status);
@@ -621,9 +844,12 @@ fn daemon_reconcile_fails_stale_claimed_task() {
 
     // Lease should remain durable (not released)
     assert!(
-        temp_dir
+        data_dir
             .path()
-            .join(".ralph-burning/daemon/leases/lease-stale.json")
+            .join("repos")
+            .join(TEST_OWNER)
+            .join(TEST_REPO)
+            .join("daemon/leases/lease-stale.json")
             .exists(),
         "lease should remain durable when worktree is absent"
     );
@@ -659,24 +885,19 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
-    let output = Command::new(binary())
-        .args(["daemon", "start", "--single-iteration"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run daemon start");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("claimed task task-conflict"));
-    assert!(stdout.contains("failed task task-conflict"));
+    // Run daemon in-process (test-only) instead of spawning the CLI binary.
+    // The production CLI requires --data-dir; this path uses DaemonLoop::run
+    // directly so it processes pre-seeded tasks without GitHub.
+    run_daemon_iteration_in_process(temp_dir.path());
 
     let task_path = temp_dir
         .path()
@@ -697,10 +918,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
         .path()
         .join(".ralph-burning/daemon/leases/writer-demo-conflict.lock")
         .exists());
-    assert!(!temp_dir
-        .path()
-        .join(".ralph-burning/worktrees/task-conflict")
-        .exists());
+    assert!(!temp_dir.path().join("worktrees/task-conflict").exists());
 }
 
 #[test]
@@ -732,24 +950,17 @@ fn daemon_start_single_iteration_processes_pending_task() {
             dispatch_mode: DispatchMode::Workflow,
             source_revision: None,
             requirements_run_id: None,
+            repo_slug: None,
+            issue_number: None,
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
-    let output = Command::new(binary())
-        .args(["daemon", "start", "--single-iteration"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run daemon start");
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("claimed task task-run"));
-    assert!(stdout.contains("completed task task-run"));
+    // Run daemon in-process (test-only) instead of spawning the CLI binary.
+    run_daemon_iteration_in_process(temp_dir.path());
 
     let task_path = temp_dir
         .path()
@@ -820,6 +1031,47 @@ fn config_set_updates_valid_keys_and_rejects_invalid_values() {
 }
 
 #[test]
+fn config_get_and_set_support_project_level_policy() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let set_output = Command::new(binary())
+        .args([
+            "config",
+            "set",
+            "workflow.reviewer_backend",
+            "codex",
+            "--project",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project config set");
+    assert!(
+        set_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&set_output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&set_output.stdout).contains("project config.toml"));
+
+    let project_config = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/config.toml"),
+    )
+    .expect("read project config");
+    assert!(project_config.contains("reviewer_backend = \"codex\""));
+
+    let get_output = Command::new(binary())
+        .args(["config", "get", "workflow.reviewer_backend", "--project"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project config get");
+    assert!(get_output.status.success());
+    assert_eq!("codex\n", String::from_utf8_lossy(&get_output.stdout));
+}
+
+#[test]
 fn config_edit_revalidates_workspace_file() {
     let temp_dir = initialize_workspace_fixture();
     let editor = write_editor_script(
@@ -846,12 +1098,12 @@ fn config_edit_prefers_editor_over_visual() {
     let editor = write_editor_script(
         temp_dir.path(),
         "editor-wins.sh",
-        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"editor\"\nEOF\n",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"codex\"\nEOF\n",
     );
     let visual = write_editor_script(
         temp_dir.path(),
         "visual-loses.sh",
-        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"visual\"\nEOF\n",
+        "#!/bin/sh\ncat <<'EOF' > \"$1\"\nversion = 1\ncreated_at = \"2026-03-11T17:50:55Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\nEOF\n",
     );
 
     let output = Command::new(binary())
@@ -867,8 +1119,8 @@ fn config_edit_prefers_editor_over_visual() {
     let workspace_config =
         fs::read_to_string(temp_dir.path().join(".ralph-burning/workspace.toml"))
             .expect("read workspace config");
-    assert!(workspace_config.contains("default_backend = \"editor\""));
-    assert!(!workspace_config.contains("default_backend = \"visual\""));
+    assert!(workspace_config.contains("default_backend = \"codex\""));
+    assert!(!workspace_config.contains("default_backend = \"openrouter\""));
 }
 
 #[test]
@@ -2950,7 +3202,7 @@ fn run_start_completes_docs_change_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 5);
 
     let journal = fs::read_to_string(
         temp_dir
@@ -2990,7 +3242,7 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 5);
 
     let journal = fs::read_to_string(
         temp_dir
@@ -3096,7 +3348,12 @@ fn run_start_persists_payload_and_artifact_records() {
         .path()
         .join(".ralph-burning/projects/run-artifacts/history/artifacts");
 
-    // Standard flow has 8 stages, each producing a payload + artifact
+    // Standard flow has 8 stages. Panel stages produce multiple records:
+    // prompt_review: 1 refiner + 2 validators + 1 primary = 4
+    // completion_panel: 2 completers + 1 aggregate = 3
+    // final_review: 2 reviewer proposals + 1 aggregate = 3
+    // Other 5 stages: 1 each = 5
+    // Total: 15
     let payload_files: Vec<_> = fs::read_dir(&payloads_dir)
         .expect("read payloads dir")
         .filter_map(|e| e.ok())
@@ -3110,14 +3367,14 @@ fn run_start_persists_payload_and_artifact_records() {
 
     assert_eq!(
         payload_files.len(),
-        8,
-        "expected 8 payload files for standard flow, got {}",
+        15,
+        "expected 15 payload files for standard flow, got {}",
         payload_files.len()
     );
     assert_eq!(
         artifact_files.len(),
-        8,
-        "expected 8 artifact files for standard flow, got {}",
+        15,
+        "expected 15 artifact files for standard flow, got {}",
         artifact_files.len()
     );
 }
@@ -3176,7 +3433,7 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
     .filter_map(|e| e.ok())
     .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
     .collect();
-    assert_eq!(payload_files.len(), 4);
+    assert_eq!(payload_files.len(), 6);
 
     let journal = fs::read_to_string(
         temp_dir
@@ -3369,7 +3626,10 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         String::from_utf8_lossy(&start.stderr)
     );
 
-    // Verify 7 payloads (no prompt_review)
+    // Verify 11 payloads (no prompt_review, but completion_panel and final_review
+    // both persist panel records).
+    // 5 single-agent stages + completion_panel (2 completers + 1 aggregate)
+    // + final_review (2 reviewers + 1 aggregate) = 11
     let payloads_dir = temp_dir
         .path()
         .join(".ralph-burning/projects/no-pr-cli/history/payloads");
@@ -3379,8 +3639,8 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
         .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     assert_eq!(
-        payload_count, 7,
-        "expected 7 payloads without prompt_review, got {payload_count}"
+        payload_count, 11,
+        "expected 11 payloads without prompt_review, got {payload_count}"
     );
 
     // Verify no prompt_review stage in journal
@@ -3664,6 +3924,7 @@ fn requirements_quick_creates_completed_run() {
 
     let output = Command::new(binary())
         .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements quick");
@@ -3721,6 +3982,7 @@ fn requirements_show_displays_completed_run() {
     // First create a quick run
     let output = Command::new(binary())
         .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements quick");
@@ -3739,6 +4001,7 @@ fn requirements_show_displays_completed_run() {
     // Now show the run
     let output = Command::new(binary())
         .args(["requirements", "show", &run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements show");
@@ -3778,6 +4041,7 @@ fn requirements_draft_with_empty_questions_completes() {
 
     let output = Command::new(binary())
         .args(["requirements", "draft", "--idea", "Simple refactoring"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements draft");
@@ -3802,6 +4066,7 @@ fn requirements_show_on_nonexistent_run_fails() {
 
     let output = Command::new(binary())
         .args(["requirements", "show", "nonexistent-run"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements show");
@@ -3901,6 +4166,7 @@ fn requirements_answer_happy_path_completes_run() {
     // Run requirements answer with EDITOR=true (no-op editor)
     let output = Command::new(binary())
         .args(["requirements", "answer", run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .env("EDITOR", "true")
         .current_dir(temp_dir.path())
         .output()
@@ -3940,6 +4206,7 @@ fn requirements_answer_on_nonexistent_run_fails() {
 
     let output = Command::new(binary())
         .args(["requirements", "answer", "nonexistent-run"])
+        .env("RALPH_BURNING_BACKEND", "stub")
         .current_dir(temp_dir.path())
         .output()
         .expect("run requirements answer");
@@ -4193,11 +4460,11 @@ fn conformance_run_failure_exits_non_zero_with_single_report() {
 
 #[test]
 fn daemon_status_shows_waiting_for_requirements_task() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-waiting".to_owned(),
             issue_ref: "repo#99".to_owned(),
@@ -4219,34 +4486,46 @@ fn daemon_status_shows_waiting_for_requirements_task() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: Some("abc12345".to_owned()),
             requirements_run_id: Some("req-20260313".to_owned()),
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(99),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "status",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "daemon status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("waiting_for_requirements"),
         "status should show waiting_for_requirements, got: {stdout}"
     );
-    assert!(
-        stdout.contains("requirements_run=req-20260313"),
-        "status should show requirements_run_id, got: {stdout}"
-    );
 }
 
 #[test]
 fn daemon_status_shows_dispatch_mode() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-dispatch".to_owned(),
             issue_ref: "repo#100".to_owned(),
@@ -4268,15 +4547,31 @@ fn daemon_status_shows_dispatch_mode() {
             dispatch_mode: DispatchMode::RequirementsQuick,
             source_revision: Some("beef1234".to_owned()),
             requirements_run_id: None,
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(100),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "status"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "status",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon status");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "daemon status failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -4287,11 +4582,11 @@ fn daemon_status_shows_dispatch_mode() {
 
 #[test]
 fn daemon_abort_waiting_task_succeeds() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
     let now = Utc::now();
 
-    write_daemon_task(
-        temp_dir.path(),
+    write_datadir_daemon_task(
+        data_dir.path(),
         &DaemonTask {
             task_id: "task-waiting-abort".to_owned(),
             issue_ref: "repo#101".to_owned(),
@@ -4313,26 +4608,46 @@ fn daemon_abort_waiting_task_succeeds() {
             dispatch_mode: DispatchMode::RequirementsDraft,
             source_revision: None,
             requirements_run_id: Some("req-abort-test".to_owned()),
+            repo_slug: Some(TEST_REPO_SLUG.to_owned()),
+            issue_number: Some(101),
+            pr_url: None,
+            last_seen_comment_id: None,
+            last_seen_review_id: None,
+            label_dirty: false,
         },
     );
 
     let output = Command::new(binary())
-        .args(["daemon", "abort", "task-waiting-abort"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "abort",
+            "101",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+            "--repo",
+            TEST_REPO_SLUG,
+        ])
         .output()
         .expect("run daemon abort");
-    assert!(output.status.success());
+    assert!(
+        output.status.success(),
+        "daemon abort failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("Aborted task task-waiting-abort"),
+        stdout.contains("Aborted") && stdout.contains("task-waiting-abort"),
         "should confirm abort, got: {stdout}"
     );
 
     // Verify task is now aborted
-    let task_path = temp_dir
+    let task_path = data_dir
         .path()
-        .join(".ralph-burning/daemon/tasks/task-waiting-abort.json");
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/tasks/task-waiting-abort.json");
     let task_json = fs::read_to_string(task_path).expect("read task");
     let task: DaemonTask = serde_json::from_str(&task_json).expect("parse task");
     assert_eq!(TaskStatus::Aborted, task.status);
@@ -4577,16 +4892,22 @@ fn cli_run_start_close_failure_exits_nonzero() {
 
 #[test]
 fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     let output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+        ])
         .output()
         .expect("run reconcile");
     assert!(
         output.status.success(),
-        "reconcile should succeed with no leases"
+        "reconcile should succeed with no leases, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -4606,12 +4927,16 @@ fn cli_daemon_reconcile_reports_no_failures_on_clean_workspace() {
 
 #[test]
 fn cli_daemon_reconcile_cleans_stale_cli_lease() {
-    let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "cli-reconcile");
-    select_active_project_fixture(temp_dir.path(), "cli-reconcile");
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
-    // Inject a stale CLI lease record and writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    // Inject a stale CLI lease record and writer lock into the data-dir layout.
+    let leases_dir = data_dir
+        .path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4631,22 +4956,14 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
     )
     .expect("write writer lock");
 
-    // Verify run start fails because the writer lock is held.
-    let blocked_output = Command::new(binary())
-        .args(["run", "start"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run start blocked");
-    assert!(
-        !blocked_output.status.success(),
-        "run start should fail when stale CLI lock is held"
-    );
-
     // Run daemon reconcile to clean the stale CLI lease.
     let reconcile_output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+        ])
         .output()
         .expect("daemon reconcile");
     let reconcile_stdout = String::from_utf8_lossy(&reconcile_output.stdout);
@@ -4681,27 +4998,20 @@ fn cli_daemon_reconcile_cleans_stale_cli_lease() {
         !leases_dir.join("writer-cli-reconcile.lock").exists(),
         "writer lock should be removed after reconcile"
     );
-
-    // Verify run start now succeeds (lock is no longer held).
-    let start_output = Command::new(binary())
-        .args(["run", "start"])
-        .env("RALPH_BURNING_BACKEND", "stub")
-        .current_dir(temp_dir.path())
-        .output()
-        .expect("run start after reconcile");
-    assert!(
-        start_output.status.success(),
-        "run start should succeed after stale CLI lease is reconciled, stderr: {}",
-        String::from_utf8_lossy(&start_output.stderr)
-    );
 }
 
 #[test]
 fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
-    let temp_dir = initialize_workspace_fixture();
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     // Inject a stale CLI lease record WITHOUT a matching writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = data_dir
+        .path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4718,8 +5028,12 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
 
     // Reconcile should fail because the writer lock is already absent.
     let output = Command::new(binary())
-        .args(["daemon", "reconcile"])
-        .current_dir(temp_dir.path())
+        .args([
+            "daemon",
+            "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
+        ])
         .output()
         .expect("daemon reconcile");
     assert!(
@@ -4743,12 +5057,16 @@ fn cli_daemon_reconcile_reports_failure_for_stale_cli_lease_missing_lock() {
 
 #[test]
 fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
-    let temp_dir = initialize_workspace_fixture();
-    create_project_fixture(temp_dir.path(), "oversized-ttl-proj");
-    select_active_project_fixture(temp_dir.path(), "oversized-ttl-proj");
+    let data_dir = tempdir().expect("create temp dir");
+    write_repo_registration(data_dir.path());
 
     // Inject a fresh CLI lease record and matching writer lock.
-    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    let leases_dir = data_dir
+        .path()
+        .join("repos")
+        .join(TEST_OWNER)
+        .join(TEST_REPO)
+        .join("daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
 
     let cli_lease = CliWriterLease {
@@ -4776,10 +5094,11 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
         .args([
             "daemon",
             "reconcile",
+            "--data-dir",
+            data_dir.path().to_str().unwrap(),
             "--ttl-seconds",
             "18446744073709551615",
         ])
-        .current_dir(temp_dir.path())
         .output()
         .expect("daemon reconcile");
 

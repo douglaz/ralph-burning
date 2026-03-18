@@ -2,6 +2,7 @@ use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::queries;
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::shared::domain::{StageCursor, StageId};
 use ralph_burning::shared::error::AppError;
 
@@ -29,12 +30,14 @@ fn status_view_not_started_when_no_active_run() {
 fn status_view_reports_completed_terminal_state_without_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Completed,
         cycle_history: Vec::new(),
         completion_rounds: 3,
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "completed after 3 rounds".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 
@@ -47,12 +50,14 @@ fn status_view_reports_completed_terminal_state_without_active_run() {
 fn status_view_reports_failed_terminal_state_without_active_run() {
     let snapshot = RunSnapshot {
         active_run: None,
+        interrupted_run: None,
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 
@@ -67,13 +72,21 @@ fn status_view_reports_running_with_cursor() {
             run_id: "run-1".to_owned(),
             stage_cursor: StageCursor::initial(StageId::Planning),
             started_at: test_timestamp(),
+            prompt_hash_at_cycle_start: "prompt-hash".to_owned(),
+            prompt_hash_at_stage_start: "prompt-hash".to_owned(),
+            qa_iterations_current_cycle: 0,
+            review_iterations_current_cycle: 0,
+            final_review_restart_count: 0,
+            stage_resolution_snapshot: None,
         }),
+        interrupted_run: None,
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 0,
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "running at planning".to_owned(),
+        last_stage_resolution_snapshot: None,
     };
     let view = queries::build_status_view("alpha", &snapshot);
 
@@ -276,6 +289,9 @@ fn filter_history_records_hides_payloads_from_rolled_back_branch() {
             attempt: 1,
             created_at: test_timestamp(),
             payload: serde_json::json!({}),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         },
         PayloadRecord {
             payload_id: "p2".to_owned(),
@@ -284,6 +300,9 @@ fn filter_history_records_hides_payloads_from_rolled_back_branch() {
             attempt: 1,
             created_at: test_timestamp(),
             payload: serde_json::json!({}),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         },
     ];
     let artifacts = vec![
@@ -293,6 +312,9 @@ fn filter_history_records_hides_payloads_from_rolled_back_branch() {
             stage_id: StageId::Planning,
             created_at: test_timestamp(),
             content: "planning".to_owned(),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         },
         ArtifactRecord {
             artifact_id: "a2".to_owned(),
@@ -300,6 +322,9 @@ fn filter_history_records_hides_payloads_from_rolled_back_branch() {
             stage_id: StageId::Implementation,
             created_at: test_timestamp(),
             content: "implementation".to_owned(),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         },
     ];
 
@@ -322,6 +347,9 @@ fn validate_history_consistency_passes_with_matching_records() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     }];
     let artifacts = vec![ArtifactRecord {
         artifact_id: "a1".to_owned(),
@@ -329,6 +357,9 @@ fn validate_history_consistency_passes_with_matching_records() {
         stage_id: StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     }];
 
     assert!(queries::validate_history_consistency(&payloads, &artifacts).is_ok());
@@ -343,6 +374,9 @@ fn validate_history_consistency_fails_with_orphaned_artifact() {
         stage_id: StageId::Planning,
         created_at: test_timestamp(),
         content: "# Planning".to_owned(),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     }];
 
     let result = queries::validate_history_consistency(&payloads, &artifacts);
@@ -368,6 +402,9 @@ fn validate_history_consistency_fails_with_orphaned_payload() {
         attempt: 1,
         created_at: test_timestamp(),
         payload: serde_json::json!({}),
+        record_kind: RecordKind::StagePrimary,
+        producer: None,
+        completion_round: 0,
     }];
     let artifacts = vec![];
 

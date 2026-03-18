@@ -1,9 +1,6 @@
 use clap::{Args, Subcommand};
 
-use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
-use crate::adapters::stub_backend::StubBackendAdapter;
-use crate::contexts::agent_execution::service::{AgentExecutionService, BackendSelectionConfig};
-use crate::contexts::requirements_drafting::service::RequirementsService;
+use crate::composition::agent_execution_builder;
 use crate::contexts::workspace_governance::EffectiveConfig;
 use crate::shared::error::AppResult;
 
@@ -39,37 +36,8 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
 
     // Load effective config for workspace backend/model defaults
     let effective_config = EffectiveConfig::load(&base_dir)?;
-    let workspace_defaults = BackendSelectionConfig::from_effective_config(&effective_config)?;
 
-    let mut adapter = StubBackendAdapter::default();
-
-    // Test-only seam: JSON map from label string to payload JSON for requirements contracts.
-    // Example: {"question_set": {"questions": [{"id":"q1","prompt":"...","required":true}]}}
-    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
-        if let Ok(overrides) = serde_json::from_str::<
-            std::collections::HashMap<String, serde_json::Value>,
-        >(&overrides_json)
-        {
-            for (label, payload) in overrides {
-                // Support both short labels ("question_set") and full labels
-                // ("requirements:question_set"). The invocation contract uses the
-                // full "requirements:<stage>" form internally.
-                let full_label = if label.starts_with("requirements:") {
-                    label
-                } else {
-                    format!("requirements:{label}")
-                };
-                adapter = adapter.with_label_payload(full_label, payload);
-            }
-        }
-    }
-
-    let raw_output_store = FsRawOutputStore;
-    let session_store = FsSessionStore;
-    let agent_service = AgentExecutionService::new(adapter, raw_output_store, session_store);
-    let requirements_store = FsRequirementsStore;
-    let service = RequirementsService::new(agent_service, requirements_store)
-        .with_workspace_defaults(workspace_defaults);
+    let service = agent_execution_builder::build_requirements_service(&effective_config)?;
 
     match command.command {
         RequirementsSubcommand::Draft { idea } => {

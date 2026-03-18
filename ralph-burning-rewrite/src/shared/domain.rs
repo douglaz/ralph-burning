@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use toml::Table;
 
@@ -40,7 +42,7 @@ impl fmt::Display for FailureClass {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendFamily {
     Claude,
@@ -245,7 +247,9 @@ impl BackendRole {
             Self::QaValidator => {
                 ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
             }
-            Self::CompletionJudge => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
+            Self::CompletionJudge => {
+                ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6")
+            }
         }
     }
 
@@ -281,12 +285,238 @@ impl fmt::Display for BackendRole {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum BackendPolicyRole {
+    Planner,
+    Implementer,
+    Reviewer,
+    Qa,
+    Completer,
+    FinalReviewer,
+    PromptReviewer,
+    PromptValidator,
+    Arbiter,
+    AcceptanceQa,
+}
+
+impl BackendPolicyRole {
+    pub const ALL: [Self; 10] = [
+        Self::Planner,
+        Self::Implementer,
+        Self::Reviewer,
+        Self::Qa,
+        Self::Completer,
+        Self::FinalReviewer,
+        Self::PromptReviewer,
+        Self::PromptValidator,
+        Self::Arbiter,
+        Self::AcceptanceQa,
+    ];
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Planner => "planner",
+            Self::Implementer => "implementer",
+            Self::Reviewer => "reviewer",
+            Self::Qa => "qa",
+            Self::Completer => "completer",
+            Self::FinalReviewer => "final_reviewer",
+            Self::PromptReviewer => "prompt_reviewer",
+            Self::PromptValidator => "prompt_validator",
+            Self::Arbiter => "arbiter",
+            Self::AcceptanceQa => "acceptance_qa",
+        }
+    }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            Self::Planner => "Planner",
+            Self::Implementer => "Implementer",
+            Self::Reviewer => "Reviewer",
+            Self::Qa => "QA",
+            Self::Completer => "Completer",
+            Self::FinalReviewer => "Final Reviewer",
+            Self::PromptReviewer => "Prompt Reviewer",
+            Self::PromptValidator => "Prompt Validator",
+            Self::Arbiter => "Arbiter",
+            Self::AcceptanceQa => "Acceptance QA",
+        }
+    }
+}
+
+impl fmt::Display for BackendPolicyRole {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for BackendPolicyRole {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "planner" => Ok(Self::Planner),
+            "implementer" => Ok(Self::Implementer),
+            "reviewer" => Ok(Self::Reviewer),
+            "qa" => Ok(Self::Qa),
+            "completer" => Ok(Self::Completer),
+            "final_reviewer" => Ok(Self::FinalReviewer),
+            "prompt_reviewer" => Ok(Self::PromptReviewer),
+            "prompt_validator" => Ok(Self::PromptValidator),
+            "arbiter" => Ok(Self::Arbiter),
+            "acceptance_qa" => Ok(Self::AcceptanceQa),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "backend_role".to_owned(),
+                value: value.to_owned(),
+                reason: "unknown backend role".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackendSelection {
+    pub family: BackendFamily,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+impl BackendSelection {
+    pub fn new(family: BackendFamily, model: Option<String>) -> Self {
+        Self { family, model }
+    }
+
+    pub fn from_backend_name(value: &str) -> AppResult<Self> {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            return Err(AppError::InvalidConfigValue {
+                key: "backend".to_owned(),
+                value: value.to_owned(),
+                reason: "backend name must not be empty".to_owned(),
+            });
+        }
+
+        if let Some((backend, model)) = normalized.split_once('(') {
+            let model = model
+                .strip_suffix(')')
+                .ok_or_else(|| AppError::InvalidConfigValue {
+                    key: "backend".to_owned(),
+                    value: value.to_owned(),
+                    reason: "backend model spec must end with ')'".to_owned(),
+                })?;
+            let family = backend.trim().parse::<BackendFamily>()?;
+            let model = model.trim();
+            if model.is_empty() {
+                return Err(AppError::InvalidConfigValue {
+                    key: "backend".to_owned(),
+                    value: value.to_owned(),
+                    reason: "backend model spec must not be empty".to_owned(),
+                });
+            }
+            Ok(Self::new(family, Some(model.to_owned())))
+        } else {
+            Ok(Self::new(normalized.parse::<BackendFamily>()?, None))
+        }
+    }
+
+    pub fn display_string(&self) -> String {
+        match &self.model {
+            Some(model) => format!("{}({model})", self.family.as_str()),
+            None => self.family.as_str().to_owned(),
+        }
+    }
+}
+
+impl fmt::Display for BackendSelection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.display_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PanelBackendSpec {
+    Required(BackendFamily),
+    Optional(BackendFamily),
+}
+
+impl PanelBackendSpec {
+    pub fn required(backend: BackendFamily) -> Self {
+        Self::Required(backend)
+    }
+
+    pub fn optional(backend: BackendFamily) -> Self {
+        Self::Optional(backend)
+    }
+
+    pub fn backend(self) -> BackendFamily {
+        match self {
+            Self::Required(backend) | Self::Optional(backend) => backend,
+        }
+    }
+
+    pub fn is_optional(self) -> bool {
+        matches!(self, Self::Optional(_))
+    }
+}
+
+impl fmt::Display for PanelBackendSpec {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Required(backend) => write!(f, "{}", backend.as_str()),
+            Self::Optional(backend) => write!(f, "?{}", backend.as_str()),
+        }
+    }
+}
+
+impl FromStr for PanelBackendSpec {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        let normalized = value.trim();
+        if normalized.is_empty() {
+            return Err(AppError::InvalidConfigValue {
+                key: "panel_backend".to_owned(),
+                value: value.to_owned(),
+                reason: "backend spec must not be empty".to_owned(),
+            });
+        }
+
+        if let Some(optional) = normalized.strip_prefix('?') {
+            Ok(Self::Optional(optional.parse::<BackendFamily>()?))
+        } else {
+            Ok(Self::Required(normalized.parse::<BackendFamily>()?))
+        }
+    }
+}
+
+impl Serialize for PanelBackendSpec {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.to_string())
+    }
+}
+
+impl<'de> Deserialize<'de> for PanelBackendSpec {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let value = String::deserialize(deserializer)?;
+        value
+            .parse::<PanelBackendSpec>()
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SessionPolicy {
     NewSession,
     ReuseIfAllowed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FlowPreset {
     Standard,
@@ -435,6 +665,12 @@ impl StageId {
             Self::CiUpdate => "ci_update",
             Self::CiValidation => "ci_validation",
         }
+    }
+
+    /// Returns `true` for stages that run local validation commands and do not
+    /// require a backend agent (docs_validation, ci_validation).
+    pub fn is_local_validation(self) -> bool {
+        matches!(self, Self::DocsValidation | Self::CiValidation)
     }
 }
 
@@ -614,12 +850,107 @@ impl fmt::Display for RunId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptChangeAction {
+    Continue,
+    Abort,
+    RestartCycle,
+}
+
+impl PromptChangeAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Continue => "continue",
+            Self::Abort => "abort",
+            Self::RestartCycle => "restart_cycle",
+        }
+    }
+}
+
+impl fmt::Display for PromptChangeAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PromptChangeAction {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "continue" => Ok(Self::Continue),
+            "abort" => Ok(Self::Abort),
+            "restart_cycle" => Ok(Self::RestartCycle),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "prompt_change_action".to_owned(),
+                value: value.to_owned(),
+                reason: "expected one of continue, abort, restart_cycle".to_owned(),
+            }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrPolicy {
+    SkipOnNoDiff,
+    CloseOnNoDiff,
+}
+
+impl PrPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SkipOnNoDiff => "skip_on_no_diff",
+            Self::CloseOnNoDiff => "close_on_no_diff",
+        }
+    }
+}
+
+impl fmt::Display for PrPolicy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for PrPolicy {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "skip_on_no_diff" => Ok(Self::SkipOnNoDiff),
+            "close_on_no_diff" => Ok(Self::CloseOnNoDiff),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "daemon.pr.no_diff_action".to_owned(),
+                value: value.to_owned(),
+                reason: "expected one of skip_on_no_diff, close_on_no_diff".to_owned(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub version: u32,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "WorkspaceSettings::is_empty")]
     pub settings: WorkspaceSettings,
+    #[serde(default, skip_serializing_if = "PromptReviewSettings::is_empty")]
+    pub prompt_review: PromptReviewSettings,
+    #[serde(default, skip_serializing_if = "WorkflowSettings::is_empty")]
+    pub workflow: WorkflowSettings,
+    #[serde(default, skip_serializing_if = "CompletionSettings::is_empty")]
+    pub completion: CompletionSettings,
+    #[serde(default, skip_serializing_if = "FinalReviewSettings::is_empty")]
+    pub final_review: FinalReviewSettings,
+    #[serde(default, skip_serializing_if = "ValidationSettings::is_empty")]
+    pub validation: ValidationSettings,
+    #[serde(default, skip_serializing_if = "DaemonSettings::is_empty")]
+    pub daemon: DaemonSettings,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backends: BTreeMap<String, BackendRuntimeSettings>,
+    #[serde(flatten)]
+    pub extra: Table,
 }
 
 impl WorkspaceConfig {
@@ -628,14 +959,56 @@ impl WorkspaceConfig {
             version: CURRENT_WORKSPACE_VERSION,
             created_at,
             settings: WorkspaceSettings::default(),
+            prompt_review: PromptReviewSettings::default(),
+            workflow: WorkflowSettings::default(),
+            completion: CompletionSettings::default(),
+            final_review: FinalReviewSettings::default(),
+            validation: ValidationSettings::default(),
+            daemon: DaemonSettings::default(),
+            backends: BTreeMap::new(),
+            extra: Table::new(),
         }
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-pub struct WorkspaceSettings {
+pub struct ProjectConfig {
+    #[serde(default, skip_serializing_if = "WorkspaceSettings::is_empty")]
+    pub settings: WorkspaceSettings,
     #[serde(default, skip_serializing_if = "PromptReviewSettings::is_empty")]
     pub prompt_review: PromptReviewSettings,
+    #[serde(default, skip_serializing_if = "WorkflowSettings::is_empty")]
+    pub workflow: WorkflowSettings,
+    #[serde(default, skip_serializing_if = "CompletionSettings::is_empty")]
+    pub completion: CompletionSettings,
+    #[serde(default, skip_serializing_if = "FinalReviewSettings::is_empty")]
+    pub final_review: FinalReviewSettings,
+    #[serde(default, skip_serializing_if = "ValidationSettings::is_empty")]
+    pub validation: ValidationSettings,
+    #[serde(default, skip_serializing_if = "DaemonSettings::is_empty")]
+    pub daemon: DaemonSettings,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backends: BTreeMap<String, BackendRuntimeSettings>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl ProjectConfig {
+    pub fn is_empty(&self) -> bool {
+        self.settings.is_empty()
+            && self.prompt_review.is_empty()
+            && self.workflow.is_empty()
+            && self.completion.is_empty()
+            && self.final_review.is_empty()
+            && self.validation.is_empty()
+            && self.daemon.is_empty()
+            && self.backends.is_empty()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkspaceSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_flow: Option<FlowPreset>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -648,8 +1021,7 @@ pub struct WorkspaceSettings {
 
 impl WorkspaceSettings {
     pub fn is_empty(&self) -> bool {
-        self.prompt_review.is_empty()
-            && self.default_flow.is_none()
+        self.default_flow.is_none()
             && self.default_backend.is_none()
             && self.default_model.is_none()
             && self.extra.is_empty()
@@ -660,12 +1032,426 @@ impl WorkspaceSettings {
 pub struct PromptReviewSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refiner_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub validator_backends: Option<Vec<PanelBackendSpec>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_reviewers: Option<usize>,
     #[serde(flatten)]
     pub extra: Table,
 }
 
 impl PromptReviewSettings {
     pub fn is_empty(&self) -> bool {
-        self.enabled.is_none() && self.extra.is_empty()
+        self.enabled.is_none()
+            && self.refiner_backend.is_none()
+            && self.validator_backends.is_none()
+            && self.min_reviewers.is_none()
+            && self.extra.is_empty()
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct WorkflowSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementer_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_qa_iterations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_review_iterations: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_change_action: Option<PromptChangeAction>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl WorkflowSettings {
+    pub fn is_empty(&self) -> bool {
+        self.planner_backend.is_none()
+            && self.implementer_backend.is_none()
+            && self.reviewer_backend.is_none()
+            && self.qa_backend.is_none()
+            && self.max_qa_iterations.is_none()
+            && self.max_review_iterations.is_none()
+            && self.prompt_change_action.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CompletionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backends: Option<Vec<PanelBackendSpec>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_completers: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consensus_threshold: Option<f64>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl CompletionSettings {
+    pub fn is_empty(&self) -> bool {
+        self.backends.is_none()
+            && self.min_completers.is_none()
+            && self.consensus_threshold.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct FinalReviewSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backends: Option<Vec<PanelBackendSpec>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min_reviewers: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consensus_threshold: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_restarts: Option<u32>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl FinalReviewSettings {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.backends.is_none()
+            && self.arbiter_backend.is_none()
+            && self.min_reviewers.is_none()
+            && self.consensus_threshold.is_none()
+            && self.max_restarts.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ValidationSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub standard_commands: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docs_commands: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ci_commands: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_commit_fmt: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_commit_clippy: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_commit_nix_build: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pre_commit_fmt_auto_fix: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl ValidationSettings {
+    pub fn is_empty(&self) -> bool {
+        self.standard_commands.is_none()
+            && self.docs_commands.is_none()
+            && self.ci_commands.is_none()
+            && self.pre_commit_fmt.is_none()
+            && self.pre_commit_clippy.is_none()
+            && self.pre_commit_nix_build.is_none()
+            && self.pre_commit_fmt_auto_fix.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DaemonSettings {
+    #[serde(default, skip_serializing_if = "DaemonPrSettings::is_empty")]
+    pub pr: DaemonPrSettings,
+    #[serde(default, skip_serializing_if = "RebasePolicy::is_empty")]
+    pub rebase: RebasePolicy,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl DaemonSettings {
+    pub fn is_empty(&self) -> bool {
+        self.pr.is_empty() && self.rebase.is_empty() && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct DaemonPrSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub no_diff_action: Option<PrPolicy>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub review_whitelist: Option<ReviewWhitelistConfig>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl DaemonPrSettings {
+    pub fn is_empty(&self) -> bool {
+        self.no_diff_action.is_none() && self.review_whitelist.is_none() && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
+pub struct ReviewWhitelistConfig(pub Vec<String>);
+
+impl ReviewWhitelistConfig {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    pub fn usernames(&self) -> &[String] {
+        &self.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct RebasePolicy {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_resolution_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_timeout: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl RebasePolicy {
+    pub fn is_empty(&self) -> bool {
+        self.agent_resolution_enabled.is_none()
+            && self.agent_timeout.is_none()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BackendRuntimeSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub args: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_seconds: Option<u64>,
+    #[serde(default, skip_serializing_if = "BackendRoleModels::is_empty")]
+    pub role_models: BackendRoleModels,
+    #[serde(default, skip_serializing_if = "BackendRoleTimeouts::is_empty")]
+    pub role_timeouts: BackendRoleTimeouts,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl BackendRuntimeSettings {
+    pub fn is_empty(&self) -> bool {
+        self.enabled.is_none()
+            && self.command.is_none()
+            && self.args.is_none()
+            && self.timeout_seconds.is_none()
+            && self.role_models.is_empty()
+            && self.role_timeouts.is_empty()
+            && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BackendRoleModels {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_reviewer: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_validator: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_qa: Option<String>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl BackendRoleModels {
+    pub fn is_empty(&self) -> bool {
+        self.planner.is_none()
+            && self.implementer.is_none()
+            && self.reviewer.is_none()
+            && self.qa.is_none()
+            && self.completer.is_none()
+            && self.final_reviewer.is_none()
+            && self.prompt_reviewer.is_none()
+            && self.prompt_validator.is_none()
+            && self.arbiter.is_none()
+            && self.acceptance_qa.is_none()
+            && self.extra.is_empty()
+    }
+
+    pub fn model_for(&self, role: BackendPolicyRole) -> Option<&str> {
+        match role {
+            BackendPolicyRole::Planner => self.planner.as_deref(),
+            BackendPolicyRole::Implementer => self.implementer.as_deref(),
+            BackendPolicyRole::Reviewer => self.reviewer.as_deref(),
+            BackendPolicyRole::Qa => self.qa.as_deref(),
+            BackendPolicyRole::Completer => self.completer.as_deref(),
+            BackendPolicyRole::FinalReviewer => self.final_reviewer.as_deref(),
+            BackendPolicyRole::PromptReviewer => self.prompt_reviewer.as_deref(),
+            BackendPolicyRole::PromptValidator => self.prompt_validator.as_deref(),
+            BackendPolicyRole::Arbiter => self.arbiter.as_deref(),
+            BackendPolicyRole::AcceptanceQa => self.acceptance_qa.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct BackendRoleTimeouts {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_reviewer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_reviewer: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_validator: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acceptance_qa: Option<u64>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl BackendRoleTimeouts {
+    pub fn is_empty(&self) -> bool {
+        self.planner.is_none()
+            && self.implementer.is_none()
+            && self.reviewer.is_none()
+            && self.qa.is_none()
+            && self.completer.is_none()
+            && self.final_reviewer.is_none()
+            && self.prompt_reviewer.is_none()
+            && self.prompt_validator.is_none()
+            && self.arbiter.is_none()
+            && self.acceptance_qa.is_none()
+            && self.extra.is_empty()
+    }
+
+    pub fn timeout_for(&self, role: BackendPolicyRole) -> Option<u64> {
+        match role {
+            BackendPolicyRole::Planner => self.planner,
+            BackendPolicyRole::Implementer => self.implementer,
+            BackendPolicyRole::Reviewer => self.reviewer,
+            BackendPolicyRole::Qa => self.qa,
+            BackendPolicyRole::Completer => self.completer,
+            BackendPolicyRole::FinalReviewer => self.final_reviewer,
+            BackendPolicyRole::PromptReviewer => self.prompt_reviewer,
+            BackendPolicyRole::PromptValidator => self.prompt_validator,
+            BackendPolicyRole::Arbiter => self.arbiter,
+            BackendPolicyRole::AcceptanceQa => self.acceptance_qa,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveRunPolicy {
+    pub default_flow: FlowPreset,
+    pub max_qa_iterations: u32,
+    pub max_review_iterations: u32,
+    pub prompt_change_action: PromptChangeAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectivePromptReviewPolicy {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refiner_backend: Option<BackendSelection>,
+    pub validator_backends: Vec<PanelBackendSpec>,
+    pub min_reviewers: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectiveCompletionPolicy {
+    pub backends: Vec<PanelBackendSpec>,
+    pub min_completers: usize,
+    pub consensus_threshold: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectiveFinalReviewPolicy {
+    pub enabled: bool,
+    pub backends: Vec<PanelBackendSpec>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arbiter_backend: Option<BackendSelection>,
+    pub min_reviewers: usize,
+    pub consensus_threshold: f64,
+    pub max_restarts: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveValidationPolicy {
+    pub standard_commands: Vec<String>,
+    pub docs_commands: Vec<String>,
+    pub ci_commands: Vec<String>,
+    pub pre_commit_fmt: bool,
+    pub pre_commit_clippy: bool,
+    pub pre_commit_nix_build: bool,
+    pub pre_commit_fmt_auto_fix: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveDaemonPrPolicy {
+    pub no_diff_action: PrPolicy,
+    pub review_whitelist: ReviewWhitelistConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EffectiveRebasePolicy {
+    pub agent_resolution_enabled: bool,
+    pub agent_timeout: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EffectiveBackendPolicy {
+    pub base_backend: BackendSelection,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub implementer_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reviewer_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub qa_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_review_refiner_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_review_arbiter_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub backends: BTreeMap<String, BackendRuntimeSettings>,
 }

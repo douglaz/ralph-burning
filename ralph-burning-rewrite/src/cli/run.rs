@@ -4,15 +4,11 @@ use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore, FsRollbackPointStore,
-    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
-    FsSessionStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRollbackPointStore, FsRunSnapshotStore,
+    FsRunSnapshotWriteStore, FsRuntimeLogStore, FsRuntimeLogWriteStore,
 };
-use crate::adapters::process_backend::ProcessBackendAdapter;
-use crate::adapters::stub_backend::StubBackendAdapter;
 use crate::adapters::worktree::WorktreeAdapter;
-use crate::adapters::BackendAdapter;
-use crate::contexts::agent_execution::service::AgentExecutionService;
+use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
@@ -20,8 +16,8 @@ use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
-use crate::shared::domain::StageId;
+use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
+use crate::shared::domain::{BackendSelection, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -32,8 +28,8 @@ pub struct RunCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum RunSubcommand {
-    Start,
-    Resume,
+    Start(RunBackendOverrideArgs),
+    Resume(RunBackendOverrideArgs),
     Status,
     History,
     Tail {
@@ -48,99 +44,37 @@ pub enum RunSubcommand {
     },
 }
 
+#[derive(Debug, Args, Clone, Default)]
+pub struct RunBackendOverrideArgs {
+    #[arg(long = "backend")]
+    pub backend: Option<String>,
+    #[arg(long = "planner-backend")]
+    pub planner_backend: Option<String>,
+    #[arg(long = "implementer-backend")]
+    pub implementer_backend: Option<String>,
+    #[arg(long = "reviewer-backend")]
+    pub reviewer_backend: Option<String>,
+    #[arg(long = "qa-backend")]
+    pub qa_backend: Option<String>,
+}
+
 pub async fn handle(command: RunCommand) -> AppResult<()> {
     match command.command {
         RunSubcommand::Status => handle_status().await,
         RunSubcommand::History => handle_history().await,
         RunSubcommand::Tail { logs } => handle_tail(logs).await,
-        RunSubcommand::Start => handle_start().await,
-        RunSubcommand::Resume => handle_resume().await,
+        RunSubcommand::Start(args) => handle_start(args).await,
+        RunSubcommand::Resume(args) => handle_resume(args).await,
         RunSubcommand::Rollback { to, hard } => handle_rollback(to, hard).await,
     }
 }
 
-pub fn build_agent_execution_service(
-) -> AppResult<AgentExecutionService<BackendAdapter, FsRawOutputStore, FsSessionStore>> {
-    let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
-        Ok(value) => value,
-        Err(std::env::VarError::NotPresent) => "process".to_owned(),
-        Err(std::env::VarError::NotUnicode(_)) => {
-            return Err(AppError::InvalidConfigValue {
-                key: "RALPH_BURNING_BACKEND".to_owned(),
-                value: "<non-unicode>".to_owned(),
-                reason: "expected one of stub, process".to_owned(),
-            });
-        }
-    };
-
-    let adapter = match backend_selector.as_str() {
-        "stub" => BackendAdapter::Stub(build_stub_backend_adapter()),
-        "process" => BackendAdapter::Process(ProcessBackendAdapter::new()),
-        other => {
-            return Err(AppError::InvalidConfigValue {
-                key: "RALPH_BURNING_BACKEND".to_owned(),
-                value: other.to_owned(),
-                reason: "expected one of stub, process".to_owned(),
-            });
-        }
-    };
-
-    Ok(AgentExecutionService::new(
-        adapter,
-        FsRawOutputStore,
-        FsSessionStore,
-    ))
+pub fn build_agent_execution_service() -> AppResult<agent_execution_builder::ProductionAgentService>
+{
+    agent_execution_builder::build_agent_execution_service()
 }
 
-fn build_stub_backend_adapter() -> StubBackendAdapter {
-    let mut adapter = StubBackendAdapter::default();
-
-    // Test-only injection seam: environment variables configure the stub backend
-    // to simulate failure modes that aren't reachable through normal CLI usage.
-    if std::env::var("RALPH_BURNING_TEST_BACKEND_UNAVAILABLE").is_ok() {
-        adapter = adapter.unavailable();
-    }
-    if let Ok(stage_str) = std::env::var("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE") {
-        if let Ok(stage_id) = stage_str.parse::<StageId>() {
-            adapter = adapter.with_invoke_failure(stage_id);
-        }
-    }
-    // Test-only seam: configure a stage to fail the first N invocations, then succeed.
-    // Format: "stage_id:count" e.g. "implementation:1"
-    if let Ok(spec) = std::env::var("RALPH_BURNING_TEST_TRANSIENT_FAILURE") {
-        if let Some((stage_str, count_str)) = spec.split_once(':') {
-            if let (Ok(stage_id), Ok(count)) =
-                (stage_str.parse::<StageId>(), count_str.parse::<u32>())
-            {
-                adapter = adapter.with_transient_failure(stage_id, count);
-            }
-        }
-    }
-    // Test-only seam: JSON map from stage-id string to payload JSON.
-    // Values may be a single object or an array of objects (payload sequence).
-    // Example: {"completion_panel": {"outcome":"conditionally_approved",...}}
-    // Example sequence: {"qa": [{"outcome":"request_changes",...}, {"outcome":"approved",...}]}
-    if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_STAGE_OVERRIDES") {
-        if let Ok(overrides) = serde_json::from_str::<
-            std::collections::HashMap<String, serde_json::Value>,
-        >(&overrides_json)
-        {
-            for (stage_str, payload) in overrides {
-                if let Ok(stage_id) = stage_str.parse::<StageId>() {
-                    if let Some(arr) = payload.as_array() {
-                        adapter = adapter.with_stage_payload_sequence(stage_id, arr.clone());
-                    } else {
-                        adapter = adapter.with_stage_payload(stage_id, payload);
-                    }
-                }
-            }
-        }
-    }
-
-    adapter
-}
-
-async fn handle_start() -> AppResult<()> {
+async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     // Validate workspace version
@@ -195,7 +129,9 @@ async fn handle_start() -> AppResult<()> {
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )?;
 
-    let effective_config = EffectiveConfig::load(&current_dir)?;
+    let cli_overrides = parse_cli_backend_overrides(&overrides)?;
+    let effective_config =
+        EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
 
     let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
@@ -245,7 +181,7 @@ async fn handle_start() -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_resume() -> AppResult<()> {
+async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -293,7 +229,9 @@ async fn handle_resume() -> AppResult<()> {
         CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
     )?;
 
-    let effective_config = EffectiveConfig::load(&current_dir)?;
+    let cli_overrides = parse_cli_backend_overrides(&overrides)?;
+    let effective_config =
+        EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
     let agent_service = build_agent_execution_service()?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
@@ -394,9 +332,20 @@ async fn handle_history() -> AppResult<()> {
     if !history.payloads.is_empty() {
         println!("--- Payloads ---");
         for payload in &history.payloads {
+            let producer_str = payload
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} ({}, cycle {}, attempt {})",
-                payload.payload_id, payload.stage_id, payload.cycle, payload.attempt
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                payload.payload_id,
+                payload.stage_id,
+                payload.cycle,
+                payload.attempt,
+                payload.record_kind,
+                payload.completion_round,
+                producer_str,
             );
         }
     }
@@ -404,9 +353,18 @@ async fn handle_history() -> AppResult<()> {
     if !history.artifacts.is_empty() {
         println!("--- Artifacts ---");
         for artifact in &history.artifacts {
+            let producer_str = artifact
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} (payload: {}, stage: {})",
-                artifact.artifact_id, artifact.payload_id, artifact.stage_id
+                "  {} (payload: {}, stage: {}, kind={}{})",
+                artifact.artifact_id,
+                artifact.payload_id,
+                artifact.stage_id,
+                artifact.record_kind,
+                producer_str,
             );
         }
     }
@@ -451,9 +409,20 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
     if !tail.payloads.is_empty() {
         println!("--- Payloads ---");
         for payload in &tail.payloads {
+            let producer_str = payload
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} ({}, cycle {}, attempt {})",
-                payload.payload_id, payload.stage_id, payload.cycle, payload.attempt
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                payload.payload_id,
+                payload.stage_id,
+                payload.cycle,
+                payload.attempt,
+                payload.record_kind,
+                payload.completion_round,
+                producer_str,
             );
         }
     }
@@ -461,9 +430,18 @@ async fn handle_tail(include_logs: bool) -> AppResult<()> {
     if !tail.artifacts.is_empty() {
         println!("--- Artifacts ---");
         for artifact in &tail.artifacts {
+            let producer_str = artifact
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
             println!(
-                "  {} (payload: {}, stage: {})",
-                artifact.artifact_id, artifact.payload_id, artifact.stage_id
+                "  {} (payload: {}, stage: {}, kind={}{})",
+                artifact.artifact_id,
+                artifact.payload_id,
+                artifact.stage_id,
+                artifact.record_kind,
+                producer_str,
             );
         }
     }
@@ -529,4 +507,30 @@ async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBackendOverrides> {
+    Ok(CliBackendOverrides {
+        backend: parse_backend_selection_arg("backend", args.backend.as_deref())?,
+        planner_backend: parse_backend_selection_arg(
+            "planner_backend",
+            args.planner_backend.as_deref(),
+        )?,
+        implementer_backend: parse_backend_selection_arg(
+            "implementer_backend",
+            args.implementer_backend.as_deref(),
+        )?,
+        reviewer_backend: parse_backend_selection_arg(
+            "reviewer_backend",
+            args.reviewer_backend.as_deref(),
+        )?,
+        qa_backend: parse_backend_selection_arg("qa_backend", args.qa_backend.as_deref())?,
+    })
+}
+
+fn parse_backend_selection_arg(
+    _key: &str,
+    raw: Option<&str>,
+) -> AppResult<Option<BackendSelection>> {
+    raw.map(BackendSelection::from_backend_name).transpose()
 }

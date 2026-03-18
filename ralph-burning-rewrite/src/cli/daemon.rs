@@ -1,22 +1,21 @@
 use clap::{Args, Subcommand};
 
 use crate::adapters::fs::{
-    FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    FsAmendmentQueueStore, FsArtifactStore, FsDataDirDaemonStore, FsJournalStore,
+    FsPayloadArtifactWriteStore, FsProjectStore, FsRepoRegistryStore, FsRequirementsStore,
+    FsRunSnapshotStore, FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
 };
-use crate::adapters::issue_watcher::FileIssueWatcher;
+use crate::adapters::github::{GithubClient, GithubClientConfig};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
 use crate::contexts::automation_runtime::model::TaskStatus;
+use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, RepoRegistryPort};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
 use crate::contexts::automation_runtime::DaemonStorePort;
-use crate::contexts::workspace_governance;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::shared::error::{AppError, AppResult};
 
-use super::run::build_agent_execution_service;
+use crate::composition::agent_execution_builder::build_agent_execution_service;
 
 #[derive(Debug, Args)]
 pub struct DaemonCommand {
@@ -26,20 +25,59 @@ pub struct DaemonCommand {
 
 #[derive(Debug, Subcommand)]
 pub enum DaemonSubcommand {
+    /// Start the daemon loop. Requires --data-dir and at least one --repo.
+    /// Runs in multi-repo GitHub intake mode.
     Start {
         #[arg(long, default_value_t = 10)]
         poll_seconds: u64,
         #[arg(long)]
         single_iteration: bool,
+        /// Root directory for multi-repo daemon state.
+        #[arg(long)]
+        data_dir: Option<String>,
+        /// Repos to manage in owner/repo form. May be repeated.
+        #[arg(long = "repo")]
+        repos: Vec<String>,
+        /// Enable verbose logging.
+        #[arg(long)]
+        verbose: bool,
     },
-    Status,
+    /// Show status of daemon tasks across registered repos.
+    Status {
+        /// Root directory for multi-repo daemon state.
+        #[arg(long)]
+        data_dir: String,
+        /// Filter status to specific repos.
+        #[arg(long = "repo")]
+        repos: Vec<String>,
+    },
+    /// Abort a task by issue number.
     Abort {
-        task_id: String,
+        /// Issue number.
+        identifier: String,
+        /// Root directory for multi-repo daemon state.
+        #[arg(long)]
+        data_dir: String,
+        /// Repo slug for issue-number resolution (owner/repo).
+        #[arg(long = "repo")]
+        repo: String,
     },
+    /// Retry a failed or aborted task by issue number.
     Retry {
-        task_id: String,
+        /// Issue number.
+        identifier: String,
+        /// Root directory for multi-repo daemon state.
+        #[arg(long)]
+        data_dir: String,
+        /// Repo slug for issue-number resolution (owner/repo).
+        #[arg(long = "repo")]
+        repo: String,
     },
+    /// Reconcile stale leases across all repos.
     Reconcile {
+        /// Root directory for multi-repo daemon state.
+        #[arg(long)]
+        data_dir: String,
         #[arg(long)]
         ttl_seconds: Option<u64>,
     },
@@ -50,22 +88,111 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
         DaemonSubcommand::Start {
             poll_seconds,
             single_iteration,
-        } => handle_start(poll_seconds, single_iteration).await,
-        DaemonSubcommand::Status => handle_status().await,
-        DaemonSubcommand::Abort { task_id } => handle_abort(&task_id).await,
-        DaemonSubcommand::Retry { task_id } => handle_retry(&task_id).await,
-        DaemonSubcommand::Reconcile { ttl_seconds } => handle_reconcile(ttl_seconds).await,
+            data_dir,
+            repos,
+            verbose,
+        } => {
+            if let Some(ref dd) = data_dir {
+                handle_start_multi_repo(dd, &repos, poll_seconds, single_iteration, verbose).await
+            } else {
+                Err(AppError::InvalidConfigValue {
+                    key: "data-dir".to_owned(),
+                    value: String::new(),
+                    reason: "--data-dir is required for daemon start".to_owned(),
+                })
+            }
+        }
+        DaemonSubcommand::Status {
+            ref data_dir,
+            ref repos,
+        } => handle_status_multi_repo(data_dir, repos).await,
+        DaemonSubcommand::Abort {
+            ref identifier,
+            ref data_dir,
+            ref repo,
+        } => handle_abort_by_issue(data_dir, repo, identifier).await,
+        DaemonSubcommand::Retry {
+            ref identifier,
+            ref data_dir,
+            ref repo,
+        } => handle_retry_by_issue(data_dir, repo, identifier).await,
+        DaemonSubcommand::Reconcile {
+            ref data_dir,
+            ttl_seconds,
+        } => handle_reconcile_multi_repo(data_dir, ttl_seconds).await,
     }
 }
 
-async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-    let _ = EffectiveConfig::load(&current_dir)?;
+// ===========================================================================
+// Multi-repo (--data-dir) handlers
+// ===========================================================================
+
+async fn handle_start_multi_repo(
+    data_dir: &str,
+    repos: &[String],
+    poll_seconds: u64,
+    single_iteration: bool,
+    verbose: bool,
+) -> AppResult<()> {
+    let data_dir_path = std::path::Path::new(data_dir);
+    repo_registry::validate_data_dir(data_dir_path)?;
+
+    if repos.is_empty() {
+        return Err(AppError::InvalidConfigValue {
+            key: "repo".to_owned(),
+            value: String::new(),
+            reason: "at least one --repo is required with --data-dir".to_owned(),
+        });
+    }
+
+    // Register, bootstrap, and validate all repos upfront.
+    // Bootstrap clones the repo if the checkout dir is empty; validate
+    // ensures the result is a usable Git checkout with a workspace dir.
+    let mut registrations = Vec::new();
+    for slug in repos {
+        let reg = repo_registry::register_repo(data_dir_path, slug)?;
+
+        // Bootstrap: clone from GitHub if checkout is missing .git
+        if let Err(e) = repo_registry::bootstrap_repo_checkout(data_dir_path, slug) {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: slug.clone(),
+                reason: format!("checkout bootstrap failed: {e}"),
+            });
+        }
+
+        // Validate the (possibly just-bootstrapped) checkout
+        if let Err(e) = repo_registry::validate_repo_checkout(&reg.repo_root) {
+            return Err(AppError::InvalidConfigValue {
+                key: "repo".to_owned(),
+                value: slug.clone(),
+                reason: format!("repo validation failed: {e}"),
+            });
+        }
+
+        registrations.push(reg);
+    }
+
+    if verbose {
+        println!(
+            "daemon: starting with data-dir={} repos={:?}",
+            data_dir, repos
+        );
+    }
+
+    // Create GitHub client early so we fail fast if GITHUB_TOKEN is missing
+    let github_config = GithubClientConfig::from_env()?;
+    let github_client = GithubClient::new(github_config);
+
+    // Persist registrations so status/reconcile can discover them later
+    let registry_store = FsRepoRegistryStore;
+    for reg in &registrations {
+        registry_store.write_registration(data_dir_path, reg)?;
+    }
 
     let agent_service = build_agent_execution_service()?;
-    let daemon_store = FsDaemonStore;
+
+    let daemon_store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
     let project_store = FsProjectStore;
     let run_snapshot_read = FsRunSnapshotStore;
@@ -75,8 +202,6 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
     let artifact_write = FsPayloadArtifactWriteStore;
     let log_write = FsRuntimeLogWriteStore;
     let amendment_queue = FsAmendmentQueueStore;
-
-    let issue_watcher = FileIssueWatcher;
     let requirements_store = FsRequirementsStore;
 
     let daemon_loop = DaemonLoop::new(
@@ -92,8 +217,9 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
         &amendment_queue,
         &agent_service,
     )
-    .with_watcher(&issue_watcher)
-    .with_requirements_store(&requirements_store);
+    .with_requirements_store(&requirements_store)
+    .with_registrations(registrations)
+    .with_data_dir(data_dir_path.to_owned());
 
     let loop_config = DaemonLoopConfig {
         poll_interval: std::time::Duration::from_secs(poll_seconds),
@@ -101,56 +227,89 @@ async fn handle_start(poll_seconds: u64, single_iteration: bool) -> AppResult<()
         ..DaemonLoopConfig::default()
     };
 
-    daemon_loop.run(&current_dir, &loop_config).await
+    daemon_loop
+        .run_multi_repo(&loop_config, &github_client)
+        .await
 }
 
-async fn handle_status() -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+async fn handle_status_multi_repo(data_dir: &str, repos: &[String]) -> AppResult<()> {
+    let data_dir_path = std::path::Path::new(data_dir);
+    repo_registry::validate_data_dir(data_dir_path)?;
 
-    let store = FsDaemonStore;
-    let tasks = DaemonTaskService::list_tasks(&store, &current_dir)?;
-    let leases = store.list_leases(&current_dir)?;
+    let store = FsDataDirDaemonStore;
 
-    if tasks.is_empty() {
-        println!("No daemon tasks found.");
-        return Ok(());
+    // Determine which repos to query
+    let slug_strings: Vec<String> = if repos.is_empty() {
+        let registry = FsRepoRegistryStore;
+        let registrations = registry.list_registrations(data_dir_path)?;
+        if registrations.is_empty() {
+            println!("No repos registered.");
+            return Ok(());
+        }
+        registrations.iter().map(|r| r.repo_slug.clone()).collect()
+    } else {
+        repos.to_vec()
+    };
+
+    print_multi_repo_status(&store, data_dir_path, &slug_strings)?;
+    Ok(())
+}
+
+fn print_multi_repo_status(
+    store: &FsDataDirDaemonStore,
+    data_dir: &std::path::Path,
+    repo_slugs: &[String],
+) -> AppResult<()> {
+    let mut any_tasks = false;
+
+    for slug in repo_slugs {
+        let (owner, repo) = repo_registry::parse_repo_slug(slug)?;
+        let daemon_dir = DataDirLayout::daemon_dir(data_dir, owner, repo);
+        let tasks = match store.list_tasks(&daemon_dir) {
+            Ok(tasks) => tasks,
+            Err(_) => continue,
+        };
+
+        for task in &tasks {
+            any_tasks = true;
+            let repo_label = task.repo_slug.as_deref().unwrap_or(slug);
+            println!(
+                "{}  {}  {}  dispatch={}  issue={}",
+                repo_label, task.task_id, task.status, task.dispatch_mode, task.issue_ref,
+            );
+        }
     }
 
-    for task in tasks {
-        let lease = leases.iter().find(|lease| lease.task_id == task.task_id);
-        let lease_id = lease
-            .map(|lease| lease.lease_id.as_str())
-            .or(task.lease_id.as_deref())
-            .unwrap_or("-");
-        let heartbeat = lease
-            .map(|lease| lease.last_heartbeat.to_rfc3339())
-            .unwrap_or_else(|| "-".to_owned());
-        let req_run = task.requirements_run_id.as_deref().unwrap_or("-");
-        println!(
-            "{}  {}  dispatch={}  lease={}  heartbeat={}  issue={}  requirements_run={}",
-            task.task_id,
-            task.status,
-            task.dispatch_mode,
-            lease_id,
-            heartbeat,
-            task.issue_ref,
-            req_run,
-        );
+    if !any_tasks {
+        println!("No daemon tasks found.");
     }
 
     Ok(())
 }
 
-async fn handle_abort(task_id: &str) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let store = FsDaemonStore;
+async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
+    let data_dir_path = std::path::Path::new(data_dir);
+    let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
+    let store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
-    let task = store.read_task(&current_dir, task_id)?;
+    let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
+    let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
+
+    let issue_number: u64 = identifier
+        .parse()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: "expected a numeric issue number".to_owned(),
+        })?;
+
+    let task = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+        .ok_or_else(|| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: format!("no task found for {repo_slug}#{issue_number}"),
+        })?;
+
     if task.status.is_terminal() {
         return Err(AppError::TaskStateTransitionInvalid {
             task_id: task.task_id,
@@ -160,74 +319,304 @@ async fn handle_abort(task_id: &str) -> AppResult<()> {
     }
 
     let original_status = task.status;
-    DaemonTaskService::mark_aborted(&store, &current_dir, task_id)?;
+    let task_id = task.task_id.clone();
+    DaemonTaskService::mark_aborted(&store, &daemon_dir, &task_id)?;
 
     if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-        cleanup_aborted_task(&store, &worktree, &current_dir, task_id, original_status).await?;
+        cleanup_aborted_task(
+            &store,
+            &worktree,
+            &daemon_dir,
+            &checkout,
+            &task_id,
+            original_status,
+        )
+        .await?;
     }
 
-    println!("Aborted task {task_id}");
+    // Sync GitHub label: Aborted → rb:failed
+    let aborted_task = store.read_task(&daemon_dir, &task_id)?;
+    match GithubClientConfig::from_env() {
+        Ok(gh_config) => {
+            let gh = GithubClient::new(gh_config);
+            if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+                &gh,
+                &aborted_task,
+            )
+            .await
+            {
+                eprintln!("warning: failed to sync GitHub label after abort: {e}");
+                let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
+            }
+        }
+        Err(_) => {
+            eprintln!(
+                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+            );
+            let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
+        }
+    }
+
+    println!("Aborted {repo_slug}#{issue_number} (task {task_id})");
     Ok(())
 }
 
-async fn handle_retry(task_id: &str) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
+    let data_dir_path = std::path::Path::new(data_dir);
+    let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
+    let store = FsDataDirDaemonStore;
+    let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
 
-    let store = FsDaemonStore;
-    let task = DaemonTaskService::retry_task(&store, &current_dir, task_id)?;
+    let issue_number: u64 = identifier
+        .parse()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: "expected a numeric issue number".to_owned(),
+        })?;
+
+    let task = DaemonTaskService::find_task_by_issue(&store, &daemon_dir, repo_slug, issue_number)?
+        .ok_or_else(|| AppError::InvalidConfigValue {
+            key: "issue-number".to_owned(),
+            value: identifier.to_owned(),
+            reason: format!("no task found for {repo_slug}#{issue_number}"),
+        })?;
+
+    // If the task retains a lease from partial cleanup, attempt cleanup
+    // before retry so retry_task() doesn't reject it.
+    if let Some(ref lid) = task.lease_id {
+        let worktree = WorktreeAdapter;
+        let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
+        if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
+            let result = LeaseService::release(
+                &store,
+                &worktree,
+                &daemon_dir,
+                &checkout,
+                &lease,
+                ReleaseMode::Idempotent,
+            );
+            if let Ok(ref r) = result {
+                if r.resources_released {
+                    let _ = DaemonTaskService::clear_lease_reference(
+                        &store,
+                        &daemon_dir,
+                        &task.task_id,
+                    );
+                }
+            }
+            // If cleanup failed, retry_task() will reject with
+            // LeaseCleanupPartialFailure — the user must reconcile first.
+        }
+    }
+
+    let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
+
+    // Sync GitHub label: retried task is Pending → rb:ready
+    match GithubClientConfig::from_env() {
+        Ok(gh_config) => {
+            let gh = GithubClient::new(gh_config);
+            if let Err(e) =
+                crate::contexts::automation_runtime::github_intake::sync_label_for_task(&gh, &task)
+                    .await
+            {
+                eprintln!("warning: failed to sync GitHub label after retry: {e}");
+                let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
+            }
+        }
+        Err(_) => {
+            eprintln!(
+                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+            );
+            let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
+        }
+    }
+
     println!(
-        "Retried task {} (attempt_count={})",
+        "Retried {repo_slug}#{issue_number} (task {}, attempt_count={})",
         task.task_id, task.attempt_count
     );
     Ok(())
 }
 
-async fn handle_reconcile(ttl_seconds: Option<u64>) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -> AppResult<()> {
+    let data_dir_path = std::path::Path::new(data_dir);
+    repo_registry::validate_data_dir(data_dir_path)?;
 
-    let store = FsDaemonStore;
+    let store = FsDataDirDaemonStore;
     let worktree = WorktreeAdapter;
-    let report = LeaseService::reconcile(
-        &store,
-        &worktree,
-        &current_dir,
-        &current_dir,
-        ttl_seconds,
-        chrono::Utc::now(),
-    )?;
+    let registry = FsRepoRegistryStore;
+
+    let registrations = match registry.list_registrations(data_dir_path) {
+        Ok(regs) => regs,
+        Err(_) => {
+            // Fallback to directory scan
+            let repos_dir = data_dir_path.join("repos");
+            if !repos_dir.is_dir() {
+                println!("No repos registered.");
+                return Ok(());
+            }
+            let mut found = Vec::new();
+            if let Ok(owners) = std::fs::read_dir(&repos_dir) {
+                for owner_entry in owners.flatten() {
+                    if !owner_entry.path().is_dir() {
+                        continue;
+                    }
+                    let owner = owner_entry.file_name().to_string_lossy().to_string();
+                    if let Ok(repo_entries) = std::fs::read_dir(owner_entry.path()) {
+                        for repo_entry in repo_entries.flatten() {
+                            if !repo_entry.path().is_dir() {
+                                continue;
+                            }
+                            let repo_name = repo_entry.file_name().to_string_lossy().to_string();
+                            found.push(format!("{owner}/{repo_name}"));
+                        }
+                    }
+                }
+            }
+            if found.is_empty() {
+                println!("No repos registered.");
+                return Ok(());
+            }
+            // Convert to minimal registrations for iteration
+            let mut regs = Vec::new();
+            for slug in &found {
+                let reg = repo_registry::register_repo(data_dir_path, slug)?;
+                regs.push(reg);
+            }
+            regs
+        }
+    };
+
+    if registrations.is_empty() {
+        println!("No repos registered.");
+        return Ok(());
+    }
+
+    let mut total_stale = 0usize;
+    let mut total_failed = 0usize;
+    let mut total_released = 0usize;
+    let mut any_cleanup_failure = false;
+    let mut total_label_repaired = 0usize;
+    let mut total_label_repair_failed = 0usize;
+
+    // Attempt GitHub label repair for tasks with label_dirty = true.
+    // Best-effort: if GitHub credentials are unavailable, skip label repair.
+    let github_client = GithubClientConfig::from_env().ok().map(GithubClient::new);
+
+    for reg in &registrations {
+        let (owner, repo_name) = repo_registry::parse_repo_slug(&reg.repo_slug)?;
+        let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo_name);
+        let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo_name);
+
+        let report = LeaseService::reconcile(
+            &store,
+            &worktree,
+            &daemon_dir,
+            &checkout,
+            ttl_seconds,
+            chrono::Utc::now(),
+        )?;
+
+        total_stale += report.stale_lease_ids.len();
+        total_failed += report.failed_task_ids.len();
+        total_released += report.released_lease_ids.len();
+
+        if report.has_cleanup_failures() {
+            any_cleanup_failure = true;
+            for failure in &report.cleanup_failures {
+                println!(
+                    "  {owner}/{repo_name}: lease={} task={}: {}",
+                    failure.lease_id,
+                    failure.task_id.as_deref().unwrap_or("n/a"),
+                    failure.details
+                );
+            }
+        }
+
+        // Repair GitHub labels for tasks with label_dirty = true,
+        // and also recover stuck tasks (revert Claimed/Active to Pending
+        // so they re-enter the pending queue, or release worktrees for
+        // terminal tasks).
+        if let Some(ref gh) = github_client {
+            if let Ok(tasks) = store.list_tasks(&daemon_dir) {
+                for task in tasks.iter().filter(|t| t.label_dirty) {
+                    match crate::contexts::automation_runtime::github_intake::sync_label_for_task(
+                        gh, task,
+                    )
+                    .await
+                    {
+                        Ok(()) => {
+                            let _ = DaemonTaskService::clear_label_dirty(
+                                &store,
+                                &daemon_dir,
+                                &task.task_id,
+                            );
+                            // Phase-0 recovery: revert stuck Claimed/Active
+                            // tasks back to Pending so daemon picks them up
+                            // again on the next cycle.
+                            if matches!(
+                                task.status.as_str(),
+                                "claimed" | "active"
+                            ) {
+                                let _ = DaemonTaskService::revert_to_pending_for_recovery(
+                                    &store,
+                                    &worktree,
+                                    &daemon_dir,
+                                    &checkout,
+                                    &task.task_id,
+                                );
+                            }
+                            total_label_repaired += 1;
+                            println!(
+                                "  {owner}/{repo_name}: repaired label for task {}",
+                                task.task_id
+                            );
+                        }
+                        Err(e) => {
+                            total_label_repair_failed += 1;
+                            println!(
+                                "  {owner}/{repo_name}: failed to repair label for task {}: {e}",
+                                task.task_id
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     println!(
-        "reconciled stale_leases={} failed_tasks={} released_leases={}",
-        report.stale_lease_ids.len(),
-        report.failed_task_ids.len(),
-        report.released_lease_ids.len()
+        "reconciled stale_leases={total_stale} failed_tasks={total_failed} released_leases={total_released}"
     );
+    if total_label_repaired > 0 || total_label_repair_failed > 0 {
+        println!("label_repair repaired={total_label_repaired} failed={total_label_repair_failed}");
+    }
 
-    if report.has_cleanup_failures() {
+    if any_cleanup_failure {
         println!("--- Cleanup Failures ---");
-        for failure in &report.cleanup_failures {
-            println!(
-                "  lease={} task={}: {}",
-                failure.lease_id,
-                failure.task_id.as_deref().unwrap_or("n/a"),
-                failure.details
-            );
-        }
         return Err(AppError::ReconcileCleanupFailed {
-            failed_count: report.cleanup_failures.len(),
+            failed_count: total_failed,
         });
     }
     Ok(())
 }
 
+// ===========================================================================
+// Shared helpers
+// ===========================================================================
+
+/// Clean up lease and worktree resources for an aborted task.
+///
+/// `base_dir` is the directory containing daemon state (tasks/leases).
+/// `repo_root` is the Git checkout root used for worktree operations.
+/// In single-repo (legacy) mode these are the same; in multi-repo mode
+/// `base_dir` is the daemon shard and `repo_root` is the checkout path.
 async fn cleanup_aborted_task(
     store: &dyn DaemonStorePort,
     worktree: &WorktreeAdapter,
     base_dir: &std::path::Path,
+    repo_root: &std::path::Path,
     task_id: &str,
     original_status: TaskStatus,
 ) -> AppResult<()> {
@@ -253,23 +642,17 @@ async fn cleanup_aborted_task(
             store,
             worktree,
             base_dir,
-            base_dir,
+            repo_root,
             &lease,
             ReleaseMode::Idempotent,
         );
         return match release_result {
             Ok(ref r) if r.resources_released => {
-                // All sub-steps succeeded — safe to clear durable lease reference.
                 DaemonTaskService::clear_lease_reference(store, base_dir, task_id).map(|_| ())
             }
-            Ok(_) => {
-                // Partial cleanup: some resources remain. Do NOT clear lease
-                // reference so inconsistent state stays visible for operator
-                // recovery.
-                Err(AppError::LeaseCleanupPartialFailure {
-                    task_id: task_id.to_owned(),
-                })
-            }
+            Ok(_) => Err(AppError::LeaseCleanupPartialFailure {
+                task_id: task_id.to_owned(),
+            }),
             Err(error) => Err(error),
         };
     }

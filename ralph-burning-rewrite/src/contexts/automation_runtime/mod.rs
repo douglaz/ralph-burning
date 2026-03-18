@@ -1,12 +1,16 @@
 use std::path::{Path, PathBuf};
 
 use crate::shared::domain::ProjectId;
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 
 pub mod cli_writer_lease;
 pub mod daemon_loop;
+pub mod github_intake;
 pub mod lease_service;
 pub mod model;
+pub mod pr_review;
+pub mod pr_runtime;
+pub mod repo_registry;
 pub mod routing;
 pub mod task_service;
 pub mod watcher;
@@ -20,8 +24,12 @@ pub use lease_service::{
 };
 pub use model::{
     CliWriterLease, DaemonJournalEvent, DaemonJournalEventType, DaemonTask, DispatchMode,
-    LeaseRecord, RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
+    GithubTaskMeta, LeaseRecord, RebaseFailureClassification, RebaseOutcome, ReviewWhitelist,
+    RoutingResolution, RoutingSource, TaskStatus, WatchedIssueMeta, WorktreeLease,
 };
+pub use pr_review::{IngestedReviewBatch, PrReviewIngestionService};
+pub use pr_runtime::{CompletionPrAction, PrRuntimeService};
+pub use repo_registry::{DataDirLayout, RepoRegistration, RepoRegistryPort};
 pub use routing::RoutingEngine;
 pub use task_service::{CreateTaskInput, DaemonTaskService};
 pub use watcher::IssueWatcherPort;
@@ -59,6 +67,39 @@ pub enum WriterLockReleaseOutcome {
     AlreadyAbsent,
     /// The lock file exists but contains a different owner token.
     OwnerMismatch { actual_owner: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictFile {
+    pub path: String,
+    pub contents: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictRequest {
+    pub branch_name: String,
+    pub upstream: String,
+    pub failure_details: String,
+    pub conflicted_files: Vec<RebaseConflictFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseResolutionFile {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct RebaseConflictResolution {
+    pub summary: String,
+    pub resolved_files: Vec<RebaseResolutionFile>,
+}
+
+pub trait RebaseConflictResolver {
+    fn resolve_conflicts(
+        &self,
+        request: &RebaseConflictRequest,
+    ) -> AppResult<RebaseConflictResolution>;
 }
 
 pub trait DaemonStorePort {
@@ -118,4 +159,32 @@ pub trait WorktreePort {
         worktree_path: &Path,
         branch_name: &str,
     ) -> AppResult<()>;
+    fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> {
+        Ok("main".to_owned())
+    }
+    fn push_branch(
+        &self,
+        _repo_root: &Path,
+        _worktree_path: &Path,
+        _branch_name: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+    fn rebase_with_agent_resolution(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+        _policy: &crate::shared::domain::EffectiveRebasePolicy,
+        _resolver: Option<&dyn RebaseConflictResolver>,
+    ) -> AppResult<RebaseOutcome> {
+        match self.rebase_onto_default_branch(repo_root, worktree_path, branch_name) {
+            Ok(()) => Ok(RebaseOutcome::Success),
+            Err(AppError::RebaseConflict { details, .. }) => Ok(RebaseOutcome::Failed {
+                classification: RebaseFailureClassification::Conflict,
+                details,
+            }),
+            Err(error) => Err(error),
+        }
+    }
 }

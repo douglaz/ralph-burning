@@ -26,9 +26,7 @@ pub enum AppError {
     InvalidFlowPreset { flow_id: String },
     #[error("unsupported workspace version {version}; supported version is {supported}")]
     UnsupportedWorkspaceVersion { version: u32, supported: u32 },
-    #[error(
-        "unknown config key '{key}'. supported keys: prompt_review.enabled, default_flow, default_backend, default_model"
-    )]
+    #[error("unknown config key '{key}'")]
     UnknownConfigKey { key: String },
     #[error("invalid value '{value}' for config key '{key}': {reason}")]
     InvalidConfigValue {
@@ -182,6 +180,20 @@ pub enum AppError {
         trigger: String,
         rollback_details: String,
     },
+    #[error("insufficient panel members for '{panel}': resolved {resolved}, minimum {minimum}")]
+    InsufficientPanelMembers {
+        panel: String,
+        resolved: usize,
+        minimum: usize,
+    },
+    #[error("prompt review rejected: {details}")]
+    PromptReviewRejected { details: String },
+    #[error("resume drift failure for stage '{stage_id}': {details}")]
+    ResumeDriftFailure { stage_id: StageId, details: String },
+    #[error("stage resolution snapshot failed for stage '{stage_id}': {details}")]
+    SnapshotPersistFailed { stage_id: StageId, details: String },
+    #[error("prompt replacement failed: {details}")]
+    PromptReplacementFailed { details: String },
     #[error("conformance parse error in {file} line {line}: {details}")]
     ConformanceParseFailed {
         file: String,

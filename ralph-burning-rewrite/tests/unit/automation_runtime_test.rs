@@ -40,6 +40,12 @@ fn sample_task() -> DaemonTask {
         dispatch_mode: DispatchMode::Workflow,
         source_revision: None,
         requirements_run_id: None,
+        repo_slug: None,
+        issue_number: None,
+        pr_url: None,
+        last_seen_comment_id: None,
+        last_seen_review_id: None,
+        label_dirty: false,
     }
 }
 
@@ -158,7 +164,7 @@ fn lease_ttl_detects_staleness() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: "/tmp/demo".into(),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -205,7 +211,7 @@ fn legacy_worktree_lease_json_deserializes_as_lease_record() {
         "task_id": "task-legacy-1",
         "project_id": "demo",
         "worktree_path": "/tmp/demo",
-        "branch_name": "rb/task/task-legacy-1",
+        "branch_name": "rb/task-legacy-1",
         "acquired_at": "2026-03-14T02:50:39Z",
         "ttl_seconds": 300,
         "last_heartbeat": "2026-03-14T02:55:39Z"
@@ -232,7 +238,7 @@ fn cli_writer_lease_staleness_matches_worktree_lease() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: "/tmp/demo".into(),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -267,7 +273,7 @@ fn fs_daemon_store_lists_worktree_and_cli_lease_records_from_same_directory() {
         task_id: "task-1".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path: temp.path().join("worktree-task-1"),
-        branch_name: "rb/task/task-1".to_owned(),
+        branch_name: "rb/task-1".to_owned(),
         acquired_at: now,
         ttl_seconds: 300,
         last_heartbeat: now,
@@ -317,8 +323,8 @@ fn worktree_path_derivation_is_deterministic() {
     let temp = tempdir().expect("tempdir");
     let path = adapter.worktree_path(temp.path(), "task-99");
 
-    assert_eq!(temp.path().join(".ralph-burning/worktrees/task-99"), path);
-    assert_eq!("rb/task/task-99", adapter.branch_name("task-99"));
+    assert_eq!(temp.path().join("worktrees/task-99"), path);
+    assert_eq!("rb/task-99", adapter.branch_name("task-99"));
 }
 
 #[test]
@@ -411,6 +417,7 @@ fn watched_issue_ingestion_creates_task_idempotently() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create from watched issue");
     assert!(result.is_some());
@@ -427,6 +434,7 @@ fn watched_issue_ingestion_creates_task_idempotently() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::Workflow,
+        None,
     )
     .expect("idempotent re-ingestion");
     assert!(result2.is_none());
@@ -455,6 +463,7 @@ fn watched_issue_newer_revision_after_terminal_creates_fresh_task() {
         FlowPreset::Standard,
         &issue1,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create first");
     let task = result.unwrap();
@@ -482,6 +491,7 @@ fn watched_issue_newer_revision_after_terminal_creates_fresh_task() {
         FlowPreset::Standard,
         &issue2,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create second for new revision");
     assert!(result2.is_some());
@@ -509,6 +519,7 @@ fn watched_issue_different_revision_while_non_terminal_fails() {
         FlowPreset::Standard,
         &issue1,
         DispatchMode::Workflow,
+        None,
     )
     .expect("create first");
 
@@ -528,6 +539,7 @@ fn watched_issue_different_revision_while_non_terminal_fails() {
         FlowPreset::Standard,
         &issue2,
         DispatchMode::Workflow,
+        None,
     )
     .expect_err("should reject different revision while non-terminal");
 
@@ -721,10 +733,14 @@ fn parse_requirements_command_multiline_body() {
 }
 
 #[test]
-fn parse_requirements_command_bare_requirements_fails() {
-    // "/rb requirements" without a subcommand is malformed
-    let result = parse_requirements_command("/rb requirements");
-    assert!(result.is_err(), "bare '/rb requirements' should fail");
+fn parse_requirements_command_bare_requirements_defaults_to_draft() {
+    // "/rb requirements" without a subcommand defaults to RequirementsDraft
+    let result = parse_requirements_command("/rb requirements").unwrap();
+    assert_eq!(
+        Some(DispatchMode::RequirementsDraft),
+        result,
+        "bare '/rb requirements' should default to RequirementsDraft"
+    );
 }
 
 #[test]
@@ -769,6 +785,7 @@ fn watched_issue_with_requirements_command_routes_flow_from_labels() {
         FlowPreset::Standard,
         &issue,
         DispatchMode::RequirementsQuick,
+        None,
     )
     .expect("should succeed with label-based flow routing");
     let task = result.expect("task should be created");
@@ -1122,7 +1139,7 @@ impl WorktreePort for FailingWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -1173,7 +1190,7 @@ impl WorktreePort for SuccessWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -1474,6 +1491,8 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
         "claim-rollback-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -1528,6 +1547,8 @@ fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
         "claim-fail-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -1582,6 +1603,8 @@ fn claim_journal_failure_with_release_failure_marks_failed_retains_lease() {
         "double-fail-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -3090,6 +3113,8 @@ fn claim_journal_failure_with_partial_release_marks_failed_retains_lease() {
         "partial-release-test",
         FlowPreset::Standard,
         300,
+        None,
+        None,
     );
 
     assert!(result.is_err(), "claim_task should fail on journal error");
@@ -3133,7 +3158,7 @@ impl WorktreePort for DisappearingWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -3290,7 +3315,7 @@ fn build_test_requirements_service_with_defaults(
     ralph_burning::adapters::fs::FsSessionStore,
     ralph_burning::adapters::fs::FsRequirementsStore,
 > {
-    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
+    ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service_for_test(
         adapter,
         effective_config,
     )
@@ -3524,10 +3549,9 @@ async fn daemon_requirements_partial_defaults_model_only() {
 
 #[test]
 fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
-    // Pre-run failure invariant: if workspace-default resolution fails before a
-    // requirements run is created, no requirements run directory/history is
-    // created and the error propagates so the daemon can mark the task as
-    // requirements_quick_failed.
+    // Pre-run failure invariant: invalid backend config is rejected before a
+    // requirements service or run can be created, so no requirements history is
+    // materialized on disk.
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
@@ -3539,25 +3563,14 @@ fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
         "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"invalid_backend_xyz\"\n",
     )
     .expect("write workspace.toml");
-    let effective_config =
-        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
-            .expect("load effective config");
-
-    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
-
-    // build_requirements_service must fail — this is the exact function the daemon
-    // calls before creating any requirements run.
     let result =
-        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
-            adapter.clone(),
-            &effective_config,
-        );
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir);
     match result {
-        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Ok(_) => panic!("effective config load should fail with invalid default_backend"),
         Err(AppError::InvalidConfigValue {
             ref key, ref value, ..
         }) => {
-            assert_eq!(key, "default_backend");
+            assert_eq!(key, "backend");
             assert_eq!(value, "invalid_backend_xyz");
         }
         Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
@@ -3569,19 +3582,12 @@ fn daemon_requirements_quick_prerun_failure_invalid_backend_no_run_created() {
         !requirements_dir.exists(),
         "no requirements directory should exist when service construction fails before run creation"
     );
-
-    // No invocations should have been recorded
-    assert!(
-        adapter.recorded_invocations().is_empty(),
-        "no invocations should occur when service construction fails"
-    );
 }
 
 #[test]
 fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
-    // Pre-run failure invariant: same as the quick path — if workspace-default
-    // resolution fails, no requirements run is created and the error propagates
-    // so the daemon can mark the task as requirements_draft_failed.
+    // Pre-run failure invariant: same as the quick path. Invalid backend config
+    // is rejected before a requirements service or run exists.
     let temp = tempdir().expect("tempdir");
     let base_dir = temp.path();
 
@@ -3593,25 +3599,14 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
         "version = 1\ncreated_at = \"2026-03-14T00:00:00Z\"\n\n[settings]\ndefault_backend = \"nonexistent_provider\"\n",
     )
     .expect("write workspace.toml");
-    let effective_config =
-        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir)
-            .expect("load effective config");
-
-    let adapter = ralph_burning::adapters::stub_backend::StubBackendAdapter::default();
-
-    // build_requirements_service must fail — this is the exact function the daemon
-    // calls before creating any requirements run.
     let result =
-        ralph_burning::contexts::automation_runtime::daemon_loop::build_requirements_service(
-            adapter.clone(),
-            &effective_config,
-        );
+        ralph_burning::contexts::workspace_governance::config::EffectiveConfig::load(base_dir);
     match result {
-        Ok(_) => panic!("build_requirements_service should fail with invalid default_backend"),
+        Ok(_) => panic!("effective config load should fail with invalid default_backend"),
         Err(AppError::InvalidConfigValue {
             ref key, ref value, ..
         }) => {
-            assert_eq!(key, "default_backend");
+            assert_eq!(key, "backend");
             assert_eq!(value, "nonexistent_provider");
         }
         Err(other) => panic!("expected InvalidConfigValue error, got: {other:?}"),
@@ -3622,12 +3617,6 @@ fn daemon_requirements_draft_prerun_failure_invalid_backend_no_run_created() {
     assert!(
         !requirements_dir.exists(),
         "no requirements directory should exist when service construction fails before run creation"
-    );
-
-    // No invocations should have been recorded
-    assert!(
-        adapter.recorded_invocations().is_empty(),
-        "no invocations should occur when service construction fails"
     );
 }
 
@@ -5532,6 +5521,8 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         "wt-rb-fail-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 
@@ -5577,7 +5568,7 @@ impl WorktreePort for PartialCreateWorktreeAdapter {
     }
 
     fn branch_name(&self, task_id: &str) -> String {
-        format!("rb/task/{task_id}")
+        format!("rb/{task_id}")
     }
 
     fn create_worktree(
@@ -5776,6 +5767,8 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports
         "wt-partial-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 
@@ -5832,6 +5825,8 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
         "wt-partial-ok-task",
         &project_id,
         300,
+        None,
+        None,
     )
     .expect_err("acquire should fail");
 

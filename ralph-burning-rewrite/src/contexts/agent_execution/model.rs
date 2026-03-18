@@ -9,6 +9,8 @@ use serde_json::Value;
 use tokio::sync::Notify;
 
 use crate::contexts::agent_execution::session::SessionMetadata;
+use crate::contexts::requirements_drafting::contracts::RequirementsContract;
+use crate::contexts::requirements_drafting::model::RequirementsStageId;
 use crate::contexts::workflow_composition::contracts::StageContract;
 use crate::shared::domain::{
     BackendRole, BackendSpec, ModelSpec, ResolvedBackendTarget, SessionPolicy, StageId,
@@ -68,15 +70,17 @@ pub struct InvocationPayload {
 
 // ── Domain-neutral contract identifier ──────────────────────────────────────
 
-/// A domain-neutral invocation contract. Wraps either a workflow `StageContract`
-/// or a requirements-specific contract label. This generalizes agent execution
-/// away from workflow-only `StageContract` coupling.
+/// A domain-neutral invocation contract. Wraps either a workflow `StageContract`,
+/// a requirements-specific contract label, or a panel-specific contract for
+/// prompt-review and completion work.
 #[derive(Debug, Clone)]
 pub enum InvocationContract {
     /// Workflow stage contract — validated by agent execution.
     Stage(StageContract),
     /// Requirements or other domain contract — caller validates after invocation.
     Requirements { label: String },
+    /// Panel-specific contract (prompt-review refiner/validator, completion vote).
+    Panel { stage_id: StageId, role: String },
 }
 
 impl InvocationContract {
@@ -85,6 +89,7 @@ impl InvocationContract {
         match self {
             Self::Stage(c) => c.stage_id.as_str().to_owned(),
             Self::Requirements { label } => label.clone(),
+            Self::Panel { stage_id, role } => format!("{}:{}", stage_id.as_str(), role),
         }
     }
 
@@ -93,6 +98,7 @@ impl InvocationContract {
         match self {
             Self::Stage(c) => Some(c.stage_id),
             Self::Requirements { .. } => None,
+            Self::Panel { stage_id, .. } => Some(*stage_id),
         }
     }
 
@@ -100,9 +106,50 @@ impl InvocationContract {
     pub fn stage_contract(&self) -> Option<&StageContract> {
         match self {
             Self::Stage(c) => Some(c),
-            Self::Requirements { .. } => None,
+            Self::Requirements { .. } | Self::Panel { .. } => None,
         }
     }
+
+    pub fn family_name(&self) -> &'static str {
+        match self {
+            Self::Stage(_) => "workflow",
+            Self::Requirements { .. } => "requirements",
+            Self::Panel { .. } => "panel",
+        }
+    }
+
+    pub fn json_schema_value(&self) -> Value {
+        match self {
+            Self::Stage(contract) => serde_json::to_value(contract.json_schema())
+                .unwrap_or_else(|_| Value::Object(Default::default())),
+            Self::Requirements { label } => requirements_contract_for_label(label)
+                .and_then(|contract| serde_json::to_value(contract.json_schema()).ok())
+                .unwrap_or_else(|| Value::Object(Default::default())),
+            Self::Panel { stage_id, role } => {
+                crate::contexts::workflow_composition::panel_contracts::panel_json_schema(
+                    *stage_id, role,
+                )
+            }
+        }
+    }
+}
+
+fn requirements_contract_for_label(label: &str) -> Option<RequirementsContract> {
+    let stage = label.strip_prefix("requirements:")?;
+    let stage = match stage {
+        "question_set" => RequirementsStageId::QuestionSet,
+        "requirements_draft" => RequirementsStageId::RequirementsDraft,
+        "requirements_review" => RequirementsStageId::RequirementsReview,
+        "project_seed" => RequirementsStageId::ProjectSeed,
+        _ => return None,
+    };
+
+    Some(match stage {
+        RequirementsStageId::QuestionSet => RequirementsContract::question_set(),
+        RequirementsStageId::RequirementsDraft => RequirementsContract::draft(),
+        RequirementsStageId::RequirementsReview => RequirementsContract::review(),
+        RequirementsStageId::ProjectSeed => RequirementsContract::seed(),
+    })
 }
 
 #[derive(Debug, Clone)]

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::contexts::workflow_composition::panel_contracts::RecordKind;
 use crate::shared::error::AppResult;
 
 use super::model::{ArtifactRecord, JournalEvent, PayloadRecord, RunSnapshot, RuntimeLogEntry};
@@ -152,6 +153,10 @@ pub fn visible_journal_events(events: &[JournalEvent]) -> AppResult<Vec<JournalE
 
 /// Filter payload/artifact history to the records reachable from the visible
 /// journal branch after applying rollback boundaries.
+///
+/// Primary records are matched via `stage_completed` journal events.
+/// Supporting and aggregate records are always included (they are persisted
+/// outside the journal event flow and remain durable evidence even on failure).
 pub fn filter_history_records(
     events: &[JournalEvent],
     payloads: Vec<PayloadRecord>,
@@ -171,13 +176,22 @@ pub fn filter_history_records(
 
     let mut visible_payloads: Vec<_> = payloads
         .into_iter()
-        .filter(|payload| visible_payload_ids.contains(payload.payload_id.as_str()))
+        .filter(|payload| {
+            // Supporting and aggregate records are always visible (durable evidence).
+            matches!(
+                payload.record_kind,
+                RecordKind::StageSupporting | RecordKind::StageAggregate
+            ) || visible_payload_ids.contains(payload.payload_id.as_str())
+        })
         .collect();
     let mut visible_artifacts: Vec<_> = artifacts
         .into_iter()
         .filter(|artifact| {
-            visible_artifact_ids.contains(artifact.artifact_id.as_str())
-                && visible_payload_ids.contains(artifact.payload_id.as_str())
+            matches!(
+                artifact.record_kind,
+                RecordKind::StageSupporting | RecordKind::StageAggregate
+            ) || (visible_artifact_ids.contains(artifact.artifact_id.as_str())
+                && visible_payload_ids.contains(artifact.payload_id.as_str()))
         })
         .collect();
 

@@ -5,6 +5,7 @@ use chrono::Utc;
 use serde_json::json;
 use tempfile::tempdir;
 
+use ralph_burning::contexts::agent_execution::model::InvocationContract;
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, QueuedAmendment,
@@ -12,6 +13,7 @@ use ralph_burning::contexts::project_run_record::model::{
 use ralph_burning::contexts::project_run_record::service::ArtifactStorePort;
 use ralph_burning::contexts::workflow_composition::contracts::contract_for_stage;
 use ralph_burning::contexts::workflow_composition::engine::build_stage_prompt;
+use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::shared::domain::{
     BackendRole, FlowPreset, ProjectId, RunId, StageCursor, StageId,
 };
@@ -145,6 +147,9 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
                     "problem_framing": "second-output",
                     "proposed_work": [{"order": 1, "summary": "implement", "details": "details"}],
                 }),
+                record_kind: RecordKind::StagePrimary,
+                producer: None,
+                completion_round: 0,
             },
             PayloadRecord {
                 payload_id: "payload-prompt-review".to_owned(),
@@ -156,6 +161,9 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
                     "problem_framing": "first-output",
                     "readiness": {"ready": true, "risks": []},
                 }),
+                record_kind: RecordKind::StagePrimary,
+                producer: None,
+                completion_round: 0,
             },
         ],
     };
@@ -198,7 +206,8 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
     assert!(prompt.contains("Tighten the validation copy"));
     assert!(prompt.contains("## Authoritative JSON Schema"));
     assert!(prompt.contains(
-        &serde_json::to_string_pretty(&contract.json_schema()).expect("serialize schema"),
+        &serde_json::to_string_pretty(&InvocationContract::Stage(contract).json_schema_value())
+            .expect("serialize schema"),
     ));
 
     let first_index = prompt.find("first-output").expect("first prior output");
@@ -249,6 +258,9 @@ fn build_stage_prompt_omits_prior_outputs_section_when_current_cycle_has_no_comp
             attempt: 1,
             created_at: Utc::now(),
             payload: json!({"problem_framing": "old-cycle"}),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         }],
     };
 
@@ -343,6 +355,9 @@ fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
                 attempt: 1,
                 created_at: Utc::now(),
                 payload: json!({"problem_framing": "visible-review"}),
+                record_kind: RecordKind::StagePrimary,
+                producer: None,
+                completion_round: 0,
             },
             PayloadRecord {
                 payload_id: "payload-rolled-back-planning".to_owned(),
@@ -351,6 +366,9 @@ fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
                 attempt: 1,
                 created_at: Utc::now(),
                 payload: json!({"problem_framing": "rolled-back-branch"}),
+                record_kind: RecordKind::StagePrimary,
+                producer: None,
+                completion_round: 0,
             },
             PayloadRecord {
                 payload_id: "payload-visible-planning".to_owned(),
@@ -359,6 +377,9 @@ fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
                 attempt: 1,
                 created_at: Utc::now(),
                 payload: json!({"problem_framing": "visible-replacement"}),
+                record_kind: RecordKind::StagePrimary,
+                producer: None,
+                completion_round: 0,
             },
         ],
     };
@@ -426,6 +447,9 @@ fn build_stage_prompt_omits_remediation_and_amendments_section_when_inputs_are_e
             attempt: 1,
             created_at: Utc::now(),
             payload: json!({"change_summary": "implemented"}),
+            record_kind: RecordKind::StagePrimary,
+            producer: None,
+            completion_round: 0,
         }],
     };
     let no_amendments: Vec<QueuedAmendment> = Vec::new();

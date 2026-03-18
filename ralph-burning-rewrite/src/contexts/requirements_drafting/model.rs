@@ -7,12 +7,13 @@
 //! stage identifiers independent of the workflow `StageId` enum.
 
 use chrono::{DateTime, Utc};
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::shared::domain::FlowPreset;
 
 /// Requirements run mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequirementsMode {
     Draft,
@@ -29,7 +30,7 @@ impl std::fmt::Display for RequirementsMode {
 }
 
 /// Requirements run status.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequirementsStatus {
     Drafting,
@@ -121,7 +122,7 @@ impl RequirementsRun {
 }
 
 /// Requirements stage identifiers — separate from workflow `StageId`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequirementsStageId {
     QuestionSet,
@@ -180,7 +181,7 @@ pub struct RequirementsJournalEvent {
 }
 
 /// Requirements review outcome — distinct from workflow `ReviewOutcome`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequirementsReviewOutcome {
     Approved,
@@ -210,7 +211,7 @@ impl std::fmt::Display for RequirementsReviewOutcome {
 // ── Structured payloads ─────────────────────────────────────────────────────
 
 /// A single question in a question set.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Question {
     pub id: String,
     pub prompt: String,
@@ -221,13 +222,13 @@ pub struct Question {
 }
 
 /// Question set payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct QuestionSetPayload {
     pub questions: Vec<Question>,
 }
 
 /// Requirements draft payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RequirementsDraftPayload {
     pub problem_summary: String,
     pub goals: Vec<String>,
@@ -239,7 +240,7 @@ pub struct RequirementsDraftPayload {
 }
 
 /// Requirements review payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct RequirementsReviewPayload {
     pub outcome: RequirementsReviewOutcome,
     pub evidence: Vec<String>,
@@ -249,7 +250,7 @@ pub struct RequirementsReviewPayload {
 }
 
 /// Project seed payload.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ProjectSeedPayload {
     pub project_id: String,
     pub project_name: String,

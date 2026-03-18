@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::shared::domain::FlowPreset;
+use crate::shared::domain::{FlowPreset, ReviewWhitelistConfig};
 use crate::shared::error::{AppError, AppResult};
 
 /// Dispatch mode for a daemon task — determines whether the task enters
@@ -83,6 +83,26 @@ pub struct DaemonTask {
     /// Linked requirements run ID (set during requirements_draft or requirements_quick dispatch).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub requirements_run_id: Option<String>,
+    /// GitHub repo slug (e.g. "owner/repo") for multi-repo daemon tasks.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_slug: Option<String>,
+    /// GitHub issue number for this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue_number: Option<u64>,
+    /// GitHub PR URL associated with this task.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    /// Dedup cursor: last-seen comment ID for incremental comment ingestion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_comment_id: Option<u64>,
+    /// Dedup cursor: last-seen review ID for incremental review ingestion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_review_id: Option<u64>,
+    /// True when the GitHub status label is known to be out of sync with
+    /// durable task state. Set on label-sync failure; cleared by reconcile
+    /// or a successful subsequent sync.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub label_dirty: bool,
 }
 
 fn default_dispatch_mode() -> DispatchMode {
@@ -128,6 +148,52 @@ impl DaemonTask {
     ) {
         self.failure_class = Some(failure_class.into());
         self.failure_message = Some(failure_message.into());
+    }
+}
+
+/// GitHub-specific task metadata for multi-repo daemon tasks.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GithubTaskMeta {
+    pub repo_slug: String,
+    pub issue_number: u64,
+    pub issue_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_comment_id: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_seen_review_id: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ReviewWhitelist {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_usernames: Vec<String>,
+}
+
+impl ReviewWhitelist {
+    pub fn from_config(config: &ReviewWhitelistConfig) -> Self {
+        let mut usernames = config
+            .usernames()
+            .iter()
+            .map(|name| name.trim().to_ascii_lowercase())
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+        usernames.sort();
+        usernames.dedup();
+        Self {
+            allowed_usernames: usernames,
+        }
+    }
+
+    pub fn allows(&self, username: &str) -> bool {
+        if self.allowed_usernames.is_empty() {
+            return true;
+        }
+        let normalized = username.trim().to_ascii_lowercase();
+        self.allowed_usernames
+            .iter()
+            .any(|candidate| candidate == &normalized)
     }
 }
 
@@ -181,7 +247,7 @@ impl TaskStatus {
                 | Self::WaitingForRequirements,
             ) => true,
             (Self::WaitingForRequirements, Self::Pending | Self::Failed | Self::Aborted) => true,
-            (Self::Failed, Self::Pending) => true,
+            (Self::Failed | Self::Aborted, Self::Pending) => true,
             _ if self == next => true,
             _ => false,
         }
@@ -424,4 +490,36 @@ pub enum DaemonJournalEventType {
     RequirementsWaiting,
     RequirementsResumed,
     RoutingWarning,
+    RebaseStarted,
+    RebaseCompleted,
+    RebaseConflict,
+    RebaseAgentResolution,
+    DraftPrCreated,
+    PrClosed,
+    PrMarkedReady,
+    ReviewsIngested,
+    AmendmentsStaged,
+    ProjectReopened,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RebaseFailureClassification {
+    Conflict,
+    Timeout,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum RebaseOutcome {
+    Success,
+    AgentResolved {
+        resolved_files: Vec<String>,
+        summary: String,
+    },
+    Failed {
+        classification: RebaseFailureClassification,
+        details: String,
+    },
 }

@@ -2,5 +2,6 @@
 
 pub mod adapters;
 pub mod cli;
+pub mod composition;
 pub mod contexts;
 pub mod shared;
