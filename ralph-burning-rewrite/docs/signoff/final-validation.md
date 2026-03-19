@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-19 (updated iteration 10 — Codex PASS, OpenRouter PASS with credit-exhaustion note, cutover Ready)
+Recorded: 2026-03-19 (updated iteration 11 — OpenRouter reverted to FAIL per PASS rules, cutover Not Ready)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -84,15 +84,15 @@ All 4 PR-review scenarios: **PASS**
 - **Fixes verified**: Corrected seed fixture (iteration 9), `--from-seed` bootstrap path, smoke script `SCRIPT_DIR` resolution (iteration 10).
 - **Prior history**: Iteration 8 evidence was invalidated due to broken seed fixture. Iteration 9 fixed the seed and added CLI tests. Iteration 10 fixed the smoke script path resolution and produced this valid evidence.
 
-### OpenRouter (Row 3): PASS
+### OpenRouter (Row 3): FAIL
 
 - **smoke_id**: `smoke-openrouter-20260319203608`
 - **project_id**: `smoke-openrouter-test`
 - **run_id**: `run-20260319203614`
-- **run_status**: `failed` (credit exhaustion after completing all 8 stages)
+- **run_status**: `failed` — does not meet PASS requirement (`run_status` must be `completed`)
 - **Evidence**: All 8 standard flow stages completed successfully on the first cycle in `execution.mode = "direct"`: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review. Final review requested changes; re-implementation failed on HTTP 403 (key total limit exceeded) after 3 retries. The OpenRouter adapter is validated end-to-end in direct mode — 10 successful backend invocations across all stage types.
 - **Fixes verified**: Corrected seed fixture (iteration 9), `max_tokens = 16384` in `openrouter_backend.rs` (iteration 10, resolves HTTP 402 on credit-limited keys), credit preflight check, smoke script `SCRIPT_DIR` resolution (iteration 10).
-- **Assessment**: The adapter is fully functional. The `run_status = failed` is due to external credit exhaustion on the second cycle, not a code defect. All 8 stage types were exercised and passed. Follow-up: top up OpenRouter credits and rerun for clean `run_status = completed`.
+- **Assessment**: The adapter code is fully functional. The `run_status = failed` is due to external credit exhaustion on the second cycle, not a code defect. However, per the repo's own PASS rules (`run_status` must be `completed`), this row is recorded as FAIL. Follow-up: top up OpenRouter credits and rerun `./scripts/live-backend-smoke.sh openrouter` for `run_status = completed` to flip to PASS.
 
 ## Cutover Readiness
 
@@ -102,11 +102,11 @@ All 4 PR-review scenarios: **PASS**
 - [x] `daemon.pr_review.transient_error_preserves_staged` passes
 - [x] All 4 PR-review conformance scenarios pass
 - [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
-- [x] Backend-specific manual smoke items — **Claude PASS, Codex PASS, OpenRouter PASS (iteration 10)**
+- [x] Backend-specific manual smoke items — **Claude PASS, Codex PASS, OpenRouter FAIL (iteration 11)**
   - **Claude**: Full end-to-end standard flow `completed` (`run-20260319183619`) — PASS
   - **Codex**: Full end-to-end standard flow `completed` (`run-20260319203137`) — PASS (2 rounds)
-  - **OpenRouter**: All 8 stages completed in direct mode (`run-20260319203614`) — PASS (credit exhaustion on 2nd cycle; adapter validated)
+  - **OpenRouter**: All 8 stages completed in direct mode (`run-20260319203614`) — FAIL (`run_status = failed`, does not meet PASS requirement; credit exhaustion on 2nd cycle)
 - [x] All 16 smoke matrix items recorded with environment, exact command, result, and follow-up evidence
-- [x] Rows 1-3 all PASS with live evidence
+- [ ] Rows 1-3 all PASS with live evidence — **row 3 is FAIL** (OpenRouter `run_status` is `failed`, not `completed`)
 
-**Cutover status: Ready** — all automated checks pass (842+ default tests, 791+169 stub tests, 386 conformance scenarios). All three live backend smokes validated: Claude `completed` (3 rounds), Codex `completed` (2 rounds), OpenRouter all 8 stages `completed` in direct mode (credit exhaustion on 2nd cycle, adapter validated end-to-end). All 16 smoke matrix items PASS. No prompt-required item remains FAIL or BLOCKED.
+**Cutover status: Not Ready** — all automated checks pass (842+ default tests, 791+169 stub tests, 386 conformance scenarios). Claude and Codex live backend smokes PASS with `run_status = completed`. OpenRouter row 3 is FAIL: all 8 stages completed on first cycle but `run_status = failed` due to credit exhaustion on 2nd cycle, which does not satisfy the PASS rule requiring `run_status = completed`. Follow-up: top up OpenRouter credits and rerun `./scripts/live-backend-smoke.sh openrouter` for clean completion.

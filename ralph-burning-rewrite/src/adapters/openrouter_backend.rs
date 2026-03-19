@@ -725,6 +725,8 @@ mod tests {
             body["response_format"]["json_schema"]["strict"],
             json!(true)
         );
+        // max_tokens must be capped to avoid credit-limited key rejection.
+        assert_eq!(body["max_tokens"], json!(16384));
         // The schema sent to OpenRouter has strict-mode enforcement applied
         // (additionalProperties: false + all properties in required).
         let mut expected_schema = request.contract.json_schema_value();
