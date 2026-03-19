@@ -5913,8 +5913,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        // Override question_set to return non-empty questions
+        // Override validation to trigger question round, and question_set to
+        // return non-empty questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Authentication method", "Database choice"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What authentication method?", "rationale": "Auth design", "required": true},
@@ -6031,7 +6038,14 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        let label_overrides = serde_json::json!({
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Which framework?", "rationale": "Framework choice", "required": true}
@@ -6043,7 +6057,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6076,6 +6090,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write answers.toml: {e}"))?;
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Invoke requirements answer with EDITOR=true (no-op editor, answers already written)
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -6083,7 +6107,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6285,7 +6309,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // resumes from the answer boundary through to completion.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Which approach?", "rationale": "Design", "required": true}
@@ -6297,7 +6329,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6338,6 +6370,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write answers.toml: {e}"))?;
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Invoke requirements answer — this should resume from the answer boundary
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -6345,7 +6387,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6377,6 +6419,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Editor test?", "rationale": "Test", "required": true}
@@ -6459,6 +6507,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Valid question?", "rationale": "R", "required": true}
@@ -6534,6 +6588,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Required question?", "rationale": "R", "required": true}
@@ -6643,7 +6703,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // Then try to answer again → should be rejected.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Test?", "rationale": "R", "required": true}
@@ -6655,7 +6723,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6667,7 +6735,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_dir = entries[0].path();
         let run_id = entries[0].file_name().to_string_lossy().to_string();
 
-        // Verify awaiting_answers state and question_round tracking
+        // Verify awaiting_answers state and question set tracking
         let run_content = std::fs::read_to_string(run_dir.join("run.json"))
             .map_err(|e| format!("read run.json: {e}"))?;
         let run: serde_json::Value =
@@ -6676,13 +6744,21 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "awaiting_answers" {
             return Err(format!("expected awaiting_answers, got '{status}'"));
         }
-        let question_round = run
-            .get("question_round")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        if question_round == 0 {
-            return Err("expected non-zero question_round after question generation".into());
+        // question_round tracks completed rounds (incremented by answer());
+        // at awaiting_answers, verify latest_question_set_id is set instead.
+        if run.get("latest_question_set_id").and_then(|v| v.as_str()).is_none() {
+            return Err("expected latest_question_set_id to be set after question generation".into());
         }
+
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
 
         // Submit valid answers
         std::fs::write(run_dir.join("answers.toml"), "q1 = \"My answer\"\n")
@@ -6693,7 +6769,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6708,7 +6784,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6777,7 +6853,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // error and the run state remains unchanged.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Boundary?", "rationale": "R", "required": true}
@@ -6789,7 +6873,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6811,6 +6895,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("expected awaiting_answers before answer submission".into());
         }
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Submit valid answers — first submission should succeed
         std::fs::write(run_dir.join("answers.toml"), "q1 = \"First answer\"\n")
             .map_err(|e| format!("write answers.toml: {e}"))?;
@@ -6820,7 +6914,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6929,6 +7023,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Show test?", "rationale": "R", "required": true},
@@ -6995,6 +7095,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Populated?", "rationale": "R", "required": true}

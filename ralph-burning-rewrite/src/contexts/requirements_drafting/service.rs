@@ -436,8 +436,11 @@ where
         let base_context = build_draft_prompt(idea, answers, base_dir, project_id)?;
 
         // ── Ideation ────────────────────────────────────────────────────
+        // Cache key uses only the idea, not the full context (which includes
+        // answers).  Ideation is answer-independent and survives question
+        // rounds, so its cache key must remain stable across resume.
         let ideation_cache_key =
-            super::model::compute_stage_cache_key(FullModeStage::Ideation, &[&base_context]);
+            super::model::compute_stage_cache_key(FullModeStage::Ideation, &[idea]);
         let ideation_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Ideation, &ideation_cache_key)
         {
@@ -517,9 +520,11 @@ where
         };
 
         // ── Research ────────────────────────────────────────────────────
+        // Like ideation, research is answer-independent and survives question
+        // rounds, so its cache key uses only the idea + ideation artifact.
         let research_cache_key = super::model::compute_stage_cache_key(
             FullModeStage::Research,
-            &[&base_context, &ideation_artifact],
+            &[idea, &ideation_artifact],
         );
         let research_artifact = if let Some(cached) =
             self.try_reuse_stage(run, FullModeStage::Research, &research_cache_key)

@@ -11,17 +11,6 @@ use ralph_burning::contexts::automation_runtime::model::{
 use ralph_burning::shared::domain::FlowPreset;
 use tempfile::tempdir;
 
-/// Skip the test at runtime if the binary was not built with the `test-stub`
-/// feature. This avoids the need for `#[cfg]` on every test function that
-/// spawns the binary with `RALPH_BURNING_BACKEND=stub`.
-macro_rules! require_stub_binary {
-    () => {
-        if !cfg!(feature = "test-stub") {
-            return;
-        }
-    };
-}
-
 fn binary() -> &'static str {
     env!("CARGO_BIN_EXE_ralph-burning")
 }
@@ -218,6 +207,7 @@ fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     .expect("write active-project");
 }
 
+#[cfg(feature = "test-stub")]
 fn requirements_run_ids(base_dir: &std::path::Path) -> Vec<String> {
     let req_dir = base_dir.join(".ralph-burning/requirements");
     let mut run_ids: Vec<String> = fs::read_dir(&req_dir)
@@ -230,6 +220,7 @@ fn requirements_run_ids(base_dir: &std::path::Path) -> Vec<String> {
     run_ids
 }
 
+#[cfg(feature = "test-stub")]
 fn only_requirements_run_id(base_dir: &std::path::Path) -> String {
     let run_ids = requirements_run_ids(base_dir);
     assert_eq!(run_ids.len(), 1, "expected exactly one requirements run");
@@ -1648,9 +1639,9 @@ fn project_create_does_not_set_active_project() {
         .exists());
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn project_create_from_requirements_creates_project_and_selects_it() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let quick = Command::new(binary())
@@ -1788,9 +1779,9 @@ fn project_create_from_requirements_fails_for_incomplete_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn project_bootstrap_from_idea_creates_project_and_selects_it() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -1828,9 +1819,9 @@ fn project_bootstrap_from_idea_creates_project_and_selects_it() {
     assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     let idea_file = temp_dir.path().join("idea.md");
     fs::write(&idea_file, "Build quick-dev flow from file input").expect("write idea file");
@@ -3881,6 +3872,7 @@ fn delete_with_unremovable_active_pointer_restores_project() {
 
 // ── Run Start ──
 
+#[cfg(feature = "test-stub")]
 fn setup_project(temp_dir: &tempfile::TempDir, project_id: &str, flow: &str) {
     let prompt = write_prompt_fixture(temp_dir.path());
     let create = Command::new(binary())
@@ -3913,13 +3905,14 @@ fn setup_project(temp_dir: &tempfile::TempDir, project_id: &str, flow: &str) {
     assert!(select.status.success());
 }
 
+#[cfg(feature = "test-stub")]
 fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
     setup_project(temp_dir, project_id, "standard");
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_standard_flow_end_to_end() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-e2e");
 
@@ -3941,9 +3934,9 @@ fn run_start_completes_standard_flow_end_to_end() {
     assert!(stdout.contains("Run completed successfully"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_docs_change_flow_end_to_end() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_project(&temp_dir, "docs-run", "docs_change");
 
@@ -3982,9 +3975,9 @@ fn run_start_completes_docs_change_flow_end_to_end() {
     assert!(journal.contains("\"docs_validation\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_ci_improvement_flow_end_to_end() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_project(&temp_dir, "ci-run", "ci_improvement");
 
@@ -4023,9 +4016,9 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
     assert!(journal.contains("\"ci_validation\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_produces_completed_snapshot() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-snap");
 
@@ -4058,9 +4051,9 @@ fn run_start_produces_completed_snapshot() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_persists_journal_events() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-journal");
 
@@ -4098,9 +4091,9 @@ fn run_start_persists_journal_events() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_persists_payload_and_artifact_records() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-artifacts");
 
@@ -4150,9 +4143,9 @@ fn run_start_persists_payload_and_artifact_records() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_status_shows_completed_after_run() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-status-after");
 
@@ -4178,9 +4171,9 @@ fn run_start_status_shows_completed_after_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_quick_dev_flow_end_to_end() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_project(&temp_dir, "qd-run", "quick_dev");
 
@@ -4220,9 +4213,9 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
     assert!(journal.contains("\"final_review\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_project(&temp_dir, "qd-status", "quick_dev");
 
@@ -4248,9 +4241,9 @@ fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_resume_quick_dev_from_failed_state() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_project(&temp_dir, "qd-resume", "quick_dev");
 
@@ -4292,9 +4285,9 @@ fn run_resume_quick_dev_from_failed_state() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_rejects_already_completed_project() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-dup");
 
@@ -4323,9 +4316,9 @@ fn run_start_rejects_already_completed_project() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_rejects_already_running_project() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "run-running");
 
@@ -4354,9 +4347,9 @@ fn run_start_rejects_already_running_project() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_without_active_project_fails() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -4374,9 +4367,9 @@ fn run_start_without_active_project_fails() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_with_prompt_review_disabled_produces_seven_stages() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     // Disable prompt_review before creating the project
@@ -4447,9 +4440,9 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_preflight_failure_leaves_state_unchanged() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "preflight-cli");
 
@@ -4527,9 +4520,9 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_backend_preflight_failure_leaves_state_unchanged() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "preflight-backend");
 
@@ -4614,9 +4607,9 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_mid_stage_failure_no_partial_durable_history() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "midstage-fail");
 
@@ -4700,9 +4693,9 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
 
 // ── Requirements CLI tests ──────────────────────────────────────────────────
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_quick_creates_completed_run() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -4758,9 +4751,9 @@ fn requirements_quick_creates_completed_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_show_displays_completed_run() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     // First create a quick run
@@ -4819,9 +4812,9 @@ fn requirements_show_displays_completed_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_draft_with_empty_questions_completes() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -4845,9 +4838,9 @@ fn requirements_draft_with_empty_questions_completes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_show_on_nonexistent_run_fails() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -4863,9 +4856,9 @@ fn requirements_show_on_nonexistent_run_fails() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_answer_happy_path_completes_run() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     let run_id = "req-20260312-120000";
     let run_dir = temp_dir
@@ -4987,9 +4980,9 @@ fn requirements_answer_happy_path_completes_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_answer_on_nonexistent_run_fails() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
@@ -5009,9 +5002,9 @@ fn requirements_answer_on_nonexistent_run_fails() {
 // Conformance List / Run CLI surface tests
 // ===========================================================================
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_discovers_all_scenarios() {
-    require_stub_binary!();
     let output = Command::new(binary())
         .args(["conformance", "list"])
         .output()
@@ -5034,9 +5027,9 @@ fn conformance_list_discovers_all_scenarios() {
     assert!(stdout.contains("SC-START-001"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_with_valid_filter_executes_one_scenario() {
-    require_stub_binary!();
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "flow-list-all-presets"])
         .output()
@@ -5055,9 +5048,9 @@ fn conformance_run_with_valid_filter_executes_one_scenario() {
     assert!(stderr.contains("Passed:    1"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_with_unknown_filter_exits_non_zero() {
-    require_stub_binary!();
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "nonexistent-scenario-id"])
         .output()
@@ -5072,9 +5065,9 @@ fn conformance_run_with_unknown_filter_exits_non_zero() {
     assert!(stderr.contains("nonexistent-scenario-id"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_validates_no_duplicate_ids() {
-    require_stub_binary!();
     // The checked-in corpus has no duplicates, so conformance list should succeed.
     let output = Command::new(binary())
         .args(["conformance", "list"])
@@ -5099,9 +5092,9 @@ fn conformance_list_validates_no_duplicate_ids() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_fails_on_duplicate_ids() {
-    require_stub_binary!();
     // Create an isolated temp features directory with two feature files that share
     // a scenario ID, then point discovery at it via RALPH_BURNING_TEST_FEATURES_DIR.
     // This avoids mutating the checked-in corpus and eliminates race conditions with
@@ -5144,9 +5137,9 @@ fn conformance_list_fails_on_duplicate_ids() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_fail_fast_reports_summary_once() {
-    require_stub_binary!();
     // Run a single passing scenario - verify summary format and single-report invariant
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "workspace-init-fresh"])
@@ -5171,9 +5164,9 @@ fn conformance_run_fail_fast_reports_summary_once() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_fail_fast_stops_and_reports_not_run() {
-    require_stub_binary!();
     // Force a specific early scenario to fail, run the full suite, and verify
     // fail-fast behavior: non-zero exit, failed=1, not_run > 0.
     let output = Command::new(binary())
@@ -5227,9 +5220,9 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_failure_exits_non_zero_with_single_report() {
-    require_stub_binary!();
     // Unknown filter causes non-zero exit before execution
     let output = Command::new(binary())
         .args([
@@ -5453,9 +5446,9 @@ fn daemon_abort_waiting_task_succeeds() {
 // Writer lock contention tests (CLI level)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_acquires_and_releases_writer_lock() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "lock-start");
     select_active_project_fixture(temp_dir.path(), "lock-start");
@@ -5495,9 +5488,9 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_fails_when_writer_lock_held() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "lock-held");
     select_active_project_fixture(temp_dir.path(), "lock-held");
@@ -5536,9 +5529,9 @@ fn cli_run_start_fails_when_writer_lock_held() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_resume_acquires_and_releases_writer_lock() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "lock-resume");
     select_active_project_fixture(temp_dir.path(), "lock-resume");
@@ -5589,9 +5582,9 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_releases_lock_on_error() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "lock-err");
     select_active_project_fixture(temp_dir.path(), "lock-err");
@@ -5637,9 +5630,9 @@ fn cli_run_start_releases_lock_on_error() {
 // Guard close failure makes successful run exit non-zero (CLI level)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_close_failure_exits_nonzero() {
-    require_stub_binary!();
     // Regression: a successful run with a guard-close failure must exit
     // non-zero. The test seam deletes the writer lock file after the
     // engine completes but before the explicit close().
@@ -5937,9 +5930,9 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
 // Daemon lifecycle conformance regression tests
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_daemon_lifecycle_007_passes() {
-    require_stub_binary!();
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "DAEMON-LIFECYCLE-007"])
         .output()
@@ -5956,9 +5949,9 @@ fn conformance_daemon_lifecycle_007_passes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_daemon_lifecycle_008_passes() {
-    require_stub_binary!();
     let output = Command::new(binary())
         .args(["conformance", "run", "--filter", "DAEMON-LIFECYCLE-008"])
         .output()
@@ -5975,9 +5968,9 @@ fn conformance_daemon_lifecycle_008_passes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_full_suite_passes() {
-    require_stub_binary!();
     // Hard-link the CLI binary to a stable path under the test binary's
     // directory (inside target/) so nested sub-spawns remain reliable even
     // if cargo relinks the original during parallel test execution. Using
@@ -7239,9 +7232,9 @@ fn backend_show_effective_nonzero_exit_with_invalid_override() {
 
 // ── Slice 7: Template override CLI integration tests ────────────────────
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "tpl-malformed");
 
@@ -7339,9 +7332,9 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
     }
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
-    require_stub_binary!();
     let temp_dir = initialize_workspace_fixture();
     setup_standard_project(&temp_dir, "tpl-no-fallback");
 

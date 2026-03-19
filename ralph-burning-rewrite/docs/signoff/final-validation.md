@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-19
+Recorded: 2026-03-19 (updated after review-response iteration 1)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -15,12 +15,12 @@ cargo test
 |--------|--------|--------|---------|
 | lib.rs | 67 | 0 | 0 |
 | main.rs | 0 | 0 | 0 |
-| cli.rs | 167 | 0 | 0 |
+| cli.rs | 123 | 0 | 0 |
 | run_attach_tmux.rs | 1 | 0 | 0 |
 | unit.rs | 640 | 0 | 0 |
-| **Total** | **875** | **0** | **0** |
+| **Total** | **831** | **0** | **0** |
 
-**Result: PASS** -- `cargo test` succeeds in the default build.
+**Result: PASS** -- `cargo test` succeeds in the default build. Stub-only CLI tests are now excluded via `#[cfg(feature = "test-stub")]` instead of runtime no-ops, so the default lane only reports tests that actually execute.
 
 ### 2. Stub Build: `cargo test --features test-stub`
 
@@ -31,11 +31,11 @@ cargo test --features test-stub
 | Target | Passed | Failed | Ignored |
 |--------|--------|--------|---------|
 | unit.rs | 791 | 0 | 1 |
-| cli.rs | 168 | 1 | 0 |
+| cli.rs | 169 | 0 | 0 |
 
 **Unit tests: PASS** (791 passed, 0 failed, 1 ignored)
 
-**CLI tests: 1 failure** (`conformance_full_suite_passes` -- see conformance details below)
+**CLI tests: PASS** (169 passed, 0 failed) -- includes `conformance_full_suite_passes`
 
 ### 3. Conformance Suite: `cargo run --features test-stub -- conformance run`
 
@@ -46,15 +46,13 @@ cargo run --features test-stub -- conformance run
 | Metric | Value |
 |--------|-------|
 | Selected | 386 |
-| Passed | 147 |
-| Failed | 1 |
-| Not run | 238 |
+| Passed | 386 |
+| Failed | 0 |
+| Not run | 0 |
 
-**Failing scenario:** `RD-001` -- `expected 'awaiting_answers', got 'completed'`
+**Result: PASS** -- All 386 conformance scenarios pass.
 
-This is a **pre-existing** issue where the `RALPH_BURNING_TEST_LABEL_OVERRIDES` environment variable is not forwarded through the conformance CLI runner. The underlying requirements draft question-round feature works correctly in direct CLI tests (`requirements_draft_with_empty_questions_completes`, `requirements_answer_happy_path_completes_run`).
-
-**Not-run scenarios (238):** These are scenarios that are skipped because they depend on `fail-fast` stopping after the first failure (`RD-001`). All 147 scenarios that ran before `RD-001` passed.
+Previously failing `RD-001` fixed by adding `validation` label override with `needs_questions` outcome alongside the existing `question_set` override. The stub's default canned validation response returns `pass`, which skipped the question round entirely. Nine additional RD-* scenarios required the same fix.
 
 ### 4. PR-Review Conformance Scenarios (targeted)
 
@@ -69,11 +67,12 @@ All 4 PR-review scenarios: **PASS**
 
 ## Cutover Readiness
 
-- [x] `cargo test` succeeds in the default build (875 tests, 0 failures)
-- [x] `cargo test --features test-stub --test unit` succeeds (791 tests, 0 failures)
-- [x] `daemon.pr_review.transient_error_preserves_staged` passes (was the primary blocker)
+- [x] `cargo test` succeeds in the default build (831 tests, 0 failures, no stub-only no-ops)
+- [x] `cargo test --features test-stub` succeeds (791 unit, 169 CLI, 0 failures)
+- [x] `cargo run --features test-stub -- conformance run` passes all 386 scenarios
+- [x] `daemon.pr_review.transient_error_preserves_staged` passes
 - [x] All 4 PR-review conformance scenarios pass
-- [x] Stub-dependent tests are correctly gated behind `#[cfg(feature = "test-stub")]`
-- [ ] Full conformance suite: 1 pre-existing failure (RD-001, not a regression)
+- [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
+- [ ] Backend-specific manual smoke items (Claude, Codex, OpenRouter) are unvalidated -- tested only with stub adapter
 
-**Cutover status: Ready**, pending resolution or explicit deferral of RD-001.
+**Cutover status: Ready**, pending live backend smoke runs for Claude, Codex, and OpenRouter.

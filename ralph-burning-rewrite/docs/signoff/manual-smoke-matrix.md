@@ -7,9 +7,9 @@ Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 | # | Item | Environment | Command | Result | Follow-up Bug |
 |---|------|-------------|---------|--------|---------------|
-| 1 | Standard flow with Claude | Linux, test-stub adapter | `cargo run --features test-stub -- run start` (project with flow=standard) | PASS | None |
-| 2 | Standard flow with Codex | Linux, test-stub adapter (RALPH_BURNING_BACKEND=stub, default_backend=codex) | `cargo test --features test-stub -- run_start_completes_standard_flow_end_to_end` | PASS | None |
-| 3 | Standard flow with OpenRouter | Linux, test-stub adapter (RALPH_BURNING_BACKEND=stub) | `cargo test --features test-stub -- run_start_completes_standard_flow_end_to_end` | PASS | None |
+| 1 | Standard flow with Claude | Linux, test-stub adapter | `cargo run --features test-stub -- run start` (project with flow=standard) | UNVALIDATED (stub only, not real Claude backend) | Requires live Claude API key |
+| 2 | Standard flow with Codex | Linux, test-stub adapter | `cargo test --features test-stub -- run_start_completes_standard_flow_end_to_end` | UNVALIDATED (stub only, not real Codex backend) | Requires live Codex binary |
+| 3 | Standard flow with OpenRouter | Linux, test-stub adapter | `cargo test --features test-stub -- run_start_completes_standard_flow_end_to_end` | UNVALIDATED (stub only, not real OpenRouter backend) | Requires live OpenRouter API key |
 | 4 | quick_dev flow | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_quick_dev_flow_end_to_end` | PASS | None |
 | 5 | docs_change flow with configured docs validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_docs_change_flow_end_to_end` | PASS | None |
 | 6 | ci_improvement flow with configured CI validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_ci_improvement_flow_end_to_end` | PASS | None |
