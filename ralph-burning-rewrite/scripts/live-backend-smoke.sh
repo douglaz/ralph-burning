@@ -31,6 +31,11 @@ SMOKE_DIR="${SMOKE_DIR:-/tmp/rb-smoke-$$}"
 SMOKE_ID="smoke-${BACKEND}-$(date +%Y%m%d%H%M%S)"
 EVIDENCE_FILE="${SMOKE_DIR}/${SMOKE_ID}-evidence.txt"
 
+# Resolve the script directory to an absolute path NOW, before we cd into
+# the scratch workspace.  dirname "$0" is relative, so it becomes invalid
+# after `cd "$SMOKE_DIR"`.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
 # Resolve the ralph-burning binary.  When the caller sets RALPH_BURNING we
 # honour it as-is; otherwise we build an absolute path to `cargo run` so that
 # it works after we cd into the scratch workspace.
@@ -308,7 +313,8 @@ log "Creating smoke project..."
 # --from-seed bypasses the quick-requirements pipeline, which avoids the
 # model-behaviour blocker where some backends (e.g. Codex) cannot approve
 # requirements within the MAX_QUICK_REVISIONS limit.
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# SCRIPT_DIR was resolved to an absolute path at the top of the script,
+# before `cd "$SMOKE_DIR"`, so it is still valid here.
 SEED_FILE="${SMOKE_SEED:-${SCRIPT_DIR}/smoke-seed.json}"
 
 if [ ! -f "$SEED_FILE" ]; then

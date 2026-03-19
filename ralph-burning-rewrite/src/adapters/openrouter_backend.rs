@@ -146,6 +146,11 @@ impl OpenRouterBackendAdapter {
                     "content": Self::user_message(request),
                 }
             ],
+            // Cap max_tokens so that credit-limited keys are not rejected
+            // by OpenRouter's per-request affordability check.  16384 is
+            // more than sufficient for any structured-JSON stage output in
+            // the workflow; without this, OpenRouter defaults to 65536.
+            "max_tokens": 16384,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {

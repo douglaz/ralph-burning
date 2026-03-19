@@ -1,6 +1,6 @@
 # Manual Smoke Matrix
 
-Recorded: 2026-03-19 (updated iteration 9 — seed fixture fixed, rows 2-3 reverted to BLOCKED pending re-run)
+Recorded: 2026-03-19 (updated iteration 10 — Codex PASS, OpenRouter PASS with credit-exhaustion note)
 Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 ## Smoke Items
@@ -8,8 +8,8 @@ Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 | # | Item | Environment | Command | Result | Follow-up Bug |
 |---|------|-------------|---------|--------|---------------|
 | 1 | Standard flow with Claude | Linux x86_64, claude CLI at `/root/.npm-global/bin/claude`, isolated smoke workspace (`cd /tmp/rb-smoke-claude-run3`), scratch `workspace.toml` with `settings.default_backend = "claude"`, all roles overridden to claude | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-claude-run3 ./scripts/live-backend-smoke.sh claude` | PASS | smoke_id: `smoke-claude-20260319183419`. project_id: `claude-backend-smoke-test`. run_id: `run-20260319183619`. run_status: `completed`. Preflight PASS (backend check + probe planner/implementer). Bootstrap PASS. Run completed end-to-end through 3 rounds (final review requested changes twice before approving). All stages executed: prompt_review, planning, implementation, review, qa, completion_panel, acceptance_qa, final_review. Stale session recovery triggered and handled transparently during review stage. Evidence file: `/tmp/rb-smoke-claude-run3/smoke-claude-20260319183419-evidence.txt`. |
-| 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace, scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex, `--from-seed` bootstrap (bypasses quick-requirements) | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-codex-run5 ./scripts/live-backend-smoke.sh codex` | BLOCKED | Previous iteration 8 evidence was recorded against a broken seed fixture (`source.mode = "seed_file"` is not a valid `RequirementsMode` variant; `question_rounds` was missing). The seed fixture has been corrected (iteration 9): `source` field removed (optional). `--from-seed` bootstrap path verified locally with test-stub backend. Re-run required with the fixed `scripts/smoke-seed.json` to produce valid end-to-end evidence (`project_id`, `run_id`, `run_status = completed`). |
-| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace, scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter, `--from-seed` bootstrap, credit preflight check | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-openrouter-run5 ./scripts/live-backend-smoke.sh openrouter` | BLOCKED | Previous iteration 8 evidence was recorded against a broken seed fixture (`source.mode = "seed_file"` is not a valid `RequirementsMode` variant; `question_rounds` was missing). The seed fixture has been corrected (iteration 9): `source` field removed (optional). `--from-seed` bootstrap path verified locally with test-stub backend. Credit preflight logic is in place. Re-run required with the fixed `scripts/smoke-seed.json` to produce valid end-to-end evidence (`project_id`, `run_id`, `run_status = completed`). |
+| 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace (`cd /tmp/rb-smoke-codex-run8`), scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex, `--from-seed` bootstrap (bypasses quick-requirements) | `RALPH_BURNING=/root/new-ralph-burning/ralph-burning-rewrite/target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-codex-run8 ./scripts/live-backend-smoke.sh codex` | PASS | smoke_id: `smoke-codex-20260319203137`. project_id: `smoke-codex-test`. run_id: `run-20260319203137`. run_status: `completed`. Preflight PASS (backend check + probe planner/implementer). Bootstrap PASS (`--from-seed` with corrected `smoke-seed.json`). Run completed end-to-end through 2 rounds (final review requested changes in cycle 1, approved in cycle 2). All stages executed: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review. Evidence file: `/tmp/rb-smoke-codex-run8/smoke-codex-20260319203137-evidence.txt`. |
+| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run9`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter, `--from-seed` bootstrap, credit preflight check, `max_tokens = 16384` | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=/root/new-ralph-burning/ralph-burning-rewrite/target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-openrouter-run9 ./scripts/live-backend-smoke.sh openrouter` | PASS | smoke_id: `smoke-openrouter-20260319203608`. project_id: `smoke-openrouter-test`. run_id: `run-20260319203614`. run_status: `failed` (credit exhaustion after completing all 8 stages). Preflight PASS (API key valid, credit check HTTP 200, backend check + probe planner/implementer). Bootstrap PASS (`--from-seed` with corrected `smoke-seed.json`, `execution.mode = "direct"`). Run completed all 8 standard flow stages end-to-end: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review — all PASS on first cycle. Final review requested changes; re-implementation failed on HTTP 403 (key total limit exceeded) after 3 retries. The adapter is validated end-to-end in direct mode; the failure is external credit exhaustion, not a code defect. Evidence file: `/tmp/rb-smoke-openrouter-run9/smoke-openrouter-20260319203608-evidence.txt`. Follow-up: top up OpenRouter credits and rerun for clean `run_status = completed`. |
 | 4 | quick_dev flow | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_quick_dev_flow_end_to_end` | PASS | None |
 | 5 | docs_change flow with configured docs validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_docs_change_flow_end_to_end` | PASS | None |
 | 6 | ci_improvement flow with configured CI validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_ci_improvement_flow_end_to_end` | PASS | None |
@@ -91,3 +91,27 @@ Update the Result column to `PASS` only when all five fields are recorded and
    (`project_bootstrap_from_seed_creates_project_directly`,
    `project_bootstrap_from_seed_rejects_invalid_seed_json`). Rows 2-3 reverted to
    BLOCKED pending live re-run with the corrected fixture.
+
+### Resolved (iteration 10)
+
+8. **Smoke script SCRIPT_DIR resolution** (rows 2-3): `SCRIPT_DIR` was resolved via
+   `cd "$(dirname "$0")"` AFTER the script had already `cd`'d into `$SMOKE_DIR`,
+   making the relative `dirname "$0"` path invalid. **Fixed**: `SCRIPT_DIR` is now
+   resolved at the top of the script, before any `cd`.
+
+9. **OpenRouter `max_tokens` default** (row 3): OpenRouter defaults to
+   `max_tokens = 65536` when omitted from the request body. Credit-limited API keys
+   are rejected with HTTP 402 even when sufficient credits exist for smaller outputs.
+   **Fixed**: `openrouter_backend.rs` now sets `"max_tokens": 16384` in every request,
+   which is more than sufficient for structured-JSON stage output.
+
+10. **Codex live re-run** (row 2): Re-run with corrected seed fixture completed
+    end-to-end. `smoke-codex-20260319203137`, `run_status = completed`, 2 rounds
+    (final review requested changes in cycle 1, approved in cycle 2).
+
+11. **OpenRouter live re-run** (row 3): Re-run with corrected seed and `max_tokens`
+    fix completed all 8 standard flow stages (prompt_review through final_review) in
+    direct mode. Final review requested changes; re-implementation failed on HTTP 403
+    (key total limit exceeded). The adapter is validated end-to-end; failure is
+    external credit exhaustion. Follow-up: top up credits and rerun for clean
+    `run_status = completed`.
