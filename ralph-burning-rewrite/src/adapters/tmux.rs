@@ -6,6 +6,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+#[cfg(unix)]
+use nix::errno::Errno;
+#[cfg(unix)]
+use nix::sys::signal::Signal;
+#[cfg(unix)]
+use nix::unistd::Pid;
 use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::Mutex;
@@ -23,6 +29,8 @@ use crate::shared::error::{AppError, AppResult};
 
 const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
+const SIGNAL_TARGET_WAIT: Duration = Duration::from_millis(250);
+const SIGNAL_TARGET_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVE_SESSION_STATE_FILE: &str = "runtime/active-tmux-session.json";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,10 +105,12 @@ impl TmuxAdapter {
             Err(error) => return Err(error.into()),
         };
 
-        serde_json::from_str(&contents).map(Some).map_err(|error| AppError::CorruptRecord {
-            file: path.display().to_string(),
-            details: format!("invalid active tmux session state: {error}"),
-        })
+        serde_json::from_str(&contents)
+            .map(Some)
+            .map_err(|error| AppError::CorruptRecord {
+                file: path.display().to_string(),
+                details: format!("invalid active tmux session state: {error}"),
+            })
     }
 
     pub fn clear_active_session(project_root: &Path, invocation_id: &str) -> AppResult<()> {
@@ -172,36 +182,69 @@ impl TmuxAdapter {
     }
 
     async fn kill_session(&self, session_name: &str) -> AppResult<()> {
-        match Command::new("tmux")
+        let output = Command::new("tmux")
             .args(["kill-session", "-t", session_name])
-            .status()
+            .output()
             .await
-        {
-            Ok(status) if status.success() => Ok(()),
-            Ok(_) => Ok(()),
-            Err(error) => Err(AppError::InvocationFailed {
+            .map_err(|error| AppError::InvocationFailed {
                 backend: "tmux".to_owned(),
                 contract_id: session_name.to_owned(),
                 failure_class: FailureClass::TransportFailure,
                 details: format!("failed to kill tmux session '{session_name}': {error}"),
-            }),
+            })?;
+
+        if output.status.success() {
+            return Ok(());
+        }
+
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        if is_missing_tmux_session(&stderr) {
+            return Ok(());
+        }
+
+        Err(AppError::InvocationFailed {
+            backend: "tmux".to_owned(),
+            contract_id: session_name.to_owned(),
+            failure_class: FailureClass::TransportFailure,
+            details: if stderr.is_empty() {
+                format!(
+                    "tmux kill-session failed for '{session_name}' with status {}",
+                    output.status
+                )
+            } else {
+                format!("failed to kill tmux session '{session_name}': {stderr}")
+            },
+        })
+    }
+
+    async fn wait_for_session_shutdown(&self, session: &ManagedTmuxSession) -> AppResult<()> {
+        loop {
+            if read_exit_code(&session.exit_status_path)?.is_some()
+                || !self.has_session(&session.session_name).await?
+            {
+                return Ok(());
+            }
+
+            tokio::time::sleep(SESSION_POLL_INTERVAL).await;
         }
     }
 
-    async fn send_ctrl_c(&self, session_name: &str) -> AppResult<()> {
-        match Command::new("tmux")
-            .args(["send-keys", "-t", session_name, "C-c"])
-            .status()
-            .await
-        {
-            Ok(status) if status.success() => Ok(()),
-            Ok(_) => Ok(()),
-            Err(error) => Err(AppError::InvocationFailed {
-                backend: "tmux".to_owned(),
-                contract_id: session_name.to_owned(),
-                failure_class: FailureClass::TransportFailure,
-                details: format!("failed to send Ctrl-C to tmux session '{session_name}': {error}"),
-            }),
+    async fn wait_for_signal_target(&self, session: &ManagedTmuxSession) -> AppResult<Option<i32>> {
+        let deadline = tokio::time::Instant::now() + SIGNAL_TARGET_WAIT;
+
+        loop {
+            if let Some(pid) = session.read_signal_pid()? {
+                return Ok(Some(pid));
+            }
+
+            if read_exit_code(&session.exit_status_path)?.is_some()
+                || !self.has_session(&session.session_name).await?
+                || tokio::time::Instant::now() >= deadline
+            {
+                return Ok(None);
+            }
+
+            tokio::time::sleep(SIGNAL_TARGET_POLL_INTERVAL).await;
         }
     }
 
@@ -462,24 +505,56 @@ impl AgentExecutionPort for TmuxAdapter {
             return Ok(());
         };
 
-        let _ = self.send_ctrl_c(&session.session_name).await;
-        let wait_result = tokio::time::timeout(CANCEL_GRACE_PERIOD, async {
-            loop {
-                if read_exit_code(&session.exit_status_path)?.is_some()
-                    || !self.has_session(&session.session_name).await?
-                {
-                    return Ok::<(), AppError>(());
-                }
-                tokio::time::sleep(SESSION_POLL_INTERVAL).await;
-            }
-        })
+        if self.wait_for_signal_target(&session).await?.is_some() {
+            session
+                .send_sigterm()
+                .map_err(|error| AppError::InvocationFailed {
+                    backend: "tmux".to_owned(),
+                    contract_id: session.session_name.clone(),
+                    failure_class: FailureClass::TransportFailure,
+                    details: format!(
+                        "failed to send SIGTERM to tmux session '{}': {error}",
+                        session.session_name
+                    ),
+                })?;
+        }
+
+        let wait_result = tokio::time::timeout(
+            CANCEL_GRACE_PERIOD,
+            self.wait_for_session_shutdown(&session),
+        )
         .await;
 
         match wait_result {
             Ok(Ok(())) => {}
             Ok(Err(error)) => return Err(error),
             Err(_) => {
-                self.kill_session(&session.session_name).await?;
+                if self.wait_for_signal_target(&session).await?.is_some() {
+                    session
+                        .send_sigkill()
+                        .map_err(|error| AppError::InvocationFailed {
+                            backend: "tmux".to_owned(),
+                            contract_id: session.session_name.clone(),
+                            failure_class: FailureClass::TransportFailure,
+                            details: format!(
+                                "failed to send SIGKILL to tmux session '{}': {error}",
+                                session.session_name
+                            ),
+                        })?;
+                }
+
+                match tokio::time::timeout(
+                    CANCEL_GRACE_PERIOD,
+                    self.wait_for_session_shutdown(&session),
+                )
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(error)) => return Err(error),
+                    Err(_) => {
+                        self.kill_session(&session.session_name).await?;
+                    }
+                }
             }
         }
 
@@ -501,7 +576,10 @@ struct ManagedTmuxSession {
     stdin_path: PathBuf,
     stdout_path: PathBuf,
     stderr_path: PathBuf,
+    stdout_pipe_path: PathBuf,
+    stderr_pipe_path: PathBuf,
     exit_status_path: PathBuf,
+    signal_pid_path: PathBuf,
 }
 
 impl ManagedTmuxSession {
@@ -518,7 +596,10 @@ impl ManagedTmuxSession {
         let stdin_path = temp_dir.join(format!("{}.tmux.stdin", request.invocation_id));
         let stdout_path = temp_dir.join(format!("{}.tmux.stdout", request.invocation_id));
         let stderr_path = temp_dir.join(format!("{}.tmux.stderr", request.invocation_id));
+        let stdout_pipe_path = temp_dir.join(format!("{}.tmux.stdout.pipe", request.invocation_id));
+        let stderr_pipe_path = temp_dir.join(format!("{}.tmux.stderr.pipe", request.invocation_id));
         let exit_status_path = temp_dir.join(format!("{}.tmux.exit", request.invocation_id));
+        let signal_pid_path = temp_dir.join(format!("{}.tmux.pid", request.invocation_id));
         let wrapper_path = temp_dir.join(format!("{}.tmux.sh", request.invocation_id));
 
         fs::write(&stdin_path, stdin_payload)?;
@@ -531,7 +612,10 @@ impl ManagedTmuxSession {
                 &stdin_path,
                 &stdout_path,
                 &stderr_path,
+                &stdout_pipe_path,
+                &stderr_pipe_path,
                 &exit_status_path,
+                &signal_pid_path,
             ),
         )?;
         #[cfg(unix)]
@@ -550,8 +634,76 @@ impl ManagedTmuxSession {
             stdin_path,
             stdout_path,
             stderr_path,
+            stdout_pipe_path,
+            stderr_pipe_path,
             exit_status_path,
+            signal_pid_path,
         })
+    }
+
+    #[cfg(unix)]
+    fn send_sigterm(&self) -> AppResult<()> {
+        self.send_signal(Signal::SIGTERM)
+    }
+
+    #[cfg(not(unix))]
+    fn send_sigterm(&self) -> AppResult<()> {
+        Err(AppError::BackendUnavailable {
+            backend: "tmux".to_owned(),
+            details: "tmux signal delivery requires unix".to_owned(),
+        })
+    }
+
+    #[cfg(unix)]
+    fn send_sigkill(&self) -> AppResult<()> {
+        self.send_signal(Signal::SIGKILL)
+    }
+
+    #[cfg(not(unix))]
+    fn send_sigkill(&self) -> AppResult<()> {
+        Err(AppError::BackendUnavailable {
+            backend: "tmux".to_owned(),
+            details: "tmux signal delivery requires unix".to_owned(),
+        })
+    }
+
+    #[cfg(unix)]
+    fn send_signal(&self, signal: Signal) -> AppResult<()> {
+        let Some(pid) = self.read_signal_pid()? else {
+            return Ok(());
+        };
+
+        match signal_tmux_target(pid, signal) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn read_signal_pid(&self) -> AppResult<Option<i32>> {
+        let contents = match fs::read_to_string(&self.signal_pid_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+        let trimmed = contents.trim();
+        if trimmed.is_empty() {
+            return Ok(None);
+        }
+
+        let pid = trimmed
+            .parse::<i32>()
+            .map_err(|error| AppError::CorruptRecord {
+                file: self.signal_pid_path.display().to_string(),
+                details: format!("invalid tmux signal pid: {error}"),
+            })?;
+        if pid <= 0 {
+            return Err(AppError::CorruptRecord {
+                file: self.signal_pid_path.display().to_string(),
+                details: format!("invalid tmux signal pid '{pid}': expected a positive pid"),
+            });
+        }
+
+        Ok(Some(pid))
     }
 
     fn cleanup(&self) {
@@ -560,7 +712,10 @@ impl ManagedTmuxSession {
             &self.stdin_path,
             &self.stdout_path,
             &self.stderr_path,
+            &self.stdout_pipe_path,
+            &self.stderr_pipe_path,
             &self.exit_status_path,
+            &self.signal_pid_path,
         ] {
             let _ = fs::remove_file(path);
         }
@@ -631,19 +786,25 @@ fn build_wrapper_script(
     stdin_path: &Path,
     stdout_path: &Path,
     stderr_path: &Path,
+    stdout_pipe_path: &Path,
+    stderr_pipe_path: &Path,
     exit_status_path: &Path,
+    signal_pid_path: &Path,
 ) -> String {
     let command = std::iter::once(shell_escape(binary))
         .chain(args.iter().map(|arg| shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
     format!(
-        "#!/usr/bin/env bash\nset +e\ncd {cwd}\n{command} < {stdin} > >(tee {stdout}) 2> >(tee {stderr} >&2)\nstatus=$?\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
+        "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid} {stdout_pipe} {stderr_pipe}\nmkfifo {stdout_pipe} {stderr_pipe}\ntrap 'rm -f {signal_pid} {stdout_pipe} {stderr_pipe}' EXIT\ntee {stdout} < {stdout_pipe} &\nstdout_tee_pid=$!\ntee {stderr} < {stderr_pipe} >&2 &\nstderr_tee_pid=$!\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout_pipe} 2> {stderr_pipe}\n) &\nchild_pid=$!\nwait \"$child_pid\"\nstatus=$?\nwait \"$stdout_tee_pid\"\nwait \"$stderr_tee_pid\"\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
         cwd = shell_escape(&working_dir.to_string_lossy()),
         stdin = shell_escape(&stdin_path.to_string_lossy()),
         stdout = shell_escape(&stdout_path.to_string_lossy()),
         stderr = shell_escape(&stderr_path.to_string_lossy()),
+        stdout_pipe = shell_escape(&stdout_pipe_path.to_string_lossy()),
+        stderr_pipe = shell_escape(&stderr_pipe_path.to_string_lossy()),
         exit_status = shell_escape(&exit_status_path.to_string_lossy()),
+        signal_pid = shell_escape(&signal_pid_path.to_string_lossy()),
     )
 }
 
@@ -716,6 +877,26 @@ fn read_exit_code(path: &Path) -> AppResult<Option<i32>> {
             file: path.display().to_string(),
             details: format!("invalid tmux exit code: {error}"),
         })
+}
+
+fn is_missing_tmux_session(stderr: &str) -> bool {
+    let stderr = stderr.to_ascii_lowercase();
+    stderr.contains("can't find session") || stderr.contains("no server running")
+}
+
+#[cfg(unix)]
+fn signal_tmux_target(pid: i32, signal: Signal) -> std::io::Result<()> {
+    let group_result = nix::sys::signal::kill(Pid::from_raw(-pid), signal);
+    let pid_result = nix::sys::signal::kill(Pid::from_raw(pid), signal);
+
+    match (group_result, pid_result) {
+        (Ok(()), _) | (_, Ok(())) => Ok(()),
+        (Err(Errno::ESRCH), Err(Errno::ESRCH)) => Ok(()),
+        (Err(Errno::ESRCH), Err(errno)) | (Err(errno), Err(Errno::ESRCH)) => {
+            Err(std::io::Error::from_raw_os_error(errno as i32))
+        }
+        (Err(errno), _) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+    }
 }
 
 fn sanitize_session_segment(value: &str) -> String {

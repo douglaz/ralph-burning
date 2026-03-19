@@ -135,6 +135,27 @@ done
     );
 }
 
+fn write_sigterm_ignoring_claude(
+    bin_dir: &std::path::Path,
+    term_file: &std::path::Path,
+    int_file: &std::path::Path,
+) {
+    write_executable(
+        &bin_dir.join("claude"),
+        &format!(
+            r#"#!/usr/bin/env bash
+trap 'printf "term\n" >> "{term_file}"' TERM
+trap 'printf "int\n" >> "{int_file}"; exit 130' INT
+while true; do
+  sleep 0.1
+done
+"#,
+            term_file = term_file.to_string_lossy(),
+            int_file = int_file.to_string_lossy(),
+        ),
+    );
+}
+
 fn write_fake_tmux(bin_dir: &std::path::Path, state_dir: &std::path::Path) {
     let state = state_dir.to_string_lossy();
     write_executable(
@@ -348,14 +369,74 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn tmux_adapter_timeout_cleans_up_session() {
+async fn tmux_adapter_cancel_uses_sigterm_before_sigkill_when_backend_ignores_term() {
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
     std::env::set_var("FAKE_TMUX_STATE_DIR", state_dir.path());
 
-    write_sleeping_claude(bin_dir.path());
+    let term_file = state_dir.path().join("sigterm.marker");
+    let int_file = state_dir.path().join("sigint.marker");
+    write_sigterm_ignoring_claude(bin_dir.path(), &term_file, &int_file);
+    write_fake_tmux(bin_dir.path(), state_dir.path());
+
+    let (_dir, request) = request_fixture("tmux-signal-cancel");
+    let session_name = session_name_for_request(&request);
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let invocation_id = request.invocation_id.clone();
+
+    let join = tokio::spawn({
+        let adapter = adapter.clone();
+        let request = request.clone();
+        async move { adapter.invoke(request).await }
+    });
+
+    for _ in 0..20 {
+        if TmuxAdapter::session_exists(&session_name).expect("query session") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    adapter
+        .cancel(&invocation_id)
+        .await
+        .expect("cancel invocation");
+    let _ = join.await.expect("join invoke task");
+
+    for _ in 0..20 {
+        if term_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+
+    assert!(
+        term_file.exists(),
+        "cancel should deliver SIGTERM before forcing cleanup"
+    );
+    assert!(
+        !int_file.exists(),
+        "cancel should not deliver SIGINT via tmux send-keys"
+    );
+    assert!(
+        !TmuxAdapter::session_exists(&session_name).expect("query session"),
+        "session should be cleaned up after forced cancel"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let state_dir = tempdir().expect("create state dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+    std::env::set_var("FAKE_TMUX_STATE_DIR", state_dir.path());
+
+    let term_file = state_dir.path().join("sigterm-timeout.marker");
+    let int_file = state_dir.path().join("sigint-timeout.marker");
+    write_sigterm_ignoring_claude(bin_dir.path(), &term_file, &int_file);
     write_fake_tmux(bin_dir.path(), state_dir.path());
 
     let (_dir, mut request) = request_fixture("tmux-timeout");
@@ -377,10 +458,23 @@ async fn tmux_adapter_timeout_cleans_up_session() {
         other => panic!("expected InvocationTimeout, got {other:?}"),
     }
 
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    for _ in 0..20 {
+        if term_file.exists() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     assert!(
         !TmuxAdapter::session_exists(&session_name).expect("query session"),
         "timeout should clean up the tmux session"
+    );
+    assert!(
+        term_file.exists(),
+        "timeout should deliver SIGTERM before forcing cleanup"
+    );
+    assert!(
+        !int_file.exists(),
+        "timeout should not deliver SIGINT via tmux control keys"
     );
     assert!(
         read_active_session(&request).is_none(),
