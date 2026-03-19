@@ -400,3 +400,73 @@ fn timeout_fallback_chain_prefers_role_timeout_then_backend_timeout_then_process
             .as_secs()
     );
 }
+
+// ── Panel probe semantics (Slice 5) ────────────────────────────────────────
+
+#[test]
+fn prompt_review_panel_resolution_includes_refiner_and_validators() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_prompt_review_panel(1)
+        .expect("resolve prompt review panel");
+
+    assert!(
+        !panel.validators.is_empty(),
+        "prompt review should resolve at least one validator"
+    );
+}
+
+#[test]
+fn backend_enabled_public_reflects_config() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let policy = BackendPolicyService::new(&effective);
+
+    assert!(policy.backend_enabled_public(BackendFamily::Claude));
+    assert!(policy.backend_enabled_public(BackendFamily::Codex));
+    assert!(policy.backend_enabled_public(BackendFamily::OpenRouter));
+    assert!(!policy.backend_enabled_public(BackendFamily::Stub));
+}
+
+#[test]
+fn optional_panel_member_omission_does_not_fail_when_minimum_met() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(1),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_completion_panel(1)
+        .expect("optional omission should not fail");
+
+    assert_eq!(1, panel.completers.len());
+    assert!(panel.completers[0].required);
+}

@@ -336,6 +336,12 @@ impl<'a> BackendPolicyService<'a> {
         self.config.backend_policy().backends.get(family.as_str())
     }
 
+    /// Returns `true` if the given backend family is considered enabled
+    /// in the effective configuration.
+    pub fn backend_enabled_public(&self, family: BackendFamily) -> bool {
+        self.backend_enabled(family)
+    }
+
     fn backend_enabled(&self, family: BackendFamily) -> bool {
         self.runtime_settings(family)
             .and_then(|settings| settings.enabled)

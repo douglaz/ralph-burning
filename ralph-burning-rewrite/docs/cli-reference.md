@@ -132,3 +132,144 @@ Lists visible rollback targets for the active project. The text table includes:
 ```text
 ralph-burning run rollback --to <stage> [--hard]
 ```
+
+## Backend Commands
+
+### `ralph-burning backend list`
+
+Shows all supported backend families, their enablement state, and transport mechanism.
+
+Flags:
+- `--json` — emit a stable JSON array for scripts
+
+`backend list --json` schema:
+
+```json
+[
+  {
+    "family": "string",
+    "display_name": "string",
+    "enabled": "bool",
+    "transport": "string",
+    "compile_only": "bool | null"
+  }
+]
+```
+
+### `ralph-burning backend check`
+
+Evaluates readiness of all effectively required backends and panel members
+for the active workspace/project scope. Aggregates all blocking failures
+in one run and exits non-zero if any required backend cannot be satisfied.
+
+This command is strictly read-only: it does not create or modify run
+snapshots, project state, journals, payloads, artifacts, sessions, or
+runtime logs.
+
+Flags:
+- `--json` — emit a stable JSON object for scripts
+- `--backend <spec>` — override base backend for this check
+- `--planner-backend <spec>` — override planner backend
+- `--implementer-backend <spec>` — override implementer backend
+- `--reviewer-backend <spec>` — override reviewer backend
+- `--qa-backend <spec>` — override QA backend
+
+`backend check --json` schema:
+
+```json
+{
+  "passed": "bool",
+  "failures": [
+    {
+      "role": "string",
+      "backend_family": "string",
+      "failure_kind": "backend_disabled | panel_minimum_violation | required_member_unavailable",
+      "details": "string",
+      "config_source": "string"
+    }
+  ]
+}
+```
+
+### `ralph-burning backend show-effective`
+
+Shows the fully resolved backend configuration with source precedence
+for each field (default, workspace.toml, project config.toml, or cli override).
+
+Flags:
+- `--json` — emit a stable JSON object for scripts
+- `--backend <spec>` — override base backend for this view
+- `--planner-backend <spec>` — override planner backend
+- `--implementer-backend <spec>` — override implementer backend
+- `--reviewer-backend <spec>` — override reviewer backend
+- `--qa-backend <spec>` — override QA backend
+
+`backend show-effective --json` schema:
+
+```json
+{
+  "base_backend": { "value": "string", "source": "string" },
+  "default_model": { "value": "string", "source": "string" },
+  "roles": [
+    {
+      "role": "string",
+      "backend_family": "string",
+      "model_id": "string",
+      "timeout_seconds": "u64",
+      "override_source": "string"
+    }
+  ],
+  "session_policy": "string",
+  "default_timeout_seconds": "u64"
+}
+```
+
+### `ralph-burning backend probe`
+
+Previews backend resolution for a given role and flow, using the same
+resolution paths as run execution. Supports both singular policy roles
+(e.g. `planner`, `implementer`) and synthetic panel targets
+(`completion_panel`, `final_review_panel`, `prompt_review_panel`).
+
+Required flags:
+- `--role <role>` — the role or panel target to probe
+- `--flow <preset>` — the flow preset to resolve against
+
+Optional flags:
+- `--cycle <n>` — cycle number (defaults to 1)
+- `--json` — emit a stable JSON object for scripts
+- `--backend <spec>` — override base backend for this probe
+- `--planner-backend <spec>` — override planner backend
+- `--implementer-backend <spec>` — override implementer backend
+- `--reviewer-backend <spec>` — override reviewer backend
+- `--qa-backend <spec>` — override QA backend
+
+`backend probe --json` schema:
+
+```json
+{
+  "role": "string",
+  "flow": "string",
+  "cycle": "u32",
+  "target": {
+    "backend_family": "string",
+    "model_id": "string",
+    "timeout_seconds": "u64"
+  },
+  "panel": {
+    "panel_type": "string",
+    "minimum": "usize",
+    "resolved_count": "usize",
+    "members": [
+      { "backend_family": "string", "model_id": "string", "required": "bool" }
+    ],
+    "omitted": [
+      { "backend_family": "string", "reason": "string", "was_optional": "bool" }
+    ]
+  }
+}
+```
+
+The `panel` field is only present for panel targets (`completion_panel`,
+`final_review_panel`, `prompt_review_panel`). For singular roles, it is
+omitted from both text and JSON output.

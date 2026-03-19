@@ -1,3 +1,4 @@
+pub mod diagnostics;
 pub mod model;
 pub mod policy;
 pub mod service;
@@ -9,6 +10,7 @@ pub use model::{
     CancellationToken, CapabilityCheck, InvocationContract, InvocationEnvelope, InvocationMetadata,
     InvocationPayload, InvocationRequest, RawOutputReference, TokenCounts,
 };
+pub use diagnostics::BackendDiagnosticsService;
 pub use policy::{
     BackendPolicyService, CompletionPanelResolution, FinalReviewPanelResolution,
     PromptReviewPanelResolution, ResolvedPanelMember,

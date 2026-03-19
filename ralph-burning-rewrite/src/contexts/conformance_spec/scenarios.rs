@@ -789,6 +789,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_validation_slice6(&mut m);
     register_daemon_github(&mut m);
     register_manual_amendments_slice3(&mut m);
+    register_backend_operations_slice5(&mut m);
 
     m
 }
@@ -18501,6 +18502,216 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
                 ));
             }
             _ => {}
+        }
+
+        Ok(())
+    });
+}
+
+
+// ===========================================================================
+// Backend Operations Parity — Slice 5 (5 scenarios)
+// ===========================================================================
+
+fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice5_backend_list", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(&["backend", "list", "--json"], ws.path())?;
+        assert_success(&out)?;
+
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend list: {e}"))?;
+        if entries.len() != 4 {
+            return Err(format!("expected 4 families, got {}", entries.len()));
+        }
+
+        let families: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e.get("family").and_then(|v| v.as_str()))
+            .collect();
+        for expected in &["claude", "codex", "openrouter", "stub"] {
+            if !families.contains(expected) {
+                return Err(format!("missing backend family '{expected}'"));
+            }
+        }
+
+        // stub must be compile_only
+        let stub_entry = entries
+            .iter()
+            .find(|e| e.get("family").and_then(|v| v.as_str()) == Some("stub"))
+            .ok_or("missing stub entry")?;
+        if stub_entry.get("compile_only").and_then(|v| v.as_bool()) != Some(true) {
+            return Err("stub should be marked compile_only".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_check", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        // Default config should pass
+        let out = run_cli(&["backend", "check", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend check: {e}"))?;
+        if result.get("passed").and_then(|v| v.as_bool()) != Some(true) {
+            return Err("default config should pass backend check".into());
+        }
+
+        // Write config with disabled base backend
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(&["backend", "check", "--json"], ws.path())?;
+        assert_failure(&out)?;
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend check: {e}"))?;
+        if result.get("passed").and_then(|v| v.as_bool()) != Some(false) {
+            return Err("disabled base backend should fail check".into());
+        }
+        let failures = result
+            .get("failures")
+            .and_then(|v| v.as_array())
+            .ok_or("missing failures array")?;
+        if failures.is_empty() {
+            return Err("expected at least one failure".into());
+        }
+
+        // Verify read-only: no project state created
+        let projects_dir = ws.path().join(".ralph-burning/projects");
+        if projects_dir.is_dir() {
+            let entries: Vec<_> = std::fs::read_dir(&projects_dir)
+                .map_err(|e| format!("read projects dir: {e}"))?
+                .collect();
+            if !entries.is_empty() {
+                return Err("backend check should not create project state".into());
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_show_effective", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(&["backend", "show-effective", "--json"], ws.path())?;
+        assert_success(&out)?;
+
+        let view: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from show-effective: {e}"))?;
+
+        // Check required fields
+        let base = view
+            .get("base_backend")
+            .ok_or("missing base_backend")?;
+        if base.get("value").is_none() || base.get("source").is_none() {
+            return Err("base_backend must have value and source".into());
+        }
+
+        let roles = view
+            .get("roles")
+            .and_then(|v| v.as_array())
+            .ok_or("missing roles array")?;
+        if roles.is_empty() {
+            return Err("roles should not be empty".into());
+        }
+
+        // Each role should have required fields
+        for role in roles {
+            for field in &["role", "backend_family", "model_id", "timeout_seconds", "override_source"] {
+                if role.get(*field).is_none() {
+                    return Err(format!("role entry missing field '{field}'"));
+                }
+            }
+        }
+
+        if view.get("default_timeout_seconds").is_none() {
+            return Err("missing default_timeout_seconds".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_probe_completion_panel", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(
+            &["backend", "probe", "--role", "completion_panel", "--flow", "standard", "--json"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from probe: {e}"))?;
+
+        if result.get("role").and_then(|v| v.as_str()) != Some("completion_panel") {
+            return Err("expected role=completion_panel".into());
+        }
+
+        let panel = result.get("panel").ok_or("missing panel object")?;
+        if panel.get("panel_type").and_then(|v| v.as_str()) != Some("completion") {
+            return Err("expected panel_type=completion".into());
+        }
+
+        let members = panel
+            .get("members")
+            .and_then(|v| v.as_array())
+            .ok_or("missing panel members")?;
+        if members.is_empty() {
+            return Err("completion panel should have at least one member".into());
+        }
+
+        // Each member must have required/optional status
+        for member in members {
+            if member.get("required").is_none() {
+                return Err("member missing required field".into());
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_probe_final_review_panel", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(
+            &["backend", "probe", "--role", "final_review_panel", "--flow", "standard", "--json"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from probe: {e}"))?;
+
+        if result.get("role").and_then(|v| v.as_str()) != Some("final_review_panel") {
+            return Err("expected role=final_review_panel".into());
+        }
+
+        let panel = result.get("panel").ok_or("missing panel object")?;
+        if panel.get("panel_type").and_then(|v| v.as_str()) != Some("final_review") {
+            return Err("expected panel_type=final_review".into());
+        }
+
+        let members = panel
+            .get("members")
+            .and_then(|v| v.as_array())
+            .ok_or("missing panel members")?;
+        if members.is_empty() {
+            return Err("final review panel should have at least one member".into());
         }
 
         Ok(())

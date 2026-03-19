@@ -1,3 +1,4 @@
+pub mod backend;
 pub mod config;
 pub mod conformance;
 pub mod daemon;
@@ -31,6 +32,7 @@ pub enum Commands {
     Run(run::RunCommand),
     Requirements(requirements::RequirementsCommand),
     Daemon(daemon::DaemonCommand),
+    Backend(backend::BackendCommand),
     Conformance(conformance::ConformanceCommand),
 }
 
@@ -43,6 +45,7 @@ pub async fn run(cli: Cli) -> AppResult<()> {
         Commands::Run(command) => run::handle(command).await,
         Commands::Requirements(command) => requirements::handle(command).await,
         Commands::Daemon(command) => daemon::handle(command).await,
+        Commands::Backend(command) => backend::handle(command).await,
         Commands::Conformance(command) => conformance::handle(command).await,
     }
 }

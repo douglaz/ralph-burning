@@ -78,3 +78,6 @@ mod validation_runner_test;
 
 #[path = "unit/checkpoint_test.rs"]
 mod checkpoint_test;
+
+#[path = "unit/backend_diagnostics_test.rs"]
+mod backend_diagnostics_test;

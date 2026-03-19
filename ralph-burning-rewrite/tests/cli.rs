@@ -6635,3 +6635,344 @@ fn cli_project_amend_clear_partial_failure_surfaces_ids_despite_close_failure() 
         "should note the close failure alongside partial-clear details, got: {stderr}"
     );
 }
+
+// ── backend command tests (Slice 5) ─────────────────────────────────────────
+
+#[test]
+fn backend_list_shows_all_families() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list");
+
+    assert!(
+        output.status.success(),
+        "backend list should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("claude"), "should list claude");
+    assert!(stdout.contains("codex"), "should list codex");
+    assert!(stdout.contains("openrouter"), "should list openrouter");
+    assert!(stdout.contains("stub"), "should list stub");
+}
+
+#[test]
+fn backend_list_json_is_valid() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "list", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list --json");
+
+    assert!(
+        output.status.success(),
+        "backend list --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.is_array(), "JSON output should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(4, arr.len(), "should have 4 backend families");
+}
+
+#[test]
+fn backend_check_succeeds_with_defaults() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "check"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check");
+
+    assert!(
+        output.status.success(),
+        "backend check should succeed with defaults: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("passed"),
+        "should report passed: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_check_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "check", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check --json");
+
+    assert!(
+        output.status.success(),
+        "backend check --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(
+        parsed.get("passed").is_some(),
+        "JSON should have 'passed' field"
+    );
+    assert!(
+        parsed.get("failures").is_some(),
+        "JSON should have 'failures' field"
+    );
+}
+
+#[test]
+fn backend_show_effective_text_output() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Base backend"), "should show base backend");
+    assert!(
+        stdout.contains("Per-role resolution"),
+        "should show per-role section"
+    );
+}
+
+#[test]
+fn backend_show_effective_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective --json");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(
+        parsed.get("base_backend").is_some(),
+        "JSON should have 'base_backend'"
+    );
+    assert!(parsed.get("roles").is_some(), "JSON should have 'roles'");
+    assert!(
+        parsed.get("default_timeout_seconds").is_some(),
+        "JSON should have 'default_timeout_seconds'"
+    );
+}
+
+#[test]
+fn backend_probe_singular_role() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "probe", "--role", "planner", "--flow", "standard"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe");
+
+    assert!(
+        output.status.success(),
+        "backend probe should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("planner"), "should show probed role");
+    assert!(
+        stdout.contains("standard"),
+        "should show flow"
+    );
+}
+
+#[test]
+fn backend_probe_completion_panel() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "completion_panel",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe completion panel");
+
+    assert!(
+        output.status.success(),
+        "backend probe completion_panel should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("completion"),
+        "should show panel type: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_probe_final_review_panel() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "final_review_panel",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe final_review_panel");
+
+    assert!(
+        output.status.success(),
+        "backend probe final_review_panel should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("final_review"),
+        "should show panel type: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_probe_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "planner",
+            "--flow",
+            "standard",
+            "--json",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe --json");
+
+    assert!(
+        output.status.success(),
+        "backend probe --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.get("role").is_some(), "JSON should have 'role'");
+    assert!(parsed.get("flow").is_some(), "JSON should have 'flow'");
+    assert!(parsed.get("target").is_some(), "JSON should have 'target'");
+}
+
+#[test]
+fn backend_check_nonzero_exit_on_failure() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Write config with a disabled base backend
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args(["backend", "check"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend check should exit non-zero when base backend is disabled"
+    );
+}
+
+#[test]
+fn backend_show_effective_with_cli_override() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "show-effective",
+            "--json",
+            "--backend",
+            "codex",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective with override");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective with override should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let base_value = parsed["base_backend"]["value"]
+        .as_str()
+        .expect("base_backend.value");
+    assert!(
+        base_value.contains("codex"),
+        "base backend should be overridden to codex, got: {}",
+        base_value
+    );
+}
