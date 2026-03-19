@@ -1297,7 +1297,8 @@ pub fn stage_amendment_batch(
 
     // Commit canonical snapshot BEFORE journal events so that a snapshot
     // write failure leaves no orphaned journal entries.
-    let snap_result = if snapshot.status == RunStatus::Completed {
+    let was_completed = snapshot.status == RunStatus::Completed;
+    let snap_result = if was_completed {
         reopen_completed_project_with_snapshot(
             run_write_port,
             project_store,
@@ -1310,7 +1311,18 @@ pub fn stage_amendment_batch(
     };
 
     if let Err(snap_err) = snap_result {
-        // Roll back all amendment files written in this batch.
+        if was_completed {
+            // When the project was completed and the reopen/snapshot write
+            // fails, amendment files that have already been written to disk
+            // must remain. The project snapshot stays at its last committed
+            // completed state and the caller must not advance cursors or
+            // journal events. On the next poll cycle the daemon will re-
+            // fetch, re-deduplicate (files overwrite safely), and retry the
+            // reopen.
+            return Err(snap_err);
+        }
+        // For non-completed projects, roll back all amendment files written
+        // in this batch so no pre-commit files leak.
         let mut cleanup_failures: Vec<String> = Vec::new();
         for id in &staged_ids {
             if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {

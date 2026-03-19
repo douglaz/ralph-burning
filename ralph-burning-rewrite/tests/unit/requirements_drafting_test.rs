@@ -585,6 +585,7 @@ fn render_project_seed_produces_markdown_with_project_details_and_suggested_comm
 
 // ── Service integration tests ───────────────────────────────────────────────
 
+#[cfg(feature = "test-stub")]
 mod service_integration {
     use chrono::{TimeZone, Utc};
     use serde_json::json;

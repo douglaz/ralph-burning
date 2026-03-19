@@ -14,7 +14,9 @@ use ralph_burning::contexts::automation_runtime::task_service::{
 };
 use ralph_burning::contexts::automation_runtime::watcher::parse_requirements_command;
 use ralph_burning::contexts::automation_runtime::{DaemonStorePort, WorktreePort};
-use ralph_burning::shared::domain::{BackendFamily, FlowPreset};
+#[cfg(feature = "test-stub")]
+use ralph_burning::shared::domain::BackendFamily;
+use ralph_burning::shared::domain::FlowPreset;
 use ralph_burning::shared::error::AppError;
 
 fn sample_task() -> DaemonTask {
@@ -3280,6 +3282,7 @@ fn daemon_loop_process_cycle_does_not_call_set_current_dir() {
 
 // ── Daemon requirements dispatch honors workspace backend/model defaults ────
 
+#[cfg(feature = "test-stub")]
 /// Helper: create a workspace.toml with explicit backend/model defaults in a
 /// temp directory and return the loaded `EffectiveConfig`.
 fn setup_workspace_with_defaults(
@@ -3303,6 +3306,7 @@ default_model = "{default_model}"
         .expect("load effective config")
 }
 
+#[cfg(feature = "test-stub")]
 /// Helper: build a `RequirementsService` with workspace defaults by calling the
 /// exact same `build_requirements_service` function the daemon uses. This ensures
 /// that a regression in daemon wiring is caught by the test suite.
@@ -3322,6 +3326,7 @@ fn build_test_requirements_service_with_defaults(
     .expect("build requirements service with defaults")
 }
 
+#[cfg(feature = "test-stub")]
 #[tokio::test]
 async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
     // Regression: daemon-driven requirements_quick must resolve the same
@@ -3366,6 +3371,7 @@ async fn daemon_requirements_quick_honors_workspace_backend_model_defaults() {
     }
 }
 
+#[cfg(feature = "test-stub")]
 #[tokio::test]
 async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
     // Regression: daemon-driven requirements_draft must resolve the same
@@ -3409,6 +3415,7 @@ async fn daemon_requirements_draft_honors_workspace_backend_model_defaults() {
     }
 }
 
+#[cfg(feature = "test-stub")]
 #[tokio::test]
 async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
     // When workspace defaults are unset, daemon requirements behavior remains
@@ -3466,6 +3473,7 @@ async fn daemon_requirements_quick_without_defaults_uses_role_defaults() {
     }
 }
 
+#[cfg(feature = "test-stub")]
 #[tokio::test]
 async fn daemon_requirements_partial_defaults_backend_only() {
     // Partial defaults: default_backend alone selects that backend's default model.
@@ -3510,6 +3518,7 @@ async fn daemon_requirements_partial_defaults_backend_only() {
     }
 }
 
+#[cfg(feature = "test-stub")]
 #[tokio::test]
 async fn daemon_requirements_partial_defaults_model_only() {
     // Partial defaults: default_model alone overrides only the model on the

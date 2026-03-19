@@ -3479,3 +3479,127 @@ fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() 
         other => panic!("expected CorruptRecord when both repair and restore fail, got: {other:?}"),
     }
 }
+
+// ── Completed-project reopen failure: staged amendments must persist ─────
+
+#[test]
+fn stage_amendment_batch_preserves_files_on_completed_project_reopen_failure() {
+    // When the project is completed and the reopen/snapshot write fails,
+    // amendment files already written must remain on disk. The project
+    // snapshot stays at its last committed state and no journal events
+    // are written.
+    let queue = FakeAmendmentQueue::empty();
+    let completed_snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Completed,
+        cycle_history: vec![CycleHistoryEntry {
+            cycle: 1,
+            stage_id: StageId::FinalReview,
+            started_at: test_timestamp(),
+            completed_at: Some(test_timestamp()),
+        }],
+        completion_rounds: 1,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    // The read store returns the completed snapshot; the write store always fails.
+    let shared_store = SharedRunSnapshotStore::new(completed_snapshot);
+    let failing_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "pr-review-persist-me".to_owned(),
+        source_stage: StageId::Review,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "persist me before failure".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(
+            &AmendmentSource::PrReview,
+            "persist me before failure",
+        ),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &failing_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the reopen/snapshot write fails.
+    assert!(result.is_err());
+
+    // Amendment files must remain on disk — they must NOT be rolled back.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        1,
+        "staged amendment files must persist when reopen/snapshot write fails for a completed project"
+    );
+
+    // Verify the correct amendment survived.
+    assert_eq!(
+        queue.amendments.borrow()[0].amendment_id,
+        "pr-review-persist-me"
+    );
+}
+
+#[test]
+fn stage_amendment_batch_rolls_back_files_on_non_completed_snapshot_write_failure() {
+    // When the project is NOT completed and the snapshot write fails,
+    // amendment files must be rolled back (no pre-commit files leak).
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial(); // status: NotStarted
+    let failing_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-rollback-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "should be rolled back".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(
+            &AmendmentSource::PrReview,
+            "should be rolled back",
+        ),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &failing_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    assert!(result.is_err());
+
+    // Amendment files must be rolled back for non-completed projects.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment files must be rolled back when snapshot write fails for non-completed project"
+    );
+}
