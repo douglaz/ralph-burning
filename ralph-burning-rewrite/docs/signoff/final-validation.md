@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-19 (updated after review-response iteration 1)
+Recorded: 2026-03-19 (updated after review-response iteration 2)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -75,4 +75,4 @@ All 4 PR-review scenarios: **PASS**
 - [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
 - [ ] Backend-specific manual smoke items (Claude, Codex, OpenRouter) are unvalidated -- tested only with stub adapter
 
-**Cutover status: Ready**, pending live backend smoke runs for Claude, Codex, and OpenRouter.
+**Cutover status: Not Ready** — backend-specific manual smoke items (Claude, Codex, OpenRouter) require live validation with real API keys/binaries before cutover can proceed. All automated checks pass; only live backend smoke evidence is missing.

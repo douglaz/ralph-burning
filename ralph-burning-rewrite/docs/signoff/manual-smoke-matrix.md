@@ -26,4 +26,4 @@ Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 ## Known Issues
 
-- RD-001 conformance scenario fails: `expected 'awaiting_answers', got 'completed'`. Pre-existing issue where the stub backend's `RALPH_BURNING_TEST_LABEL_OVERRIDES` mechanism does not propagate through the conformance CLI runner. Does not affect production behavior.
+None. All previously known issues (including RD-001 conformance scenario) have been resolved.
