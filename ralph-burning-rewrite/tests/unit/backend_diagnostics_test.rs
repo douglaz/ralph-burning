@@ -3010,6 +3010,192 @@ async fn check_with_availability_reports_correct_configured_index_for_panel_memb
     assert_eq!("codex", panel_failure.backend_family);
 }
 
+// ── implicit completion-panel resolution alignment ───────────────────────
+
+/// Regression: when `completion.backends` is not explicitly configured,
+/// `backend check` must validate the same implicit targets that
+/// `resolve_completion_panel()` / `default_completion_targets()` would use,
+/// not the built-in default backend list.
+///
+/// Setup: default_backend=claude, claude disabled, all stage roles
+/// overridden to codex, openrouter enabled. With implicit completion
+/// backends, runtime resolves the Completer role via `opposite_family(codex)`
+/// which falls through to openrouter (claude disabled). The built-in
+/// default completion backends list is `[claude(required), codex(required)]`
+/// — the old code would fail on disabled claude even though runtime never
+/// uses it.
+#[test]
+fn check_passes_with_implicit_completion_backends_when_runtime_targets_are_available() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // default_backend = claude, but claude is disabled
+    workspace.settings.default_backend = Some("claude".to_owned());
+    workspace
+        .backends
+        .insert("claude".to_owned(), empty_backend_settings(false));
+    // Enable openrouter so opposite_family(codex) can fall through to it
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    // Override all stage roles to codex — planner=codex
+    workspace.workflow.planner_backend = Some("codex".to_owned());
+    workspace.workflow.implementer_backend = Some("codex".to_owned());
+    workspace.workflow.reviewer_backend = Some("codex".to_owned());
+    workspace.workflow.qa_backend = Some("codex".to_owned());
+    // Do NOT set completion.backends — leave implicit so runtime uses
+    // default_completion_targets() which resolves the Completer role
+    // (opposite of planner=codex → openrouter, since claude is disabled).
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Probe should succeed (runtime resolution uses opposite family)
+    let probe_result = service.probe("completion_panel", FlowPreset::Standard, 1);
+    assert!(
+        probe_result.is_ok(),
+        "probe should succeed with implicit completion backends: {:?}",
+        probe_result.err()
+    );
+
+    // Check should also succeed — both should use the same resolution path
+    let check_result = service.check_backends(FlowPreset::Standard);
+    let completion_failures: Vec<_> = check_result
+        .failures
+        .iter()
+        .filter(|f| f.role.contains("completion"))
+        .collect();
+    assert!(
+        completion_failures.is_empty(),
+        "check should not fail on completion panel when implicit targets are available: {:?}",
+        completion_failures
+    );
+}
+
+/// Regression: when completion backends are implicit and the Completer role
+/// target is actually disabled, `backend check` should report the failure
+/// using the real resolution source (e.g. `default_backend`), not
+/// `completion.backends`.
+#[test]
+fn check_fails_with_implicit_completion_backends_when_completer_role_unavailable() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Claude is the default; codex (the opposite family for Completer) is disabled
+    workspace
+        .backends
+        .insert("codex".to_owned(), empty_backend_settings(false));
+    // No explicit completion.backends
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    let completion_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role.contains("completion"));
+    assert!(
+        completion_failure.is_some(),
+        "check should fail on completion panel when Completer role target is unavailable: {:?}",
+        result.failures
+    );
+}
+
+// ── final-review scoping alignment with engine stage plan ────────────────
+
+/// Regression: `backend check` must validate final review whenever the
+/// flow's stage plan includes FinalReview, regardless of `final_review.enabled`.
+/// The engine's `stage_plan_for_flow()` does NOT filter FinalReview based
+/// on that flag, so diagnostics must not skip it either.
+#[test]
+fn check_validates_final_review_even_when_final_review_enabled_is_false() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable final review via config flag
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(false),
+        // Configure arbiter/reviewers on a disabled backend so check would fail
+        // IF it actually validates final review
+        arbiter_backend: Some("openrouter".to_owned()),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Standard flow includes FinalReview in its stage plan regardless of
+    // final_review.enabled, so check must validate it and report failure.
+    let result = service.check_backends(FlowPreset::Standard);
+    let final_review_failures: Vec<_> = result
+        .failures
+        .iter()
+        .filter(|f| f.role.contains("final_review"))
+        .collect();
+    assert!(
+        !final_review_failures.is_empty(),
+        "check should validate final review even when final_review.enabled=false \
+         because the engine stage plan still includes FinalReview: {:?}",
+        result.failures
+    );
+}
+
+/// Regression: for flows that do NOT include FinalReview in their stage
+/// definitions (e.g. docs_change), `backend check` should still skip
+/// final review validation regardless of `final_review.enabled`.
+#[test]
+fn check_still_skips_final_review_for_flows_without_final_review_stage() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Configure broken final review
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        arbiter_backend: Some("openrouter".to_owned()),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // DocsChange does not include FinalReview in its stages
+    let result = service.check_backends(FlowPreset::DocsChange);
+    let final_review_failures: Vec<_> = result
+        .failures
+        .iter()
+        .filter(|f| f.role.contains("final_review"))
+        .collect();
+    assert!(
+        final_review_failures.is_empty(),
+        "docs_change should skip final review validation since the flow \
+         does not include FinalReview: {:?}",
+        final_review_failures
+    );
+}
+
 // ── build-sensitive compile_only for stub ────────────────────────────────
 
 #[cfg(feature = "test-stub")]

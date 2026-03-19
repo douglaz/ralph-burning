@@ -174,6 +174,17 @@ runtime targets, `default_backend` and generic stage-derived roles are
 not checked. This prevents false failures when the base backend is
 disabled but all effectively-required targets are explicitly configured.
 
+When `completion.backends` is not explicitly configured, `backend check`
+validates the same implicit resolution path that run execution uses
+(`default_completion_targets()` via the Completer role), not the built-in
+default backend list. This prevents false failures on default-list
+backends that runtime would never use.
+
+Final review is validated whenever the flow's stage plan includes the
+`FinalReview` stage, regardless of `final_review.enabled`. This matches
+the engine's `stage_plan_for_flow()`, which does not filter `FinalReview`
+based on that configuration flag.
+
 If the backend adapter itself cannot be constructed (e.g., invalid
 `RALPH_BURNING_BACKEND` value), the command reports that as an
 `availability_failure` and exits non-zero instead of silently falling

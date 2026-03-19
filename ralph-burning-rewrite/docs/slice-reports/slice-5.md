@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (68 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (72 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 19 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -131,3 +131,11 @@
 - CLI failure-path coverage expanded: `backend list` and
   `backend show-effective` now have non-zero exit tests (missing
   workspace, corrupt config, invalid backend override).
+- `backend check` now uses the runtime completion-panel resolution path
+  when `completion.backends` is not explicitly configured. Previously it
+  iterated the built-in default backend list, which could fail on
+  backends that `default_completion_targets()` would never use.
+- `backend check` now validates final review whenever the flow's stage
+  plan includes `FinalReview`, regardless of `final_review.enabled`.
+  This aligns with the engine's `stage_plan_for_flow()`, which does not
+  filter `FinalReview` based on that flag.

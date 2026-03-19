@@ -250,10 +250,12 @@ impl<'a> BackendDiagnosticsService<'a> {
             self.check_completion_panel_config(&mut failures);
         }
 
-        // Check final review panel only if the flow includes it and it's enabled
-        if flow_def.stages.contains(&StageId::FinalReview)
-            && self.config.final_review_policy().enabled
-        {
+        // Check final review panel if the flow includes it.
+        // Note: the engine's stage_plan_for_flow() does NOT filter FinalReview
+        // based on final_review.enabled — it always includes FinalReview when
+        // the flow definition contains it. Diagnostics must match this behavior
+        // so `backend check` validates what the engine will actually execute.
+        if flow_def.stages.contains(&StageId::FinalReview) {
             self.check_final_review_panel_config(&mut failures);
         }
 
@@ -349,9 +351,9 @@ impl<'a> BackendDiagnosticsService<'a> {
         // reviewers may be optional).
         // Arbiter is resolved independently so its availability is always
         // checked even when reviewer resolution fails.
-        if flow_def.stages.contains(&StageId::FinalReview)
-            && self.config.final_review_policy().enabled
-        {
+        // Note: aligned with engine stage_plan_for_flow() which does NOT filter
+        // FinalReview based on final_review.enabled.
+        if flow_def.stages.contains(&StageId::FinalReview) {
             // Arbiter — always required, resolved independently of panel
             if let Ok(arbiter_target) = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, 1) {
                 required_targets.push((
@@ -494,10 +496,33 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Check completion panel members individually, reporting exact member
     /// identity and config source field for each failure.
+    ///
+    /// When `completion.backends` is not explicitly configured, this uses the
+    /// same implicit resolution path as `BackendPolicyService::resolve_completion_panel()`:
+    /// `default_completion_targets()` resolves the Completer role target instead
+    /// of iterating the built-in default backend list. This prevents false
+    /// failures when the default list contains backends that runtime would never
+    /// use.
     fn check_completion_panel_config(
         &self,
         failures: &mut Vec<BackendCheckFailure>,
     ) {
+        if !self.config.completion_backends_are_explicit() {
+            // Implicit completion backends: runtime uses default_completion_targets(),
+            // which resolves the Completer role and replicates it min_completers times.
+            // Validate that the Completer role can actually resolve.
+            if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::Completer, 1) {
+                failures.push(BackendCheckFailure {
+                    role: "completion_panel".to_owned(),
+                    backend_family: self.family_for_role(BackendPolicyRole::Completer),
+                    failure_kind: BackendCheckFailureKind::BackendDisabled,
+                    details: e.to_string(),
+                    config_source: self.config_source_for_role(BackendPolicyRole::Completer),
+                });
+            }
+            return;
+        }
+
         let specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
         let mut resolved_count = 0;
