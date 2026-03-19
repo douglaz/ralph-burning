@@ -1,5 +1,25 @@
 # Slice 3 Report — Manual Amendment Parity
 
+## Legacy References Consulted
+
+The following old-`ralph` references were consulted for manual amendment parity:
+
+- `rb.md` (lines 492–493) — glossary definition of "amendment request": a requested change reintroduced into work after final review or external direction
+- `rb.md` (lines 717, 730) — domain model: `AmendmentQueue` value object and `AmendmentRequest` entity in the Project Run Record context
+- `rb.md` (lines 760–761) — commands: `EnqueueAmendment` and `ClaimAmendments` as the canonical intake and consumption operations
+- `rb.md` (line 802) — events: `AmendmentQueued` as the durable history event for amendment intake
+- `rb.md` (line 841) — data ownership: "amendment state" owned by `contexts/project_run_record`
+- `rb.md` (line 1646) — failure/compensation invariant: "amendment queue claims must not be lost across crashes"
+- `rb.md` (line 1848) — filesystem layout: `amendments/` directory under project root
+- `rb.md` (line 1884) — run state: "amendment queue" as part of canonical run model
+- `rb.md` (line 2363) — behavioral rule 31: "Accepted final-review amendments reopen work unless the preset/policy reaches an explicit cap outcome"
+- `rb.md` (line 2732) — domain behavior test coverage: "amendment queue behavior"
+- `rb.md` (lines 2517–2525) — conformance scenario: "Final review restarts work after accepted amendments" with expected reopen semantics
+- `rb.md` (lines 4121–4145, 4173) — implementation slice 8 scope: amendment queue integration, acceptance/rejection, and safety rule "accepted amendments must persist before reopening work"
+- `parity-plan.md` (lines 151–180) — Slice 3 target CLI, required changes, and acceptance criteria for manual amendment parity
+- `prompt.md` (Slice 3 section) — master prompt target CLI contract: `project amend add/list/remove/clear`, source metadata, dedup, reopen, and journal requirements
+- Existing `ralph-burning-rewrite` codebase — PR-review amendment intake (`pr_review.rs`), workflow-stage amendment generation (`engine.rs`), and `QueuedAmendment` model as the pre-Slice-3 automated amendment baseline
+
 ## Scope
 
 Slice 3 adds manual amendment management as a first-class CLI surface and
@@ -47,10 +67,10 @@ and workflow-stage sources:
 - `src/cli/project.rs` — CLI subcommands
 - `src/contexts/automation_runtime/pr_review.rs` — migrated to shared service
 - `src/contexts/workflow_composition/engine.rs` — source/dedup_key fields
-- `src/contexts/conformance_spec/scenarios.rs` — 12 conformance scenarios
+- `src/contexts/conformance_spec/scenarios.rs` — 16 conformance scenarios
 - `src/adapters/fs.rs` — `project_root` visibility
-- `tests/unit/project_run_record_test.rs` — 20 new unit tests
-- `tests/cli.rs` — 12 new CLI integration tests
+- `tests/unit/project_run_record_test.rs` — 34 Slice 3 unit tests
+- `tests/cli.rs` — 14 CLI integration tests
 - `tests/unit/adapter_contract_test.rs` — updated QueuedAmendment constructors
 - `tests/unit/prompt_builder_test.rs` — updated amendment helper
 - `tests/unit/journal_test.rs` — updated event builder call
@@ -67,17 +87,21 @@ and workflow-stage sources:
 - `cargo test --features test-stub --test unit add_manual_amendment` — unit tests
 - `cargo test --features test-stub --test unit clear_amendments` — unit tests
 - `cargo test --features test-stub --test cli project_amend` — CLI tests
-- 12 conformance scenarios (`parity_slice3_*`)
+- 16 conformance scenarios (`parity_slice3_*`)
 
 ## Results
 
 - `cargo check` passed in both default and `test-stub` builds
-- 20 new unit tests for dedup key computation, AmendmentSource serialization,
-  backwards-compatible deserialization, and all service operations passed
-- 12 CLI integration tests covering add/list/remove/clear, duplicate detection,
-  completed-project reopen, journal recording, and lease conflict rejection passed
-- 12 conformance scenarios (8 original + 4 new: restart persistence,
-  completion blocking, lease-conflict rejection, run.json sync)
+- 34 Slice 3 unit tests for dedup key computation, AmendmentSource serialization,
+  backwards-compatible deserialization, all service operations, failure-injection
+  rollback, journal atomicity, and composite `CorruptRecord` error reporting passed
+- 14 CLI integration tests covering add/list/remove/clear, duplicate detection,
+  completed-project reopen, journal recording, and lease conflict rejection for
+  all mutating commands passed
+- 16 conformance scenarios: manual add/list/remove/clear, duplicate manual add,
+  completed-project reopen, journal event recording, remove-missing failure,
+  restart persistence, completion blocking, lease-conflict rejection (add/remove/clear),
+  clear partial failure, run.json sync, and journal-append-failure rollback
 
 ## Review Response Changes (Iteration 1)
 

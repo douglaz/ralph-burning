@@ -122,7 +122,7 @@ event with:
 ## CLI output
 
 `project amend list` surfaces per-amendment metadata including the amendment
-ID, source type, a truncated dedup key, and a UTF-8-safe body preview.
+ID, source type, the full dedup key, and a UTF-8-safe body preview.
 
 On partial `clear` failure, the CLI reports the exact removed and remaining
 amendment IDs.
