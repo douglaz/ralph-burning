@@ -7,7 +7,7 @@ use ralph_burning::contexts::agent_execution::diagnostics::{
 };
 use ralph_burning::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use ralph_burning::shared::domain::{
-    BackendFamily, BackendRoleTimeouts, BackendRuntimeSettings, BackendSelection,
+    BackendFamily, BackendRoleModels, BackendRoleTimeouts, BackendRuntimeSettings, BackendSelection,
     CompletionSettings, FlowPreset, PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
 };
 
@@ -157,15 +157,19 @@ fn check_reports_required_panel_member_failure() {
     let result = service.check_backends(FlowPreset::Standard);
 
     assert!(!result.passed);
-    let panel_failure = result
+    // With decomposed panel checks, the failure now identifies the exact
+    // member index and config source, not the panel as a whole.
+    let member_failure = result
         .failures
         .iter()
-        .find(|f| f.role == "completion_panel")
-        .expect("expected completion_panel failure");
+        .find(|f| f.role.starts_with("completion_panel.member"))
+        .expect("expected completion_panel.member[N] failure");
     assert_eq!(
         BackendCheckFailureKind::RequiredMemberUnavailable,
-        panel_failure.failure_kind
+        member_failure.failure_kind
     );
+    assert_eq!("openrouter", member_failure.backend_family);
+    assert_eq!("completion.backends", member_failure.config_source);
 }
 
 // ── show-effective tests ────────────────────────────────────────────────────
@@ -627,19 +631,20 @@ fn check_panel_failure_identifies_exact_backend_family() {
     let result = service.check_backends(FlowPreset::Standard);
 
     assert!(!result.passed);
-    let panel_failure = result
+    // With decomposed panel checks, each member has its own failure entry
+    let member_failure = result
         .failures
         .iter()
-        .find(|f| f.role == "completion_panel")
-        .expect("expected completion_panel failure");
+        .find(|f| f.role.starts_with("completion_panel.member"))
+        .expect("expected completion_panel.member[N] failure");
 
     // The failure should identify the exact backend, not just "mixed"
     assert_eq!(
         BackendCheckFailureKind::RequiredMemberUnavailable,
-        panel_failure.failure_kind
+        member_failure.failure_kind
     );
-    assert_eq!("openrouter", panel_failure.backend_family);
-    assert_eq!("completion.backends", panel_failure.config_source);
+    assert_eq!("openrouter", member_failure.backend_family);
+    assert_eq!("completion.backends", member_failure.config_source);
 }
 
 // ── inherited source-precedence tests ────────────────────────────────────────
@@ -1559,5 +1564,164 @@ async fn probe_failure_includes_config_source_for_required_member() {
         err_msg.contains("[source: completion.backends]"),
         "error should include config source field for completion member: {}",
         err_msg
+    );
+}
+
+// ── exact panel-failure identity tests (check) ────────────────────────────
+
+#[test]
+fn check_arbiter_failure_reports_exact_member_and_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter but configure the arbiter to use it
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::Codex),
+        ]),
+        min_reviewers: Some(2),
+        arbiter_backend: Some("openrouter".to_owned()),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    assert!(!result.passed, "should fail when arbiter backend is disabled");
+    let arbiter_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "final_review_panel.arbiter")
+        .expect("expected exact arbiter failure identity");
+    assert_eq!(
+        BackendCheckFailureKind::RequiredMemberUnavailable,
+        arbiter_failure.failure_kind
+    );
+    assert_eq!(
+        "final_review.arbiter_backend", arbiter_failure.config_source,
+        "arbiter failure should report the arbiter config field, not the panel backends field"
+    );
+}
+
+#[test]
+fn check_refiner_failure_reports_exact_member_and_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter but configure the refiner to use it
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.prompt_review.refiner_backend = Some("openrouter".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    assert!(!result.passed, "should fail when refiner backend is disabled");
+    let refiner_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "prompt_review_panel.refiner")
+        .expect("expected exact refiner failure identity");
+    assert_eq!(
+        BackendCheckFailureKind::RequiredMemberUnavailable,
+        refiner_failure.failure_kind
+    );
+    assert_eq!(
+        "prompt_review.refiner_backend", refiner_failure.config_source,
+        "refiner failure should report the refiner config field, not the validator backends field"
+    );
+}
+
+// ── per-field source precedence tests (show-effective) ────────────────────
+
+#[test]
+fn show_effective_reports_model_source_from_role_models() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    let mut claude_settings = empty_backend_settings(true);
+    claude_settings.role_models = BackendRoleModels {
+        planner: Some("planner-model-x".to_owned()),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("claude".to_owned(), claude_settings);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!("planner-model-x", planner.model_id);
+    assert_eq!(
+        "workspace.toml", planner.model_source,
+        "model set via backends.claude.role_models.planner should report workspace.toml source"
+    );
+}
+
+#[test]
+fn show_effective_reports_timeout_source_from_role_timeouts() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    let mut claude_settings = empty_backend_settings(true);
+    claude_settings.role_timeouts = BackendRoleTimeouts {
+        planner: Some(11),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("claude".to_owned(), claude_settings);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(11, planner.timeout_seconds);
+    assert_eq!(
+        "workspace.toml", planner.timeout_source,
+        "timeout set via backends.claude.role_timeouts.planner should report workspace.toml source"
+    );
+}
+
+#[test]
+fn show_effective_default_model_and_timeout_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // With no explicit role models or timeouts, sources should be "default"
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "default", planner.model_source,
+        "default model should report source as 'default'"
+    );
+    assert_eq!(
+        "default", planner.timeout_source,
+        "default timeout should report source as 'default'"
     );
 }

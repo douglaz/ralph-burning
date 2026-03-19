@@ -392,13 +392,19 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
     println!("  Per-role resolution:");
     for role in &view.roles {
         println!(
-            "    {:<20} {}/{} timeout={}s session={} (source: {})",
+            "    {:<20} {}/{} timeout={}s session={}",
             role.role,
             role.backend_family,
             role.model_id,
             role.timeout_seconds,
             role.session_policy,
+        );
+        println!(
+            "    {:<20} sources: backend={}, model={}, timeout={}",
+            "",
             role.override_source,
+            role.model_source,
+            role.timeout_source,
         );
     }
 }

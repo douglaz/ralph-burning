@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (39 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (44 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -58,3 +58,9 @@
   excluding generic stage-derived roles that are covered by dedicated
   panel checks and skipping `default_backend` when all effectively-required
   roles have explicit overrides.
+- `backend check` now decomposes panel failures to exact member identity
+  (e.g. `final_review_panel.arbiter`, `prompt_review_panel.refiner`)
+  with the selecting config source field.
+- `backend show-effective` now reports per-field source precedence for
+  model_id (`model_source`) and timeout (`timeout_source`) in addition
+  to the existing backend override source.

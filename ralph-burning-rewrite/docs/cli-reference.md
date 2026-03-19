@@ -178,6 +178,12 @@ Availability failures are reported per role/member — if the same backend
 target is shared by multiple roles (e.g., planner and final-review
 arbiter), each role is checked and reported independently.
 
+Config-time panel failures identify the exact failing member and its
+selecting config field: `final_review_panel.arbiter` with source
+`final_review.arbiter_backend`, `prompt_review_panel.refiner` with source
+`prompt_review.refiner_backend`, and individual reviewer/member identities
+(e.g. `final_review_panel.reviewer[0]`) with source `final_review.backends`.
+
 This command is strictly read-only: it does not create or modify run
 snapshots, project state, journals, payloads, artifacts, sessions, or
 runtime logs.
@@ -211,6 +217,10 @@ Flags:
 
 Shows the fully resolved backend configuration with source precedence
 for each field (default, workspace.toml, project config.toml, or cli override).
+Per-role entries include separate source metadata for backend selection
+(`override_source`), model resolution (`model_source`), and timeout
+resolution (`timeout_source`), so operators can trace every resolved
+value back to its originating config layer.
 
 Flags:
 - `--json` — emit a stable JSON object for scripts
@@ -233,7 +243,9 @@ Flags:
       "model_id": "string",
       "timeout_seconds": "u64",
       "session_policy": "string",
-      "override_source": "string"
+      "override_source": "string",
+      "model_source": "string",
+      "timeout_source": "string"
     }
   ],
   "default_session_policy": "string",

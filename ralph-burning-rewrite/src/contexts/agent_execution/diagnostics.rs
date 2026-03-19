@@ -96,6 +96,8 @@ pub struct RoleEffectiveView {
     pub timeout_seconds: u64,
     pub session_policy: String,
     pub override_source: String,
+    pub model_source: String,
+    pub timeout_source: String,
 }
 
 /// Result of `backend probe`.
@@ -232,63 +234,21 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         // Check completion panel only if the flow includes it
         if flow_def.stages.contains(&StageId::CompletionPanel) {
-            self.check_panel_members(
-                &mut failures,
-                "completion_panel",
-                || {
-                    let res = self.policy.resolve_completion_panel(1)?;
-                    Ok(res
-                        .completers
-                        .into_iter()
-                        .map(|m| (m.target, m.required))
-                        .collect::<Vec<_>>())
-                },
-                &self.config.completion_policy().backends,
-                self.config.completion_policy().min_completers,
-                "completion.backends",
-            );
+            self.check_completion_panel_config(&mut failures);
         }
 
         // Check final review panel only if the flow includes it and it's enabled
         if flow_def.stages.contains(&StageId::FinalReview)
             && self.config.final_review_policy().enabled
         {
-            self.check_panel_members(
-                &mut failures,
-                "final_review_panel",
-                || {
-                    let res = self.policy.resolve_final_review_panel(1)?;
-                    Ok(res
-                        .reviewers
-                        .into_iter()
-                        .map(|m| (m.target, m.required))
-                        .collect::<Vec<_>>())
-                },
-                &self.config.final_review_policy().backends,
-                self.config.final_review_policy().min_reviewers,
-                "final_review.backends",
-            );
+            self.check_final_review_panel_config(&mut failures);
         }
 
         // Check prompt review panel only if the flow includes it and it's enabled
         if flow_def.stages.contains(&StageId::PromptReview)
             && self.config.prompt_review_policy().enabled
         {
-            self.check_panel_members(
-                &mut failures,
-                "prompt_review_panel",
-                || {
-                    let res = self.policy.resolve_prompt_review_panel(1)?;
-                    Ok(res
-                        .validators
-                        .into_iter()
-                        .map(|m| (m.target, m.required))
-                        .collect::<Vec<_>>())
-                },
-                &self.config.prompt_review_policy().validator_backends,
-                self.config.prompt_review_policy().min_reviewers,
-                "prompt_review.validator_backends",
-            );
+            self.check_prompt_review_panel_config(&mut failures);
         }
 
         BackendCheckResult {
@@ -430,44 +390,157 @@ impl<'a> BackendDiagnosticsService<'a> {
         result
     }
 
-    fn check_panel_members<F>(
+    /// Check completion panel members individually, reporting exact member
+    /// identity and config source field for each failure.
+    fn check_completion_panel_config(
         &self,
         failures: &mut Vec<BackendCheckFailure>,
-        panel_name: &str,
-        resolve_fn: F,
-        configured_specs: &[PanelBackendSpec],
-        minimum: usize,
-        config_field: &str,
-    ) where
-        F: FnOnce() -> AppResult<Vec<(ResolvedBackendTarget, bool)>>,
-    {
-        match resolve_fn() {
-            Err(error) => {
-                // Classify the panel error with structural detail
-                let (kind, backend_family, details) =
-                    classify_panel_error_structured(&error, configured_specs, minimum);
+    ) {
+        let specs = &self.config.completion_policy().backends;
+        let minimum = self.config.completion_policy().min_completers;
+        let mut resolved_count = 0;
+
+        for (idx, spec) in specs.iter().enumerate() {
+            let backend = spec.backend();
+            if !self.policy.backend_enabled_public(backend) {
+                if spec.is_optional() {
+                    continue;
+                }
                 failures.push(BackendCheckFailure {
-                    role: panel_name.to_owned(),
-                    backend_family,
-                    failure_kind: kind,
-                    details,
-                    config_source: config_field.to_owned(),
+                    role: format!("completion_panel.member[{}]", idx),
+                    backend_family: backend.as_str().to_owned(),
+                    failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                    details: format!("required backend '{}' is disabled", backend),
+                    config_source: "completion.backends".to_owned(),
                 });
+                continue;
             }
-            Ok(resolved) if resolved.len() < minimum => {
+            resolved_count += 1;
+        }
+
+        if resolved_count < minimum {
+            failures.push(BackendCheckFailure {
+                role: "completion_panel".to_owned(),
+                backend_family: "mixed".to_owned(),
+                failure_kind: BackendCheckFailureKind::PanelMinimumViolation,
+                details: format!(
+                    "resolved {} member(s) but minimum is {}",
+                    resolved_count, minimum
+                ),
+                config_source: "completion.backends".to_owned(),
+            });
+        }
+    }
+
+    /// Check final review panel members individually: planner, each reviewer,
+    /// and arbiter each get their own failure identity and config source.
+    fn check_final_review_panel_config(
+        &self,
+        failures: &mut Vec<BackendCheckFailure>,
+    ) {
+        let policy = self.config.final_review_policy();
+
+        // Check arbiter separately — this was previously collapsed into the panel
+        if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, 1) {
+            failures.push(BackendCheckFailure {
+                role: "final_review_panel.arbiter".to_owned(),
+                backend_family: self.family_for_role(BackendPolicyRole::Arbiter),
+                failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                details: e.to_string(),
+                config_source: "final_review.arbiter_backend".to_owned(),
+            });
+        }
+
+        // Check each reviewer spec individually
+        let specs = &policy.backends;
+        let minimum = policy.min_reviewers;
+        let mut resolved_count = 0;
+
+        for (idx, spec) in specs.iter().enumerate() {
+            let backend = spec.backend();
+            if !self.policy.backend_enabled_public(backend) {
+                if spec.is_optional() {
+                    continue;
+                }
                 failures.push(BackendCheckFailure {
-                    role: panel_name.to_owned(),
-                    backend_family: "mixed".to_owned(),
-                    failure_kind: BackendCheckFailureKind::PanelMinimumViolation,
-                    details: format!(
-                        "resolved {} member(s) but minimum is {}",
-                        resolved.len(),
-                        minimum
-                    ),
-                    config_source: config_field.to_owned(),
+                    role: format!("final_review_panel.reviewer[{}]", idx),
+                    backend_family: backend.as_str().to_owned(),
+                    failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                    details: format!("required backend '{}' is disabled", backend),
+                    config_source: "final_review.backends".to_owned(),
                 });
+                continue;
             }
-            Ok(_) => {}
+            resolved_count += 1;
+        }
+
+        if resolved_count < minimum {
+            failures.push(BackendCheckFailure {
+                role: "final_review_panel".to_owned(),
+                backend_family: "mixed".to_owned(),
+                failure_kind: BackendCheckFailureKind::PanelMinimumViolation,
+                details: format!(
+                    "resolved {} reviewer(s) but minimum is {}",
+                    resolved_count, minimum
+                ),
+                config_source: "final_review.backends".to_owned(),
+            });
+        }
+    }
+
+    /// Check prompt review panel members individually: refiner and each
+    /// validator get their own failure identity and config source.
+    fn check_prompt_review_panel_config(
+        &self,
+        failures: &mut Vec<BackendCheckFailure>,
+    ) {
+        let policy = self.config.prompt_review_policy();
+
+        // Check refiner separately — this was previously collapsed into the panel
+        if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, 1) {
+            failures.push(BackendCheckFailure {
+                role: "prompt_review_panel.refiner".to_owned(),
+                backend_family: self.family_for_role(BackendPolicyRole::PromptReviewer),
+                failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                details: e.to_string(),
+                config_source: "prompt_review.refiner_backend".to_owned(),
+            });
+        }
+
+        // Check each validator spec individually
+        let specs = &policy.validator_backends;
+        let minimum = policy.min_reviewers;
+        let mut resolved_count = 0;
+
+        for (idx, spec) in specs.iter().enumerate() {
+            let backend = spec.backend();
+            if !self.policy.backend_enabled_public(backend) {
+                if spec.is_optional() {
+                    continue;
+                }
+                failures.push(BackendCheckFailure {
+                    role: format!("prompt_review_panel.validator[{}]", idx),
+                    backend_family: backend.as_str().to_owned(),
+                    failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                    details: format!("required backend '{}' is disabled", backend),
+                    config_source: "prompt_review.validator_backends".to_owned(),
+                });
+                continue;
+            }
+            resolved_count += 1;
+        }
+
+        if resolved_count < minimum {
+            failures.push(BackendCheckFailure {
+                role: "prompt_review_panel".to_owned(),
+                backend_family: "mixed".to_owned(),
+                failure_kind: BackendCheckFailureKind::PanelMinimumViolation,
+                details: format!(
+                    "resolved {} validator(s) but minimum is {}",
+                    resolved_count, minimum
+                ),
+                config_source: "prompt_review.validator_backends".to_owned(),
+            });
         }
     }
 
@@ -493,16 +566,21 @@ impl<'a> BackendDiagnosticsService<'a> {
             .iter()
             .filter_map(|role| {
                 let target = self.policy.resolve_role_target(*role, 1).ok()?;
-                let timeout = self.policy.timeout_for_role(target.backend.family, *role);
+                let family = target.backend.family;
+                let timeout = self.policy.timeout_for_role(family, *role);
                 let override_source = self.override_source_for_role(*role);
+                let model_source = self.model_source_for_role(*role, family);
+                let timeout_source = self.timeout_source_for_role(*role, family);
                 let session_policy = session_policy_for_role(*role);
                 Some(RoleEffectiveView {
                     role: role.as_str().to_owned(),
-                    backend_family: target.backend.family.as_str().to_owned(),
+                    backend_family: family.as_str().to_owned(),
                     model_id: target.model.model_id.clone(),
                     timeout_seconds: timeout.as_secs(),
                     session_policy,
                     override_source,
+                    model_source,
+                    timeout_source,
                 })
             })
             .collect();
@@ -969,6 +1047,86 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
     }
+
+    /// Determine the source precedence for a role's resolved model_id.
+    ///
+    /// Model resolution order (matching `BackendPolicyService::target_for_family`):
+    /// 1. Explicit model from the role's backend selection override
+    /// 2. Role-specific model from `backends.<family>.role_models.<role>`
+    /// 3. Base backend model from `default_model`
+    /// 4. Family default model
+    fn model_source_for_role(&self, role: BackendPolicyRole, family: BackendFamily) -> String {
+        let bp = self.config.backend_policy();
+
+        // 1. If the role has an explicit selection with a model, model comes
+        //    from the same config source as the role override.
+        let selection = match role {
+            BackendPolicyRole::Planner => bp.planner_backend.as_ref(),
+            BackendPolicyRole::Implementer => bp.implementer_backend.as_ref(),
+            BackendPolicyRole::Reviewer => bp.reviewer_backend.as_ref(),
+            BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => bp.qa_backend.as_ref(),
+            BackendPolicyRole::PromptReviewer => bp.prompt_review_refiner_backend.as_ref(),
+            BackendPolicyRole::Arbiter => bp.final_review_arbiter_backend.as_ref(),
+            _ => None,
+        };
+        if let Some(sel) = selection {
+            if sel.model.is_some() {
+                return self.override_source_for_role(role);
+            }
+        }
+
+        // 2. Check role-specific model from runtime settings
+        let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
+        if let Ok(entry) = self.config.get(&key) {
+            if !matches!(entry.value, crate::contexts::workspace_governance::config::ConfigValue::String(None)) {
+                let source = entry.source;
+                if source != crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                    return source.to_string();
+                }
+            }
+        }
+
+        // 3. Check base backend model (only if this role resolved to the base family)
+        if family == bp.base_backend.family && bp.default_model.is_some() {
+            return self.source_for_default_model();
+        }
+
+        // 4. Family default
+        "default".to_owned()
+    }
+
+    /// Determine the source precedence for a role's resolved timeout_seconds.
+    ///
+    /// Timeout resolution order (matching `BackendPolicyService::timeout_for_role`):
+    /// 1. Role-specific timeout from `backends.<family>.role_timeouts.<role>`
+    /// 2. Backend-level timeout from `backends.<family>.timeout_seconds`
+    /// 3. Global default (`DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS`)
+    fn timeout_source_for_role(&self, role: BackendPolicyRole, family: BackendFamily) -> String {
+        // 1. Check role-specific timeout
+        let role_key = format!(
+            "backends.{}.role_timeouts.{}",
+            family.as_str(),
+            role.as_str()
+        );
+        if let Ok(entry) = self.config.get(&role_key) {
+            let source = entry.source;
+            if source != crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                return source.to_string();
+            }
+        }
+
+        // 2. Check backend-level timeout
+        let backend_key = format!("backends.{}.timeout_seconds", family.as_str());
+        if let Ok(entry) = self.config.get(&backend_key) {
+            let source = entry.source;
+            if source != crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                return source.to_string();
+            }
+        }
+
+        // 3. Global default
+        "default".to_owned()
+    }
 }
 
 // ── Free functions ──────────────────────────────────────────────────────────
@@ -1046,43 +1204,3 @@ fn validate_flow_has_stage(flow_def: &FlowDefinition, stage_id: StageId) -> AppR
     }
 }
 
-/// Classify a panel resolution error with structural detail: returns the
-/// failure kind, the specific backend family (not "mixed"), and a detail string.
-fn classify_panel_error_structured(
-    error: &AppError,
-    configured_specs: &[PanelBackendSpec],
-    minimum: usize,
-) -> (BackendCheckFailureKind, String, String) {
-    match error {
-        AppError::BackendUnavailable { backend, details } => (
-            BackendCheckFailureKind::RequiredMemberUnavailable,
-            backend.clone(),
-            format!("required backend '{backend}' unavailable: {details}"),
-        ),
-        AppError::InvalidConfigValue { reason, .. } if reason.contains("minimum") => {
-            // Try to identify which backends were lost
-            let disabled: Vec<String> = configured_specs
-                .iter()
-                .filter(|spec| !spec.is_optional())
-                .map(|spec| spec.backend().as_str().to_owned())
-                .collect();
-            let family = if disabled.len() == 1 {
-                disabled[0].clone()
-            } else {
-                "mixed".to_owned()
-            };
-            (
-                BackendCheckFailureKind::PanelMinimumViolation,
-                family,
-                format!(
-                    "resolved panel member count is below the required minimum of {minimum}"
-                ),
-            )
-        }
-        other => (
-            BackendCheckFailureKind::RequiredMemberUnavailable,
-            "mixed".to_owned(),
-            other.to_string(),
-        ),
-    }
-}
