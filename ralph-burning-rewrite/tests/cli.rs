@@ -6010,3 +6010,63 @@ fn cli_project_amend_clear_close_failure_exits_nonzero() {
         "should report the close failure reason, got: {stderr}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Combined partial-clear + close failure: partial-clear IDs are still surfaced
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_clear_partial_failure_surfaces_ids_despite_close_failure() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "combo-clr");
+    select_active_project_fixture(temp_dir.path(), "combo-clr");
+
+    // Add two amendments so the partial failure has both removed and remaining.
+    let add1 = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "First amendment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("add first amendment");
+    assert!(add1.status.success(), "first add should succeed");
+
+    let add2 = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Second amendment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("add second amendment");
+    assert!(add2.status.success(), "second add should succeed");
+
+    // Trigger partial clear (first remove succeeds, second fails) AND close failure.
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend clear with partial + close failure");
+
+    assert!(
+        !output.status.success(),
+        "should exit non-zero on partial clear + close failure"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The partial-clear contract requires exact removed/remaining IDs.
+    assert!(
+        stderr.contains("removed:"),
+        "must surface removed IDs even when close also fails, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("remaining:"),
+        "must surface remaining IDs even when close also fails, got: {stderr}"
+    );
+
+    // The close failure should also be mentioned.
+    assert!(
+        stderr.contains("writer-lease cleanup also failed")
+            || stderr.contains("writer_lock_absent")
+            || stderr.contains("guard close failed"),
+        "should note the close failure alongside partial-clear details, got: {stderr}"
+    );
+}

@@ -345,12 +345,29 @@ and workflow-stage sources:
    document that guard shutdown failures are surfaced as non-zero exit codes
    on all mutating amend commands.
 
+### Iteration 12
+
+1. **`project amend clear` result ordering (Required Change 1)**:
+   `handle_amend_clear` no longer uses `lock_guard.close()?` before matching
+   the service result. Instead, the close result is captured and deferred:
+   if `clear_amendments` returns `AmendmentClearPartial`, the exact
+   removed/remaining IDs are always printed to stderr regardless of whether
+   close() also fails. On a successful clear, close failure still propagates.
+   Both failures are reported when they co-occur.
+2. **Combined regression test (Recommended Improvement)**:
+   Added `cli_project_amend_clear_partial_failure_surfaces_ids_despite_close_failure`
+   CLI test that enables both `RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1`
+   and `RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE=1`, verifying that
+   removed/remaining IDs and the close failure message all appear in stderr.
+3. **Docs updated**: `amendments.md` lease conflict section updated to
+   document the partial-clear priority over lease cleanup.
+
 ## Tests Run (updated)
 
 - `cargo check` — clean
 - `cargo check --features test-stub` — clean
 - 34 Slice 3 unit tests pass
-- 17 CLI integration tests pass (14 original + 3 close-failure regression)
+- 18 CLI integration tests pass (14 original + 3 close-failure + 1 combined)
 - 16 conformance scenarios pass
 
 ## Remaining Known Gaps

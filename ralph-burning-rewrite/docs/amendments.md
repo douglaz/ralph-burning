@@ -115,6 +115,12 @@ guard and surfaces any cleanup failure as a non-zero exit code. This matches
 the `run start` and `run resume` convention and prevents silently leaving
 behind a durable lease or stranded writer lock when lock release fails.
 
+For `project amend clear`, the partial-clear contract takes priority over
+lease cleanup: if `clear_amendments` returns `AmendmentClearPartial` with
+exact removed/remaining IDs, those IDs are always surfaced on stderr even
+if the subsequent writer-lease close also fails. Both failures are reported
+when they co-occur.
+
 ## Journal events
 
 Every amendment (manual and automated) emits an `amendment_queued` journal

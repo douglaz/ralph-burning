@@ -801,12 +801,15 @@ async fn handle_amend_clear() -> AppResult<()> {
         let _ = std::fs::remove_file(&lock_path);
     }
 
-    // Explicit guard shutdown before printing success — surfaces cleanup
-    // failures as non-zero exit instead of silently succeeding.
-    lock_guard.close()?;
+    // Capture close result but don't propagate yet — the partial-clear
+    // contract requires surfacing removed/remaining IDs even if lease
+    // cleanup also fails.
+    let close_result = lock_guard.close();
 
     match result {
         Ok(removed) => {
+            // On successful clear, propagate any close failure.
+            close_result?;
             if removed.is_empty() {
                 println!("No pending amendments to clear.");
             } else {
@@ -821,12 +824,16 @@ async fn handle_amend_clear() -> AppResult<()> {
             remaining,
             ..
         }) => {
+            // Always surface partial-clear IDs, even if close also failed.
             eprintln!("Partial clear failure:");
             for id in &removed {
                 eprintln!("  removed: {}", id);
             }
             for id in &remaining {
                 eprintln!("  remaining: {}", id);
+            }
+            if let Err(close_err) = close_result {
+                eprintln!("  (writer-lease cleanup also failed: {close_err})");
             }
             return Err(AppError::AmendmentClearPartial {
                 removed_count: removed.len(),
