@@ -1908,6 +1908,109 @@ fn project_bootstrap_fails_for_invalid_flow_before_creating_requirements_run() {
     );
 }
 
+// ── Project Bootstrap --from-seed ──
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_from_seed_creates_project_directly() {
+    let temp_dir = initialize_workspace_fixture();
+    let seed_path = temp_dir.path().join("test-seed.json");
+    fs::write(
+        &seed_path,
+        r#"{
+  "version": 2,
+  "project_id": "seed-test-project",
+  "project_name": "Seed Test Project",
+  "flow": "standard",
+  "prompt_body": "Build a hello-world utility.",
+  "handoff_summary": "Minimal seed test."
+}"#,
+    )
+    .expect("write seed file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-seed",
+            seed_path.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from seed");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --from-seed should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/seed-test-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+    assert!(project_toml.contains("seed-test-project"));
+}
+
+#[test]
+fn project_bootstrap_from_seed_rejects_invalid_seed_json() {
+    let temp_dir = initialize_workspace_fixture();
+    let seed_path = temp_dir.path().join("bad-seed.json");
+    fs::write(
+        &seed_path,
+        r#"{
+  "version": 2,
+  "project_id": "bad-project",
+  "project_name": "Bad Project",
+  "flow": "standard",
+  "prompt_body": "Hello",
+  "handoff_summary": "Bad.",
+  "source": {
+    "mode": "seed_file",
+    "run_id": "fake"
+  }
+}"#,
+    )
+    .expect("write bad seed file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-seed",
+            seed_path.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from bad seed");
+
+    assert!(
+        !output.status.success(),
+        "bootstrap --from-seed with invalid source.mode should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid project seed JSON"),
+        "should report invalid seed JSON, got: {stderr}"
+    );
+    // No project directory should be created
+    let projects_dir = temp_dir.path().join(".ralph-burning/projects");
+    let project_count = fs::read_dir(&projects_dir)
+        .map(|rd| rd.count())
+        .unwrap_or(0);
+    assert_eq!(
+        project_count, 0,
+        "invalid seed should not create any project"
+    );
+}
+
 // ── Project List ──
 
 #[test]

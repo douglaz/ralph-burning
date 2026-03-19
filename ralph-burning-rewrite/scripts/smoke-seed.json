@@ -5,9 +5,5 @@
   "flow": "standard",
   "prompt_body": "Smoke test: validate backend end-to-end with a minimal standard flow. Create a single-file utility that prints 'smoke ok' to stdout.",
   "handoff_summary": "Minimal smoke test project for live backend validation.",
-  "follow_ups": [],
-  "source": {
-    "mode": "seed_file",
-    "run_id": "smoke-seed-fixture"
-  }
+  "follow_ups": []
 }
