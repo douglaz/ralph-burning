@@ -346,12 +346,12 @@ Optional flags:
     "minimum": "usize",
     "resolved_count": "usize",
     "members": [
-      { "backend_family": "string", "model_id": "string", "required": "bool" }
+      { "backend_family": "string", "model_id": "string", "required": "bool", "configured_index": "usize" }
     ],
     "omitted": [
       { "backend_family": "string", "reason": "string", "was_optional": "bool" }
     ],
-    "arbiter": { "backend_family": "string", "model_id": "string", "required": "bool" }
+    "arbiter": { "backend_family": "string", "model_id": "string", "required": "bool", "configured_index": "usize" }
   }
 }
 ```
@@ -359,3 +359,7 @@ Optional flags:
 The `panel` field is only present for panel targets (`completion_panel`,
 `final_review_panel`, `prompt_review_panel`). For singular roles, it is
 omitted from both text and JSON output.
+
+The `configured_index` on each member and arbiter is the member's position in
+the original configured spec list, preserved through optional-member filtering
+so failure messages always reference the exact configured position.

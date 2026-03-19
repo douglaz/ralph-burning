@@ -358,7 +358,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 required_targets.push((
                     arbiter_target,
                     "final_review_panel.arbiter".to_owned(),
-                    "final_review.arbiter_backend".to_owned(),
+                    self.config_source_for_role(BackendPolicyRole::Arbiter),
                 ));
             }
 
@@ -369,7 +369,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 required_targets.push((
                     res.planner.clone(),
                     "final_review_panel.planner".to_owned(),
-                    "workflow.planner_backend".to_owned(),
+                    self.config_source_for_role(BackendPolicyRole::Planner),
                 ));
 
                 let minimum = self.config.final_review_policy().min_reviewers;
@@ -399,7 +399,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 required_targets.push((
                     refiner_target,
                     "prompt_review_panel.refiner".to_owned(),
-                    "prompt_review.refiner_backend".to_owned(),
+                    self.config_source_for_role(BackendPolicyRole::PromptReviewer),
                 ));
             }
 
@@ -550,7 +550,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 backend_family: self.family_for_role(BackendPolicyRole::Arbiter),
                 failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
                 details: e.to_string(),
-                config_source: "final_review.arbiter_backend".to_owned(),
+                config_source: self.config_source_for_role(BackendPolicyRole::Arbiter),
             });
         }
 
@@ -606,7 +606,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 backend_family: self.family_for_role(BackendPolicyRole::PromptReviewer),
                 failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
                 details: e.to_string(),
-                config_source: "prompt_review.refiner_backend".to_owned(),
+                config_source: self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             });
         }
 
@@ -859,7 +859,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             .map_err(|err| self.make_probe_target_error(
                 "final_review_panel", "arbiter",
                 &self.family_for_role(BackendPolicyRole::Arbiter),
-                "final_review.arbiter_backend",
+                &self.config_source_for_role(BackendPolicyRole::Arbiter),
                 &err,
             ))?;
 
@@ -1275,16 +1275,22 @@ impl<'a> BackendDiagnosticsService<'a> {
     }
 
     fn config_source_for_role(&self, role: BackendPolicyRole) -> String {
-        match role {
-            BackendPolicyRole::Planner => "workflow.planner_backend",
-            BackendPolicyRole::Implementer => "workflow.implementer_backend",
-            BackendPolicyRole::Reviewer => "workflow.reviewer_backend",
-            BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => "workflow.qa_backend",
-            BackendPolicyRole::PromptReviewer => "prompt_review.refiner_backend",
-            BackendPolicyRole::Arbiter => "final_review.arbiter_backend",
-            _ => "default_backend",
+        // If the role has an explicit override set, return the role-specific
+        // config key. Otherwise the role inherits from `default_backend`.
+        if self.policy.has_explicit_override(role) {
+            match role {
+                BackendPolicyRole::Planner => "workflow.planner_backend",
+                BackendPolicyRole::Implementer => "workflow.implementer_backend",
+                BackendPolicyRole::Reviewer => "workflow.reviewer_backend",
+                BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => "workflow.qa_backend",
+                BackendPolicyRole::PromptReviewer => "prompt_review.refiner_backend",
+                BackendPolicyRole::Arbiter => "final_review.arbiter_backend",
+                _ => "default_backend",
+            }
+            .to_owned()
+        } else {
+            "default_backend".to_owned()
         }
-        .to_owned()
     }
 
     fn source_for_base_backend(&self) -> String {

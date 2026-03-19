@@ -1324,11 +1324,10 @@ async fn probe_prompt_review_panel_failure_reports_refiner_source() {
 
     assert!(result.is_err(), "probe should fail when refiner is unavailable");
     let err_msg = result.unwrap_err().to_string();
-    // The prompt_review_panel primary target is the refiner, so the source
-    // should be prompt_review.refiner_backend, NOT workflow.planner_backend.
+    // No explicit refiner override set, so refiner inherits from default_backend
     assert!(
-        err_msg.contains("[source: prompt_review.refiner_backend]"),
-        "error should include refiner config source field, got: {}",
+        err_msg.contains("[source: default_backend]"),
+        "inherited refiner failure should report default_backend, got: {}",
         err_msg
     );
 }
@@ -1486,9 +1485,10 @@ async fn probe_failure_includes_config_source_for_planner() {
 
     assert!(result.is_err(), "probe should fail when planner is unavailable");
     let err_msg = result.unwrap_err().to_string();
+    // No explicit planner override set, so planner inherits from default_backend
     assert!(
-        err_msg.contains("[source: workflow.planner_backend]"),
-        "error should include config source field for planner: {}",
+        err_msg.contains("[source: default_backend]"),
+        "inherited planner failure should report default_backend, not workflow.planner_backend: {}",
         err_msg
     );
 }

@@ -109,3 +109,13 @@
   (`test-stub` feature absent). In test-stub builds, `stub` reports
   `null` for `compile_only`, consistent with its actually being
   operational.
+- `backend check` and `backend probe` now correctly report `default_backend`
+  as the config source when a role or panel target inherits from the base
+  backend, instead of misattributing to an unset role-specific override
+  key (e.g. `workflow.planner_backend`). Source attribution for roles with
+  explicit overrides is unchanged.
+- Conformance scenarios updated: `parity_slice5_backend_list` uses
+  build-sensitive `compile_only` assertion; probe scenarios now assert
+  `configured_index` field presence on panel members.
+- `cli-reference.md` updated: `backend probe --json` schema documents
+  `configured_index` on member and arbiter objects.

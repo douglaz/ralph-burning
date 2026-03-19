@@ -18546,13 +18546,25 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             }
         }
 
-        // stub must be compile_only
+        // stub compile_only is build-sensitive: in test-stub builds it is
+        // null (absent), in production builds it is true.
         let stub_entry = entries
             .iter()
             .find(|e| e.get("family").and_then(|v| v.as_str()) == Some("stub"))
             .ok_or("missing stub entry")?;
-        if stub_entry.get("compile_only").and_then(|v| v.as_bool()) != Some(true) {
-            return Err("stub should be marked compile_only".into());
+        #[cfg(feature = "test-stub")]
+        {
+            if stub_entry.get("compile_only").is_some()
+                && !stub_entry.get("compile_only").unwrap().is_null()
+            {
+                return Err("stub compile_only should be null in test-stub build".into());
+            }
+        }
+        #[cfg(not(feature = "test-stub"))]
+        {
+            if stub_entry.get("compile_only").and_then(|v| v.as_bool()) != Some(true) {
+                return Err("stub should be marked compile_only in non-stub build".into());
+            }
         }
 
         Ok(())
@@ -18702,13 +18714,16 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             return Err("completion panel should have at least one member".into());
         }
 
-        // Each member must have required/optional status and backend_family
+        // Each member must have required/optional status, backend_family, and configured_index
         for member in members {
             if member.get("required").is_none() {
                 return Err("member missing required field".into());
             }
             if member.get("backend_family").is_none() {
                 return Err("member missing backend_family field".into());
+            }
+            if member.get("configured_index").is_none() {
+                return Err("member missing configured_index field".into());
             }
         }
 
@@ -18758,10 +18773,13 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             return Err("final review panel should have at least one member".into());
         }
 
-        // Each member must have backend_family
+        // Each member must have backend_family and configured_index
         for member in members {
             if member.get("backend_family").is_none() {
                 return Err("member missing backend_family field".into());
+            }
+            if member.get("configured_index").is_none() {
+                return Err("member missing configured_index field".into());
             }
         }
 
