@@ -70,7 +70,7 @@ and workflow-stage sources:
 - `src/contexts/conformance_spec/scenarios.rs` — 16 conformance scenarios
 - `src/adapters/fs.rs` — `project_root` visibility
 - `tests/unit/project_run_record_test.rs` — 34 Slice 3 unit tests
-- `tests/cli.rs` — 14 CLI integration tests
+- `tests/cli.rs` — 17 CLI integration tests
 - `tests/unit/adapter_contract_test.rs` — updated QueuedAmendment constructors
 - `tests/unit/prompt_builder_test.rs` — updated amendment helper
 - `tests/unit/journal_test.rs` — updated event builder call
@@ -95,9 +95,9 @@ and workflow-stage sources:
 - 34 Slice 3 unit tests for dedup key computation, AmendmentSource serialization,
   backwards-compatible deserialization, all service operations, failure-injection
   rollback, journal atomicity, and composite `CorruptRecord` error reporting passed
-- 14 CLI integration tests covering add/list/remove/clear, duplicate detection,
-  completed-project reopen, journal recording, and lease conflict rejection for
-  all mutating commands passed
+- 17 CLI integration tests covering add/list/remove/clear, duplicate detection,
+  completed-project reopen, journal recording, lease conflict rejection for
+  all mutating commands, and writer-lease close-failure regression passed
 - 16 conformance scenarios: manual add/list/remove/clear, duplicate manual add,
   completed-project reopen, journal event recording, remove-missing failure,
   restart persistence, completion blocking, lease-conflict rejection (add/remove/clear),
@@ -326,6 +326,32 @@ and workflow-stage sources:
 4. **Docs updated**: `amendments.md` failure safety section updated to
    document composite `CorruptRecord` errors for all rollback-failure paths
    in add, remove, clear, and batch staging.
+
+### Iteration 11
+
+1. **Writer-lease cleanup on successful amend mutations (Required Change 1)**:
+   Replaced `let _ = lock_guard.close();` with `lock_guard.close()?;` in
+   `handle_amend_add`, `handle_amend_remove`, and `handle_amend_clear`,
+   matching the existing success-path pattern in `handle_run_start` and
+   `handle_resume`. Added the `RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE`
+   test injection seam to all three handlers.
+2. **CLI regression coverage (Recommended Improvement)**:
+   Added 3 new CLI integration tests:
+   - `cli_project_amend_add_close_failure_exits_nonzero`
+   - `cli_project_amend_remove_close_failure_exits_nonzero`
+   - `cli_project_amend_clear_close_failure_exits_nonzero`
+   These mirror the existing `cli_run_start_close_failure_exits_nonzero` test.
+3. **Docs updated**: `amendments.md` lease conflict section updated to
+   document that guard shutdown failures are surfaced as non-zero exit codes
+   on all mutating amend commands.
+
+## Tests Run (updated)
+
+- `cargo check` — clean
+- `cargo check --features test-stub` — clean
+- 34 Slice 3 unit tests pass
+- 17 CLI integration tests pass (14 original + 3 close-failure regression)
+- 16 conformance scenarios pass
 
 ## Remaining Known Gaps
 

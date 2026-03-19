@@ -641,8 +641,19 @@ async fn handle_amend_add(args: AmendAddArgs) -> AppResult<()> {
         &body,
     )?;
 
-    // Release the writer lease before printing output.
-    let _ = lock_guard.close();
+    // Test-only injection seam: delete the writer lock file before close()
+    // to exercise close-failure handling at the CLI level.
+    if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
+        let lock_path = current_dir.join(format!(
+            ".ralph-burning/daemon/leases/writer-{}.lock",
+            project_id.as_str()
+        ));
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     match result {
         service::AmendmentAddResult::Created { amendment_id } => {
@@ -725,7 +736,19 @@ async fn handle_amend_remove(id: String) -> AppResult<()> {
         &id,
     )?;
 
-    let _ = lock_guard.close();
+    // Test-only injection seam: delete the writer lock file before close()
+    // to exercise close-failure handling at the CLI level.
+    if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
+        let lock_path = current_dir.join(format!(
+            ".ralph-burning/daemon/leases/writer-{}.lock",
+            project_id.as_str()
+        ));
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     println!("Removed amendment '{}'", id);
     Ok(())
@@ -768,8 +791,19 @@ async fn handle_amend_clear() -> AppResult<()> {
         &project_id,
     );
 
-    // Release the writer lease before printing output.
-    let _ = lock_guard.close();
+    // Test-only injection seam: delete the writer lock file before close()
+    // to exercise close-failure handling at the CLI level.
+    if std::env::var("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE").is_ok() {
+        let lock_path = current_dir.join(format!(
+            ".ralph-burning/daemon/leases/writer-{}.lock",
+            project_id.as_str()
+        ));
+        let _ = std::fs::remove_file(&lock_path);
+    }
+
+    // Explicit guard shutdown before printing success — surfaces cleanup
+    // failures as non-zero exit instead of silently succeeding.
+    lock_guard.close()?;
 
     match result {
         Ok(removed) => {

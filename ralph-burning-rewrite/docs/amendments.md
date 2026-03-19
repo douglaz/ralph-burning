@@ -110,6 +110,11 @@ acquires an RAII writer lease before performing any mutation, preventing races
 between concurrent CLI invocations and in-flight workflow execution. The
 service layer also rejects mutations when `run.json` shows `status = running`.
 
+After the mutation succeeds, the CLI explicitly shuts down the writer-lease
+guard and surfaces any cleanup failure as a non-zero exit code. This matches
+the `run start` and `run resume` convention and prevents silently leaving
+behind a durable lease or stranded writer lock when lock release fails.
+
 ## Journal events
 
 Every amendment (manual and automated) emits an `amendment_queued` journal

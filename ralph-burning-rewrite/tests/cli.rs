@@ -5896,3 +5896,117 @@ fn project_amend_clear_lease_conflict_rejects() {
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
     assert!(!list_stdout.contains("No pending amendments"), "amendments should still be pending: {list_stdout}");
 }
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend add exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_add_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-add");
+    select_active_project_fixture(temp_dir.path(), "close-add");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Close failure test"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend add with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend add must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend remove exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_remove_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-rm");
+    select_active_project_fixture(temp_dir.path(), "close-rm");
+
+    // Add an amendment first (without close-failure seam).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment for close-rm test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success(), "add should succeed");
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .lines()
+        .find(|l| l.starts_with("Amendment: "))
+        .expect("should print amendment id")
+        .trim_start_matches("Amendment: ")
+        .trim()
+        .to_owned();
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend remove with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend remove must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend clear exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_clear_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-clr");
+    select_active_project_fixture(temp_dir.path(), "close-clr");
+
+    // Add an amendment first (without close-failure seam).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment for close-clr test"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success(), "add should succeed");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend clear with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend clear must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
