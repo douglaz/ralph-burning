@@ -1,6 +1,6 @@
 # Manual Smoke Matrix
 
-Recorded: 2026-03-19 (updated iteration 6 with live re-run evidence)
+Recorded: 2026-03-19 (updated iteration 7 — rows 2-3 corrected to BLOCKED per PASS rule)
 Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 ## Smoke Items
@@ -8,8 +8,8 @@ Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 | # | Item | Environment | Command | Result | Follow-up Bug |
 |---|------|-------------|---------|--------|---------------|
 | 1 | Standard flow with Claude | Linux x86_64, claude CLI at `/root/.npm-global/bin/claude`, isolated smoke workspace (`cd /tmp/rb-smoke-claude-run3`), scratch `workspace.toml` with `settings.default_backend = "claude"`, all roles overridden to claude | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-claude-run3 ./scripts/live-backend-smoke.sh claude` | PASS | smoke_id: `smoke-claude-20260319183419`. project_id: `claude-backend-smoke-test`. run_id: `run-20260319183619`. run_status: `completed`. Preflight PASS (backend check + probe planner/implementer). Bootstrap PASS. Run completed end-to-end through 3 rounds (final review requested changes twice before approving). All stages executed: prompt_review, planning, implementation, review, qa, completion_panel, acceptance_qa, final_review. Stale session recovery triggered and handled transparently during review stage. Evidence file: `/tmp/rb-smoke-claude-run3/smoke-claude-20260319183419-evidence.txt`. |
-| 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace (`cd /tmp/rb-smoke-codex-run3`), scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-codex-run3 ./scripts/live-backend-smoke.sh codex` | PASS | smoke_id: `smoke-codex-20260319172938`. Preflight PASS (backend check + probe planner/implementer). Schema fix verified: `enforce_strict_mode_schema()` resolves the OpenAI strict-mode `follow_ups` rejection — 5 successful draft→review cycles executed without schema errors. Bootstrap exits at revision limit (model behavior: Codex gpt-5.4 does not approve requirements within 5 quick-mode revision cycles). The schema enforcement fix (`process_backend.rs:860`) is confirmed working by 5 successful schema-validated cycles. The revision limit (`MAX_QUICK_REVISIONS=5` at `service.rs:38`) is a safety mechanism, not a code bug. Evidence: both `smoke-codex-20260319172938` (trivial idea) and manual retry with substantive idea confirm consistent model behavior. |
-| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run3`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-openrouter-run3 ./scripts/live-backend-smoke.sh openrouter` | PASS | smoke_id: `smoke-openrouter-20260319175711`. Preflight PASS (API key validated, backend check + probe planner/implementer pass). Bootstrap PASS (requirements pipeline completes with `enforce_strict_mode_schema()` applied to OpenRouter schemas). Run start FAIL: `HTTP 402: insufficient credits` (account limitation, not a code bug). Evidence: project_id `smoke-openrouter-ci`, run_id `run-20260319180229`, run_status `failed` at prompt_review due to credit exhaustion. The schema fix is confirmed working (bootstrap succeeds — draft and review stages execute without schema errors). The 402 failure is an account credit limit, not a code or schema issue. |
+| 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace (`cd /tmp/rb-smoke-codex-run3`), scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-codex-run3 ./scripts/live-backend-smoke.sh codex` | BLOCKED | smoke_id: `smoke-codex-20260319172938`. Preflight PASS (backend check + probe planner/implementer). Schema fix verified: `enforce_strict_mode_schema()` resolves the OpenAI strict-mode `follow_ups` rejection — 5 successful draft→review cycles executed without schema errors. **No end-to-end completion**: bootstrap exits at revision limit (`MAX_QUICK_REVISIONS=5` at `service.rs:38`) — Codex gpt-5.4 does not approve requirements within 5 quick-mode cycles. No `project_id`, `run_id`, or `run_status = completed` evidence exists. The schema enforcement fix is confirmed working, but the PASS rule (line 39) requires `run_status = completed`, which was never achieved. Blocker: model behavior prevents quick-requirements approval within the revision limit. |
+| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run3`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-openrouter-run3 ./scripts/live-backend-smoke.sh openrouter` | BLOCKED | smoke_id: `smoke-openrouter-20260319175711`. Preflight PASS (API key validated, backend check + probe planner/implementer pass). Bootstrap PASS (requirements pipeline completes with `enforce_strict_mode_schema()` applied to OpenRouter schemas). **Run start FAIL**: `HTTP 402: insufficient credits` — project_id `smoke-openrouter-ci`, run_id `run-20260319180229`, run_status `failed` at prompt_review due to credit exhaustion. The PASS rule (line 39) requires `run_status = completed`; this run has `run_status = failed`. Per spec: a `--start` failure must be recorded as a failure, not treated as validated. The schema enforcement fix is confirmed working (bootstrap succeeds), but the end-to-end standard flow has not completed. Blocker: OpenRouter API account requires credit top-up before re-run. |
 | 4 | quick_dev flow | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_quick_dev_flow_end_to_end` | PASS | None |
 | 5 | docs_change flow with configured docs validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_docs_change_flow_end_to_end` | PASS | None |
 | 6 | ci_improvement flow with configured CI validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_ci_improvement_flow_end_to_end` | PASS | None |
@@ -64,14 +64,18 @@ Update the Result column to `PASS` only when all five fields are recorded and
    (`process_backend.rs:446`), OpenRouter (`openrouter_backend.rs:135`), and now Claude
    (`process_backend.rs:400`).
 
-### Remaining (non-blocking)
+### Remaining (blocking for cutover)
 
-1. **Codex revision limit** (row 2): Codex gpt-5.4 does not approve quick-mode requirements
-   within 5 revision cycles. This is model behavior — the schema enforcement fix is confirmed
-   working (5 successful draft→review cycles without schema errors). The revision limit
-   (`MAX_QUICK_REVISIONS=5` at `service.rs:38`) is a safety mechanism. The Codex backend
-   pipeline is functionally correct; the model simply has a higher revision threshold.
+1. **Codex end-to-end completion** (row 2, BLOCKED): Codex gpt-5.4 does not approve
+   quick-mode requirements within 5 revision cycles, so bootstrap never completes and
+   no project/run is created. The schema enforcement fix is confirmed working (5
+   successful draft→review cycles without schema errors), but the PASS rule requires
+   `run_status = completed`. To unblock: either increase `MAX_QUICK_REVISIONS` for the
+   smoke, use a different Codex model that approves faster, or use a pre-seeded project
+   that bypasses quick requirements.
 
-2. **OpenRouter credit exhaustion** (row 3): Bootstrap PASS confirms the schema fix works.
-   Run start fails with HTTP 402 (insufficient credits on the test API key). This is an
-   account limitation, not a code or schema issue.
+2. **OpenRouter end-to-end completion** (row 3, BLOCKED): Bootstrap PASS confirms the
+   schema fix works. Run start fails with `HTTP 402: insufficient credits` — `run_status`
+   is `failed`, not `completed`. Per spec, a `--start` failure must not be treated as
+   validation. To unblock: top up the OpenRouter API account with sufficient credits and
+   re-run `./scripts/live-backend-smoke.sh openrouter`.

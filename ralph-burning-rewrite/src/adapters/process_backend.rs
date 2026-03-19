@@ -91,19 +91,25 @@ impl PreparedCommand {
                 } else {
                     // Both structured_output and result are empty.
                     // Last resort: try to find JSON in the raw stdout beyond the envelope.
-                    extract_json_from_text(&stdout_text).map_err(|_| {
-                        ProcessBackendAdapter::invocation_failed(
-                            request,
-                            FailureClass::SchemaValidationFailure,
-                            format!(
-                                "Claude returned empty result with no structured_output \
-                                 (contract: {}, stdout_len: {}, session_policy: {:?})",
-                                request.contract.label(),
-                                output.stdout.len(),
-                                request.session_policy,
-                            ),
-                        )
-                    })?
+                    // Guard: reject if the extracted object is just the Claude envelope
+                    // itself (has `result` + `session_id` keys), which would happen when
+                    // stdout contains only the envelope and no separate payload.
+                    extract_json_from_text(&stdout_text)
+                        .ok()
+                        .filter(|val| !looks_like_claude_envelope(val))
+                        .ok_or_else(|| {
+                            ProcessBackendAdapter::invocation_failed(
+                                request,
+                                FailureClass::SchemaValidationFailure,
+                                format!(
+                                    "Claude returned empty result with no structured_output \
+                                     (contract: {}, stdout_len: {}, session_policy: {:?})",
+                                    request.contract.label(),
+                                    output.stdout.len(),
+                                    request.session_policy,
+                                ),
+                            )
+                        })?
                 };
 
                 let session_id = envelope.session_id.or_else(|| {
@@ -973,6 +979,22 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     }
 }
 
+/// Returns `true` if the given JSON value looks like a Claude CLI envelope
+/// (contains `result` and/or `session_id` top-level keys) rather than a
+/// contract payload. Used to guard the empty-result fallback from accidentally
+/// recovering the envelope itself as the payload.
+fn looks_like_claude_envelope(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    // The Claude envelope has `result`, `session_id`, and optionally
+    // `structured_output`. If we see at least two of these three keys,
+    // this is almost certainly the envelope, not a contract payload.
+    let envelope_keys = ["result", "session_id", "structured_output"];
+    let matches = envelope_keys.iter().filter(|k| obj.contains_key(**k)).count();
+    matches >= 2
+}
+
 /// Try to extract a JSON object from text that may contain surrounding prose or
 /// markdown fencing. This handles cases where the Claude CLI returns the payload
 /// inside `result` wrapped in markdown code blocks or conversational text.
@@ -1135,5 +1157,46 @@ mod tests {
     fn extract_json_from_text_no_json_returns_error() {
         let text = "No JSON here at all.";
         assert!(extract_json_from_text(text).is_err());
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_detects_envelope() {
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-abc123",
+            "structured_output": null
+        });
+        assert!(looks_like_claude_envelope(&envelope));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_detects_partial_envelope() {
+        // Two of three envelope keys → still detected
+        let partial = json!({
+            "result": "some text",
+            "session_id": "sess-xyz"
+        });
+        assert!(looks_like_claude_envelope(&partial));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_rejects_contract_payload() {
+        let payload = json!({
+            "outcome": "approved",
+            "evidence": ["test passed"],
+            "findings": []
+        });
+        assert!(!looks_like_claude_envelope(&payload));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_rejects_single_key_overlap() {
+        // A payload that happens to have a "result" key but nothing else
+        // from the envelope signature should NOT be rejected.
+        let payload = json!({
+            "result": "approved",
+            "score": 95
+        });
+        assert!(!looks_like_claude_envelope(&payload));
     }
 }
