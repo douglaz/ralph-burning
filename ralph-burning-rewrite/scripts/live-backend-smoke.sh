@@ -46,10 +46,34 @@ log()  { printf '[smoke] %s\n' "$*" >&2; }
 fail() { printf '[smoke] FAIL: %s\n' "$*" >&2; }
 evidence() { printf '%s\n' "$*" | tee -a "$EVIDENCE_FILE"; }
 
+# json_field <field_name> — extract a top-level string field from JSON on stdin.
+# Uses jq if available; otherwise falls back to a whitespace-tolerant sed pattern
+# that handles both compact and pretty-printed serde_json output.
+json_field() {
+    local field="$1"
+    if command -v jq >/dev/null 2>&1; then
+        # Recursively find the first string value for the named field,
+        # handling both top-level fields and nested ones like events[].details.run_id.
+        jq -r --arg f "$field" '[.. | .[$f]? | strings] | first // empty' 2>/dev/null
+    else
+        # Match "field" : "value" with optional whitespace around the colon
+        sed -n 's/.*"'"$field"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1
+    fi
+}
+
+# Preflight evidence directory — evidence captured during preflight is saved
+# here so it survives scratch-dir cleanup on preflight failure.
+PREFLIGHT_EVIDENCE_DIR="${SMOKE_DIR%/*}"  # parent of SMOKE_DIR (e.g. /tmp)
+PREFLIGHT_EVIDENCE_COPY="${PREFLIGHT_EVIDENCE_DIR}/${SMOKE_ID}-preflight-evidence.txt"
+
 cleanup_on_preflight_fail() {
     # Preflight failures must not leave any project or workspace state.
-    # We check the preflight_passed flag rather than evidence file existence
-    # because early evidence lines are written before preflight completes.
+    # Preserve the evidence file outside the scratch dir so the operator
+    # can inspect the readiness error, then remove the scratch dir.
+    if [ -d "$SMOKE_DIR" ] && [ -f "$EVIDENCE_FILE" ]; then
+        cp "$EVIDENCE_FILE" "$PREFLIGHT_EVIDENCE_COPY" 2>/dev/null || true
+        log "Preflight evidence preserved at: $PREFLIGHT_EVIDENCE_COPY"
+    fi
     if [ -d "$SMOKE_DIR" ]; then
         rm -rf "$SMOKE_DIR"
     fi
@@ -250,9 +274,13 @@ else
     # Run history remains canonical and inspectable
     "${RB[@]}" run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
     "${RB[@]}" run history --json > "$SMOKE_DIR/final-history.json" 2>/dev/null || true
-    FAIL_RUN_ID=$(grep -o '"run_id":"[^"]*"' "$SMOKE_DIR/final-history.json" 2>/dev/null | head -1 | cut -d'"' -f4 || echo "(unknown)")
+    FAIL_PROJECT_ID=$(json_field project_id < "$SMOKE_DIR/final-status.json" 2>/dev/null || echo "(unknown)")
+    FAIL_RUN_STATUS=$(json_field status < "$SMOKE_DIR/final-status.json" 2>/dev/null || echo "(unknown)")
+    FAIL_RUN_ID=$(json_field run_id < "$SMOKE_DIR/final-history.json" 2>/dev/null || echo "(unknown)")
+    evidence "project_id: $FAIL_PROJECT_ID"
     evidence "run_id: $FAIL_RUN_ID"
-    evidence "final_status: $(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '(unavailable)')"
+    evidence "run_status: $FAIL_RUN_STATUS"
+    evidence "final_status_json: $(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '(unavailable)')"
     exit 1
 fi
 
@@ -266,13 +294,15 @@ log "Collecting final evidence..."
 FINAL_STATUS=$(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '{}')
 
 # Extract project_id and canonical status for sign-off evidence.
-PROJECT_ID=$(printf '%s' "$FINAL_STATUS" | grep -o '"project_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
-RUN_STATUS=$(printf '%s' "$FINAL_STATUS" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
+# Uses json_field() which handles both pretty-printed (serde_json::to_string_pretty)
+# and compact JSON output from the CLI.
+PROJECT_ID=$(printf '%s' "$FINAL_STATUS" | json_field project_id || echo "(unknown)")
+RUN_STATUS=$(printf '%s' "$FINAL_STATUS" | json_field status || echo "(unknown)")
 
 # Extract run_id from journal events in run history.  The run_started event
 # stores run_id in details.run_id (journal.rs:107).
 FINAL_HISTORY=$(cat "$SMOKE_DIR/final-history.json" 2>/dev/null || echo '{}')
-RUN_ID=$(printf '%s' "$FINAL_HISTORY" | grep -o '"run_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
+RUN_ID=$(printf '%s' "$FINAL_HISTORY" | json_field run_id || echo "(unknown)")
 
 evidence ""
 evidence "--- Final Evidence ---"

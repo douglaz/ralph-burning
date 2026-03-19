@@ -40,9 +40,11 @@ Update the Result column to `PASS` only when all five fields are recorded and
 
 ## Known Issues
 
-Rows 1-3 require live backend execution against a working harness with proper
+Rows 1-3 require live backend execution against the fixed harness which provides:
 workspace isolation (`cd` into scratch dir), `settings.default_backend` binding
 in the scratch workspace config, explicit `--backend` flags at every CLI phase,
-and `RALPH_BURNING_BACKEND` env var for OpenRouter.  Evidence must include
-`run_id` (from journal `run_started` event) in addition to `project_id`,
-`run_status`, and `smoke_id`.
+`RALPH_BURNING_BACKEND` env var for OpenRouter, and structural JSON parsing
+(`jq` with whitespace-tolerant `sed` fallback) for correct evidence extraction
+from the CLI's pretty-printed JSON output (`serde_json::to_string_pretty`).
+Evidence must include `run_id` (from journal `run_started` event) in addition
+to `project_id`, `run_status`, and `smoke_id`.

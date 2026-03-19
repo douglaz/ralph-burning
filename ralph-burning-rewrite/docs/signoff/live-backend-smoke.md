@@ -106,9 +106,11 @@ via `agent_execution_builder.rs:85`.
 ### Preflight Failure (exit code 2)
 
 - No project directory, active-project selection, or workspace config is mutated
-  (scratch dir is removed if evidence file was never written)
-- Only the evidence file records the readiness error
-- The smoke matrix row records `FAIL` with the exact preflight error
+- The scratch directory is removed on preflight failure, but the evidence file
+  is first copied to the parent directory (e.g. `/tmp/<smoke-id>-preflight-evidence.txt`)
+  so the operator can inspect the exact readiness error
+- The smoke matrix row records `FAIL` with the exact preflight error from the
+  preserved evidence file
 
 ### Run Failure (exit code 1)
 
@@ -147,11 +149,16 @@ After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
 
 1. From the evidence file, extract: **project_id**, **run_id** (from the
    `run_started` journal event in `run history --json`, see `journal.rs:107`),
-   **run_status** (from `run status --json`), **smoke_id**, and **smoke_dir**
+   **run_status** (from `run status --json`), **smoke_id**, and **smoke_dir**.
+   The harness extracts these fields using `jq` when available, falling back to
+   whitespace-tolerant `sed` patterns that handle the pretty-printed JSON output
+   from `serde_json::to_string_pretty()` (`run.rs:764`).
 2. Replace the Result column with `PASS` or `FAIL`
 3. Record the project_id, run_id, run_status (must be `completed` for PASS),
    and smoke_id in the Follow-up Bug column
 4. If `FAIL`, record the exact error and leave the scratch dir for inspection
+5. If preflight `FAIL` (exit code 2), the evidence is preserved at
+   `/tmp/<smoke-id>-preflight-evidence.txt` after scratch-dir cleanup
 
 Once all three backend rows are `PASS` with complete evidence, update
 `docs/signoff/final-validation.md` to change `Cutover status` from
