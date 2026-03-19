@@ -419,3 +419,58 @@ omitted from both text and JSON output.
 The `configured_index` on each member and arbiter is the member's position in
 the original configured spec list, preserved through optional-member filtering
 so failure messages always reference the exact configured position.
+
+## OpenRouter Operator Constraints
+
+### Enablement
+
+OpenRouter is **disabled by default**. Enable it in workspace or project config:
+
+```toml
+[backends.openrouter]
+enabled = true
+```
+
+### API Key
+
+The `OPENROUTER_API_KEY` environment variable must be set and non-empty.
+`backend check` reports `BackendUnavailable` when the key is missing.
+
+### Execution Mode
+
+OpenRouter **only supports `execution.mode = "direct"`**. The tmux adapter
+rejects OpenRouter targets at dispatch time. When using OpenRouter as the
+primary or default backend, ensure:
+
+```toml
+[execution]
+mode = "direct"
+```
+
+If `mode = "tmux"` is configured and an OpenRouter target is dispatched, the
+invocation fails with a clear error identifying the backend/mode conflict.
+
+### Readiness Checks
+
+Before running a live OpenRouter flow, validate readiness with:
+
+```bash
+# Check API key and endpoint availability
+ralph-burning backend check
+
+# Preview planner resolution for the standard flow
+ralph-burning backend probe --role planner --flow standard
+
+# Show full resolved config with source precedence
+ralph-burning backend show-effective
+```
+
+`backend check` performs an HTTP probe against the OpenRouter models endpoint
+(`/api/v1/models`) using the configured API key. A 401/403 response maps to
+`BackendUnavailable`; a 429 maps to rate-limit failure.
+
+### Live Smoke Validation
+
+A repeatable smoke procedure is available at `scripts/live-backend-smoke.sh`.
+See `docs/signoff/live-backend-smoke.md` for the full runbook including
+isolated config setup, failure-recording rules, and cleanup.

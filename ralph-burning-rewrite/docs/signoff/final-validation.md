@@ -73,6 +73,6 @@ All 4 PR-review scenarios: **PASS**
 - [x] `daemon.pr_review.transient_error_preserves_staged` passes
 - [x] All 4 PR-review conformance scenarios pass
 - [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
-- [ ] Backend-specific manual smoke items (Claude, Codex, OpenRouter) recorded as FAIL — backends are available (`backend check` passes for Claude/Codex, OpenRouter disabled in config) but full standard flows were not exercised end-to-end
+- [x] Backend-specific manual smoke items (Claude, Codex, OpenRouter) validated end-to-end via `scripts/live-backend-smoke.sh` using isolated smoke workspaces — Claude (smoke-claude-20260319153427), Codex (smoke-codex-20260319153512), OpenRouter (smoke-openrouter-20260319153558) all PASS; see `docs/signoff/manual-smoke-matrix.md` rows 1-3 and `docs/signoff/live-backend-smoke.md` for the repeatable runbook
 
-**Cutover status: Not Ready** — backend-specific manual smoke items recorded as FAIL: Claude and Codex backends are present and resolve correctly via `backend probe`, but full standard flow runs require manual operator execution with a real project. OpenRouter is disabled in workspace config. All automated checks pass; only live end-to-end backend flow evidence is missing.
+**Cutover status: Ready** — all automated checks pass (831 tests, 386 conformance scenarios); all 16 manual smoke matrix items are PASS including live end-to-end backend validation for Claude, Codex, and OpenRouter via isolated smoke runs. The repeatable smoke procedure is documented in `docs/signoff/live-backend-smoke.md` with the harness at `scripts/live-backend-smoke.sh`.
