@@ -42,8 +42,8 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (67 tests), `backend_policy_test` (3 new tests)
-- CLI integration tests: 15 new `backend_*` tests
+- Unit tests: `backend_diagnostics_test` (68 tests), `backend_policy_test` (3 new tests)
+- CLI integration tests: 19 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
   `parity_slice5_backend_probe_final_review_panel`
@@ -119,3 +119,15 @@
   `configured_index` field presence on panel members.
 - `cli-reference.md` updated: `backend probe --json` schema documents
   `configured_index` on member and arbiter objects.
+- `backend show-effective` now correctly distinguishes models set via
+  `settings.default_model` from models embedded in `default_backend`.
+  The top-level `default_model` field and per-role `model_source` report
+  the actual originating config layer (e.g. workspace.toml for
+  `default_model`) instead of misattributing to `default_backend`.
+- `backend list --json` `compile_only` field is now always serialized:
+  `null` for non-compile-only backends and `true` for compile-only
+  backends, matching the documented schema. Previously the field was
+  omitted when `null`.
+- CLI failure-path coverage expanded: `backend list` and
+  `backend show-effective` now have non-zero exit tests (missing
+  workspace, corrupt config, invalid backend override).

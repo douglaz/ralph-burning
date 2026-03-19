@@ -7113,3 +7113,81 @@ enabled = false
         "failure should have 'failure_kind'"
     );
 }
+
+#[test]
+fn backend_list_nonzero_exit_without_workspace() {
+    let temp_dir = tempdir().expect("create temp dir");
+    // No workspace initialized — backend list should fail
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list without workspace");
+
+    assert!(
+        !output.status.success(),
+        "backend list should exit non-zero when no workspace exists"
+    );
+}
+
+#[test]
+fn backend_show_effective_nonzero_exit_without_workspace() {
+    let temp_dir = tempdir().expect("create temp dir");
+    // No workspace initialized — show-effective should fail
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective without workspace");
+
+    assert!(
+        !output.status.success(),
+        "backend show-effective should exit non-zero when no workspace exists"
+    );
+}
+
+#[test]
+fn backend_list_nonzero_exit_with_corrupt_config() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Corrupt the workspace.toml
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        "this is not valid toml {{{",
+    )
+    .expect("write corrupt config");
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list with corrupt config");
+
+    assert!(
+        !output.status.success(),
+        "backend list should exit non-zero with corrupt workspace config"
+    );
+}
+
+#[test]
+fn backend_show_effective_nonzero_exit_with_invalid_override() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "show-effective",
+            "--backend",
+            "not-a-real-backend",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective with invalid override");
+
+    assert!(
+        !output.status.success(),
+        "backend show-effective should exit non-zero with invalid backend override"
+    );
+}

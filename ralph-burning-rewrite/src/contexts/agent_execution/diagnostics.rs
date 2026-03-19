@@ -29,7 +29,6 @@ pub struct BackendListEntry {
     pub display_name: String,
     pub enabled: bool,
     pub transport: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub compile_only: Option<bool>,
 }
 
@@ -661,10 +660,21 @@ impl<'a> BackendDiagnosticsService<'a> {
         // target_for_family(): base_backend.model (set from either
         // default_backend="family(model)" or merged from default_model)
         // takes precedence over the compile-time family default.
+        //
+        // Distinguish models embedded in default_backend from those merged
+        // from settings.default_model: if bp.default_model matches
+        // base_backend.model, the model came from settings.default_model
+        // and should report that source; otherwise it was embedded in
+        // default_backend.
         let default_model = if let Some(ref model) = bp.base_backend.model {
+            let source = if bp.default_model.as_ref() == Some(model) {
+                self.source_for_default_model()
+            } else {
+                self.source_for_base_backend()
+            };
             EffectiveFieldView {
                 value: model.clone(),
-                source: self.source_for_base_backend(),
+                source,
             }
         } else {
             EffectiveFieldView {
@@ -1384,21 +1394,18 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 3. Check base backend embedded model — `target_for_family` resolves
-        //    from `base_backend.model` (set via `default_backend = "family(model)"`)
-        //    before falling through to the compile-time family default.
-        //    This must be checked before `default_model` because the runtime
-        //    resolution uses `base_backend.model` at this priority level.
+        // 3. Check base backend model — `target_for_family` resolves from
+        //    `base_backend.model` before falling through to the compile-time
+        //    family default. The model in `base_backend` may have been set
+        //    from `default_backend = "family(model)"` or merged from
+        //    `settings.default_model`. Distinguish the two sources by
+        //    comparing with `bp.default_model`.
         if family == bp.base_backend.family && bp.base_backend.model.is_some() {
-            return self.source_for_base_backend();
-        }
-
-        // 3b. Check separate default_model setting (if set independently of
-        //     default_backend). Note: `target_for_family` does not currently
-        //     use this field, but include it for completeness if the policy
-        //     is extended to consult it.
-        if family == bp.base_backend.family && bp.default_model.is_some() {
-            return self.source_for_default_model();
+            if bp.default_model.as_ref() == bp.base_backend.model.as_ref() {
+                return self.source_for_default_model();
+            } else {
+                return self.source_for_base_backend();
+            }
         }
 
         // 4. Family default

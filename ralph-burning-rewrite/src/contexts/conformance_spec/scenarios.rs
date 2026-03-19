@@ -18547,7 +18547,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         }
 
         // stub compile_only is build-sensitive: in test-stub builds it is
-        // null (absent), in production builds it is true.
+        // null, in production builds it is true.
         let stub_entry = entries
             .iter()
             .find(|e| e.get("family").and_then(|v| v.as_str()) == Some("stub"))

@@ -139,9 +139,10 @@ ralph-burning run rollback --to <stage> [--hard]
 
 Shows all supported backend families, their enablement state, and transport mechanism.
 The `compile_only` field is build-sensitive: `stub` is reported as compile-time-only
-only when the current binary was built without stub support. Builds with the
+(`true`) only when the current binary was built without stub support. Builds with the
 `test-stub` feature report `null` for stub's `compile_only`, matching the fact
-that the stub backend is fully operational.
+that the stub backend is fully operational. The field is always present in JSON
+output (never omitted); non-compile-only backends report `null`.
 
 Flags:
 - `--json` — emit a stable JSON array for scripts
@@ -238,8 +239,9 @@ Per-role entries include separate source metadata for backend selection
 resolution (`timeout_source`), so operators can trace every resolved
 value back to its originating config layer. Models embedded in the
 `default_backend` setting (e.g. `default_backend = "codex(custom-model)"`)
-are correctly attributed to the `default_backend` source, not reported
-as `"default"`. This applies to both the top-level `default_model` field
+are correctly attributed to the `default_backend` source. Models set via
+`settings.default_model` are correctly attributed to the `default_model`
+source. This distinction applies to both the top-level `default_model` field
 and the per-role `model_source` fields.
 
 Roles whose configured backend cannot resolve (e.g., a disabled backend)

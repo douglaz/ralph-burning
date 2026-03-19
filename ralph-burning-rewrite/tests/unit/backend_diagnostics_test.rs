@@ -2529,6 +2529,80 @@ fn show_effective_model_source_default_when_no_embedded_model() {
     );
 }
 
+// ── default_model source attribution tests ────────────────────────────────
+
+#[test]
+fn show_effective_default_model_from_settings_default_model_reports_correct_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Only set settings.default_model, NOT default_backend with embedded model
+    workspace.settings.default_model = Some("my-workspace-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // The top-level default_model should trace to the default_model setting,
+    // not to default_backend or "default".
+    assert_eq!(
+        "my-workspace-model", view.default_model.value,
+        "default_model.value should come from settings.default_model"
+    );
+    assert_ne!(
+        "default", view.default_model.source,
+        "default_model.source should NOT be 'default' when set via settings.default_model"
+    );
+    // source_for_default_model() looks up "default_model" key in config
+    assert!(
+        view.default_model.source.contains("workspace"),
+        "default_model.source should trace to workspace.toml, got: {}",
+        view.default_model.source
+    );
+
+    // Inherited roles (e.g., planner) should also report model_source as
+    // coming from default_model, not from default_backend or "default".
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "my-workspace-model", planner.model_id,
+        "planner model should resolve to the settings.default_model value"
+    );
+    assert_ne!(
+        "default", planner.model_source,
+        "planner model_source should NOT be 'default' when model comes from settings.default_model; got: {}",
+        planner.model_source
+    );
+}
+
+#[test]
+fn show_effective_default_model_embedded_in_default_backend_beats_settings_default_model() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Set both: embedded model in default_backend AND separate default_model
+    workspace.settings.default_backend = Some("claude(embedded-model)".to_owned());
+    workspace.settings.default_model = Some("separate-model".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // When default_backend has an embedded model, it takes precedence
+    assert_eq!(
+        "embedded-model", view.default_model.value,
+        "embedded model in default_backend should take precedence over settings.default_model"
+    );
+    // Source should trace to default_backend, not default_model
+    assert_ne!(
+        "default", view.default_model.source,
+        "source should not be 'default'"
+    );
+}
+
 // ── probe minimum-violation from optional omission tests ──────────────────
 
 #[test]
