@@ -289,8 +289,35 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
+    /// Check when the backend adapter could not be constructed at all.
+    /// The adapter construction failure is itself a readiness error that should
+    /// be surfaced alongside any config-level failures.
+    pub fn check_backends_with_adapter_failure(
+        &self,
+        flow: FlowPreset,
+        adapter_err: &AppError,
+    ) -> BackendCheckResult {
+        let mut result = self.check_backends(flow);
+
+        // The adapter could not be constructed, so all resolved targets are
+        // effectively unavailable. Report a single top-level availability failure.
+        result.failures.push(BackendCheckFailure {
+            role: "adapter".to_owned(),
+            backend_family: "unknown".to_owned(),
+            failure_kind: BackendCheckFailureKind::AvailabilityFailure,
+            details: format!("backend adapter construction failed: {}", adapter_err),
+            config_source: "RALPH_BURNING_BACKEND".to_owned(),
+        });
+        result.passed = false;
+        result
+    }
+
     /// Check with real adapter availability. This is the async variant that
     /// uses the production adapter to verify binary/API readiness.
+    ///
+    /// Unlike the previous implementation, this does NOT deduplicate targets by
+    /// family:model — every role/member is checked and failures are reported
+    /// with the exact role/member identity.
     pub async fn check_backends_with_availability<A: AgentExecutionPort>(
         &self,
         flow: FlowPreset,
@@ -298,81 +325,86 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> BackendCheckResult {
         let mut result = self.check_backends(flow);
 
-        // Collect all unique resolved targets to check availability for,
-        // including stage-role targets AND panel-specific targets.
-        let mut targets_to_check: Vec<(String, ResolvedBackendTarget, String, String)> = Vec::new();
+        // Collect ALL resolved targets with their role/member identity.
+        // No deduplication — every role/member that resolves to a target gets
+        // its own availability check so failures preserve exact identity.
+        let mut targets_to_check: Vec<(ResolvedBackendTarget, String, String)> = Vec::new();
         let flow_def = flow_definition(flow);
         let flow_roles = roles_for_flow(flow_def);
-
-        // Helper closure to add a target if not already present
-        let mut add_target = |target: &ResolvedBackendTarget, role: &str, config_source: String| {
-            let key = format!("{}:{}", target.backend.family, target.model.model_id);
-            if !targets_to_check.iter().any(|(k, _, _, _)| k == &key) {
-                targets_to_check.push((key, target.clone(), role.to_owned(), config_source));
-            }
-        };
 
         // Stage-role targets
         for role in &flow_roles {
             if let Ok(target) = self.policy.resolve_role_target(*role, 1) {
-                add_target(&target, role.as_str(), self.config_source_for_role(*role));
+                targets_to_check.push((
+                    target,
+                    role.as_str().to_owned(),
+                    self.config_source_for_role(*role),
+                ));
             }
         }
 
         // Panel-specific targets: completion panel members
         if flow_def.stages.contains(&StageId::CompletionPanel) {
             if let Ok(res) = self.policy.resolve_completion_panel(1) {
-                for member in &res.completers {
-                    add_target(
-                        &member.target,
-                        "completion_panel",
+                for (idx, member) in res.completers.iter().enumerate() {
+                    let member_role = format!("completion_panel.member[{}]", idx);
+                    targets_to_check.push((
+                        member.target.clone(),
+                        member_role,
                         "completion.backends".to_owned(),
-                    );
+                    ));
                 }
             }
         }
 
-        // Panel-specific targets: final review panel members + arbiter
+        // Panel-specific targets: final review panel members + planner + arbiter
         if flow_def.stages.contains(&StageId::FinalReview)
             && self.config.final_review_policy().enabled
         {
             if let Ok(res) = self.policy.resolve_final_review_panel(1) {
-                for member in &res.reviewers {
-                    add_target(
-                        &member.target,
-                        "final_review_panel",
+                targets_to_check.push((
+                    res.planner.clone(),
+                    "final_review_panel.planner".to_owned(),
+                    "workflow.planner_backend".to_owned(),
+                ));
+                for (idx, member) in res.reviewers.iter().enumerate() {
+                    let member_role = format!("final_review_panel.reviewer[{}]", idx);
+                    targets_to_check.push((
+                        member.target.clone(),
+                        member_role,
                         "final_review.backends".to_owned(),
-                    );
+                    ));
                 }
-                add_target(
-                    &res.arbiter,
-                    "final_review_panel.arbiter",
+                targets_to_check.push((
+                    res.arbiter.clone(),
+                    "final_review_panel.arbiter".to_owned(),
                     "final_review.arbiter_backend".to_owned(),
-                );
+                ));
             }
         }
 
-        // Panel-specific targets: prompt review panel members + refiner
+        // Panel-specific targets: prompt review panel refiner + validators
         if flow_def.stages.contains(&StageId::PromptReview)
             && self.config.prompt_review_policy().enabled
         {
             if let Ok(res) = self.policy.resolve_prompt_review_panel(1) {
-                add_target(
-                    &res.refiner,
-                    "prompt_review_panel.refiner",
+                targets_to_check.push((
+                    res.refiner.clone(),
+                    "prompt_review_panel.refiner".to_owned(),
                     "prompt_review.refiner_backend".to_owned(),
-                );
-                for member in &res.validators {
-                    add_target(
-                        &member.target,
-                        "prompt_review_panel",
+                ));
+                for (idx, member) in res.validators.iter().enumerate() {
+                    let member_role = format!("prompt_review_panel.validator[{}]", idx);
+                    targets_to_check.push((
+                        member.target.clone(),
+                        member_role,
                         "prompt_review.validator_backends".to_owned(),
-                    );
+                    ));
                 }
             }
         }
 
-        for (_, target, role, config_source) in &targets_to_check {
+        for (target, role, config_source) in &targets_to_check {
             if let Err(error) = adapter.check_availability(target).await {
                 result.failures.push(BackendCheckFailure {
                     role: role.clone(),
@@ -658,6 +690,8 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Probe with real adapter availability. Optional panel members that are
     /// enabled but unavailable are moved to `omitted` instead of `members`.
+    /// Required unavailable members, planners, arbiters, and refiners cause the
+    /// probe to fail with exact member identity and source field.
     pub async fn probe_with_availability<A: AgentExecutionPort>(
         &self,
         role_str: &str,
@@ -667,28 +701,73 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> AppResult<BackendProbeResult> {
         let mut result = self.probe(role_str, flow, cycle)?;
 
+        // Check the primary target (planner for panels, role target for singular)
+        {
+            let family: BackendFamily = result.target.backend_family.parse()?;
+            let target = ResolvedBackendTarget::new(family, result.target.model_id.clone());
+            if let Err(err) = adapter.check_availability(&target).await {
+                return Err(AppError::BackendUnavailable {
+                    backend: family.as_str().to_owned(),
+                    details: format!(
+                        "required target '{}' (planner/primary) unavailable: {}",
+                        role_str, err
+                    ),
+                });
+            }
+        }
+
         if let Some(panel) = &mut result.panel {
+            // Check arbiter availability (required for final_review_panel)
+            if let Some(arbiter) = &panel.arbiter {
+                let family: BackendFamily = arbiter.backend_family.parse()?;
+                let target = ResolvedBackendTarget::new(family, arbiter.model_id.clone());
+                if let Err(err) = adapter.check_availability(&target).await {
+                    return Err(AppError::BackendUnavailable {
+                        backend: family.as_str().to_owned(),
+                        details: format!(
+                            "required arbiter for '{}' unavailable: {}",
+                            role_str, err
+                        ),
+                    });
+                }
+            }
+
+            // Check panel members: required unavailable → fail; optional unavailable → omit
             let mut available_members = Vec::new();
             for member in panel.members.drain(..) {
                 let family: BackendFamily = member.backend_family.parse()?;
                 let target = ResolvedBackendTarget::new(family, member.model_id.clone());
                 match adapter.check_availability(&target).await {
                     Ok(()) => available_members.push(member),
-                    Err(_) if !member.required => {
+                    Err(err) if !member.required => {
                         panel.omitted.push(PanelOmittedView {
                             backend_family: member.backend_family,
                             reason: "backend unavailable".to_owned(),
                             was_optional: true,
                         });
                     }
-                    Err(_) => {
-                        // Required member is unavailable — still include it in
-                        // members so the operator sees it, but the check path
-                        // will catch this failure.
-                        available_members.push(member);
+                    Err(err) => {
+                        return Err(AppError::BackendUnavailable {
+                            backend: member.backend_family.clone(),
+                            details: format!(
+                                "required panel member '{}/{}' unavailable: {}",
+                                member.backend_family, member.model_id, err
+                            ),
+                        });
                     }
                 }
             }
+
+            // Check minimum satisfaction after filtering
+            let panel_min = panel.minimum;
+            if available_members.len() < panel_min {
+                return Err(AppError::InsufficientPanelMembers {
+                    panel: panel.panel_type.clone(),
+                    resolved: available_members.len(),
+                    minimum: panel_min,
+                });
+            }
+
             panel.members = available_members;
             panel.resolved_count = panel.members.len();
         }

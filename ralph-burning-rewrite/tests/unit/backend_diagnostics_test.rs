@@ -903,3 +903,278 @@ async fn probe_with_availability_omits_unavailable_optional_member() {
     assert_eq!("openrouter", panel.omitted[0].backend_family);
     assert!(panel.omitted[0].was_optional);
 }
+
+// ── adapter construction failure tests ───────────────────────────────────────
+
+#[test]
+fn check_with_adapter_failure_reports_availability_error() {
+    use ralph_burning::shared::error::AppError;
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Simulate a bogus RALPH_BURNING_BACKEND that causes adapter build failure
+    let adapter_err = AppError::InvalidConfigValue {
+        key: "RALPH_BURNING_BACKEND".to_owned(),
+        value: "bogus".to_owned(),
+        reason: "expected one of process, openrouter".to_owned(),
+    };
+
+    let result = service.check_backends_with_adapter_failure(FlowPreset::Standard, &adapter_err);
+
+    assert!(!result.passed, "adapter failure should fail check");
+    let adapter_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "adapter")
+        .expect("expected adapter-level failure");
+    assert_eq!(
+        BackendCheckFailureKind::AvailabilityFailure,
+        adapter_failure.failure_kind
+    );
+    assert!(
+        adapter_failure.details.contains("adapter construction failed"),
+        "details should mention adapter construction: {}",
+        adapter_failure.details
+    );
+    assert_eq!("RALPH_BURNING_BACKEND", adapter_failure.config_source);
+}
+
+// ── probe required member availability failure tests ─────────────────────────
+
+#[tokio::test]
+async fn probe_with_availability_fails_on_required_unavailable_member() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for openrouter backends
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            // OpenRouter is REQUIRED, not optional
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "probe should fail when required member is unavailable"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("openrouter") || err_msg.contains("unavailable"),
+        "error should identify the failing backend: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn probe_with_availability_fails_on_unavailable_planner() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails ALL availability checks
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    // Planner target is unavailable — should fail the probe
+    let result = service
+        .probe_with_availability("planner", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "probe should fail when planner is unavailable"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("planner") || err_msg.contains("unavailable"),
+        "error should mention planner: {}",
+        err_msg
+    );
+}
+
+// ── per-role availability aggregation test ────────────────────────────────────
+
+#[tokio::test]
+async fn check_with_availability_reports_all_role_aliases_for_shared_target() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for ALL backends
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    assert!(!result.passed, "all-unavailable should fail");
+
+    // With the default config (claude base + codex opposite), when everything is
+    // unavailable we should get multiple failures with different role identities
+    // (planner, implementer, reviewer, etc.) — NOT just one deduplicated entry.
+    let avail_failures: Vec<_> = result
+        .failures
+        .iter()
+        .filter(|f| f.failure_kind == BackendCheckFailureKind::AvailabilityFailure)
+        .collect();
+
+    assert!(
+        avail_failures.len() > 2,
+        "expected multiple per-role availability failures, got {}: {:?}",
+        avail_failures.len(),
+        avail_failures.iter().map(|f| &f.role).collect::<Vec<_>>()
+    );
+
+    // Verify role/member identities are preserved — should see both stage roles
+    // AND panel-specific roles like final_review_panel.arbiter
+    let roles: Vec<&str> = avail_failures.iter().map(|f| f.role.as_str()).collect();
+    assert!(
+        roles.iter().any(|r| r.contains("final_review_panel")),
+        "expected final_review_panel-related failure, got roles: {:?}",
+        roles
+    );
+}

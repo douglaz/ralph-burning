@@ -186,10 +186,12 @@ async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<(
     let service = BackendDiagnosticsService::new(&config);
     let flow = resolve_active_project_flow(&config);
 
-    // Use adapter availability checks when possible
+    // Use adapter availability checks when possible. If the adapter cannot be
+    // constructed at all, that is itself a readiness failure — surface it
+    // instead of silently falling back to config-only checks.
     let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
         Ok(adapter) => service.check_backends_with_availability(flow, &adapter).await,
-        Err(_) => service.check_backends(flow),
+        Err(adapter_err) => service.check_backends_with_adapter_failure(flow, &adapter_err),
     };
 
     if json {
@@ -233,14 +235,24 @@ async fn handle_probe(
     let service = BackendDiagnosticsService::new(&config);
 
     // Use adapter availability when possible so optional unavailable members
-    // are correctly reported as omitted.
+    // are correctly reported as omitted and required unavailable members fail.
+    // If the adapter cannot be constructed, surface that as an error instead of
+    // silently falling back to config-only resolution.
     let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
         Ok(adapter) => {
             service
                 .probe_with_availability(&role, flow, cycle.unwrap_or(1), &adapter)
                 .await?
         }
-        Err(_) => service.probe(&role, flow, cycle.unwrap_or(1))?,
+        Err(adapter_err) => {
+            return Err(AppError::BackendUnavailable {
+                backend: "adapter".to_owned(),
+                details: format!(
+                    "cannot construct backend adapter for probe: {}",
+                    adapter_err
+                ),
+            });
+        }
     };
 
     if json {

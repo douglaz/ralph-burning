@@ -162,6 +162,15 @@ Evaluates readiness of all effectively required backends and panel members
 for the active workspace/project scope. Aggregates all blocking failures
 in one run and exits non-zero if any required backend cannot be satisfied.
 
+If the backend adapter itself cannot be constructed (e.g., invalid
+`RALPH_BURNING_BACKEND` value), the command reports that as an
+`availability_failure` and exits non-zero instead of silently falling
+back to config-only checks.
+
+Availability failures are reported per role/member — if the same backend
+target is shared by multiple roles (e.g., planner and final-review
+arbiter), each role is checked and reported independently.
+
 This command is strictly read-only: it does not create or modify run
 snapshots, project state, journals, payloads, artifacts, sessions, or
 runtime logs.
@@ -231,6 +240,16 @@ Previews backend resolution for a given role and flow, using the same
 resolution paths as run execution. Supports both singular policy roles
 (e.g. `planner`, `implementer`) and synthetic panel targets
 (`completion_panel`, `final_review_panel`, `prompt_review_panel`).
+
+The probe checks actual backend availability. If the backend adapter
+cannot be constructed, the command exits non-zero. For panel probes:
+- Required unavailable members cause the probe to fail with the exact
+  member identity.
+- Optional unavailable members are moved to `omitted`.
+- The planner, arbiter (final-review), and refiner (prompt-review)
+  targets are checked for availability and fail the probe if unavailable.
+- If omission of optional members causes the panel minimum to be
+  unsatisfied, the probe fails with a minimum-violation error.
 
 Required flags:
 - `--role <role>` — the role or panel target to probe

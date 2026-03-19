@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (22+ tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (31 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
