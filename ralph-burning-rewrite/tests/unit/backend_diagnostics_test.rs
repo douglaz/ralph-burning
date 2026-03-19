@@ -641,3 +641,265 @@ fn check_panel_failure_identifies_exact_backend_family() {
     assert_eq!("openrouter", panel_failure.backend_family);
     assert_eq!("completion.backends", panel_failure.config_source);
 }
+
+// ── inherited source-precedence tests ────────────────────────────────────────
+
+#[test]
+fn show_effective_inherited_role_reports_base_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    // Set default_backend at workspace level
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // Roles that inherit from base should report default_backend with the
+    // actual source layer, not just "default"
+    let completer = view.roles.iter().find(|r| r.role == "completer");
+    if let Some(c) = completer {
+        assert!(
+            c.override_source.contains("workspace.toml"),
+            "completer should report workspace.toml source, got: {}",
+            c.override_source
+        );
+    }
+
+    // Planner should also inherit from default_backend since no explicit override
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert!(
+        planner.override_source.contains("workspace.toml"),
+        "planner should report workspace.toml source when inheriting from base, got: {}",
+        planner.override_source
+    );
+}
+
+#[test]
+fn show_effective_explicit_role_override_beats_inheritance() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("codex".to_owned());
+    workspace.workflow.planner_backend = Some("claude".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // Planner has explicit override — should report workspace.toml directly
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "workspace.toml", planner.override_source,
+        "explicit planner override should report workspace.toml"
+    );
+}
+
+// ── availability-aware check tests ───────────────────────────────────────────
+
+#[tokio::test]
+async fn check_with_availability_covers_panel_targets() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+
+    struct AlwaysAvailableAdapter;
+    impl AgentExecutionPort for AlwaysAvailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AlwaysAvailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+    assert!(result.passed, "all-available adapter should pass: {:?}", result.failures);
+}
+
+#[tokio::test]
+async fn check_with_availability_reports_panel_member_failure() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for codex backends
+    struct CodexUnavailableAdapter;
+    impl AgentExecutionPort for CodexUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::Codex {
+                Err(AppError::BackendUnavailable {
+                    backend: "codex".to_owned(),
+                    details: "codex binary not found".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = CodexUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    assert!(!result.passed, "codex-unavailable should fail check");
+    let avail_failure = result
+        .failures
+        .iter()
+        .find(|f| f.failure_kind == BackendCheckFailureKind::AvailabilityFailure)
+        .expect("expected availability failure");
+    assert_eq!("codex", avail_failure.backend_family);
+    // Should NOT have generic "availability" role
+    assert_ne!("availability", avail_failure.role);
+}
+
+// ── probe availability tests ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn probe_with_availability_omits_unavailable_optional_member() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for openrouter backends
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(1),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
+        .await
+        .expect("probe should succeed");
+
+    let panel = result.panel.expect("should have panel view");
+
+    // OpenRouter is optional and unavailable — should be omitted, not a member
+    assert_eq!(
+        1, panel.resolved_count,
+        "only claude should remain as resolved member"
+    );
+    assert_eq!(1, panel.omitted.len(), "openrouter should be in omitted");
+    assert_eq!("openrouter", panel.omitted[0].backend_family);
+    assert!(panel.omitted[0].was_optional);
+}

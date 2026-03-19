@@ -2,10 +2,12 @@
 
 use clap::{Args, Subcommand};
 
+use crate::adapters::fs::FsProjectStore;
 use crate::contexts::agent_execution::diagnostics::{
     BackendCheckResult, BackendDiagnosticsService, BackendListEntry, BackendProbeResult,
     EffectiveBackendView,
 };
+use crate::contexts::project_run_record::service::ProjectStorePort;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use crate::shared::domain::{BackendSelection, FlowPreset};
@@ -182,7 +184,7 @@ async fn handle_list(json: bool) -> AppResult<()> {
 async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<()> {
     let config = load_effective_config(overrides)?;
     let service = BackendDiagnosticsService::new(&config);
-    let flow = config.default_flow();
+    let flow = resolve_active_project_flow(&config);
 
     // Use adapter availability checks when possible
     let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
@@ -229,7 +231,17 @@ async fn handle_probe(
     let flow: FlowPreset = flow_str.parse()?;
     let config = load_effective_config(overrides)?;
     let service = BackendDiagnosticsService::new(&config);
-    let result = service.probe(&role, flow, cycle.unwrap_or(1))?;
+
+    // Use adapter availability when possible so optional unavailable members
+    // are correctly reported as omitted.
+    let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
+        Ok(adapter) => {
+            service
+                .probe_with_availability(&role, flow, cycle.unwrap_or(1), &adapter)
+                .await?
+        }
+        Err(_) => service.probe(&role, flow, cycle.unwrap_or(1))?,
+    };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -284,6 +296,26 @@ fn build_overrides(
             .map(BackendSelection::from_backend_name)
             .transpose()?,
     })
+}
+
+/// Resolve the canonical flow for the active project. Falls back to the
+/// workspace/config default flow when no project is selected.
+fn resolve_active_project_flow(config: &EffectiveConfig) -> FlowPreset {
+    let current_dir = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(_) => return config.default_flow(),
+    };
+
+    match workspace_governance::resolve_active_project(&current_dir) {
+        Ok(project_id) => {
+            let store = FsProjectStore;
+            match store.read_project_record(&current_dir, &project_id) {
+                Ok(record) => record.flow,
+                Err(_) => config.default_flow(),
+            }
+        }
+        Err(_) => config.default_flow(),
+    }
 }
 
 // ── Text renderers ──────────────────────────────────────────────────────────

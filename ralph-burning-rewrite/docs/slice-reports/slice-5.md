@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (11 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (22+ tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -50,11 +50,6 @@
 
 ## Remaining Known Gaps
 
-- `backend check` does not perform live transport-level availability checks
-  (e.g., pinging the OpenRouter API or checking process executable permission).
-  It validates config-level enablement and panel resolution only. Live
-  readiness checks require the actual backend adapter, which would introduce
-  side effects; this is intentionally deferred.
 - `backend probe` does not yet support arbitrary stage-level resolution
   (e.g., `--stage planning`). Role and panel targets cover the primary
   operator use cases. Stage-level probing can be added as a follow-up.

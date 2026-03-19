@@ -183,7 +183,7 @@ Flags:
     {
       "role": "string",
       "backend_family": "string",
-      "failure_kind": "backend_disabled | panel_minimum_violation | required_member_unavailable",
+      "failure_kind": "backend_disabled | panel_minimum_violation | required_member_unavailable | availability_failure",
       "details": "string",
       "config_source": "string"
     }
@@ -216,10 +216,11 @@ Flags:
       "backend_family": "string",
       "model_id": "string",
       "timeout_seconds": "u64",
+      "session_policy": "string",
       "override_source": "string"
     }
   ],
-  "session_policy": "string",
+  "default_session_policy": "string",
   "default_timeout_seconds": "u64"
 }
 ```
@@ -265,7 +266,8 @@ Optional flags:
     ],
     "omitted": [
       { "backend_family": "string", "reason": "string", "was_optional": "bool" }
-    ]
+    ],
+    "arbiter": { "backend_family": "string", "model_id": "string", "required": "bool" }
   }
 }
 ```

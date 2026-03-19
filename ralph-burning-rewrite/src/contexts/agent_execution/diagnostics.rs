@@ -298,33 +298,84 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> BackendCheckResult {
         let mut result = self.check_backends(flow);
 
-        // If config resolution already failed, don't bother with availability
-        if !result.passed {
-            return result;
-        }
-
-        // Collect unique resolved targets to check availability for
-        let mut targets_to_check: Vec<(String, ResolvedBackendTarget, String)> = Vec::new();
+        // Collect all unique resolved targets to check availability for,
+        // including stage-role targets AND panel-specific targets.
+        let mut targets_to_check: Vec<(String, ResolvedBackendTarget, String, String)> = Vec::new();
         let flow_def = flow_definition(flow);
         let flow_roles = roles_for_flow(flow_def);
 
+        // Helper closure to add a target if not already present
+        let mut add_target = |target: &ResolvedBackendTarget, role: &str, config_source: String| {
+            let key = format!("{}:{}", target.backend.family, target.model.model_id);
+            if !targets_to_check.iter().any(|(k, _, _, _)| k == &key) {
+                targets_to_check.push((key, target.clone(), role.to_owned(), config_source));
+            }
+        };
+
+        // Stage-role targets
         for role in &flow_roles {
             if let Ok(target) = self.policy.resolve_role_target(*role, 1) {
-                let key = format!("{}:{}", target.backend.family, target.model.model_id);
-                if !targets_to_check.iter().any(|(k, _, _)| k == &key) {
-                    targets_to_check.push((
-                        key,
-                        target,
-                        self.config_source_for_role(*role),
-                    ));
+                add_target(&target, role.as_str(), self.config_source_for_role(*role));
+            }
+        }
+
+        // Panel-specific targets: completion panel members
+        if flow_def.stages.contains(&StageId::CompletionPanel) {
+            if let Ok(res) = self.policy.resolve_completion_panel(1) {
+                for member in &res.completers {
+                    add_target(
+                        &member.target,
+                        "completion_panel",
+                        "completion.backends".to_owned(),
+                    );
                 }
             }
         }
 
-        for (_, target, config_source) in &targets_to_check {
+        // Panel-specific targets: final review panel members + arbiter
+        if flow_def.stages.contains(&StageId::FinalReview)
+            && self.config.final_review_policy().enabled
+        {
+            if let Ok(res) = self.policy.resolve_final_review_panel(1) {
+                for member in &res.reviewers {
+                    add_target(
+                        &member.target,
+                        "final_review_panel",
+                        "final_review.backends".to_owned(),
+                    );
+                }
+                add_target(
+                    &res.arbiter,
+                    "final_review_panel.arbiter",
+                    "final_review.arbiter_backend".to_owned(),
+                );
+            }
+        }
+
+        // Panel-specific targets: prompt review panel members + refiner
+        if flow_def.stages.contains(&StageId::PromptReview)
+            && self.config.prompt_review_policy().enabled
+        {
+            if let Ok(res) = self.policy.resolve_prompt_review_panel(1) {
+                add_target(
+                    &res.refiner,
+                    "prompt_review_panel.refiner",
+                    "prompt_review.refiner_backend".to_owned(),
+                );
+                for member in &res.validators {
+                    add_target(
+                        &member.target,
+                        "prompt_review_panel",
+                        "prompt_review.validator_backends".to_owned(),
+                    );
+                }
+            }
+        }
+
+        for (_, target, role, config_source) in &targets_to_check {
             if let Err(error) = adapter.check_availability(target).await {
                 result.failures.push(BackendCheckFailure {
-                    role: "availability".to_owned(),
+                    role: role.clone(),
                     backend_family: target.backend.family.as_str().to_owned(),
                     failure_kind: BackendCheckFailureKind::AvailabilityFailure,
                     details: error.to_string(),
@@ -605,6 +656,46 @@ impl<'a> BackendDiagnosticsService<'a> {
         })
     }
 
+    /// Probe with real adapter availability. Optional panel members that are
+    /// enabled but unavailable are moved to `omitted` instead of `members`.
+    pub async fn probe_with_availability<A: AgentExecutionPort>(
+        &self,
+        role_str: &str,
+        flow: FlowPreset,
+        cycle: u32,
+        adapter: &A,
+    ) -> AppResult<BackendProbeResult> {
+        let mut result = self.probe(role_str, flow, cycle)?;
+
+        if let Some(panel) = &mut result.panel {
+            let mut available_members = Vec::new();
+            for member in panel.members.drain(..) {
+                let family: BackendFamily = member.backend_family.parse()?;
+                let target = ResolvedBackendTarget::new(family, member.model_id.clone());
+                match adapter.check_availability(&target).await {
+                    Ok(()) => available_members.push(member),
+                    Err(_) if !member.required => {
+                        panel.omitted.push(PanelOmittedView {
+                            backend_family: member.backend_family,
+                            reason: "backend unavailable".to_owned(),
+                            was_optional: true,
+                        });
+                    }
+                    Err(_) => {
+                        // Required member is unavailable — still include it in
+                        // members so the operator sees it, but the check path
+                        // will catch this failure.
+                        available_members.push(member);
+                    }
+                }
+            }
+            panel.members = available_members;
+            panel.resolved_count = panel.members.len();
+        }
+
+        Ok(result)
+    }
+
     fn build_panel_member_views(
         &self,
         resolved: &[(BackendFamily, String, bool)],
@@ -621,12 +712,15 @@ impl<'a> BackendDiagnosticsService<'a> {
             });
         }
 
-        // Check for omitted optional members from configured specs
+        // Check for omitted optional members from configured specs.
+        // A member is omitted if its backend is disabled (not enabled in config).
         for spec in configured_specs {
-            if spec.is_optional() && !self.policy.backend_enabled_public(spec.backend()) {
+            let backend = spec.backend();
+            let already_resolved = resolved.iter().any(|(f, _, _)| *f == backend);
+            if spec.is_optional() && !already_resolved && !self.policy.backend_enabled_public(backend) {
                 omitted.push(PanelOmittedView {
-                    backend_family: spec.backend().as_str().to_owned(),
-                    reason: "backend disabled or unavailable".to_owned(),
+                    backend_family: backend.as_str().to_owned(),
+                    reason: "backend disabled".to_owned(),
                     was_optional: true,
                 });
             }
@@ -712,14 +806,32 @@ impl<'a> BackendDiagnosticsService<'a> {
             BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => "workflow.qa_backend",
             BackendPolicyRole::PromptReviewer => "prompt_review.refiner_backend",
             BackendPolicyRole::Arbiter => "final_review.arbiter_backend",
-            BackendPolicyRole::Completer => return "default (inherits from base)".to_owned(),
-            BackendPolicyRole::FinalReviewer => return "default (inherits from base)".to_owned(),
-            BackendPolicyRole::PromptValidator => return "default (inherits from base)".to_owned(),
+            // Panel member roles inherit from the base backend. Report the
+            // effective source of `default_backend` so operators see where the
+            // resolution actually comes from.
+            BackendPolicyRole::Completer
+            | BackendPolicyRole::FinalReviewer
+            | BackendPolicyRole::PromptValidator => {
+                let base_source = self.source_for_base_backend();
+                return format!("default_backend ({})", base_source);
+            }
         };
 
         match self.config.get(key) {
-            Ok(entry) => entry.source.to_string(),
-            Err(_) => "default".to_owned(),
+            Ok(entry) => {
+                if entry.source == crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                    // No explicit override set — role inherits from default_backend
+                    let base_source = self.source_for_base_backend();
+                    format!("default_backend ({})", base_source)
+                } else {
+                    entry.source.to_string()
+                }
+            }
+            Err(_) => {
+                // Key not found means no explicit override — inherits from base
+                let base_source = self.source_for_base_backend();
+                format!("default_backend ({})", base_source)
+            }
         }
     }
 }
