@@ -496,11 +496,21 @@ sent to the backend. This is necessary because `schemars` honours
 standard JSON Schema but violates the strict-mode contract.
 
 This enforcement is applied:
+- **Claude**: in `ProcessBackendAdapter::build_command()` before passing the
+  schema to `--json-schema` (`process_backend.rs:400`)
 - **Codex**: in `ProcessBackendAdapter::build_command()` before writing the
-  schema file (`process_backend.rs:429`)
+  schema file (`process_backend.rs:446`)
 - **OpenRouter**: in `OpenRouterBackendAdapter::request_body()` before
   embedding the schema in the `response_format` payload
-  (`openrouter_backend.rs:134`)
+  (`openrouter_backend.rs:135`)
+
+### Stale Session Recovery
+
+When the Claude CLI fails with "No conversation found with session ID" during a
+`--resume` attempt (typically caused by expired sessions between multi-cycle flow
+rounds), the process backend automatically retries once without `--resume`,
+starting a fresh session. This is transparent to the caller and prevents stale
+session references in the session store from blocking multi-cycle runs.
 
 ### Live Smoke Validation
 

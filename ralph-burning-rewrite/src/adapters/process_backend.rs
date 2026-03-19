@@ -72,20 +72,11 @@ impl PreparedCommand {
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     structured
-                } else if envelope.result.trim().is_empty() {
-                    return Err(ProcessBackendAdapter::invocation_failed(
-                        request,
-                        FailureClass::SchemaValidationFailure,
-                        format!(
-                            "Claude returned empty result with no structured_output \
-                             (contract: {}, stdout_len: {}, session_policy: {:?})",
-                            request.contract.label(),
-                            output.stdout.len(),
-                            request.session_policy,
-                        ),
-                    ));
-                } else {
-                    serde_json::from_str(&envelope.result).map_err(|error| {
+                } else if !envelope.result.trim().is_empty() {
+                    // result is non-empty: try direct parse, then extract embedded JSON
+                    serde_json::from_str(&envelope.result).or_else(|_| {
+                        extract_json_from_text(&envelope.result)
+                    }).map_err(|error| {
                         ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -94,6 +85,22 @@ impl PreparedCommand {
                                  (contract: {}, result_len: {})",
                                 request.contract.label(),
                                 envelope.result.len(),
+                            ),
+                        )
+                    })?
+                } else {
+                    // Both structured_output and result are empty.
+                    // Last resort: try to find JSON in the raw stdout beyond the envelope.
+                    extract_json_from_text(&stdout_text).map_err(|_| {
+                        ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!(
+                                "Claude returned empty result with no structured_output \
+                                 (contract: {}, stdout_len: {}, session_policy: {:?})",
+                                request.contract.label(),
+                                output.stdout.len(),
+                                request.session_policy,
                             ),
                         )
                     })?
@@ -397,7 +404,9 @@ impl ProcessBackendAdapter {
         match request.resolved_target.backend.family {
             BackendFamily::Claude => {
                 let model_id = &request.resolved_target.model.model_id;
-                let schema_json = serde_json::to_string(&request.contract.json_schema_value())
+                let mut schema_value = request.contract.json_schema_value();
+                enforce_strict_mode_schema(&mut schema_value);
+                let schema_json = serde_json::to_string(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
                     && request.prior_session.is_some();
@@ -767,6 +776,52 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         match output.status {
             status if !status.success() => {
                 let stderr = String::from_utf8_lossy(&output.stderr);
+
+                // Stale session recovery: if Claude fails with "No conversation
+                // found" while resuming a session, retry once without --resume.
+                if request.prior_session.is_some()
+                    && stderr.contains("No conversation found with session ID")
+                {
+                    prepared.cleanup().await;
+                    let mut fresh_request = request.clone();
+                    fresh_request.prior_session = None;
+                    let fresh_prepared = self.build_command(&fresh_request).await?;
+                    let fresh_output = match self
+                        .spawn_and_wait(
+                            &fresh_request,
+                            fresh_prepared.binary(),
+                            fresh_prepared.args(),
+                            fresh_prepared.stdin_payload(),
+                        )
+                        .await
+                    {
+                        Ok(output) => output,
+                        Err(error) => {
+                            fresh_prepared.cleanup().await;
+                            return Err(error);
+                        }
+                    };
+                    if !fresh_output.status.success() {
+                        let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
+                        let code = fresh_output.status.code().map_or("signal".to_owned(), |c| c.to_string());
+                        fresh_prepared.cleanup().await;
+                        return Err(Self::invocation_failed(
+                            &fresh_request,
+                            FailureClass::TransportFailure,
+                            format!(
+                                "{} exited with code {code}{}",
+                                fresh_prepared.binary(),
+                                if fresh_stderr.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(": {fresh_stderr}")
+                                }
+                            ),
+                        ));
+                    }
+                    return fresh_prepared.finish(&fresh_request, fresh_output).await;
+                }
+
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
                 prepared.cleanup().await;
                 Err(Self::invocation_failed(
@@ -915,5 +970,170 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
         if let Some(items) = map.get_mut("items") {
             enforce_strict_mode_schema(items);
         }
+    }
+}
+
+/// Try to extract a JSON object from text that may contain surrounding prose or
+/// markdown fencing. This handles cases where the Claude CLI returns the payload
+/// inside `result` wrapped in markdown code blocks or conversational text.
+fn extract_json_from_text(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    // 1. Try direct parse first (already attempted by caller, but cheap).
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        if val.is_object() {
+            return Ok(val);
+        }
+    }
+
+    // 2. Try extracting from ```json ... ``` fenced blocks.
+    if let Some(start) = text.find("```json") {
+        let after_fence = &text[start + 7..];
+        if let Some(end) = after_fence.find("```") {
+            let candidate = after_fence[..end].trim();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                if val.is_object() {
+                    return Ok(val);
+                }
+            }
+        }
+    }
+
+    // 3. Find the first balanced `{...}` substring.
+    if let Some(obj_start) = text.find('{') {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape_next = false;
+        for (i, ch) in text[obj_start..].char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_string => escape_next = true,
+                '"' => in_string = !in_string,
+                '{' if !in_string => depth += 1,
+                '}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let candidate = &text[obj_start..obj_start + i + 1];
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                            if val.is_object() {
+                                return Ok(val);
+                            }
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Nothing found — return an error via a failed parse of the original text.
+    serde_json::from_str::<serde_json::Value>(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn enforce_strict_mode_adds_missing_required_fields() {
+        // Simulates a schema generated by schemars for a struct with
+        // #[serde(default)] fields — `follow_ups` is in properties but
+        // NOT in the required array.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outcome": { "type": "string" },
+                "evidence": { "type": "array", "items": { "type": "string" } },
+                "findings": { "type": "array", "items": { "type": "string" } },
+                "follow_ups": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["outcome", "evidence", "findings"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"follow_ups"),
+            "follow_ups should be added to required; got: {required_strings:?}");
+        assert!(required_strings.contains(&"outcome"));
+        assert!(required_strings.contains(&"evidence"));
+        assert!(required_strings.contains(&"findings"));
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_creates_required_when_absent() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "value": { "type": "integer" }
+            }
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 2);
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_recurses_into_nested_objects() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string" },
+                        "run_id": { "type": "string" },
+                        "quick_revisions": { "type": "integer" }
+                    },
+                    "required": ["mode", "run_id"]
+                }
+            },
+            "required": ["source"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let nested = &schema["properties"]["source"];
+        let nested_required = nested["required"].as_array().unwrap();
+        let nested_strings: Vec<&str> = nested_required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(nested_strings.contains(&"quick_revisions"),
+            "quick_revisions should be added to nested required; got: {nested_strings:?}");
+        assert_eq!(nested["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn extract_json_from_text_direct_parse() {
+        let text = r#"{"project_id": "test-123", "flow": "standard"}"#;
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["project_id"], "test-123");
+    }
+
+    #[test]
+    fn extract_json_from_text_markdown_fenced() {
+        let text = "Here is the output:\n```json\n{\"project_id\": \"test-456\"}\n```\nDone.";
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["project_id"], "test-456");
+    }
+
+    #[test]
+    fn extract_json_from_text_embedded_object() {
+        let text = "The result is: {\"outcome\": \"approved\", \"evidence\": [\"ok\"]} and that's it.";
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["outcome"], "approved");
+    }
+
+    #[test]
+    fn extract_json_from_text_no_json_returns_error() {
+        let text = "No JSON here at all.";
+        assert!(extract_json_from_text(text).is_err());
     }
 }
