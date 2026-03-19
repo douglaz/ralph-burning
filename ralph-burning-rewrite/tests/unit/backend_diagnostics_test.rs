@@ -7,8 +7,8 @@ use ralph_burning::contexts::agent_execution::diagnostics::{
 };
 use ralph_burning::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use ralph_burning::shared::domain::{
-    BackendFamily, BackendRuntimeSettings, BackendSelection, CompletionSettings, FlowPreset,
-    PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
+    BackendFamily, BackendRoleTimeouts, BackendRuntimeSettings, BackendSelection,
+    CompletionSettings, FlowPreset, PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
 };
 
 use super::workspace_test::initialize_workspace_fixture;
@@ -1176,5 +1176,243 @@ async fn check_with_availability_reports_all_role_aliases_for_shared_target() {
         roles.iter().any(|r| r.contains("final_review_panel")),
         "expected final_review_panel-related failure, got roles: {:?}",
         roles
+    );
+}
+
+// ── probe timeout fidelity tests ──────────────────────────────────────────────
+
+#[test]
+fn probe_final_review_panel_uses_planner_timeout_not_final_reviewer() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Set distinct planner and final_reviewer timeouts so the test can
+    // distinguish which role the probe uses.
+    let mut claude_settings = empty_backend_settings(true);
+    claude_settings.role_timeouts = BackendRoleTimeouts {
+        planner: Some(11),
+        final_reviewer: Some(22),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("claude".to_owned(), claude_settings);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .probe("final_review_panel", FlowPreset::Standard, 1)
+        .expect("probe should succeed");
+
+    // The target is the planner — its timeout must come from the planner role
+    // timeout (11), not the final_reviewer role timeout (22), matching runtime.
+    assert_eq!(
+        11, result.target.timeout_seconds,
+        "final_review_panel target timeout should use planner role (11), not final_reviewer (22)"
+    );
+}
+
+#[test]
+fn probe_prompt_review_panel_uses_prompt_reviewer_timeout_not_validator() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    let mut claude_settings = empty_backend_settings(true);
+    claude_settings.role_timeouts = BackendRoleTimeouts {
+        prompt_reviewer: Some(15),
+        prompt_validator: Some(30),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("claude".to_owned(), claude_settings);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .probe("prompt_review_panel", FlowPreset::Standard, 1)
+        .expect("probe should succeed");
+
+    // The target is the refiner — its timeout must come from prompt_reviewer
+    // role (15), not prompt_validator (30), matching runtime engine.rs:5878.
+    assert_eq!(
+        15, result.target.timeout_seconds,
+        "prompt_review_panel target timeout should use prompt_reviewer role (15), not prompt_validator (30)"
+    );
+}
+
+#[test]
+fn probe_completion_panel_uses_planner_timeout_not_completer() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    let mut claude_settings = empty_backend_settings(true);
+    claude_settings.role_timeouts = BackendRoleTimeouts {
+        planner: Some(7),
+        completer: Some(42),
+        ..Default::default()
+    };
+    workspace
+        .backends
+        .insert("claude".to_owned(), claude_settings);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .probe("completion_panel", FlowPreset::Standard, 1)
+        .expect("probe should succeed");
+
+    // The target is the planner — timeout must come from planner role (7),
+    // not completer role (42), matching runtime.
+    assert_eq!(
+        7, result.target.timeout_seconds,
+        "completion_panel target timeout should use planner role (7), not completer (42)"
+    );
+}
+
+// ── probe failure config source tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn probe_failure_includes_config_source_for_planner() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("final_review_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err(), "probe should fail when planner is unavailable");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("[source: workflow.planner_backend]"),
+        "error should include config source field for planner: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn probe_failure_includes_config_source_for_required_member() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability only for openrouter
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err(), "probe should fail on required unavailable member");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("[source: completion.backends]"),
+        "error should include config source field for completion member: {}",
+        err_msg
     );
 }

@@ -558,9 +558,12 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         let resolution = self.policy.resolve_completion_panel(cycle)?;
+        // The target is the planner — use Planner role for timeout, matching
+        // runtime behavior in engine.rs which resolves planner timeout via
+        // policy_role_for_stage → Planner.
         let timeout = self.policy.timeout_for_role(
             resolution.planner.backend.family,
-            BackendPolicyRole::Completer,
+            BackendPolicyRole::Planner,
         );
 
         let configured_specs = &self.config.completion_policy().backends;
@@ -601,9 +604,11 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         let resolution = self.policy.resolve_final_review_panel(cycle)?;
+        // The target is the planner — use Planner role for timeout, matching
+        // runtime behavior in engine.rs:6340 which uses BackendPolicyRole::Planner.
         let timeout = self.policy.timeout_for_role(
             resolution.planner.backend.family,
-            BackendPolicyRole::FinalReviewer,
+            BackendPolicyRole::Planner,
         );
 
         let configured_specs = &self.config.final_review_policy().backends;
@@ -651,9 +656,12 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         let resolution = self.policy.resolve_prompt_review_panel(cycle)?;
+        // The target is the refiner — use PromptReviewer role for timeout,
+        // matching runtime behavior in engine.rs:5878 which uses
+        // BackendPolicyRole::PromptReviewer for the refiner.
         let timeout = self.policy.timeout_for_role(
             resolution.refiner.backend.family,
-            BackendPolicyRole::PromptValidator,
+            BackendPolicyRole::PromptReviewer,
         );
 
         let configured_specs = &self.config.prompt_review_policy().validator_backends;
@@ -691,7 +699,8 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// Probe with real adapter availability. Optional panel members that are
     /// enabled but unavailable are moved to `omitted` instead of `members`.
     /// Required unavailable members, planners, arbiters, and refiners cause the
-    /// probe to fail with exact member identity and source field.
+    /// probe to fail with exact member identity, backend family, and effective
+    /// config source field.
     pub async fn probe_with_availability<A: AgentExecutionPort>(
         &self,
         role_str: &str,
@@ -701,6 +710,9 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> AppResult<BackendProbeResult> {
         let mut result = self.probe(role_str, flow, cycle)?;
 
+        // Resolve config source for the primary target role
+        let primary_source = self.probe_primary_config_source(role_str);
+
         // Check the primary target (planner for panels, role target for singular)
         {
             let family: BackendFamily = result.target.backend_family.parse()?;
@@ -709,8 +721,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                 return Err(AppError::BackendUnavailable {
                     backend: family.as_str().to_owned(),
                     details: format!(
-                        "required target '{}' (planner/primary) unavailable: {}",
-                        role_str, err
+                        "required target '{}' (planner/primary) unavailable: {} [source: {}]",
+                        role_str, err, primary_source
                     ),
                 });
             }
@@ -719,18 +731,21 @@ impl<'a> BackendDiagnosticsService<'a> {
         if let Some(panel) = &mut result.panel {
             // Check arbiter availability (required for final_review_panel)
             if let Some(arbiter) = &panel.arbiter {
+                let arbiter_source = self.config_source_for_role(BackendPolicyRole::Arbiter);
                 let family: BackendFamily = arbiter.backend_family.parse()?;
                 let target = ResolvedBackendTarget::new(family, arbiter.model_id.clone());
                 if let Err(err) = adapter.check_availability(&target).await {
                     return Err(AppError::BackendUnavailable {
                         backend: family.as_str().to_owned(),
                         details: format!(
-                            "required arbiter for '{}' unavailable: {}",
-                            role_str, err
+                            "required arbiter for '{}' unavailable: {} [source: {}]",
+                            role_str, err, arbiter_source
                         ),
                     });
                 }
             }
+
+            let members_source = Self::panel_members_config_source(&panel.panel_type);
 
             // Check panel members: required unavailable → fail; optional unavailable → omit
             let mut available_members = Vec::new();
@@ -739,7 +754,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let target = ResolvedBackendTarget::new(family, member.model_id.clone());
                 match adapter.check_availability(&target).await {
                     Ok(()) => available_members.push(member),
-                    Err(err) if !member.required => {
+                    Err(_) if !member.required => {
                         panel.omitted.push(PanelOmittedView {
                             backend_family: member.backend_family,
                             reason: "backend unavailable".to_owned(),
@@ -750,8 +765,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                         return Err(AppError::BackendUnavailable {
                             backend: member.backend_family.clone(),
                             details: format!(
-                                "required panel member '{}/{}' unavailable: {}",
-                                member.backend_family, member.model_id, err
+                                "required panel member '{}/{}' unavailable: {} [source: {}]",
+                                member.backend_family, member.model_id, err, members_source
                             ),
                         });
                     }
@@ -773,6 +788,33 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Resolve the effective config source field for the primary/planner target
+    /// of a probe, based on the role string.
+    fn probe_primary_config_source(&self, role_str: &str) -> String {
+        match role_str {
+            // Panel probes always resolve the planner as the primary target
+            "completion_panel" | "final_review_panel" | "prompt_review_panel" => {
+                self.config_source_for_role(BackendPolicyRole::Planner)
+            }
+            // Singular role probe — parse to get the actual role's config source
+            _ => match role_str.parse::<BackendPolicyRole>() {
+                Ok(role) => self.config_source_for_role(role),
+                Err(_) => "default_backend".to_owned(),
+            },
+        }
+    }
+
+    /// Return the config field that governs panel member selection.
+    fn panel_members_config_source(panel_type: &str) -> String {
+        match panel_type {
+            "completion" => "completion.backends",
+            "final_review" => "final_review.backends",
+            "prompt_review" => "prompt_review.validator_backends",
+            _ => "default_backend",
+        }
+        .to_owned()
     }
 
     fn build_panel_member_views(

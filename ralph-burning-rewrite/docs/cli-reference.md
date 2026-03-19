@@ -244,10 +244,16 @@ resolution paths as run execution. Supports both singular policy roles
 The probe checks actual backend availability. If the backend adapter
 cannot be constructed, the command exits non-zero. For panel probes:
 - Required unavailable members cause the probe to fail with the exact
-  member identity.
+  member identity, backend family, and effective config source field
+  (e.g. `[source: completion.backends]`).
 - Optional unavailable members are moved to `omitted`.
 - The planner, arbiter (final-review), and refiner (prompt-review)
-  targets are checked for availability and fail the probe if unavailable.
+  targets are checked for availability and fail the probe if unavailable,
+  reporting their config source field (e.g. `[source: workflow.planner_backend]`,
+  `[source: final_review.arbiter_backend]`).
+- Panel target timeouts match runtime semantics: the planner target uses
+  `planner` role timeout, and the refiner target uses `prompt_reviewer`
+  role timeout.
 - If omission of optional members causes the panel minimum to be
   unsatisfied, the probe fails with a minimum-violation error.
 
