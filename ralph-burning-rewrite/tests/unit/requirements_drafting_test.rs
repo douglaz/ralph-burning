@@ -3367,3 +3367,73 @@ fn parity_slice1_seed_without_version_defaults_to_1() {
     assert_eq!(seed.version, 1, "missing version should default to 1");
     assert!(seed.source.is_none());
 }
+
+// ── Template override parity (Slice 7) ──────────────────────────────────────
+
+mod template_override_parity {
+    use ralph_burning::contexts::workspace_governance::template_catalog;
+    use tempfile::tempdir;
+
+    #[test]
+    fn requirements_draft_built_in_contains_idea_placeholder() {
+        let tmp = tempdir().unwrap();
+        let resolved = template_catalog::resolve("requirements_draft", tmp.path(), None).unwrap();
+        assert_eq!(resolved.source, template_catalog::TemplateSource::BuiltIn);
+        assert!(resolved.content.contains("{{idea}}"));
+    }
+
+    #[test]
+    fn requirements_ideation_built_in_contains_base_context() {
+        let tmp = tempdir().unwrap();
+        let resolved =
+            template_catalog::resolve("requirements_ideation", tmp.path(), None).unwrap();
+        assert!(resolved.content.contains("{{base_context}}"));
+    }
+
+    #[test]
+    fn requirements_workspace_override_used() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("requirements_draft.md"), "CUSTOM: {{idea}}").unwrap();
+        let resolved = template_catalog::resolve("requirements_draft", tmp.path(), None).unwrap();
+        assert!(matches!(
+            resolved.source,
+            template_catalog::TemplateSource::WorkspaceOverride(_)
+        ));
+        assert!(resolved.content.starts_with("CUSTOM:"));
+    }
+
+    #[test]
+    fn requirements_malformed_override_rejected() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("requirements_draft.md"), "No idea placeholder.").unwrap();
+        let result = template_catalog::resolve("requirements_draft", tmp.path(), None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("malformed template override"));
+    }
+
+    #[test]
+    fn requirements_override_render_produces_custom_output() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "MY IDEATION\n\n{{base_context}}\n\nDone.",
+        )
+        .unwrap();
+        let rendered = template_catalog::resolve_and_render(
+            "requirements_ideation",
+            tmp.path(),
+            None,
+            &[("base_context", "test context")],
+        )
+        .unwrap();
+        assert!(rendered.starts_with("MY IDEATION"));
+        assert!(rendered.contains("test context"));
+    }
+}

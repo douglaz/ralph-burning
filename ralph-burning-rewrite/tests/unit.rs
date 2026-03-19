@@ -90,3 +90,6 @@ mod backend_diagnostics_test;
 
 #[path = "unit/execution_config_test.rs"]
 mod execution_config_test;
+
+#[path = "unit/template_catalog_test.rs"]
+mod template_catalog_test;

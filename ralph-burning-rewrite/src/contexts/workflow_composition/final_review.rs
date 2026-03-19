@@ -38,6 +38,7 @@ use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
     BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -212,7 +213,7 @@ where
             BackendRole::Reviewer,
             &reviewer_id,
             "reviewer",
-            build_reviewer_prompt(&project_prompt)?,
+            build_reviewer_prompt(&project_prompt, base_dir, Some(project_id))?,
             Value::Null,
             reviewer_timeout_for_backend(member.target.backend.family),
             cancellation_token.clone(),
@@ -319,7 +320,7 @@ where
         BackendRole::Planner,
         "planner",
         "voter",
-        build_voter_prompt("Planner Positions", &amendments, None)?,
+        build_voter_prompt("Planner Positions", &amendments, None, base_dir, Some(project_id))?,
         json!({
             "amendments": amendments
                 .iter()
@@ -386,7 +387,7 @@ where
             BackendRole::Reviewer,
             &reviewer.reviewer_id,
             "voter",
-            build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes))?,
+            build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes), base_dir, Some(project_id))?,
             json!({
                 "amendments": amendments
                     .iter()
@@ -510,7 +511,7 @@ where
             BackendRole::Reviewer,
             "arbiter",
             "arbiter",
-            build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes)?,
+            build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes, base_dir, Some(project_id))?,
             json!({
                 "disputed_amendments": disputed_set
                     .values()
@@ -659,20 +660,33 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
     }
 }
 
-fn build_reviewer_prompt(project_prompt: &str) -> AppResult<String> {
+fn build_reviewer_prompt(
+    project_prompt: &str,
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "reviewer");
-    Ok(format!(
-        "# Final Review Proposals\n\n## Project Prompt\n\n{project_prompt}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    ))
+    let schema_str = serde_json::to_string_pretty(&schema)?;
+    template_catalog::resolve_and_render(
+        "final_review_reviewer",
+        base_dir,
+        project_id,
+        &[
+            ("project_prompt", project_prompt),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn build_voter_prompt(
     title: &str,
     amendments: &[CanonicalAmendment],
     planner_votes: Option<&FinalReviewVotePayload>,
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "voter");
+    let schema_str = serde_json::to_string_pretty(&schema)?;
     let amendment_text = amendments
         .iter()
         .map(|amendment| {
@@ -691,18 +705,28 @@ fn build_voter_prompt(
             )
         })
         .unwrap_or_default();
-    Ok(format!(
-        "# {title}\n\n{amendment_text}{planner_section}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    ))
+    template_catalog::resolve_and_render(
+        "final_review_voter",
+        base_dir,
+        project_id,
+        &[
+            ("title", title),
+            ("amendments", &amendment_text),
+            ("planner_positions", &planner_section),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn build_arbiter_prompt(
     disputed_amendments: &HashMap<String, &CanonicalAmendment>,
     planner_votes: &FinalReviewVotePayload,
     reviewer_votes: &[FinalReviewVotePayload],
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "arbiter");
+    let schema_str = serde_json::to_string_pretty(&schema)?;
     let amendment_text = disputed_amendments
         .values()
         .map(|amendment| {
@@ -713,12 +737,19 @@ fn build_arbiter_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    Ok(format!(
-        "# Final Review Arbiter\n\n{amendment_text}\n\n## Planner Positions\n\n```json\n{}\n```\n\n## Reviewer Votes\n\n```json\n{}\n```\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(planner_votes)?,
-        serde_json::to_string_pretty(reviewer_votes)?,
-        serde_json::to_string_pretty(&schema)?
-    ))
+    let planner_str = serde_json::to_string_pretty(planner_votes)?;
+    let reviewer_str = serde_json::to_string_pretty(reviewer_votes)?;
+    template_catalog::resolve_and_render(
+        "final_review_arbiter",
+        base_dir,
+        project_id,
+        &[
+            ("amendments", &amendment_text),
+            ("planner_positions", &planner_str),
+            ("reviewer_votes", &reviewer_str),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn validate_vote_payload(

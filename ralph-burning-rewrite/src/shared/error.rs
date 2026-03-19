@@ -238,6 +238,8 @@ pub enum AppError {
     },
     #[error("backend diagnostics check failed: {failure_count} failure(s)")]
     BackendCheckFailed { failure_count: usize },
+    #[error("malformed template override at '{path}': {reason}")]
+    MalformedTemplate { path: String, reason: String },
     #[error("conformance run failed (see above for details)")]
     ConformanceRunFailed,
     #[error(transparent)]

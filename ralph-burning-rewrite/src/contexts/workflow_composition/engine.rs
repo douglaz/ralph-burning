@@ -39,6 +39,7 @@ use crate::contexts::workflow_composition::payloads::{
 use crate::contexts::workspace_governance::config::{
     EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRole, FailureClass, FlowPreset, ProjectId,
     ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
@@ -101,20 +102,10 @@ pub fn build_stage_prompt(
     let schema =
         serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
 
-    let mut sections = vec![
-        format!(
-            "# Stage Execution Prompt\n\n{}",
-            stage_role_instruction(role, contract.stage_id)
-        ),
-        format!(
-            "## Original Project Prompt\n\n{}",
-            project_prompt.trim_end()
-        ),
-    ];
-
-    if !prior_outputs.is_empty() {
+    // Pre-render optional sections
+    let prior_outputs_block = if !prior_outputs.is_empty() {
         let mut section = String::from("## Prior Stage Outputs This Cycle");
-        for record in prior_outputs {
+        for record in &prior_outputs {
             let payload = serde_json::to_string_pretty(&record.payload)?;
             section.push_str(&format!(
                 "\n\n### {} (`{}`)\n- Payload ID: `{}`\n- Attempt: `{}`\n\n```json\n{}\n```",
@@ -125,10 +116,12 @@ pub fn build_stage_prompt(
                 payload
             ));
         }
-        sections.push(section);
-    }
+        section
+    } else {
+        String::new()
+    };
 
-    if execution_context.is_some()
+    let remediation_block = if execution_context.is_some()
         || pending_amendments.is_some_and(|amendments| !amendments.is_empty())
     {
         let mut section = String::from("## Remediation / Pending Amendments");
@@ -148,15 +141,26 @@ pub fn build_stage_prompt(
                 serde_json::to_string_pretty(&amendment_bodies)?
             ));
         }
-        sections.push(section);
-    }
+        section
+    } else {
+        String::new()
+    };
 
-    sections.push(format!(
-        "## Authoritative JSON Schema\n\nThe JSON schema below is authoritative. Return only JSON that conforms exactly to it.\n\n```json\n{}\n```",
-        schema
-    ));
+    let template_id = template_catalog::stage_template_id(contract.stage_id);
+    let role_instruction = stage_role_instruction(role, contract.stage_id);
 
-    Ok(sections.join("\n\n"))
+    template_catalog::resolve_and_render(
+        template_id,
+        base_dir,
+        Some(project_id),
+        &[
+            ("role_instruction", &role_instruction),
+            ("project_prompt", project_prompt.trim_end()),
+            ("json_schema", &schema),
+            ("prior_outputs", &prior_outputs_block),
+            ("remediation", &remediation_block),
+        ],
+    )
 }
 
 /// Resolved target per stage for preflight.

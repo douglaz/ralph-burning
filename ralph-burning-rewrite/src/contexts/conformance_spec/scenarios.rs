@@ -791,6 +791,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_manual_amendments_slice3(&mut m);
     register_backend_operations_slice5(&mut m);
     register_tmux_streaming_slice6(&mut m);
+    register_template_overrides_slice7(&mut m);
 
     m
 }
@@ -19448,6 +19449,287 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 .map_err(|e| format!("load config: {e}"))?;
         if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
             return Err("default execution mode should be direct".into());
+        }
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Template Overrides — Slice 7 (10 scenarios)
+// ===========================================================================
+
+fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>) {
+    use crate::contexts::workspace_governance::template_catalog;
+
+    // @parity_slice7_workspace_override
+    reg!(m, "parity_slice7_workspace_override", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("planning.md"),
+            "CUSTOM: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        )
+        .map_err(|e| format!("write override: {e}"))?;
+        let resolved = template_catalog::resolve("planning", ws.path(), None)
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::WorkspaceOverride(_) => {}
+            other => return Err(format!("expected workspace override, got {other:?}")),
+        }
+        let rendered = template_catalog::render(
+            &resolved,
+            &[
+                ("role_instruction", "You are the Planner."),
+                ("project_prompt", "Build X."),
+                ("json_schema", "{}"),
+            ],
+        )
+        .map_err(|e| format!("render: {e}"))?;
+        if !rendered.starts_with("CUSTOM:") {
+            return Err(format!("expected custom prefix, got: {}", &rendered[..40]));
+        }
+        Ok(())
+    });
+
+    // @parity_slice7_project_override
+    reg!(m, "parity_slice7_project_override", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-proj", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-proj".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-proj/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("planning.md"),
+            "PROJECT: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        )
+        .map_err(|e| format!("write project override: {e}"))?;
+        let resolved = template_catalog::resolve("planning", ws.path(), Some(&pid))
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::ProjectOverride(_) => Ok(()),
+            other => Err(format!("expected project override, got {other:?}")),
+        }
+    });
+
+    // @parity_slice7_project_over_workspace
+    reg!(m, "parity_slice7_project_over_workspace", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-prec", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-prec".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let ws_templates = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws_templates)
+            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::write(
+            ws_templates.join("requirements_ideation.md"),
+            "WS: {{base_context}}",
+        )
+        .map_err(|e| format!("write ws override: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-prec/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("requirements_ideation.md"),
+            "PROJECT: {{base_context}}",
+        )
+        .map_err(|e| format!("write proj override: {e}"))?;
+        let resolved =
+            template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid))
+                .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::ProjectOverride(_) => Ok(()),
+            other => Err(format!("expected project override to win, got {other:?}")),
+        }
+    });
+
+    // @parity_slice7_malformed_workflow_rejection
+    reg!(m, "parity_slice7_malformed_workflow_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("planning.md"),
+            "No placeholders here.",
+        )
+        .map_err(|e| format!("write malformed: {e}"))?;
+        match template_catalog::resolve("planning", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("malformed template override") {
+                    Ok(())
+                } else {
+                    Err(format!("expected malformed template error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for malformed template".into()),
+        }
+    });
+
+    // @parity_slice7_malformed_requirements_rejection
+    reg!(m, "parity_slice7_malformed_requirements_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_draft.md"),
+            "Missing the idea placeholder.",
+        )
+        .map_err(|e| format!("write malformed: {e}"))?;
+        match template_catalog::resolve("requirements_draft", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("malformed template override") {
+                    Ok(())
+                } else {
+                    Err(format!("expected malformed template error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for malformed requirements template".into()),
+        }
+    });
+
+    // @parity_slice7_no_silent_fallback
+    reg!(m, "parity_slice7_no_silent_fallback", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-nofb", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-nofb".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let ws_templates = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws_templates)
+            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::write(
+            ws_templates.join("requirements_ideation.md"),
+            "WS valid: {{base_context}}",
+        )
+        .map_err(|e| format!("write ws override: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-nofb/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("requirements_ideation.md"),
+            "Malformed — no placeholders.",
+        )
+        .map_err(|e| format!("write malformed proj: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid)) {
+            Err(_) => Ok(()),
+            Ok(_) => Err("must not silently fall back to workspace override".into()),
+        }
+    });
+
+    // @parity_slice7_built_in_default_preserved
+    reg!(m, "parity_slice7_built_in_default_preserved", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let resolved = template_catalog::resolve("planning", ws.path(), None)
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::BuiltIn => {}
+            other => return Err(format!("expected built-in, got {other:?}")),
+        }
+        let rendered = template_catalog::render(
+            &resolved,
+            &[
+                ("role_instruction", "You are the Planner."),
+                ("project_prompt", "Build X."),
+                ("json_schema", "{}"),
+            ],
+        )
+        .map_err(|e| format!("render: {e}"))?;
+        if !rendered.contains("# Stage Execution Prompt") {
+            return Err("rendered built-in should contain stage header".into());
+        }
+        if !rendered.contains("## Authoritative JSON Schema") {
+            return Err("rendered built-in should contain schema header".into());
+        }
+        Ok(())
+    });
+
+    // @parity_slice7_placeholder_validation
+    reg!(m, "parity_slice7_placeholder_validation", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_ideation.md"),
+            "{{base_context}} and {{unknown_field}}",
+        )
+        .map_err(|e| format!("write: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("unknown placeholder") && msg.contains("unknown_field") {
+                    Ok(())
+                } else {
+                    Err(format!("expected unknown placeholder error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for unknown placeholder".into()),
+        }
+    });
+
+    // @parity_slice7_non_utf8_rejection
+    reg!(m, "parity_slice7_non_utf8_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_ideation.md"),
+            &[0xFF, 0xFE, 0x00, 0x01],
+        )
+        .map_err(|e| format!("write non-utf8: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UTF-8") {
+                    Ok(())
+                } else {
+                    Err(format!("expected UTF-8 error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for non-UTF-8 file".into()),
+        }
+    });
+
+    // Meta-conformance: all template IDs have manifests
+    reg!(m, "parity_slice7_all_ids_have_manifests", || {
+        for &id in template_catalog::STAGE_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!("missing manifest for stage template '{id}'"));
+            }
+        }
+        for &id in template_catalog::PANEL_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!("missing manifest for panel template '{id}'"));
+            }
+        }
+        for &id in template_catalog::REQUIREMENTS_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!(
+                    "missing manifest for requirements template '{id}'"
+                ));
+            }
         }
         Ok(())
     });

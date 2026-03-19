@@ -22,6 +22,7 @@ use crate::contexts::agent_execution::service::{
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
 use crate::shared::domain::{BackendRole, FlowPreset, SessionPolicy};
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 use super::contracts::{RequirementsContract, RequirementsPayload, RequirementsValidatedBundle};
@@ -427,7 +428,7 @@ where
         let mut seq = start_seq;
 
         // Build context from idea and answers
-        let base_context = build_draft_prompt(idea, answers);
+        let base_context = build_draft_prompt(idea, answers, base_dir)?;
 
         // ── Ideation ────────────────────────────────────────────────────
         let ideation_cache_key =
@@ -471,9 +472,12 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Explore themes and initial scope for the following idea:\n\n{base_context}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_ideation",
+                base_dir,
+                None,
+                &[("base_context", &base_context)],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -548,9 +552,12 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Research background and technical context for:\n\n{base_context}\n\nIdeation output:\n{ideation_artifact}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_research",
+                base_dir,
+                None,
+                &[("base_context", &base_context), ("ideation_artifact", &ideation_artifact)],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -626,9 +633,16 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Synthesize requirements from ideation and research:\n\nIdea: {base_context}\n\nIdeation:\n{ideation_artifact}\n\nResearch:\n{research_artifact}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_synthesis",
+                base_dir,
+                None,
+                &[
+                    ("base_context", &*base_context),
+                    ("ideation_artifact", &*ideation_artifact),
+                    ("research_artifact", &*research_artifact),
+                ],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -711,9 +725,12 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Create an implementation specification from the synthesized requirements:\n\n{synthesis_artifact}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_implementation_spec",
+                base_dir,
+                None,
+                &[("synthesis_artifact", &*synthesis_artifact)],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -788,9 +805,15 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Analyze gaps between requirements and implementation spec:\n\nSynthesis:\n{synthesis_artifact}\n\nImplementation Spec:\n{impl_spec_artifact}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_gap_analysis",
+                base_dir,
+                None,
+                &[
+                    ("synthesis_artifact", &*synthesis_artifact),
+                    ("impl_spec_artifact", &*impl_spec_artifact),
+                ],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -891,9 +914,16 @@ where
             run.updated_at = Utc::now();
             self.store.write_run(base_dir, &run_id, run)?;
 
-            let prompt = format!(
-                "Validate the requirements pipeline output:\n\nSynthesis:\n{synthesis_artifact}\n\nImplementation Spec:\n{impl_spec_artifact}\n\nGap Analysis:\n{gap_artifact}"
-            );
+            let prompt = template_catalog::resolve_and_render(
+                "requirements_validation",
+                base_dir,
+                None,
+                &[
+                    ("synthesis_artifact", &*synthesis_artifact),
+                    ("impl_spec_artifact", &*impl_spec_artifact),
+                    ("gap_artifact", &*gap_artifact),
+                ],
+            )?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -972,10 +1002,13 @@ where
         let run_root = requirements_run_root(base_dir, &run_id);
 
         // Generate questions about the missing information
-        let question_prompt = format!(
-            "Generate clarifying questions about the following missing information for the idea:\n\n{idea}\n\nMissing information:\n{}",
-            missing_info.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n")
-        );
+        let missing_info_text = missing_info.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n");
+        let question_prompt = template_catalog::resolve_and_render(
+            "requirements_question_set",
+            base_dir,
+            None,
+            &[("idea", idea), ("missing_info", &missing_info_text)],
+        )?;
 
         let bundle = match self
             .invoke_stage(
@@ -1258,7 +1291,7 @@ where
         let run_root = requirements_run_root(base_dir, &run_id);
         let mut seq = start_seq;
 
-        let draft_prompt = build_draft_prompt(idea, answers);
+        let draft_prompt = build_draft_prompt(idea, answers, base_dir)?;
         let mut last_draft_artifact: String;
 
         // Initial draft
@@ -1341,8 +1374,12 @@ where
         // Revision loop: review → possibly revise → review again
         loop {
             // Review the current draft
-            let review_prompt =
-                format!("Review the following requirements draft:\n\n{last_draft_artifact}");
+            let review_prompt = template_catalog::resolve_and_render(
+                "requirements_review",
+                base_dir,
+                None,
+                &[("draft_artifact", &last_draft_artifact)],
+            )?;
             let review_result = self
                 .invoke_stage(
                     &run_root,
@@ -1480,11 +1517,19 @@ where
                     }
                     seq += 1;
 
-                    // Generate revised draft with feedback
-                    let revision_prompt = format!(
+                    // Generate revised draft with feedback — uses the
+                    // requirements_draft template with the full revision
+                    // context packed into the idea placeholder.
+                    let revision_context = format!(
                         "Revise the following requirements draft based on review feedback:\n\nDraft:\n{last_draft_artifact}\n\nReview findings:\n{}\n\nRevision notes: address the findings above.",
                         review_payload.findings.join("\n- ")
                     );
+                    let revision_prompt = template_catalog::resolve_and_render(
+                        "requirements_draft",
+                        base_dir,
+                        None,
+                        &[("idea", &revision_context)],
+                    )?;
 
                     let revised = match self
                         .invoke_stage(
@@ -1607,15 +1652,20 @@ where
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
 
-        let seed_prompt = format!(
-            "Generate a project seed from the following requirements:\n\n{}\n\nFollow-ups: {}",
-            requirements_artifact,
-            if follow_ups.is_empty() {
-                "none".to_owned()
-            } else {
-                follow_ups.join("; ")
-            }
-        );
+        let follow_ups_text = if follow_ups.is_empty() {
+            "none".to_owned()
+        } else {
+            follow_ups.join("; ")
+        };
+        let seed_prompt = template_catalog::resolve_and_render(
+            "requirements_project_seed",
+            base_dir,
+            None,
+            &[
+                ("requirements_artifact", requirements_artifact),
+                ("follow_ups", &follow_ups_text),
+            ],
+        )?;
 
         let seed_result = self
             .invoke_stage(
@@ -2176,15 +2226,21 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
     Ok(PersistedAnswers { answers })
 }
 
-fn build_draft_prompt(idea: &str, answers: &[(String, String)]) -> String {
-    let mut prompt = format!("Draft requirements for the following idea:\n\n{idea}\n");
-
-    if !answers.is_empty() {
-        prompt.push_str("\nClarifying answers:\n");
+fn build_draft_prompt(idea: &str, answers: &[(String, String)], base_dir: &Path) -> AppResult<String> {
+    let answers_text = if answers.is_empty() {
+        String::new()
+    } else {
+        let mut s = String::from("\nClarifying answers:\n");
         for (qid, answer) in answers {
-            prompt.push_str(&format!("- {qid}: {answer}\n"));
+            s.push_str(&format!("- {qid}: {answer}\n"));
         }
-    }
+        s
+    };
 
-    prompt
+    template_catalog::resolve_and_render(
+        "requirements_draft",
+        base_dir,
+        None,
+        &[("idea", idea), ("answers", &answers_text)],
+    )
 }
