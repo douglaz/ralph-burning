@@ -811,25 +811,11 @@ pub fn add_manual_amendment(
     // Write durable amendment file.
     amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
 
-    // Emit journal event.
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let seq = journal::last_sequence(&events) + 1;
-    let journal_event = journal::amendment_queued_manual_event(
-        seq,
-        now,
-        &amendment_id,
-        body,
-        "manual",
-        &dedup_key,
-    );
-    let line = journal::serialize_event(&journal_event)?;
-    if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &line) {
-        // Roll back the amendment file on journal failure.
-        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
-        return Err(journal_err);
-    }
-
     // Sync canonical snapshot: add the amendment to run.json pending queue.
+    // The snapshot is committed BEFORE the journal event so that a snapshot
+    // write failure leaves no orphaned journal entry. The journal is append-only
+    // and written last — if it fails, the amendment is still visible in
+    // canonical state and will be picked up normally.
     snapshot.amendment_queue.pending.push(amendment.clone());
 
     // If the project is completed, reopen it with the pending amendment
@@ -848,12 +834,27 @@ pub fn add_manual_amendment(
     };
 
     if let Err(snap_err) = snap_result {
-        // Roll back the amendment file so canonical state stays consistent:
-        // reconciliation skips journaled IDs, so a file+journal entry without
-        // a snapshot entry would be permanently lost.
+        // Roll back the amendment file so canonical state stays consistent.
         let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
         return Err(snap_err);
     }
+
+    // Emit journal event AFTER canonical state is committed. If this fails,
+    // the amendment is still visible in run.json and will function correctly;
+    // the journal entry is informational history, not a gating artifact.
+    let events = journal_port.read_journal(base_dir, project_id)?;
+    let seq = journal::last_sequence(&events) + 1;
+    let journal_event = journal::amendment_queued_manual_event(
+        seq,
+        now,
+        &amendment_id,
+        body,
+        "manual",
+        &dedup_key,
+    );
+    let line = journal::serialize_event(&journal_event)?;
+    // Best-effort: canonical state is already committed.
+    let _ = journal_port.append_event(base_dir, project_id, &line);
 
     Ok(AmendmentAddResult::Created { amendment_id })
 }
@@ -870,9 +871,10 @@ pub fn list_amendments(
 
 /// Remove a single pending amendment by ID. Updates both run.json and disk.
 ///
-/// Drives existence checks and mutations from canonical snapshot state so that
-/// a snapshot-write failure leaves no inconsistency: the snapshot is updated
-/// first, then the file is deleted as best-effort cleanup.
+/// Deletes the durable file first, then updates the canonical snapshot. If the
+/// file deletion fails, the amendment remains pending everywhere and the command
+/// fails cleanly. If the snapshot write fails after a successful file deletion,
+/// the amendment file is restored and the command fails.
 pub fn remove_amendment(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -883,36 +885,46 @@ pub fn remove_amendment(
 ) -> AppResult<()> {
     // Verify the amendment exists in canonical snapshot state.
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
-    if !snapshot
+    let amendment = snapshot
         .amendment_queue
         .pending
         .iter()
-        .any(|a| a.amendment_id == amendment_id)
-    {
-        return Err(AppError::AmendmentNotFound {
-            amendment_id: amendment_id.to_owned(),
-        });
-    }
+        .find(|a| a.amendment_id == amendment_id)
+        .cloned();
+    let amendment = match amendment {
+        Some(a) => a,
+        None => {
+            return Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            });
+        }
+    };
 
-    // Update canonical snapshot first — if this fails, no mutation is visible.
+    // Delete the durable file first. If this fails, the amendment stays pending
+    // everywhere and completion will correctly block on it.
+    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)?;
+
+    // Update canonical snapshot to reflect the removal.
     snapshot
         .amendment_queue
         .pending
         .retain(|a| a.amendment_id != amendment_id);
-    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+    if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
+        // Restore the amendment file so disk and snapshot stay consistent.
+        let _ = amendment_queue.write_amendment(base_dir, project_id, &amendment);
+        return Err(snap_err);
+    }
 
-    // Best-effort file cleanup — canonical state is already updated.
-    let _ = amendment_queue.remove_amendment(base_dir, project_id, amendment_id);
     Ok(())
 }
 
 /// Clear all pending amendments. Returns removed and remaining IDs.
 /// On partial failure, reports exactly which amendments were removed and which remain.
 ///
-/// Drives the pending set from canonical snapshot state. The snapshot is
-/// optimistically cleared first so that a snapshot-write failure leaves no
-/// mutation visible. File deletions happen after the canonical commit; any
-/// un-deletable files are re-added to the snapshot.
+/// Drives the pending set from canonical snapshot state. Files are deleted
+/// first, then the snapshot is updated to reflect only the remaining amendments.
+/// If the snapshot write fails after partial deletion, `AmendmentClearPartial`
+/// is still returned so the caller always gets the exact removed/remaining IDs.
 pub fn clear_amendments(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -929,10 +941,7 @@ pub fn clear_amendments(
 
     let total = pending.len();
 
-    // Commit cleared canonical state first — if this fails nothing is mutated.
-    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
-
-    // Best-effort file cleanup.
+    // Delete files first, track removed/remaining.
     let mut removed = Vec::new();
     let mut remaining = Vec::new();
 
@@ -943,17 +952,29 @@ pub fn clear_amendments(
         }
     }
 
-    if !remaining.is_empty() {
-        // Re-add un-deletable amendments back to canonical state.
+    // Update canonical snapshot to reflect only the remaining amendments.
+    if remaining.is_empty() {
+        // All files deleted — clear the snapshot pending queue.
+        // snapshot.amendment_queue.pending is already empty from std::mem::take.
+        if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
+            // Restore all amendment files so disk and snapshot stay consistent.
+            for a in &pending {
+                let _ = amendment_queue.write_amendment(base_dir, project_id, a);
+            }
+            return Err(snap_err);
+        }
+    } else {
+        // Partial failure — put remaining amendments back into canonical state.
         let remaining_set: std::collections::HashSet<&str> =
             remaining.iter().map(|s| s.as_str()).collect();
-        let mut updated = run_port.read_run_snapshot(base_dir, project_id)?;
         for a in &pending {
             if remaining_set.contains(a.amendment_id.as_str()) {
-                updated.amendment_queue.pending.push(a.clone());
+                snapshot.amendment_queue.pending.push(a.clone());
             }
         }
-        run_write_port.write_run_snapshot(base_dir, project_id, &updated)?;
+        // Best-effort snapshot update. Even if this write fails, we still
+        // return AmendmentClearPartial so the caller gets the exact IDs.
+        let _ = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot);
 
         return Err(AppError::AmendmentClearPartial {
             removed_count: removed.len(),
@@ -986,9 +1007,8 @@ pub fn stage_amendment_batch(
     }
 
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let mut seq = journal::last_sequence(&events);
     let mut staged_ids = Vec::new();
+    let mut staged_amendments: Vec<&QueuedAmendment> = Vec::new();
 
     for amendment in amendments {
         // Dedup check against canonical snapshot pending queue.
@@ -1004,7 +1024,44 @@ pub fn stage_amendment_batch(
         // Write durable amendment file.
         amendment_queue.write_amendment(base_dir, project_id, amendment)?;
 
-        // Emit journal event.
+        // Sync canonical snapshot (in memory — committed below).
+        snapshot.amendment_queue.pending.push(amendment.clone());
+        staged_ids.push(amendment.amendment_id.clone());
+        staged_amendments.push(amendment);
+    }
+
+    if staged_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Commit canonical snapshot BEFORE journal events so that a snapshot
+    // write failure leaves no orphaned journal entries.
+    let snap_result = if snapshot.status == RunStatus::Completed {
+        reopen_completed_project_with_snapshot(
+            run_write_port,
+            project_store,
+            base_dir,
+            project_id,
+            &mut snapshot,
+        )
+    } else {
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+    };
+
+    if let Err(snap_err) = snap_result {
+        // Roll back all amendment files written in this batch.
+        for id in &staged_ids {
+            let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+        }
+        return Err(snap_err);
+    }
+
+    // Emit journal events AFTER canonical state is committed. Best-effort:
+    // the amendments are already in run.json and will function correctly
+    // even if journal writes fail.
+    let events = journal_port.read_journal(base_dir, project_id)?;
+    let mut seq = journal::last_sequence(&events);
+    for amendment in &staged_amendments {
         seq += 1;
         let journal_event = journal::amendment_queued_manual_event(
             seq,
@@ -1014,34 +1071,9 @@ pub fn stage_amendment_batch(
             amendment.source.as_str(),
             &amendment.dedup_key,
         );
-        let line = journal::serialize_event(&journal_event)?;
-        if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &line) {
-            // Roll back the amendment file on journal failure.
-            let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment.amendment_id);
-            return Err(journal_err);
+        if let Ok(line) = journal::serialize_event(&journal_event) {
+            let _ = journal_port.append_event(base_dir, project_id, &line);
         }
-
-        // Sync canonical snapshot.
-        snapshot.amendment_queue.pending.push(amendment.clone());
-        staged_ids.push(amendment.amendment_id.clone());
-    }
-
-    if staged_ids.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    // If the project is completed, reopen it with pending amendments.
-    if snapshot.status == RunStatus::Completed {
-        reopen_completed_project_with_snapshot(
-            run_write_port,
-            project_store,
-            base_dir,
-            project_id,
-            &mut snapshot,
-        )?;
-    } else {
-        // Persist the updated snapshot.
-        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
     }
 
     Ok(staged_ids)

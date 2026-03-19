@@ -2115,6 +2115,50 @@ fn remove_amendment_preserves_amendment_on_snapshot_write_failure() {
 }
 
 #[test]
+fn remove_amendment_fails_when_file_deletion_fails() {
+    // Build a snapshot with one amendment.
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, "keep me");
+    let amendment = QueuedAmendment {
+        amendment_id: "manual-test-123".to_owned(),
+        source_stage: ralph_burning::shared::domain::StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "keep me".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source,
+        dedup_key,
+    };
+    snapshot
+        .amendment_queue
+        .pending
+        .push(amendment.clone());
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let run_write = FakeRunSnapshotWriteStore::new();
+
+    // Use FailingRemoveAmendmentQueue so file deletion fails.
+    let queue = FailingRemoveAmendmentQueue::with(vec![amendment]);
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::remove_amendment(
+        &queue, &run_store, &run_write, &base, &pid, "manual-test-123",
+    );
+
+    // Remove must fail because the file couldn't be deleted.
+    assert!(result.is_err());
+
+    // Snapshot should NOT have been updated — no mutation visible.
+    assert!(
+        run_write.written_snapshot().is_none(),
+        "snapshot must not be updated when file deletion fails"
+    );
+}
+
+#[test]
 fn clear_amendments_preserves_all_on_snapshot_write_failure() {
     let amendments = vec![
         QueuedAmendment {
@@ -2156,11 +2200,11 @@ fn clear_amendments_preserves_all_on_snapshot_write_failure() {
     // Clear must fail because snapshot write fails.
     assert!(result.is_err());
 
-    // No files should have been removed — the snapshot-first approach means
-    // we never reach file deletion when the canonical commit fails.
+    // Files are deleted first, but since snapshot write fails the service
+    // restores them. Both amendments must be back in the queue.
     assert_eq!(
         queue.amendments.borrow().len(),
         2,
-        "amendments must not be removed when snapshot write fails"
+        "amendment files must be restored when snapshot write fails"
     );
 }

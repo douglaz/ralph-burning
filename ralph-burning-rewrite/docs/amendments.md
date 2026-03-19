@@ -42,17 +42,23 @@ This ensures the project is picked up on the next resume cycle.
 
 ## Canonical state sync and failure safety
 
-All amendment mutations (add, remove, clear, reopen) are transactional against
+All amendment mutations (add, remove, clear, reopen) are failure-safe against
 the canonical `run.json` snapshot. Mutations drive existence checks and dedup
-from `run.json`, and commit the snapshot update before performing best-effort
-file cleanup on disk:
+from `run.json`:
 
-- **add**: dedup checks the snapshot pending queue; if the snapshot write fails
-  after file+journal creation, the amendment file is rolled back.
-- **remove**: the snapshot is updated (amendment removed) before the file is
-  deleted. If the snapshot write fails, no mutation is visible.
-- **clear**: the snapshot is optimistically cleared first. Files are then
-  deleted as best-effort; any un-deletable files are re-added to the snapshot.
+- **add**: writes the amendment file, commits the snapshot, then appends the
+  journal event. If the snapshot write fails after file creation, the amendment
+  file is rolled back. The journal event is written last (best-effort) so a
+  snapshot failure never leaves an orphaned journal entry.
+- **remove**: deletes the amendment file first, then updates the snapshot. If
+  file deletion fails, no mutation is visible. If the snapshot write fails after
+  a successful file deletion, the file is restored.
+- **clear**: deletes amendment files first, tracking which succeed and which
+  fail. Then updates the snapshot to contain only remaining (un-deletable)
+  amendments. If all files are deleted but the snapshot write fails, the files
+  are restored. On partial failure, `AmendmentClearPartial` is returned with
+  the exact removed and remaining IDs regardless of whether the snapshot
+  repair write succeeds.
 
 This ensures `run.json` is always the canonical source of truth for pending
 amendments, and that completion gating, resume reconciliation, and snapshot

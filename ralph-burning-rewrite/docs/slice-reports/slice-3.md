@@ -141,6 +141,30 @@ and workflow-stage sources:
    for tests that call service functions multiple times and need writes visible
    on subsequent reads. Existing dedup and multi-call tests migrated to it.
 
+## Review Response Changes (Iteration 4)
+
+1. **Amendment commit transactionality**: Reordered `add_manual_amendment` and
+   `stage_amendment_batch` so journal events are written AFTER the canonical
+   snapshot is committed. A snapshot write failure can no longer leave orphaned
+   journal entries. Journal writes are best-effort after canonical commit.
+2. **Remove failure on disk deletion**: `remove_amendment` now deletes the file
+   first. If file deletion fails, no mutation is visible (snapshot untouched).
+   If the snapshot write fails after file deletion, the file is restored.
+3. **Clear partial-failure invariants**: `clear_amendments` now deletes files
+   first, then updates the snapshot. If all files are deleted but snapshot write
+   fails, all files are restored. On partial deletion, `AmendmentClearPartial`
+   is returned even if the repair snapshot write fails, ensuring the caller
+   always gets the exact removed/remaining IDs.
+4. **Partial-clear conformance proof**: `parity_slice3_clear_partial_failure`
+   now requires BOTH the removed ID AND the remaining ID to be present in
+   stderr (not just one of the pair). Uses `&&` within each ordering check
+   instead of `||` across them.
+5. **New unit test**: `remove_amendment_fails_when_file_deletion_fails` verifies
+   that a remove with a failing disk delete leaves the snapshot untouched.
+6. **Docs updated**: `amendments.md` failure safety section rewritten to match
+   the actual write ordering (file → snapshot → journal for add; file → snapshot
+   for remove/clear).
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

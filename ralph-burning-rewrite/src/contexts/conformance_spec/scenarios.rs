@@ -17765,23 +17765,20 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // The clear must have partially failed.
         assert_failure(&clear)?;
 
-        // Stderr must mention the exact removed and remaining IDs.
+        // Stderr must mention BOTH the exact removed and remaining IDs as a
+        // complete pair. Either ordering is valid since amendments are sorted
+        // by (created_at, batch_sequence).
         let stderr = &clear.stderr;
-        let has_removed_id = stderr.contains(&format!("removed: {id1}"));
-        let has_remaining_id = stderr.contains(&format!("remaining: {id2}"));
-        if !has_removed_id && !has_remaining_id {
-            // Amendments are sorted by (created_at, batch_sequence) so the
-            // first added may be removed and the second remaining, or vice
-            // versa. Check both orderings.
-            let alt_removed = stderr.contains(&format!("removed: {id2}"));
-            let alt_remaining = stderr.contains(&format!("remaining: {id1}"));
-            if !alt_removed && !alt_remaining {
-                return Err(format!(
-                    "partial clear should report exact removed/remaining IDs.\n\
-                     Expected one of: removed={id1} remaining={id2}, or removed={id2} remaining={id1}\n\
-                     Got stderr: {stderr}"
-                ));
-            }
+        let ordering_a =
+            stderr.contains(&format!("removed: {id1}")) && stderr.contains(&format!("remaining: {id2}"));
+        let ordering_b =
+            stderr.contains(&format!("removed: {id2}")) && stderr.contains(&format!("remaining: {id1}"));
+        if !ordering_a && !ordering_b {
+            return Err(format!(
+                "partial clear must report both exact removed AND remaining IDs.\n\
+                 Expected one of: removed={id1} remaining={id2}, or removed={id2} remaining={id1}\n\
+                 Got stderr: {stderr}"
+            ));
         }
 
         // run.json should reflect exactly one remaining pending amendment.
