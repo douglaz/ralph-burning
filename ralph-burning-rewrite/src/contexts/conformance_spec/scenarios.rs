@@ -9298,9 +9298,16 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write watched issue: {e}"))?;
 
-        // Override question_set to return non-empty questions so the draft
-        // path reaches awaiting_answers instead of completing directly.
+        // Override validation to return NeedsQuestions so the full-mode
+        // pipeline pauses and generates questions, then override question_set
+        // to return the actual questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["incomplete auth requirements"],
+                "blocking_issues": [],
+                "missing_information": ["authentication strategy", "database choice"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What authentication?", "rationale": "Auth", "required": true},
@@ -9672,9 +9679,16 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write watched issue: {e}"))?;
 
-        // Override question_set to return non-empty questions so the draft
-        // path reaches awaiting_answers instead of completing directly.
+        // Override validation to return NeedsQuestions so the full-mode
+        // pipeline pauses and generates questions, then override question_set
+        // to return the actual questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["incomplete scope"],
+                "blocking_issues": [],
+                "missing_information": ["feature scope"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What scope?", "rationale": "Scope", "required": true}
