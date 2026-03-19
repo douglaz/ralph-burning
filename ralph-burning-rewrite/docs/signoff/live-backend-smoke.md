@@ -13,18 +13,35 @@ This runbook describes how to validate the three live backend smoke items
 | `OPENROUTER_API_KEY` | `test -n "$OPENROUTER_API_KEY"` | Required for OpenRouter smoke |
 | Network access | curl to backend endpoints | Backends need outbound HTTPS |
 
-## Isolated Config Setup
+## Workspace Isolation
 
-Each smoke run uses an isolated scratch directory so that no workspace config,
-active-project selection, or checked-in state is mutated.
+Each smoke run creates a scratch directory (`/tmp/rb-smoke-$PID`) and **`cd`s
+into it** before executing any CLI commands.  The CLI resolves workspace root
+from `current_dir()` (`src/cli/project.rs:217`, `src/cli/run.rs:130`,
+`src/cli/backend.rs:310`), so running inside the scratch directory guarantees:
 
-```bash
-# The script creates /tmp/rb-smoke-$PID as the scratch root.
-# For OpenRouter, it also writes an isolated workspace.toml that:
-#   - enables [backends.openrouter]
-#   - forces execution.mode = "direct"
-# No existing workspace.toml or project directory is touched.
-```
+- A fresh `.ralph-burning/workspace.toml` is written inside the scratch dir
+- `project bootstrap` persists the active project inside `$SMOKE_DIR/.ralph-burning/`
+- No existing workspace config, active-project selection, or checked-in state
+  in the real repo is read or mutated
+
+The script initialises the scratch workspace with a minimal `workspace.toml`
+(`version = 1`) appropriate for the backend under test.
+
+## Backend Binding
+
+The script explicitly binds the backend under test at every CLI phase:
+
+- **`backend check --backend <name>`** — validates the specific backend
+- **`backend probe --backend <name>`** — resolves against the specific backend
+- **`run start --backend <name>`** — executes using the specific backend
+
+For **OpenRouter**, the script additionally:
+- Writes `[backends.openrouter] enabled = true` in the scratch workspace config
+- Sets `execution.mode = "direct"` (OpenRouter does not support tmux transport)
+- Exports `RALPH_BURNING_BACKEND=openrouter` so that `agent_execution_builder`
+  selects the `OpenRouterBackendAdapter` instead of the default `ProcessBackendAdapter`
+  (which rejects OpenRouter targets at `process_backend.rs:468`)
 
 ## Running the Smoke Script
 
@@ -43,63 +60,64 @@ OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `RALPH_BURNING` | `cargo run --` | Path to ralph-burning binary |
-| `SMOKE_DIR` | `/tmp/rb-smoke-$$` | Scratch directory for smoke state |
+| `RALPH_BURNING` | `cargo run --manifest-path .../Cargo.toml --` | Path/command for ralph-burning binary |
+| `SMOKE_DIR` | `/tmp/rb-smoke-$$` | Scratch directory (becomes CWD for CLI) |
 | `OPENROUTER_API_KEY` | (none) | API key for OpenRouter smoke |
-| `RALPH_BURNING_WORKSPACE` | (none) | Set automatically for OpenRouter |
 
 ## Backend-Specific Commands
 
 ### Claude
 
-1. **Preflight**: `command -v claude` + `ralph-burning backend check`
-2. **Probe**: `ralph-burning backend probe --role planner --flow standard`
-3. **Bootstrap**: `ralph-burning project bootstrap --idea "..." --flow standard`
-4. **Run**: `ralph-burning run start`
+1. **Preflight**: `command -v claude` + `backend check --backend claude`
+2. **Probe**: `backend probe --role planner --flow standard --backend claude`
+3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+4. **Run**: `run start --backend claude`
 
 ### Codex
 
-1. **Preflight**: `command -v codex` + `ralph-burning backend check`
-2. **Probe**: `ralph-burning backend probe --role planner --flow standard`
-3. **Bootstrap**: `ralph-burning project bootstrap --idea "..." --flow standard`
-4. **Run**: `ralph-burning run start`
+1. **Preflight**: `command -v codex` + `backend check --backend codex`
+2. **Probe**: `backend probe --role planner --flow standard --backend codex`
+3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+4. **Run**: `run start --backend codex`
 
 ### OpenRouter
 
 OpenRouter has additional constraints:
 
-1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + `ralph-burning backend check`
-2. **Config**: Isolated `workspace.toml` with `[backends.openrouter] enabled = true`
-   and `[execution] mode = "direct"` (OpenRouter does not support tmux mode)
-3. **Probe**: `ralph-burning backend probe --role planner --flow standard`
-4. **Bootstrap**: `ralph-burning project bootstrap --idea "..." --flow standard`
-5. **Run**: `ralph-burning run start`
+1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + `backend check --backend openrouter`
+2. **Config**: Scratch `workspace.toml` with `[backends.openrouter] enabled = true`
+   and `[execution] mode = "direct"`; `RALPH_BURNING_BACKEND=openrouter` exported
+3. **Probe**: `backend probe --role planner --flow standard --backend openrouter`
+4. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+5. **Run**: `run start --backend openrouter`
 
-**Important**: OpenRouter must run in `execution.mode = "direct"`. The tmux
-adapter rejects OpenRouter targets. The smoke script enforces this via the
-isolated workspace config.
+**Important**: OpenRouter must run in `execution.mode = "direct"`.  The process
+adapter rejects OpenRouter targets (`process_backend.rs:468`).  The
+`RALPH_BURNING_BACKEND=openrouter` env var selects the direct OpenRouter adapter
+via `agent_execution_builder.rs:85`.
 
 ## Failure Recording Rules
 
 ### Preflight Failure (exit code 2)
 
 - No project directory, active-project selection, or workspace config is mutated
+  (scratch dir is removed if evidence file was never written)
 - Only the evidence file records the readiness error
 - The smoke matrix row records `FAIL` with the exact preflight error
 
 ### Run Failure (exit code 1)
 
-- The created project remains valid and inspectable
+- The created project remains valid and inspectable inside the scratch workspace
 - Run state shows `failed` or `not_started` (never half-written)
-- No backend override or active project selection is left in ambiguous state
-- Durable run history remains canonical via `ralph-burning run history --json`
+- No backend override or active project selection is left in the real repo
+- Durable run history remains canonical via `run history --json`
 - Runtime logs are attached to that specific run only
 - The smoke matrix records the exact failure, not a generic "not exercised"
 
 ### Cancellation
 
 - If a smoke run is cancelled (Ctrl-C / SIGINT), the script propagates the
-  signal. The ralph-burning process handles cleanup (no orphan processes).
+  signal.  The ralph-burning process handles cleanup (no orphan processes).
 - Durable history up to the cancellation point remains inspectable.
 - The evidence file captures partial results.
 
@@ -114,7 +132,7 @@ ls /tmp/rb-smoke-*/
 rm -rf /tmp/rb-smoke-*
 ```
 
-After failed smoke: leave the smoke directory for inspection. The created
+After failed smoke: leave the smoke directory for inspection.  The created
 project (if any) is inside the scratch directory and does not affect the
 real workspace.
 
@@ -122,11 +140,13 @@ real workspace.
 
 After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
 
-1. Replace the row's Command column with the exact command used
+1. From the evidence file, extract: **project_id**, **run_status** (from
+   `run status --json`), **smoke_id**, and **smoke_dir**
 2. Replace the Result column with `PASS` or `FAIL`
-3. Record the smoke ID and timestamp
-4. If `FAIL`, record the exact error in the Follow-up Bug column
+3. Record the project_id, run_status (must be `completed` for PASS), and
+   smoke_id in the Follow-up Bug column
+4. If `FAIL`, record the exact error and leave the scratch dir for inspection
 
-Once all three backend rows are `PASS`, update
+Once all three backend rows are `PASS` with complete evidence, update
 `docs/signoff/final-validation.md` to change `Cutover status` from
 `Not Ready` to `Ready`.

@@ -436,6 +436,18 @@ enabled = true
 The `OPENROUTER_API_KEY` environment variable must be set and non-empty.
 `backend check` reports `BackendUnavailable` when the key is missing.
 
+### Transport Selection
+
+OpenRouter requires the dedicated `OpenRouterBackendAdapter`.  The adapter is
+selected by setting the environment variable:
+
+```bash
+export RALPH_BURNING_BACKEND=openrouter
+```
+
+Without this, the default `ProcessBackendAdapter` is used, which rejects
+OpenRouter targets at dispatch time (`process_backend.rs:468`).
+
 ### Execution Mode
 
 OpenRouter **only supports `execution.mode = "direct"`**. The tmux adapter

@@ -8,9 +8,14 @@
 # Where <backend> is one of: claude, codex, openrouter
 #
 # Environment variables:
-#   RALPH_BURNING   — path to ralph-burning binary (default: cargo run --)
-#   SMOKE_DIR       — scratch directory for smoke state (default: /tmp/rb-smoke-$$)
+#   RALPH_BURNING      — path to ralph-burning binary (default: cargo run --)
+#   SMOKE_DIR          — scratch directory for smoke state (default: /tmp/rb-smoke-$$)
 #   OPENROUTER_API_KEY — required when backend=openrouter
+#
+# The script runs all CLI commands from inside SMOKE_DIR so that current_dir()
+# resolves to the scratch workspace, not the real repo.  This guarantees that
+# preflight and run failures cannot touch the checked-in .ralph-burning state
+# or active-project selection.
 #
 # Exit codes:
 #   0  — smoke passed
@@ -22,10 +27,18 @@ set -euo pipefail
 # ── Defaults ──────────────────────────────────────────────────────────────────
 
 BACKEND="${1:?Usage: $0 <claude|codex|openrouter>}"
-RALPH_BURNING="${RALPH_BURNING:-cargo run --}"
 SMOKE_DIR="${SMOKE_DIR:-/tmp/rb-smoke-$$}"
 SMOKE_ID="smoke-${BACKEND}-$(date +%Y%m%d%H%M%S)"
 EVIDENCE_FILE="${SMOKE_DIR}/${SMOKE_ID}-evidence.txt"
+
+# Resolve the ralph-burning binary.  When the caller sets RALPH_BURNING we
+# honour it as-is; otherwise we build an absolute path to `cargo run` so that
+# it works after we cd into the scratch workspace.
+if [ -n "${RALPH_BURNING:-}" ]; then
+    RB=( $RALPH_BURNING )
+else
+    RB=( cargo run --manifest-path "$(cd "$(dirname "$0")/.." && pwd)/Cargo.toml" -- )
+fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,8 +66,10 @@ case "$BACKEND" in
     *) fail "Unknown backend: $BACKEND (expected claude, codex, or openrouter)"; exit 2 ;;
 esac
 
-# Create isolated smoke workspace
-mkdir -p "$SMOKE_DIR"
+# Create isolated smoke workspace directory and initialise a minimal
+# workspace.toml so that the CLI accepts it as a valid workspace root.
+mkdir -p "$SMOKE_DIR/.ralph-burning"
+
 evidence "# Smoke Evidence: $SMOKE_ID"
 evidence "backend: $BACKEND"
 evidence "timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -62,7 +77,41 @@ evidence "hostname: $(hostname)"
 evidence "smoke_dir: $SMOKE_DIR"
 evidence ""
 
-# Backend-specific preflight
+# Write backend-specific workspace config inside the scratch workspace.
+case "$BACKEND" in
+    claude)
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+version = 1
+
+[execution]
+mode = "direct"
+TOML
+        ;;
+    codex)
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+version = 1
+
+[execution]
+mode = "direct"
+TOML
+        ;;
+    openrouter)
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+version = 1
+
+[backends.openrouter]
+enabled = true
+
+[execution]
+mode = "direct"
+TOML
+        # OpenRouter requires the dedicated adapter, selected via env var.
+        export RALPH_BURNING_BACKEND=openrouter
+        ;;
+esac
+evidence "workspace_config: $SMOKE_DIR/.ralph-burning/workspace.toml written"
+
+# Backend-specific preflight checks
 case "$BACKEND" in
     claude)
         if ! command -v claude >/dev/null 2>&1; then
@@ -93,9 +142,15 @@ case "$BACKEND" in
         ;;
 esac
 
-# Run ralph-burning backend check to validate readiness
-log "Running backend check..."
-if $RALPH_BURNING backend check --json > "$SMOKE_DIR/backend-check.json" 2>&1; then
+# All subsequent CLI calls run from the scratch workspace so that
+# current_dir() resolves to SMOKE_DIR, isolating all project/workspace state.
+cd "$SMOKE_DIR"
+
+# Run ralph-burning backend check with explicit --backend to validate
+# the specific backend under test.
+log "Running backend check (--backend $BACKEND)..."
+if "${RB[@]}" backend check --backend "$BACKEND" --json \
+       > "$SMOKE_DIR/backend-check.json" 2>&1; then
     log "Backend check passed"
     evidence "backend_check: PASS"
 else
@@ -106,9 +161,11 @@ else
     exit 2
 fi
 
-# Run backend probe for the standard flow
-log "Running backend probe for standard flow..."
-if $RALPH_BURNING backend probe --role planner --flow standard --json > "$SMOKE_DIR/probe-planner.json" 2>&1; then
+# Run backend probe for the standard flow with explicit --backend.
+log "Running backend probe for standard flow (--backend $BACKEND)..."
+if "${RB[@]}" backend probe --role planner --flow standard \
+       --backend "$BACKEND" --json \
+       > "$SMOKE_DIR/probe-planner.json" 2>&1; then
     evidence "probe_planner: PASS"
 else
     probe_exit=$?
@@ -117,7 +174,9 @@ else
     exit 2
 fi
 
-if $RALPH_BURNING backend probe --role implementer --flow standard --json > "$SMOKE_DIR/probe-implementer.json" 2>&1; then
+if "${RB[@]}" backend probe --role implementer --flow standard \
+       --backend "$BACKEND" --json \
+       > "$SMOKE_DIR/probe-implementer.json" 2>&1; then
     evidence "probe_implementer: PASS"
 else
     probe_exit=$?
@@ -135,31 +194,17 @@ evidence ""
 
 log "Creating smoke project..."
 
-SMOKE_PROJECT_NAME="smoke-${BACKEND}-$(date +%s)"
+# Bootstrap a standard-flow project with explicit --backend binding so the
+# created project uses the backend under test, not ambient defaults.
+BOOTSTRAP_ARGS=(
+    project bootstrap
+    --idea "Smoke test: validate ${BACKEND} backend end-to-end"
+    --flow standard
+)
+evidence "bootstrap_command: ${RB[*]} ${BOOTSTRAP_ARGS[*]}"
 
-# For OpenRouter, create an isolated config that enables the backend
-if [ "$BACKEND" = "openrouter" ]; then
-    SMOKE_CONFIG_DIR="${SMOKE_DIR}/.ralph-burning"
-    mkdir -p "$SMOKE_CONFIG_DIR"
-    cat > "$SMOKE_CONFIG_DIR/workspace.toml" <<TOML
-[workspace]
-version = "0.1.0"
-
-[backends.openrouter]
-enabled = true
-
-[execution]
-mode = "direct"
-TOML
-    evidence "openrouter_config: isolated workspace.toml with enabled=true, mode=direct"
-    export RALPH_BURNING_WORKSPACE="$SMOKE_DIR"
-fi
-
-# Bootstrap a standard-flow project
-BOOTSTRAP_CMD="$RALPH_BURNING project bootstrap --idea \"Smoke test: validate ${BACKEND} backend end-to-end\" --flow standard"
-evidence "bootstrap_command: $BOOTSTRAP_CMD"
-
-if eval "$BOOTSTRAP_CMD" > "$SMOKE_DIR/bootstrap-stdout.txt" 2>"$SMOKE_DIR/bootstrap-stderr.txt"; then
+if "${RB[@]}" "${BOOTSTRAP_ARGS[@]}" \
+       > "$SMOKE_DIR/bootstrap-stdout.txt" 2>"$SMOKE_DIR/bootstrap-stderr.txt"; then
     evidence "bootstrap: PASS"
     log "Project bootstrapped successfully"
 else
@@ -173,12 +218,17 @@ fi
 
 # ── Run Start ─────────────────────────────────────────────────────────────────
 
-log "Starting standard flow run..."
+log "Starting standard flow run (--backend $BACKEND)..."
 
-START_CMD="$RALPH_BURNING run start"
-evidence "start_command: $START_CMD"
+# Pass --backend so that the run explicitly targets the backend under test.
+START_ARGS=(
+    run start
+    --backend "$BACKEND"
+)
+evidence "start_command: ${RB[*]} ${START_ARGS[*]}"
 
-if eval "$START_CMD" > "$SMOKE_DIR/run-stdout.txt" 2>"$SMOKE_DIR/run-stderr.txt"; then
+if "${RB[@]}" "${START_ARGS[@]}" \
+       > "$SMOKE_DIR/run-stdout.txt" 2>"$SMOKE_DIR/run-stderr.txt"; then
     evidence "run_start: PASS"
     log "Run completed successfully"
 else
@@ -187,7 +237,7 @@ else
     evidence "run_start: FAIL (exit $run_exit)"
     evidence "run_stderr: $(cat "$SMOKE_DIR/run-stderr.txt" 2>/dev/null || echo '(empty)')"
     # Run history remains canonical and inspectable
-    $RALPH_BURNING run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
+    "${RB[@]}" run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
     evidence "final_status: $(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '(unavailable)')"
     exit 1
 fi
@@ -196,17 +246,26 @@ fi
 
 log "Collecting final evidence..."
 
-$RALPH_BURNING run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
-$RALPH_BURNING run history --json > "$SMOKE_DIR/final-history.json" 2>/dev/null || true
+"${RB[@]}" run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
+"${RB[@]}" run history --json > "$SMOKE_DIR/final-history.json" 2>/dev/null || true
 
 FINAL_STATUS=$(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '{}')
+
+# Extract project_id and canonical status for sign-off evidence.
+PROJECT_ID=$(printf '%s' "$FINAL_STATUS" | grep -o '"project_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
+RUN_STATUS=$(printf '%s' "$FINAL_STATUS" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
+
 evidence ""
 evidence "--- Final Evidence ---"
-evidence "final_status: $FINAL_STATUS"
+evidence "project_id: $PROJECT_ID"
+evidence "run_status: $RUN_STATUS"
+evidence "final_status_json: $FINAL_STATUS"
 evidence "smoke_result: PASS"
 evidence "smoke_id: $SMOKE_ID"
 
 log "Smoke PASSED for $BACKEND"
-log "Evidence file: $EVIDENCE_FILE"
+log "  project_id: $PROJECT_ID"
+log "  run_status: $RUN_STATUS"
+log "  Evidence file: $EVIDENCE_FILE"
 
 exit 0
