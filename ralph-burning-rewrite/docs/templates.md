@@ -42,21 +42,21 @@ These IDs correspond to `StageId::as_str()`:
 | `prompt_review_refiner` | `role_label`, `prompt_text`, `json_schema` | — |
 | `prompt_review_validator` | `role_label`, `prompt_text`, `json_schema` | — |
 | `completion_panel_completer` | `prompt_text`, `json_schema` | — |
-| `final_review_reviewer` | `prompt_text`, `json_schema` | — |
-| `final_review_voter` | `prompt_text`, `prior_reviews`, `json_schema` | — |
-| `final_review_arbiter` | `prompt_text`, `prior_reviews`, `json_schema` | — |
+| `final_review_reviewer` | `project_prompt`, `json_schema` | — |
+| `final_review_voter` | `title`, `amendments`, `json_schema` | `planner_positions` |
+| `final_review_arbiter` | `amendments`, `planner_positions`, `reviewer_votes`, `json_schema` | — |
 
 ### Requirements
 
 | Template ID | Required Placeholders | Optional |
 |---|---|---|
 | `requirements_draft` | `idea` | `answers` |
-| `requirements_review` | `idea`, `draft_artifact` | — |
-| `requirements_question_set` | `idea`, `draft_artifact`, `review_artifact` | — |
-| `requirements_project_seed` | `synthesis_artifact`, `impl_spec_artifact` | — |
+| `requirements_review` | `draft_artifact` | — |
+| `requirements_question_set` | `idea`, `missing_info` | — |
+| `requirements_project_seed` | `requirements_artifact`, `follow_ups` | — |
 | `requirements_ideation` | `base_context` | — |
 | `requirements_research` | `base_context`, `ideation_artifact` | — |
-| `requirements_synthesis` | `base_context`, `ideation_artifact` | `answers` |
+| `requirements_synthesis` | `base_context`, `ideation_artifact`, `research_artifact` | — |
 | `requirements_implementation_spec` | `synthesis_artifact` | — |
 | `requirements_gap_analysis` | `synthesis_artifact`, `impl_spec_artifact` | — |
 | `requirements_validation` | `synthesis_artifact`, `impl_spec_artifact`, `gap_artifact` | — |

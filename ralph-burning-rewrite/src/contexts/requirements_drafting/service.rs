@@ -467,17 +467,19 @@ where
                 })?;
             renderers::render_ideation(&ideation)
         } else {
-            run.current_stage = Some(FullModeStage::Ideation);
-            run.status_summary = "drafting: ideation".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
+            // Resolve template BEFORE persisting run state so a malformed
+            // override fails without durable side-effects (Slice 7 invariant).
             let prompt = template_catalog::resolve_and_render(
                 "requirements_ideation",
                 base_dir,
                 None,
                 &[("base_context", &base_context)],
             )?;
+
+            run.current_stage = Some(FullModeStage::Ideation);
+            run.status_summary = "drafting: ideation".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -547,17 +549,17 @@ where
                 })?;
             renderers::render_research(&research)
         } else {
-            run.current_stage = Some(FullModeStage::Research);
-            run.status_summary = "drafting: research".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
             let prompt = template_catalog::resolve_and_render(
                 "requirements_research",
                 base_dir,
                 None,
                 &[("base_context", &base_context), ("ideation_artifact", &ideation_artifact)],
             )?;
+
+            run.current_stage = Some(FullModeStage::Research);
+            run.status_summary = "drafting: research".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -628,11 +630,6 @@ where
             run.recommended_flow = Some(synthesis.recommended_flow);
             renderers::render_synthesis(&synthesis)
         } else {
-            run.current_stage = Some(FullModeStage::Synthesis);
-            run.status_summary = "drafting: synthesis".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
             let prompt = template_catalog::resolve_and_render(
                 "requirements_synthesis",
                 base_dir,
@@ -643,6 +640,11 @@ where
                     ("research_artifact", &*research_artifact),
                 ],
             )?;
+
+            run.current_stage = Some(FullModeStage::Synthesis);
+            run.status_summary = "drafting: synthesis".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -720,17 +722,17 @@ where
                 })?;
             renderers::render_implementation_spec(&impl_spec)
         } else {
-            run.current_stage = Some(FullModeStage::ImplementationSpec);
-            run.status_summary = "drafting: implementation spec".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
             let prompt = template_catalog::resolve_and_render(
                 "requirements_implementation_spec",
                 base_dir,
                 None,
                 &[("synthesis_artifact", &*synthesis_artifact)],
             )?;
+
+            run.current_stage = Some(FullModeStage::ImplementationSpec);
+            run.status_summary = "drafting: implementation spec".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -800,11 +802,6 @@ where
                 })?;
             renderers::render_gap_analysis(&gap)
         } else {
-            run.current_stage = Some(FullModeStage::GapAnalysis);
-            run.status_summary = "drafting: gap analysis".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
             let prompt = template_catalog::resolve_and_render(
                 "requirements_gap_analysis",
                 base_dir,
@@ -814,6 +811,11 @@ where
                     ("impl_spec_artifact", &*impl_spec_artifact),
                 ],
             )?;
+
+            run.current_stage = Some(FullModeStage::GapAnalysis);
+            run.status_summary = "drafting: gap analysis".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -909,11 +911,6 @@ where
                 ValidationOutcome::Pass => {}
             }
         } else {
-            run.current_stage = Some(FullModeStage::Validation);
-            run.status_summary = "drafting: validation".to_owned();
-            run.updated_at = Utc::now();
-            self.store.write_run(base_dir, &run_id, run)?;
-
             let prompt = template_catalog::resolve_and_render(
                 "requirements_validation",
                 base_dir,
@@ -924,6 +921,11 @@ where
                     ("gap_artifact", &*gap_artifact),
                 ],
             )?;
+
+            run.current_stage = Some(FullModeStage::Validation);
+            run.status_summary = "drafting: validation".to_owned();
+            run.updated_at = Utc::now();
+            self.store.write_run(base_dir, &run_id, run)?;
             let bundle = match self
                 .invoke_stage(
                     &run_root,
@@ -1491,6 +1493,20 @@ where
                         });
                     }
 
+                    // Resolve the revision template BEFORE journaling so a
+                    // malformed override fails without durable side-effects
+                    // (Slice 7 failure invariant).
+                    let revision_context = format!(
+                        "Revise the following requirements draft based on review feedback:\n\nDraft:\n{last_draft_artifact}\n\nReview findings:\n{}\n\nRevision notes: address the findings above.",
+                        review_payload.findings.join("\n- ")
+                    );
+                    let revision_prompt = template_catalog::resolve_and_render(
+                        "requirements_draft",
+                        base_dir,
+                        None,
+                        &[("idea", &revision_context)],
+                    )?;
+
                     // Journal the revision request — must succeed to maintain
                     // the rollback invariant for Slice 1 transitions.
                     let rev_event = journal_event(
@@ -1516,20 +1532,6 @@ where
                         return Err(e);
                     }
                     seq += 1;
-
-                    // Generate revised draft with feedback — uses the
-                    // requirements_draft template with the full revision
-                    // context packed into the idea placeholder.
-                    let revision_context = format!(
-                        "Revise the following requirements draft based on review feedback:\n\nDraft:\n{last_draft_artifact}\n\nReview findings:\n{}\n\nRevision notes: address the findings above.",
-                        review_payload.findings.join("\n- ")
-                    );
-                    let revision_prompt = template_catalog::resolve_and_render(
-                        "requirements_draft",
-                        base_dir,
-                        None,
-                        &[("idea", &revision_context)],
-                    )?;
 
                     let revised = match self
                         .invoke_stage(

@@ -4330,6 +4330,41 @@ where
             .await;
         }
 
+        // Resolve and render the template BEFORE any durable state writes.
+        // If the selected override is malformed, we must fail without
+        // appending journal entries or updating snapshots (Slice 7 failure
+        // invariant).
+        let prompt = match build_stage_prompt(
+            artifact_store,
+            base_dir,
+            project_id,
+            project_root,
+            prompt_reference,
+            stage_entry.role,
+            &stage_entry.contract,
+            run_id,
+            &cursor,
+            execution_context,
+            pending_amendments,
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return fail_run_result(
+                    &error,
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+        };
+
         *seq += 1;
         let stage_entered = journal::stage_entered_event(
             *seq,
@@ -4414,37 +4449,6 @@ where
                 ),
             },
         );
-
-        let prompt = match build_stage_prompt(
-            artifact_store,
-            base_dir,
-            project_id,
-            project_root,
-            prompt_reference,
-            stage_entry.role,
-            &stage_entry.contract,
-            run_id,
-            &cursor,
-            execution_context,
-            pending_amendments,
-        ) {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                return fail_run_result(
-                    &error,
-                    stage_id,
-                    run_id,
-                    seq,
-                    snapshot,
-                    journal_store,
-                    run_snapshot_write,
-                    base_dir,
-                    project_id,
-                    origin,
-                )
-                .await;
-            }
-        };
 
         let result = invoke_stage_on_backend(
             agent_service,

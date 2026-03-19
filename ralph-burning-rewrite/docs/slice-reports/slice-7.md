@@ -42,7 +42,31 @@
 - Unit tests: `requirements_drafting_test::template_override_parity` (5 tests)
 - Conformance: 10 scenarios with `@parity_slice7_*` tags
 
+## Review Response (Iteration 1)
+
+### Required Change 1 — Failure invariants
+Moved template resolution/rendering before all durable state writes:
+- `engine.rs`: `build_stage_prompt()` now runs before `stage_entered` journal append and snapshot write
+- `service.rs`: `resolve_and_render()` now runs before `write_run()` in all 6 full-mode stages (ideation, research, synthesis, implementation spec, gap analysis, validation)
+- `service.rs`: Quick-mode revision template rendering now runs before `RevisionRequested` journal append
+
+A malformed override now fails with no new journal entries, snapshots, or run-state transitions for the affected contract.
+
+### Required Change 2 — Template documentation contract
+Synced `docs/templates.md` with the actual manifests in `template_catalog.rs`:
+- `final_review_reviewer`: `prompt_text` → `project_prompt`
+- `final_review_voter`: `prompt_text, prior_reviews` → `title, amendments` (required), `planner_positions` (optional)
+- `final_review_arbiter`: `prompt_text, prior_reviews` → `amendments, planner_positions, reviewer_votes`
+- `requirements_review`: removed spurious `idea` from required placeholders
+- `requirements_question_set`: `idea, draft_artifact, review_artifact` → `idea, missing_info`
+- `requirements_project_seed`: `synthesis_artifact, impl_spec_artifact` → `requirements_artifact, follow_ups`
+- `requirements_synthesis`: added missing `research_artifact` required placeholder, removed incorrect `answers` optional
+
+### Recommended Improvement — CLI integration tests
+Added two CLI integration tests in `tests/cli.rs`:
+- `run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change`: verifies malformed override causes non-zero exit, mentions the error in stderr, writes no stage_entered events, and creates no payloads
+- `run_start_malformed_project_override_does_not_fall_back_to_workspace`: verifies a malformed project override is not silently replaced by a valid workspace override
+
 ## Remaining Known Gaps
 
 - Template path helpers were placed in `template_catalog.rs` rather than `adapters/fs.rs` as specified. The deviation keeps template logic self-contained in one module rather than splitting between the catalog and the filesystem adapter.
-- CLI-level malformed-override tests (invoking `run start` with a malformed override and asserting CLI error output) were not added as separate integration tests since the unit and conformance tests fully cover the failure invariants at the resolution layer. The CLI passes through template errors unchanged.

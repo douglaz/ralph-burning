@@ -7178,3 +7178,153 @@ fn backend_show_effective_nonzero_exit_with_invalid_override() {
         "backend show-effective should exit non-zero with invalid backend override"
     );
 }
+
+// ── Slice 7: Template override CLI integration tests ────────────────────
+
+#[test]
+fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "tpl-malformed");
+
+    // Install a malformed workspace template override for "planning"
+    // (the first stage in a standard flow). Missing all required placeholders.
+    let ws_templates = temp_dir
+        .path()
+        .join(".ralph-burning")
+        .join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "This override has no placeholders at all.",
+    )
+    .expect("write malformed override");
+
+    // Capture pre-run state
+    let pre_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/run.json"),
+    )
+    .expect("read run.json before");
+    let pre_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/journal.ndjson"),
+    )
+    .expect("read journal before");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start with malformed override");
+
+    assert!(
+        !output.status.success(),
+        "run start should fail with malformed template override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("malformed template override") || stderr.contains("MalformedTemplate"),
+        "stderr should mention malformed template: {stderr}"
+    );
+
+    // Verify no durable state was mutated beyond run_started
+    let post_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/run.json"),
+    )
+    .expect("read run.json after");
+    let post_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/journal.ndjson"),
+    )
+    .expect("read journal after");
+
+    // The journal must not contain a stage_entered event for the stage
+    // whose template was malformed — template resolution now happens
+    // before the journal append.
+    assert!(
+        !post_journal.contains("stage_entered"),
+        "no stage_entered event should be written for the malformed stage"
+    );
+
+    // run.json must not record a running stage for the failed template
+    assert!(
+        !post_run_json.contains("\"status\":\"running\"")
+            || post_run_json == pre_run_json,
+        "run.json must not show running status for a malformed template failure"
+    );
+
+    // Journal should only have grown by the run_started event (if any),
+    // not by stage-level events
+    let pre_line_count = pre_journal.lines().count();
+    let post_line_count = post_journal.lines().count();
+    assert!(
+        post_line_count <= pre_line_count + 1,
+        "journal should have at most one new event (run_started), not stage events: pre={pre_line_count} post={post_line_count}"
+    );
+
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/tpl-malformed/history/payloads");
+    if payloads_dir.exists() {
+        let payload_count = fs::read_dir(&payloads_dir)
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .count();
+        assert_eq!(
+            payload_count, 0,
+            "no payloads should be written for a malformed template"
+        );
+    }
+}
+
+#[test]
+fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "tpl-no-fallback");
+
+    // Install a VALID workspace override
+    let ws_templates = temp_dir
+        .path()
+        .join(".ralph-burning")
+        .join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "VALID WS\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+    )
+    .expect("write valid workspace override");
+
+    // Install a MALFORMED project override (should NOT fall back to workspace)
+    let proj_templates = temp_dir
+        .path()
+        .join(".ralph-burning/projects/tpl-no-fallback/templates");
+    fs::create_dir_all(&proj_templates).expect("create project templates dir");
+    fs::write(
+        proj_templates.join("planning.md"),
+        "BROKEN PROJECT OVERRIDE — no placeholders",
+    )
+    .expect("write malformed project override");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start with malformed project override");
+
+    assert!(
+        !output.status.success(),
+        "malformed project override must not silently fall back to workspace override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("malformed template override") || stderr.contains("MalformedTemplate"),
+        "stderr should mention malformed template: {stderr}"
+    );
+}
