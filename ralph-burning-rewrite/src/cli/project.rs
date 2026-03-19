@@ -17,7 +17,9 @@ use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSum
 use crate::contexts::project_run_record::service::{
     self, CreateProjectInput, ProjectStorePort, RunSnapshotPort,
 };
-use crate::contexts::requirements_drafting::model::RequirementsStatus;
+use crate::contexts::requirements_drafting::model::{
+    ProjectSeedPayload, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
+};
 use crate::contexts::requirements_drafting::service::{
     self as requirements_service, RequirementsStorePort,
 };
@@ -94,13 +96,17 @@ pub struct ProjectCreateArgs {
     ArgGroup::new("bootstrap_input")
         .required(true)
         .multiple(false)
-        .args(["idea", "from_file"])
+        .args(["idea", "from_file", "from_seed"])
 ))]
 pub struct BootstrapArgs {
     #[arg(long, group = "bootstrap_input")]
     pub idea: Option<String>,
     #[arg(long = "from-file", group = "bootstrap_input")]
     pub from_file: Option<PathBuf>,
+    /// Path to a JSON project seed file (ProjectSeedPayload). Skips quick-requirements
+    /// and creates the project directly from the seed.
+    #[arg(long = "from-seed", group = "bootstrap_input")]
+    pub from_seed: Option<PathBuf>,
     #[arg(long)]
     pub flow: Option<String>,
     #[arg(long)]
@@ -220,15 +226,28 @@ async fn handle_bootstrap(args: BootstrapArgs) -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
 
     let flow_override = parse_flow_override(args.flow.as_deref())?;
-    let idea = read_bootstrap_idea(&current_dir, &args)?;
-    let effective_config = EffectiveConfig::load(&current_dir)?;
-    let requirements_cli_service =
-        agent_execution_builder::build_requirements_service(&effective_config)?;
-    let run_id = requirements_cli_service
-        .quick(&current_dir, &idea, Utc::now(), None)
-        .await?;
-    let handoff =
-        requirements_service::extract_seed_handoff(&FsRequirementsStore, &current_dir, &run_id)?;
+
+    let (handoff, handoff_ref) = if let Some(ref seed_path) = args.from_seed {
+        // --from-seed: skip quick-requirements, load the seed directly.
+        let handoff = load_seed_from_file(&current_dir, seed_path)?;
+        let ref_label = seed_path.display().to_string();
+        (handoff, ref_label)
+    } else {
+        // --idea or --from-file: run quick-requirements pipeline.
+        let idea = read_bootstrap_idea(&current_dir, &args)?;
+        let effective_config = EffectiveConfig::load(&current_dir)?;
+        let requirements_cli_service =
+            agent_execution_builder::build_requirements_service(&effective_config)?;
+        let run_id = requirements_cli_service
+            .quick(&current_dir, &idea, Utc::now(), None)
+            .await?;
+        let handoff = requirements_service::extract_seed_handoff(
+            &FsRequirementsStore,
+            &current_dir,
+            &run_id,
+        )?;
+        (handoff, run_id)
+    };
 
     let store = FsProjectStore;
     let journal_store = FsJournalStore;
@@ -240,7 +259,7 @@ async fn handle_bootstrap(args: BootstrapArgs) -> AppResult<()> {
         flow_override,
         Utc::now(),
     )
-    .map_err(|error| map_requirements_project_error(error, &run_id))?;
+    .map_err(|error| map_requirements_project_error(error, &handoff_ref))?;
 
     set_active_project_after_create(&current_dir, &record.id)?;
 
@@ -428,6 +447,55 @@ fn load_seed_handoff(
     }
 
     requirements_service::extract_seed_handoff(&store, base_dir, run_id)
+}
+
+/// Load a `SeedHandoff` directly from a JSON project seed file, bypassing the
+/// requirements pipeline. This is used by `project bootstrap --from-seed` for
+/// backends where the quick-requirements pipeline cannot complete (e.g. model
+/// behaviour prevents approval within the revision limit).
+fn load_seed_from_file(
+    base_dir: &Path,
+    seed_path: &Path,
+) -> AppResult<requirements_service::SeedHandoff> {
+    let resolved = if seed_path.is_absolute() {
+        seed_path.to_path_buf()
+    } else {
+        base_dir.join(seed_path)
+    };
+
+    let raw = std::fs::read_to_string(&resolved).map_err(|error| AppError::Io(
+        std::io::Error::new(
+            error.kind(),
+            format!("failed to read seed file '{}': {}", resolved.display(), error),
+        ),
+    ))?;
+
+    let seed: ProjectSeedPayload = serde_json::from_str(&raw).map_err(|error| {
+        AppError::RequirementsHandoffFailed {
+            task_id: resolved.display().to_string(),
+            details: format!("invalid project seed JSON: {error}"),
+        }
+    })?;
+
+    if !SUPPORTED_SEED_VERSIONS.contains(&seed.version) {
+        return Err(AppError::RequirementsHandoffFailed {
+            task_id: resolved.display().to_string(),
+            details: format!(
+                "unsupported seed version {} (supported: {:?})",
+                seed.version, SUPPORTED_SEED_VERSIONS
+            ),
+        });
+    }
+
+    Ok(requirements_service::SeedHandoff {
+        requirements_run_id: format!("seed-file:{}", resolved.display()),
+        project_id: seed.project_id,
+        project_name: seed.project_name,
+        flow: seed.flow,
+        prompt_body: seed.prompt_body,
+        prompt_path: resolved,
+        recommended_flow: None,
+    })
 }
 
 fn map_requirements_project_error(error: AppError, run_id: &str) -> AppError {

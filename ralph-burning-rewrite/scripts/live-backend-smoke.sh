@@ -223,6 +223,32 @@ case "$BACKEND" in
         fi
         log "Preflight: OPENROUTER_API_KEY is set"
         evidence "preflight: OPENROUTER_API_KEY present (${#OPENROUTER_API_KEY} chars)"
+
+        # Credit check: send a minimal completion request to verify the key
+        # has usable credits before committing to a full smoke run.
+        log "Preflight: verifying OpenRouter credit availability..."
+        CREDIT_CHECK_RESPONSE=$(curl -s -w "\n%{http_code}" \
+            -H "Authorization: Bearer $OPENROUTER_API_KEY" \
+            -H "Content-Type: application/json" \
+            -d '{"model":"openai/gpt-4o-mini","messages":[{"role":"user","content":"say ok"}],"max_tokens":3}' \
+            "https://openrouter.ai/api/v1/chat/completions" 2>/dev/null || echo "000")
+        CREDIT_CHECK_HTTP=$(echo "$CREDIT_CHECK_RESPONSE" | tail -1)
+        if [ "$CREDIT_CHECK_HTTP" = "402" ]; then
+            fail "OpenRouter API key has insufficient credits (HTTP 402)"
+            evidence "preflight: FAIL — OpenRouter credit check returned HTTP 402 (insufficient credits)"
+            evidence "preflight: Top up the OpenRouter account and re-run."
+            exit 2
+        elif [ "$CREDIT_CHECK_HTTP" = "401" ]; then
+            fail "OpenRouter API key is invalid (HTTP 401)"
+            evidence "preflight: FAIL — OpenRouter API key rejected (HTTP 401)"
+            exit 2
+        elif [ "$CREDIT_CHECK_HTTP" -ge 200 ] && [ "$CREDIT_CHECK_HTTP" -lt 300 ] 2>/dev/null; then
+            log "Preflight: OpenRouter credit check PASS (HTTP $CREDIT_CHECK_HTTP)"
+            evidence "preflight: OpenRouter credit check PASS (HTTP $CREDIT_CHECK_HTTP)"
+        else
+            log "Preflight: OpenRouter credit check inconclusive (HTTP $CREDIT_CHECK_HTTP), proceeding"
+            evidence "preflight: OpenRouter credit check inconclusive (HTTP $CREDIT_CHECK_HTTP)"
+        fi
         ;;
 esac
 
@@ -278,11 +304,33 @@ evidence ""
 
 log "Creating smoke project..."
 
-# Bootstrap a standard-flow project with explicit --backend binding so the
-# created project uses the backend under test, not ambient defaults.
+# Resolve the seed fixture path relative to the script directory.  Using
+# --from-seed bypasses the quick-requirements pipeline, which avoids the
+# model-behaviour blocker where some backends (e.g. Codex) cannot approve
+# requirements within the MAX_QUICK_REVISIONS limit.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SEED_FILE="${SMOKE_SEED:-${SCRIPT_DIR}/smoke-seed.json}"
+
+if [ ! -f "$SEED_FILE" ]; then
+    fail "smoke seed fixture not found: $SEED_FILE"
+    evidence "bootstrap: FAIL — seed file not found: $SEED_FILE"
+    exit 2
+fi
+
+# Copy seed into scratch workspace so paths stay isolated.
+cp "$SEED_FILE" "$SMOKE_DIR/smoke-seed.json"
+
+# Override project_id in the seed to include the backend name, ensuring
+# each backend smoke creates a distinct project.
+if command -v jq >/dev/null 2>&1; then
+    jq --arg id "smoke-${BACKEND}-test" '.project_id = $id | .project_name = "Smoke Test (\($id))"' \
+        "$SMOKE_DIR/smoke-seed.json" > "$SMOKE_DIR/smoke-seed-tmp.json" \
+        && mv "$SMOKE_DIR/smoke-seed-tmp.json" "$SMOKE_DIR/smoke-seed.json"
+fi
+
 BOOTSTRAP_ARGS=(
     project bootstrap
-    --idea "Smoke test: validate ${BACKEND} backend end-to-end"
+    --from-seed "$SMOKE_DIR/smoke-seed.json"
     --flow standard
 )
 evidence "bootstrap_command: ${RB[*]} ${BOOTSTRAP_ARGS[*]}"

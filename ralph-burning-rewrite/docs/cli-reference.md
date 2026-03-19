@@ -20,6 +20,27 @@ Resolution follows the standard precedence order: built-in defaults, then
 - `mode = "tmux"` requires `tmux` on `PATH`; `backend check` reports
   `tmux_unavailable` when that requirement is not met
 
+## Project Bootstrap
+
+### `ralph-burning project bootstrap`
+
+Creates a project from requirements and optionally starts a run.
+
+Input modes (mutually exclusive):
+- `--idea "..."` — run quick-requirements pipeline with the given idea text
+- `--from-file <path>` — read idea text from a file, then run quick-requirements
+- `--from-seed <path>` — load a pre-built `ProjectSeedPayload` JSON file directly,
+  skipping the quick-requirements pipeline entirely
+
+Optional flags:
+- `--flow <preset>` — override the flow preset (default: from seed or `standard`)
+- `--start` — start a run immediately after project creation
+
+The `--from-seed` path is useful when the quick-requirements pipeline cannot
+complete for a given backend (e.g., model behaviour prevents approval within
+`MAX_QUICK_REVISIONS`). The seed file must be a valid `ProjectSeedPayload` JSON
+with a supported `version` field. See `scripts/smoke-seed.json` for an example.
+
 ## Run Commands
 
 ### `ralph-burning run status`

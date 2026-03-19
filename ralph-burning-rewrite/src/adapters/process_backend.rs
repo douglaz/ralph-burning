@@ -1199,4 +1199,156 @@ mod tests {
         });
         assert!(!looks_like_claude_envelope(&payload));
     }
+
+    // ── Integration-style tests for the full Claude finish() fallback ────
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy};
+
+    fn make_test_request() -> InvocationRequest {
+        InvocationRequest {
+            invocation_id: "test-inv-001".to_owned(),
+            project_root: PathBuf::from("/tmp/test"),
+            working_dir: PathBuf::from("/tmp/test"),
+            contract: InvocationContract::Requirements {
+                label: "requirements:project_seed".to_owned(),
+            },
+            role: BackendRole::Planner,
+            resolved_target: ResolvedBackendTarget::new(BackendFamily::Claude, "claude-test"),
+            payload: InvocationPayload {
+                prompt: "test".to_owned(),
+                context: json!({}),
+            },
+            timeout: Duration::from_secs(60),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        }
+    }
+
+    fn make_child_output(stdout: &str) -> ChildOutput {
+        ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_claude_result_raw_json_extraction() {
+        // When structured_output is null and result contains raw JSON (no
+        // markdown fencing), the fallback should parse it directly.
+        let envelope = json!({
+            "result": "{\"outcome\": \"approved\", \"evidence\": [\"test passed\"]}",
+            "session_id": "sess-test-001",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_empty_result_rejects_envelope_only() {
+        // When stdout contains ONLY the envelope (no separate payload),
+        // the fallback should fail rather than returning the envelope.
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-test-002",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await;
+
+        assert!(result.is_err(), "should fail when only envelope is in stdout");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty result"),
+            "error should mention empty result: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_claude_structured_output_preferred() {
+        // When structured_output is present, it should be used directly
+        // regardless of result content.
+        let envelope = json!({
+            "result": "some conversational text",
+            "session_id": "sess-test-003",
+            "structured_output": {
+                "outcome": "approved",
+                "evidence": ["test passed"]
+            }
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_result_json_extraction() {
+        // When structured_output is null but result contains JSON embedded in
+        // markdown fencing, the fallback should extract it.
+        let envelope = json!({
+            "result": "Here is the output:\n```json\n{\"outcome\": \"approved\", \"evidence\": [\"ok\"]}\n```\nDone.",
+            "session_id": "sess-test-004",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
 }

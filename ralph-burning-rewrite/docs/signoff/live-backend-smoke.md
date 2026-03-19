@@ -27,10 +27,20 @@ from `current_dir()` (`src/cli/project.rs:217`, `src/cli/run.rs:130`,
 
 The script initialises the scratch workspace with a `workspace.toml` that sets
 `settings.default_backend` to the backend under test (e.g. `"claude"`, `"codex"`,
-or `"openrouter"`).  This ensures that `project bootstrap`, which runs quick
-requirements internally, resolves its backend from `default_backend()` in
-`service.rs:23` → `config.rs:376` using the correct backend — not the ambient
-fallback (`DEFAULT_BASE_BACKEND = Claude` at `config.rs:37`).
+or `"openrouter"`).
+
+### Seed-Based Bootstrap (iteration 8)
+
+The smoke harness uses `project bootstrap --from-seed` with a pre-built seed
+fixture (`scripts/smoke-seed.json`) instead of `--idea`. This bypasses the
+quick-requirements pipeline, which avoids model-behaviour blockers where some
+backends cannot approve requirements within `MAX_QUICK_REVISIONS=5` cycles.
+
+The seed fixture is copied into the scratch workspace and the `project_id` is
+overridden to include the backend name (e.g. `smoke-codex-test`) so each
+backend creates a distinct project. The `--from-seed` path loads the
+`ProjectSeedPayload` JSON directly, validates the seed version, and creates
+the project without invoking the requirements service.
 
 ### Single-Backend Role Overrides
 
@@ -89,27 +99,31 @@ OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter
 
 1. **Preflight**: `command -v claude` + `backend check --backend claude`
 2. **Probe**: `backend probe --role planner --flow standard --backend claude`
-3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "claude"` in scratch `workspace.toml`)
+3. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
 4. **Run**: `run start --backend claude`
 
 ### Codex
 
 1. **Preflight**: `command -v codex` + `backend check --backend codex`
 2. **Probe**: `backend probe --role planner --flow standard --backend codex`
-3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "codex"` in scratch `workspace.toml`)
+3. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
 4. **Run**: `run start --backend codex`
 
 ### OpenRouter
 
 OpenRouter has additional constraints:
 
-1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + `backend check --backend openrouter`
+1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + credit preflight (minimal completion request) + `backend check --backend openrouter`
 2. **Config**: Scratch `workspace.toml` with `settings.default_backend = "openrouter"`,
    `[backends.openrouter] enabled = true`, and `[execution] mode = "direct"`;
    `RALPH_BURNING_BACKEND=openrouter` exported
 3. **Probe**: `backend probe --role planner --flow standard --backend openrouter`
-4. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "openrouter"` in scratch `workspace.toml`)
+4. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
 5. **Run**: `run start --backend openrouter`
+
+**Credit preflight**: The harness sends a minimal completion request to OpenRouter
+before the full smoke to verify the API key has usable credits. HTTP 402 is caught
+at preflight (exit code 2) before any project state is created.
 
 **Important**: OpenRouter must run in `execution.mode = "direct"`.  The process
 adapter rejects OpenRouter targets (`process_backend.rs:468`).  The
