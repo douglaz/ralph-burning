@@ -13,7 +13,7 @@ pub use model::{
 pub use diagnostics::BackendDiagnosticsService;
 pub use policy::{
     BackendPolicyService, CompletionPanelResolution, FinalReviewPanelResolution,
-    PromptReviewPanelResolution, ResolvedPanelMember,
+    PromptReviewPanelResolution, ResolvedPanelMember, stage_to_policy_role,
 };
 pub use service::{
     AgentExecutionPort, AgentExecutionService, BackendResolver, BackendSelectionConfig,

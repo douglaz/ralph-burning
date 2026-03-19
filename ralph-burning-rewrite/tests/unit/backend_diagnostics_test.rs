@@ -8,7 +8,7 @@ use ralph_burning::contexts::agent_execution::diagnostics::{
 use ralph_burning::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use ralph_burning::shared::domain::{
     BackendFamily, BackendRuntimeSettings, BackendSelection, CompletionSettings, FlowPreset,
-    PanelBackendSpec, WorkspaceConfig,
+    PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
 };
 
 use super::workspace_test::initialize_workspace_fixture;
@@ -401,4 +401,243 @@ fn check_aggregates_all_failures_in_one_run() {
         "expected multiple aggregated failures, got {}",
         result.failures.len()
     );
+}
+
+// ── flow-scoped check tests ─────────────────────────────────────────────────
+
+#[test]
+fn check_docs_change_flow_skips_completion_and_final_review() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    // Configure completion to require an unavailable backend.
+    // For docs_change flow, this should NOT cause a failure since it doesn't
+    // include CompletionPanel or FinalReview stages.
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_reviewers: Some(2),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // DocsChange should pass — its stages don't need completion/final-review
+    let result = service.check_backends(FlowPreset::DocsChange);
+    assert!(
+        result.passed,
+        "docs_change should pass even with broken completion/final-review config: {:?}",
+        result.failures
+    );
+
+    // Standard should fail — it uses CompletionPanel and FinalReview
+    let result = service.check_backends(FlowPreset::Standard);
+    assert!(
+        !result.passed,
+        "standard should fail with broken completion config"
+    );
+}
+
+// ── flow-scoped probe tests ─────────────────────────────────────────────────
+
+#[test]
+fn probe_completion_panel_fails_for_docs_change_flow() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // docs_change flow does not have CompletionPanel
+    let result = service.probe("completion_panel", FlowPreset::DocsChange, 1);
+    assert!(
+        result.is_err(),
+        "probing completion_panel on docs_change flow should fail"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("does not include stage"),
+        "error should indicate the stage is not in the flow: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn probe_final_review_panel_fails_for_docs_change_flow() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // docs_change flow does not have FinalReview
+    let result = service.probe("final_review_panel", FlowPreset::DocsChange, 1);
+    assert!(
+        result.is_err(),
+        "probing final_review_panel on docs_change flow should fail"
+    );
+}
+
+// ── show-effective session policy tests ──────────────────────────────────────
+
+#[test]
+fn show_effective_reports_per_role_session_policy() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // Main-stage roles should use reuse_if_allowed
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!("reuse_if_allowed", planner.session_policy);
+
+    let implementer = view.roles.iter().find(|r| r.role == "implementer").unwrap();
+    assert_eq!("reuse_if_allowed", implementer.session_policy);
+
+    // Panel roles should use new_session
+    let completer = view.roles.iter().find(|r| r.role == "completer");
+    if let Some(completer) = completer {
+        assert_eq!("new_session", completer.session_policy);
+    }
+
+    let final_reviewer = view.roles.iter().find(|r| r.role == "final_reviewer");
+    if let Some(fr) = final_reviewer {
+        assert_eq!("new_session", fr.session_policy);
+    }
+}
+
+// ── show-effective source precedence for inherited roles ─────────────────────
+
+#[test]
+fn show_effective_reports_source_for_prompt_reviewer_role() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.prompt_review.refiner_backend = Some("codex".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let prompt_reviewer = view.roles.iter().find(|r| r.role == "prompt_reviewer");
+    if let Some(pr) = prompt_reviewer {
+        // Should report as workspace.toml, not "default"
+        assert_eq!("workspace.toml", pr.override_source);
+    }
+}
+
+#[test]
+fn show_effective_reports_source_for_arbiter_role() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.final_review.arbiter_backend = Some("codex".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let arbiter = view.roles.iter().find(|r| r.role == "arbiter");
+    if let Some(arb) = arbiter {
+        assert_eq!("workspace.toml", arb.override_source);
+    }
+}
+
+// ── final-review probe arbiter tests ─────────────────────────────────────────
+
+#[test]
+fn probe_final_review_panel_includes_arbiter() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .probe("final_review_panel", FlowPreset::Standard, 1)
+        .expect("probe final review panel");
+
+    let panel = result.panel.expect("should have panel view");
+    assert_eq!("final_review", panel.panel_type);
+    let arbiter = panel.arbiter.expect("should have arbiter in final_review panel");
+    assert!(!arbiter.backend_family.is_empty());
+    assert!(!arbiter.model_id.is_empty());
+    assert!(arbiter.required);
+}
+
+// ── structured panel failure tests ───────────────────────────────────────────
+
+#[test]
+fn check_panel_failure_identifies_exact_backend_family() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    assert!(!result.passed);
+    let panel_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "completion_panel")
+        .expect("expected completion_panel failure");
+
+    // The failure should identify the exact backend, not just "mixed"
+    assert_eq!(
+        BackendCheckFailureKind::RequiredMemberUnavailable,
+        panel_failure.failure_kind
+    );
+    assert_eq!("openrouter", panel_failure.backend_family);
+    assert_eq!("completion.backends", panel_failure.config_source);
 }

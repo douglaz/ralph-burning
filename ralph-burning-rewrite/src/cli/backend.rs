@@ -183,7 +183,12 @@ async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<(
     let config = load_effective_config(overrides)?;
     let service = BackendDiagnosticsService::new(&config);
     let flow = config.default_flow();
-    let result = service.check_backends(flow);
+
+    // Use adapter availability checks when possible
+    let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
+        Ok(adapter) => service.check_backends_with_availability(flow, &adapter).await,
+        Err(_) => service.check_backends(flow),
+    };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -332,8 +337,8 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
         view.default_model.value, view.default_model.source
     );
     println!(
-        "  Session policy:   {}",
-        view.session_policy
+        "  Default session:  {}",
+        view.default_session_policy
     );
     println!(
         "  Default timeout:  {}s",
@@ -343,11 +348,12 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
     println!("  Per-role resolution:");
     for role in &view.roles {
         println!(
-            "    {:<20} {}/{} timeout={}s (source: {})",
+            "    {:<20} {}/{} timeout={}s session={} (source: {})",
             role.role,
             role.backend_family,
             role.model_id,
             role.timeout_seconds,
+            role.session_policy,
             role.override_source,
         );
     }
@@ -372,6 +378,12 @@ fn render_probe_text(result: &BackendProbeResult) {
             println!(
                 "    [{req}] {}/{}",
                 member.backend_family, member.model_id,
+            );
+        }
+        if let Some(arbiter) = &panel.arbiter {
+            println!(
+                "    [arbiter] {}/{}",
+                arbiter.backend_family, arbiter.model_id,
             );
         }
         for omitted in &panel.omitted {

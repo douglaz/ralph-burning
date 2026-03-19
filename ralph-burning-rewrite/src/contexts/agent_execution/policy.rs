@@ -189,21 +189,7 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     pub fn policy_role_for_stage(&self, stage_id: StageId) -> BackendPolicyRole {
-        match stage_id {
-            StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-                BackendPolicyRole::Planner
-            }
-            StageId::Implementation
-            | StageId::PlanAndImplement
-            | StageId::ApplyFixes
-            | StageId::DocsUpdate
-            | StageId::CiUpdate => BackendPolicyRole::Implementer,
-            StageId::Qa | StageId::DocsValidation | StageId::CiValidation => BackendPolicyRole::Qa,
-            StageId::AcceptanceQa => BackendPolicyRole::AcceptanceQa,
-            StageId::Review => BackendPolicyRole::Reviewer,
-            StageId::CompletionPanel => BackendPolicyRole::Completer,
-            StageId::FinalReview => BackendPolicyRole::FinalReviewer,
-        }
+        stage_to_policy_role(stage_id)
     }
 
     fn resolve_panel_backends(
@@ -353,5 +339,30 @@ impl<'a> BackendPolicyService<'a> {
 
     fn panel_backend_resolvable(&self, family: BackendFamily) -> bool {
         self.backend_enabled(family)
+    }
+
+    /// Map a stage ID to its corresponding backend policy role.
+    /// Used by both execution and diagnostics to ensure consistent resolution.
+    pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
+        stage_to_policy_role(stage_id)
+    }
+}
+
+/// Map a stage ID to its corresponding backend policy role (free function).
+pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
+    match stage_id {
+        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
+            BackendPolicyRole::Planner
+        }
+        StageId::Implementation
+        | StageId::PlanAndImplement
+        | StageId::ApplyFixes
+        | StageId::DocsUpdate
+        | StageId::CiUpdate => BackendPolicyRole::Implementer,
+        StageId::Qa | StageId::DocsValidation | StageId::CiValidation => BackendPolicyRole::Qa,
+        StageId::AcceptanceQa => BackendPolicyRole::AcceptanceQa,
+        StageId::Review => BackendPolicyRole::Reviewer,
+        StageId::CompletionPanel => BackendPolicyRole::Completer,
+        StageId::FinalReview => BackendPolicyRole::FinalReviewer,
     }
 }
