@@ -530,7 +530,10 @@ fn validate_template(
     manifest: &TemplateManifest,
     path: &Path,
 ) -> AppResult<()> {
-    let found = extract_placeholders(content);
+    // Extract ALL marker-shaped tokens (including those with invalid names
+    // like hyphens or spaces) so we can reject them.
+    let all_tokens = extract_all_marker_tokens(content);
+    let valid_placeholders = extract_placeholders(content);
 
     let allowed: HashSet<&str> = manifest
         .required_placeholders
@@ -539,8 +542,20 @@ fn validate_template(
         .copied()
         .collect();
 
-    // Check for unknown placeholders
-    for ph in &found {
+    // Reject any marker token whose name contains invalid characters
+    // (not alphanumeric or underscore).  These are placeholder-shaped but
+    // cannot be legitimate placeholders.
+    for token in &all_tokens {
+        if !valid_placeholders.contains(token) {
+            return Err(AppError::MalformedTemplate {
+                path: path.display().to_string(),
+                reason: format!("unknown placeholder '{{{{{}}}}}' in template", token),
+            });
+        }
+    }
+
+    // Check for unknown placeholders (valid name but not in manifest)
+    for ph in &valid_placeholders {
         if !allowed.contains(ph.as_str()) {
             return Err(AppError::MalformedTemplate {
                 path: path.display().to_string(),
@@ -551,7 +566,7 @@ fn validate_template(
 
     // Check for missing required placeholders
     for &req in manifest.required_placeholders {
-        if !found.contains(req) {
+        if !valid_placeholders.contains(req) {
             return Err(AppError::MalformedTemplate {
                 path: path.display().to_string(),
                 reason: format!(
@@ -566,6 +581,10 @@ fn validate_template(
 }
 
 /// Extract all `{{placeholder_name}}` occurrences from template text.
+///
+/// Only returns placeholders with valid names (alphanumeric + underscore).
+/// Use [`extract_all_marker_tokens`] to find every `{{...}}` token including
+/// those with invalid characters.
 pub fn extract_placeholders(content: &str) -> HashSet<String> {
     let mut result = HashSet::new();
     let mut remaining = content;
@@ -574,6 +593,27 @@ pub fn extract_placeholders(content: &str) -> HashSet<String> {
         if let Some(end) = after_open.find("}}") {
             let name = after_open[..end].trim();
             if !name.is_empty() && name.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                result.insert(name.to_owned());
+            }
+            remaining = &after_open[end + 2..];
+        } else {
+            break;
+        }
+    }
+    result
+}
+
+/// Extract every `{{...}}` token from template text, including those with
+/// invalid placeholder names (spaces, hyphens, etc.).  Used by validation
+/// to reject any placeholder-shaped marker not in the manifest.
+fn extract_all_marker_tokens(content: &str) -> HashSet<String> {
+    let mut result = HashSet::new();
+    let mut remaining = content;
+    while let Some(start) = remaining.find("{{") {
+        let after_open = &remaining[start + 2..];
+        if let Some(end) = after_open.find("}}") {
+            let name = after_open[..end].trim();
+            if !name.is_empty() {
                 result.insert(name.to_owned());
             }
             remaining = &after_open[end + 2..];
@@ -691,11 +731,22 @@ mod tests {
     }
 
     #[test]
-    fn extract_placeholders_ignores_invalid() {
+    fn extract_placeholders_ignores_invalid_names() {
         let content = "{{}} and {{with spaces}} and {{valid}}";
         let phs = extract_placeholders(content);
         assert_eq!(phs.len(), 1);
         assert!(phs.contains("valid"));
+    }
+
+    #[test]
+    fn extract_all_marker_tokens_captures_invalid_names() {
+        let content = "{{}} and {{with spaces}} and {{valid}} and {{hyphen-name}}";
+        let all = extract_all_marker_tokens(content);
+        assert_eq!(all.len(), 3);
+        assert!(all.contains("with spaces"));
+        assert!(all.contains("valid"));
+        assert!(all.contains("hyphen-name"));
+        // empty `{{}}` is excluded because the trimmed name is empty
     }
 
     #[test]

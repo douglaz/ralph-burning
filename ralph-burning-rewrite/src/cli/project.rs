@@ -225,7 +225,7 @@ async fn handle_bootstrap(args: BootstrapArgs) -> AppResult<()> {
     let requirements_cli_service =
         agent_execution_builder::build_requirements_service(&effective_config)?;
     let run_id = requirements_cli_service
-        .quick(&current_dir, &idea, Utc::now())
+        .quick(&current_dir, &idea, Utc::now(), None)
         .await?;
     let handoff =
         requirements_service::extract_seed_handoff(&FsRequirementsStore, &current_dir, &run_id)?;

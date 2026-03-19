@@ -21,7 +21,7 @@ use crate::contexts::agent_execution::service::{
 };
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
-use crate::shared::domain::{BackendRole, FlowPreset, SessionPolicy};
+use crate::shared::domain::{BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
@@ -152,6 +152,7 @@ where
         base_dir: &Path,
         idea: &str,
         now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<String> {
         let run_id = generate_run_id(now);
         let mut run = RequirementsRun::new_draft(run_id.clone(), idea.to_owned(), now);
@@ -176,7 +177,7 @@ where
         }
 
         // Run the full-mode staged pipeline
-        self.run_full_mode_pipeline(base_dir, &mut run, idea, &[], 2, now)
+        self.run_full_mode_pipeline(base_dir, &mut run, idea, &[], 2, now, project_id)
             .await?;
 
         Ok(run_id)
@@ -191,6 +192,7 @@ where
         base_dir: &Path,
         idea: &str,
         now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<String> {
         let run_id = generate_run_id(now);
         let mut run = RequirementsRun::new_quick(run_id.clone(), idea.to_owned(), now);
@@ -214,7 +216,7 @@ where
         }
 
         // Skip question generation entirely — go through quick revision loop
-        self.run_quick_mode_pipeline(base_dir, &mut run, idea, &[], 2, now)
+        self.run_quick_mode_pipeline(base_dir, &mut run, idea, &[], 2, now, project_id)
             .await?;
 
         Ok(run_id)
@@ -273,7 +275,7 @@ where
     ///
     /// Valid only for runs in `awaiting_answers` status, or failed runs whose
     /// latest durable boundary is a committed question set.
-    pub async fn answer(&self, base_dir: &Path, run_id: &str) -> AppResult<()> {
+    pub async fn answer(&self, base_dir: &Path, run_id: &str, project_id: Option<&ProjectId>) -> AppResult<()> {
         let mut run = self.store.read_run(base_dir, run_id)?;
 
         match run.status {
@@ -395,6 +397,7 @@ where
                 &answer_entries,
                 seq + 1,
                 Utc::now(),
+                project_id,
             )
             .await?;
         } else {
@@ -405,6 +408,7 @@ where
                 &answer_entries,
                 seq + 1,
                 Utc::now(),
+                project_id,
             )
             .await?;
         }
@@ -422,13 +426,14 @@ where
         answers: &[(String, String)],
         start_seq: u64,
         _now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
         let mut seq = start_seq;
 
         // Build context from idea and answers
-        let base_context = build_draft_prompt(idea, answers, base_dir)?;
+        let base_context = build_draft_prompt(idea, answers, base_dir, project_id)?;
 
         // ── Ideation ────────────────────────────────────────────────────
         let ideation_cache_key =
@@ -472,7 +477,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_ideation",
                 base_dir,
-                None,
+                project_id,
                 &[("base_context", &base_context)],
             )?;
 
@@ -552,7 +557,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_research",
                 base_dir,
-                None,
+                project_id,
                 &[("base_context", &base_context), ("ideation_artifact", &ideation_artifact)],
             )?;
 
@@ -633,7 +638,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_synthesis",
                 base_dir,
-                None,
+                project_id,
                 &[
                     ("base_context", &*base_context),
                     ("ideation_artifact", &*ideation_artifact),
@@ -725,7 +730,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_implementation_spec",
                 base_dir,
-                None,
+                project_id,
                 &[("synthesis_artifact", &*synthesis_artifact)],
             )?;
 
@@ -805,7 +810,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_gap_analysis",
                 base_dir,
-                None,
+                project_id,
                 &[
                     ("synthesis_artifact", &*synthesis_artifact),
                     ("impl_spec_artifact", &*impl_spec_artifact),
@@ -894,6 +899,7 @@ where
                             idea,
                             &validation.missing_information,
                             seq,
+                            project_id,
                         )
                         .await;
                 }
@@ -914,7 +920,7 @@ where
             let prompt = template_catalog::resolve_and_render(
                 "requirements_validation",
                 base_dir,
-                None,
+                project_id,
                 &[
                     ("synthesis_artifact", &*synthesis_artifact),
                     ("impl_spec_artifact", &*impl_spec_artifact),
@@ -967,7 +973,7 @@ where
             match validation_outcome {
                 ValidationOutcome::NeedsQuestions => {
                     return self
-                        .open_question_round(base_dir, run, idea, &missing_info, seq)
+                        .open_question_round(base_dir, run, idea, &missing_info, seq, project_id)
                         .await;
                 }
                 ValidationOutcome::Fail => {
@@ -986,7 +992,7 @@ where
         };
 
         // ── Project Seed ────────────────────────────────────────────────
-        self.generate_and_commit_seed(base_dir, run, &synthesis_artifact, &[], seq)
+        self.generate_and_commit_seed(base_dir, run, &synthesis_artifact, &[], seq, project_id)
             .await
     }
 
@@ -999,6 +1005,7 @@ where
         idea: &str,
         missing_info: &[String],
         mut seq: u64,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
@@ -1008,7 +1015,7 @@ where
         let question_prompt = template_catalog::resolve_and_render(
             "requirements_question_set",
             base_dir,
-            None,
+            project_id,
             &[("idea", idea), ("missing_info", &missing_info_text)],
         )?;
 
@@ -1288,12 +1295,13 @@ where
         answers: &[(String, String)],
         start_seq: u64,
         _now: DateTime<Utc>,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
         let mut seq = start_seq;
 
-        let draft_prompt = build_draft_prompt(idea, answers, base_dir)?;
+        let draft_prompt = build_draft_prompt(idea, answers, base_dir, project_id)?;
         let mut last_draft_artifact: String;
 
         // Initial draft
@@ -1379,7 +1387,7 @@ where
             let review_prompt = template_catalog::resolve_and_render(
                 "requirements_review",
                 base_dir,
-                None,
+                project_id,
                 &[("draft_artifact", &last_draft_artifact)],
             )?;
             let review_result = self
@@ -1471,6 +1479,7 @@ where
                             &last_draft_artifact,
                             &follow_ups,
                             seq,
+                            project_id,
                         )
                         .await;
                 }
@@ -1503,7 +1512,7 @@ where
                     let revision_prompt = template_catalog::resolve_and_render(
                         "requirements_draft",
                         base_dir,
-                        None,
+                        project_id,
                         &[("idea", &revision_context)],
                     )?;
 
@@ -1650,6 +1659,7 @@ where
         requirements_artifact: &str,
         follow_ups: &[String],
         mut seq: u64,
+        project_id: Option<&ProjectId>,
     ) -> AppResult<()> {
         let run_id = run.run_id.clone();
         let run_root = requirements_run_root(base_dir, &run_id);
@@ -1662,7 +1672,7 @@ where
         let seed_prompt = template_catalog::resolve_and_render(
             "requirements_project_seed",
             base_dir,
-            None,
+            project_id,
             &[
                 ("requirements_artifact", requirements_artifact),
                 ("follow_ups", &follow_ups_text),
@@ -2228,7 +2238,7 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
     Ok(PersistedAnswers { answers })
 }
 
-fn build_draft_prompt(idea: &str, answers: &[(String, String)], base_dir: &Path) -> AppResult<String> {
+fn build_draft_prompt(idea: &str, answers: &[(String, String)], base_dir: &Path, project_id: Option<&ProjectId>) -> AppResult<String> {
     let answers_text = if answers.is_empty() {
         String::new()
     } else {
@@ -2242,7 +2252,7 @@ fn build_draft_prompt(idea: &str, answers: &[(String, String)], base_dir: &Path)
     template_catalog::resolve_and_render(
         "requirements_draft",
         base_dir,
-        None,
+        project_id,
         &[("idea", idea), ("answers", &answers_text)],
     )
 }

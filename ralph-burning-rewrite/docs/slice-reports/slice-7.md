@@ -86,6 +86,31 @@ Added `render_preserves_verbatim_pre_rendered_blocks` in `tests/unit/template_ca
 - Verifies multi-line JSON schema blocks and multi-paragraph prompt text survive substitution intact
 - Pins the blank-line normalization behavior (3+ consecutive newlines collapsed to 2)
 
+## Review Response (Iteration 3)
+
+### Required Change 1 — Requirements project-override parity
+Wired `project_id: Option<&ProjectId>` through the entire requirements service execution path:
+- Updated `draft()`, `quick()`, and `answer()` public APIs to accept an optional project ID
+- Updated all internal methods: `run_full_mode_pipeline()`, `run_quick_mode_pipeline()`, `open_question_round()`, `generate_and_commit_seed()`, `build_draft_prompt()`
+- All 11 `resolve_and_render()` calls in `service.rs` now pass `project_id` instead of `None`
+- CLI callers (`requirements.rs`, `project.rs`, `daemon_loop.rs`) pass `None` when no project context exists
+- Updated `docs/templates.md` to document unified three-tier precedence for all prompt surfaces
+
+### Required Change 2 — Malformed panel override failure invariants
+Pre-validated panel template overrides before durable state writes in all three panel dispatch functions:
+- `dispatch_prompt_review_panel()`: validates `prompt_review_refiner` and `prompt_review_validator` before `stage_entered`
+- `dispatch_completion_panel()`: validates `completion_panel_completer` before `stage_entered`
+- `dispatch_final_review_panel()`: validates `final_review_reviewer`, `final_review_voter`, and `final_review_arbiter` before `stage_entered`
+A malformed panel override now fails before any journal event or snapshot mutation.
+
+### Required Change 3 — Unknown placeholder rejection is incomplete
+Extended `validate_template()` to reject any `{{...}}` marker token that is not a valid manifest placeholder:
+- Added `extract_all_marker_tokens()` that captures every `{{...}}` token regardless of character validity
+- `validate_template()` now compares all marker tokens against valid placeholders; tokens with invalid names (hyphens, spaces, etc.) are rejected as malformed
+- Updated the internal test that previously codified the ignore behavior
+- Added 2 unit tests: `placeholder_with_hyphens_rejected_as_malformed`, `placeholder_with_spaces_rejected_as_malformed`
+- Added conformance scenario `@parity_slice7_invalid_marker_rejection`
+
 ## Remaining Known Gaps
 
 - Template path helpers were placed in `template_catalog.rs` rather than `adapters/fs.rs` as specified. The deviation keeps template logic self-contained in one module rather than splitting between the catalog and the filesystem adapter.

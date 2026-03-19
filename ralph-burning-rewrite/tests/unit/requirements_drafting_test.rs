@@ -615,7 +615,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -636,7 +636,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -665,7 +665,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Refactor the auth module", now)
+            .draft(temp_dir.path(),"Refactor the auth module", now, None)
             .await
             .expect("draft should succeed");
 
@@ -726,7 +726,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Add a new API endpoint", now)
+            .draft(temp_dir.path(),"Add a new API endpoint", now, None)
             .await
             .expect("draft should succeed");
 
@@ -761,7 +761,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -802,7 +802,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test idea", now)
+            .draft(temp_dir.path(),"Test idea", now, None)
             .await
             .expect("draft should succeed");
 
@@ -852,7 +852,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test idea", now)
+            .draft(temp_dir.path(),"Test idea", now, None)
             .await
             .expect("draft should succeed");
 
@@ -889,7 +889,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a REST API", now)
+            .quick(temp_dir.path(), "Build a REST API", now, None)
             .await
             .expect("quick should succeed with conditional approval");
 
@@ -942,7 +942,7 @@ mod service_integration {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service.quick(temp_dir.path(), "Build something", now).await;
+        let result = service.quick(temp_dir.path(), "Build something", now, None).await;
 
         assert!(result.is_err(), "quick should fail on request_changes");
 
@@ -995,7 +995,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test durable boundary", now)
+            .draft(temp_dir.path(),"Test durable boundary", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1039,7 +1039,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected for run with answers already submitted"
@@ -1079,7 +1079,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test defense in depth", now)
+            .draft(temp_dir.path(),"Test defense in depth", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1109,7 +1109,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected for AwaitingAnswers run with AnswersSubmitted in journal"
@@ -1141,7 +1141,7 @@ mod service_integration {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service.quick(temp_dir.path(), "Build a widget", now).await;
+        let result = service.quick(temp_dir.path(), "Build a widget", now, None).await;
 
         assert!(
             result.is_err(),
@@ -1162,7 +1162,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Quick file layout test", now)
+            .quick(temp_dir.path(), "Quick file layout test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1194,7 +1194,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Empty questions file layout test", now)
+            .draft(temp_dir.path(),"Empty questions file layout test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1247,7 +1247,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Question boundary failure test", now)
+            .draft(temp_dir.path(),"Question boundary failure test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1328,7 +1328,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test answers.json boundary", now)
+            .draft(temp_dir.path(),"Test answers.json boundary", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1356,7 +1356,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected when answers.json already has content"
@@ -1386,7 +1386,7 @@ mod service_integration {
         // First, run a successful quick-mode run to get a baseline
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed history rollback test", now)
+            .quick(temp_dir.path(), "Seed history rollback test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1440,7 +1440,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Full mode stages test", now)
+            .draft(temp_dir.path(),"Full mode stages test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1507,7 +1507,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Round-aware full-mode answer", now)
+            .draft(temp_dir.path(),"Round-aware full-mode answer", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1528,7 +1528,7 @@ mod service_integration {
         std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
 
         service
-            .answer(temp_dir.path(), &run_id)
+            .answer(temp_dir.path(), &run_id, None)
             .await
             .expect("answer should succeed");
 
@@ -1600,7 +1600,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Stale pending questions test", now)
+            .draft(temp_dir.path(),"Stale pending questions test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1701,6 +1701,7 @@ mod service_integration {
                 temp_dir.path(),
                 "Draft-committed pending questions test",
                 now,
+                None,
             )
             .await
             .expect("draft should succeed");
@@ -1766,7 +1767,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed rollback ordering test", now)
+            .quick(temp_dir.path(), "Seed rollback ordering test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1834,7 +1835,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test special chars", now)
+            .draft(temp_dir.path(),"Test special chars", now, None)
             .await
             .expect("draft should succeed");
 
@@ -2088,7 +2089,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test run_created failure", now)
+                .draft(temp_dir.path(),"Test run_created failure", now, None)
                 .await;
 
             assert!(
@@ -2122,7 +2123,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test run_created failure in quick", now)
+                .quick(temp_dir.path(), "Test run_created failure in quick", now, None)
                 .await;
 
             assert!(
@@ -2154,7 +2155,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test questions_generated failure", now)
+                .draft(temp_dir.path(),"Test questions_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2216,7 +2217,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test draft_generated failure", now)
+                .quick(temp_dir.path(), "Test draft_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2272,7 +2273,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test review_completed failure", now)
+                .quick(temp_dir.path(), "Test review_completed failure", now, None)
                 .await;
 
             assert!(
@@ -2315,7 +2316,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test seed_generated failure", now)
+                .quick(temp_dir.path(), "Test seed_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2380,7 +2381,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test run_completed failure", now)
+                .quick(temp_dir.path(), "Test run_completed failure", now, None)
                 .await;
 
             // The run should succeed despite RunCompleted journal failure
@@ -2454,7 +2455,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test later review_completed failure", now)
+                .quick(temp_dir.path(), "Test later review_completed failure", now, None)
                 .await;
 
             assert!(
@@ -2510,7 +2511,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let run_id = service
-                .draft(temp_dir.path(), "Test answers_submitted failure", now)
+                .draft(temp_dir.path(),"Test answers_submitted failure", now, None)
                 .await
                 .expect("draft should succeed (to reach awaiting_answers)");
 
@@ -2546,7 +2547,7 @@ mod service_integration {
             let store2 = FailingJournalRequirementsStore::new(1);
             let service2 = RequirementsService::new(agent_service2, store2);
 
-            let result = service2.answer(temp_dir.path(), &run_id).await;
+            let result = service2.answer(temp_dir.path(), &run_id, None).await;
             assert!(
                 result.is_err(),
                 "answer should fail on AnswersSubmitted journal failure"
@@ -2601,7 +2602,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test question_round_opened failure", now)
+                .draft(temp_dir.path(),"Test question_round_opened failure", now, None)
                 .await;
 
             assert!(
@@ -2650,7 +2651,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test stage_completed failure", now)
+                .draft(temp_dir.path(),"Test stage_completed failure", now, None)
                 .await;
 
             assert!(
@@ -2722,7 +2723,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test revision_completed failure", now)
+                .quick(temp_dir.path(), "Test revision_completed failure", now, None)
                 .await;
 
             assert!(
@@ -2774,7 +2775,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test revision_requested failure", now)
+                .quick(temp_dir.path(), "Test revision_requested failure", now, None)
                 .await;
 
             assert!(
@@ -2824,7 +2825,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let run_id = service
-                .draft(temp_dir.path(), "Test current_stage recomputation", now)
+                .draft(temp_dir.path(),"Test current_stage recomputation", now, None)
                 .await
                 .expect("draft should succeed (to reach awaiting_answers)");
 
@@ -2872,7 +2873,7 @@ mod service_integration {
             let store2 = FailingJournalRequirementsStore::new(2);
             let service2 = RequirementsService::new(agent_service2, store2);
 
-            let result = service2.answer(temp_dir.path(), &run_id).await;
+            let result = service2.answer(temp_dir.path(), &run_id, None).await;
             assert!(
                 result.is_err(),
                 "answer should fail on StageCompleted journal failure"

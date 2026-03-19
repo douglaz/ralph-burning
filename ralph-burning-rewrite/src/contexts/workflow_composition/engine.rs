@@ -5891,6 +5891,12 @@ where
         policy.timeout_for_role(family, BackendPolicyRole::PromptValidator)
     };
 
+    // Pre-validate panel template overrides BEFORE any durable state writes.
+    // If a panel template override is malformed, we must fail without
+    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    template_catalog::resolve("prompt_review_refiner", base_dir, Some(project_id))?;
+    template_catalog::resolve("prompt_review_validator", base_dir, Some(project_id))?;
+
     // Emit stage_entered journal event.
     *seq += 1;
     let stage_entered = journal::stage_entered_event(
@@ -6147,6 +6153,11 @@ where
     let timeout_for_backend =
         |family: BackendFamily| -> Duration { policy.timeout_for_role(family, policy_role) };
 
+    // Pre-validate panel template overrides BEFORE any durable state writes.
+    // If a panel template override is malformed, we must fail without
+    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    template_catalog::resolve("completion_panel_completer", base_dir, Some(project_id))?;
+
     // Emit stage_entered journal event.
     *seq += 1;
     let stage_entered = journal::stage_entered_event(
@@ -6351,6 +6362,13 @@ where
     };
     let arbiter_timeout =
         policy.timeout_for_role(panel.arbiter.backend.family, BackendPolicyRole::Arbiter);
+
+    // Pre-validate panel template overrides BEFORE any durable state writes.
+    // If a panel template override is malformed, we must fail without
+    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    template_catalog::resolve("final_review_reviewer", base_dir, Some(project_id))?;
+    template_catalog::resolve("final_review_voter", base_dir, Some(project_id))?;
+    template_catalog::resolve("final_review_arbiter", base_dir, Some(project_id))?;
 
     *seq += 1;
     let stage_entered = journal::stage_entered_event(

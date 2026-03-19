@@ -7343,7 +7343,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = chrono::Utc::now();
-        let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now))?;
+        let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None))?;
 
         let store = FsRequirementsStore;
         let run = store
@@ -7562,7 +7562,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = chrono::Utc::now();
-        let run_id = block_on_app_result(service.draft(ws.path(), "Cache reuse test", now))?;
+        let run_id = block_on_app_result(service.draft(ws.path(), "Cache reuse test", now, None))?;
 
         // Run should be awaiting answers
         let store = FsRequirementsStore;
@@ -7592,7 +7592,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
             .map_err(|e| format!("write answers: {e}"))?;
 
-        block_on_app_result(service.answer(ws.path(), &run_id))?;
+        block_on_app_result(service.answer(ws.path(), &run_id, None))?;
 
         let run = store
             .read_run(ws.path(), &run_id)
@@ -7683,7 +7683,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
             let now = chrono::Utc::now();
-            let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now))?;
+            let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now, None))?;
 
             let store = FsRequirementsStore;
             let run = store
@@ -7752,7 +7752,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = chrono::Utc::now();
-        let result = block_on_app_result(service.quick(ws.path(), "Max revisions test", now));
+        let result = block_on_app_result(service.quick(ws.path(), "Max revisions test", now, None));
 
         // Should fail due to revision limit
         if result.is_ok() {
@@ -19710,6 +19710,63 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
             }
             Ok(_) => Err("expected error for non-UTF-8 file".into()),
         }
+    });
+
+    // @parity_slice7_invalid_marker_rejection
+    reg!(m, "parity_slice7_invalid_marker_rejection", || {
+        let tmp = std::env::temp_dir().join(format!(
+            "ralph-conformance-invalid-marker-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws = tmp.join(".ralph-burning").join("templates");
+        std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+
+        // Override with hyphenated marker
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "{{base_context}} and {{invented-placeholder}}",
+        )
+        .map_err(|e| e.to_string())?;
+
+        match template_catalog::resolve("requirements_ideation", &tmp, None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("invented-placeholder") {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Err(format!(
+                        "error should cite 'invented-placeholder': {msg}"
+                    ));
+                }
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err("expected error for hyphenated placeholder marker".into());
+            }
+        }
+
+        // Override with spaced marker
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "{{base_context}} and {{with spaces}}",
+        )
+        .map_err(|e| e.to_string())?;
+
+        match template_catalog::resolve("requirements_ideation", &tmp, None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("with spaces") {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Err(format!("error should cite 'with spaces': {msg}"));
+                }
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err("expected error for spaced placeholder marker".into());
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        Ok(())
     });
 
     // Meta-conformance: all template IDs have manifests

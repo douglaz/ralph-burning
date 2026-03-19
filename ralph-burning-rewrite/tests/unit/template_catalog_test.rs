@@ -137,6 +137,42 @@ fn unknown_placeholder_rejected() {
 }
 
 #[test]
+fn placeholder_with_hyphens_rejected_as_malformed() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().join(".ralph-burning").join("templates");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("requirements_ideation.md"),
+        "{{base_context}} and {{invented-placeholder}}",
+    )
+    .unwrap();
+
+    let result = template_catalog::resolve("requirements_ideation", tmp.path(), None);
+    assert!(result.is_err(), "hyphened placeholder must be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown placeholder"));
+    assert!(err.contains("invented-placeholder"));
+}
+
+#[test]
+fn placeholder_with_spaces_rejected_as_malformed() {
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().join(".ralph-burning").join("templates");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("requirements_ideation.md"),
+        "{{base_context}} and {{with spaces}}",
+    )
+    .unwrap();
+
+    let result = template_catalog::resolve("requirements_ideation", tmp.path(), None);
+    assert!(result.is_err(), "spaced placeholder must be rejected");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("unknown placeholder"));
+    assert!(err.contains("with spaces"));
+}
+
+#[test]
 fn missing_required_placeholder_rejected() {
     let tmp = tempdir().unwrap();
     let ws = tmp.path().join(".ralph-burning").join("templates");

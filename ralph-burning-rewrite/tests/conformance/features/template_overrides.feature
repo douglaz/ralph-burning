@@ -61,6 +61,13 @@ Feature: Template Override Parity (Slice 7)
     When the template is resolved
     Then resolution fails citing non-UTF-8 content
 
+  @parity_slice7_invalid_marker_rejection
+  Scenario: Override with invalid-character placeholder markers is rejected
+    Given a workspace override containing "{{invented-placeholder}}" or "{{with spaces}}"
+    When the template is resolved
+    Then resolution fails citing the unknown placeholder marker
+    And the marker is not silently ignored or passed through to the prompt
+
   @parity_slice7_all_ids_have_manifests
   Scenario: All frozen template IDs have manifests
     Given the template catalog

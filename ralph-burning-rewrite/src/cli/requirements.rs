@@ -42,12 +42,12 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
     match command.command {
         RequirementsSubcommand::Draft { idea } => {
             let now = chrono::Utc::now();
-            let run_id = service.draft(&base_dir, &idea, now).await?;
+            let run_id = service.draft(&base_dir, &idea, now, None).await?;
             println!("Requirements run created: {run_id}");
         }
         RequirementsSubcommand::Quick { idea } => {
             let now = chrono::Utc::now();
-            let run_id = service.quick(&base_dir, &idea, now).await?;
+            let run_id = service.quick(&base_dir, &idea, now, None).await?;
             println!("Requirements run completed: {run_id}");
         }
         RequirementsSubcommand::Show { run_id } => {
@@ -97,7 +97,7 @@ pub async fn handle(command: RequirementsCommand) -> AppResult<()> {
             }
         }
         RequirementsSubcommand::Answer { run_id } => {
-            service.answer(&base_dir, &run_id).await?;
+            service.answer(&base_dir, &run_id, None).await?;
             println!("Answers submitted for run: {run_id}");
         }
     }
