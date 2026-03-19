@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (72 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (78 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 19 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -139,3 +139,13 @@
   plan includes `FinalReview`, regardless of `final_review.enabled`.
   This aligns with the engine's `stage_plan_for_flow()`, which does not
   filter `FinalReview` based on that flag.
+- Opposite-family role attribution now reflects the runtime resolution
+  path. `family_for_role()` returns the attempted opposite family (e.g.
+  `codex` when `default_backend=claude`) for Implementer/Qa/AcceptanceQa/
+  Completer roles, not the base backend. When no opposite family is
+  enabled, it reports `opposite_of(<base>)` with a `resolution_error`.
+  This affects `show-effective`, `check`, and `probe` failure surfaces.
+- Implicit completion-panel availability failures now report the actual
+  Completer-role config source (e.g. `default_backend`) instead of
+  hard-coded `completion.backends`. This applies to both
+  `check_backends_with_availability()` and `probe_with_availability()`.

@@ -3196,6 +3196,324 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
     );
 }
 
+// ── opposite-family role attribution ──────────────────────────────────────
+
+/// Regression: when opposite-family roles (implementer, qa, completer) have no
+/// explicit override, `family_for_role()` must reflect the runtime resolution
+/// path (`opposite_family(planner_family)`), not `default_backend`.
+///
+/// Setup: default_backend=claude, both opposite families disabled. The runtime
+/// resolution for implementer would attempt opposite_family(claude) and fail.
+/// `show-effective` must report the attempted opposite family, not "claude".
+#[test]
+fn show_effective_opposite_family_roles_report_attempted_family_not_base() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    // Disable both codex and openrouter so opposite_family(claude) fails
+    workspace
+        .backends
+        .insert("codex".to_owned(), empty_backend_settings(false));
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // Implementer, qa, acceptance_qa, completer use opposite-family resolution.
+    // With no opposite family available, they should NOT report "claude" as
+    // the backend family — that would be wrong per runtime semantics.
+    let implementer = view.roles.iter().find(|r| r.role == "implementer").unwrap();
+    assert_ne!(
+        "claude", implementer.backend_family,
+        "implementer should not report base backend 'claude' — it uses opposite-family resolution"
+    );
+    assert!(
+        implementer.resolution_error.is_some(),
+        "implementer should have resolution_error when opposite family is unavailable"
+    );
+
+    let qa = view.roles.iter().find(|r| r.role == "qa").unwrap();
+    assert_ne!(
+        "claude", qa.backend_family,
+        "qa should not report base backend 'claude' — it uses opposite-family resolution"
+    );
+
+    let completer = view.roles.iter().find(|r| r.role == "completer").unwrap();
+    assert_ne!(
+        "claude", completer.backend_family,
+        "completer should not report base backend 'claude' — it uses opposite-family resolution"
+    );
+
+    // Planner-family roles (planner, reviewer) should still report "claude"
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "claude", planner.backend_family,
+        "planner should report base backend 'claude'"
+    );
+}
+
+/// Regression: when opposite-family roles resolve successfully, show-effective
+/// must report the actual opposite family (e.g., codex), not the base backend.
+#[test]
+fn show_effective_opposite_family_roles_report_resolved_family_when_available() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    // Codex is enabled by default — it is the opposite family for claude
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // When resolution succeeds, the resolved target family is used (codex)
+    let implementer = view.roles.iter().find(|r| r.role == "implementer").unwrap();
+    assert_eq!(
+        "codex", implementer.backend_family,
+        "implementer should resolve to opposite family 'codex' when available"
+    );
+    assert!(
+        implementer.resolution_error.is_none(),
+        "implementer should not have resolution_error when opposite family is available"
+    );
+}
+
+/// Regression: `backend check` must report the attempted opposite family (not
+/// the base backend) when opposite-family roles fail.
+#[test]
+fn check_reports_opposite_family_not_base_for_failed_opposite_roles() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    workspace
+        .backends
+        .insert("codex".to_owned(), empty_backend_settings(false));
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    // Implementer failures should NOT report backend_family="claude"
+    let impl_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "implementer");
+    if let Some(failure) = impl_failure {
+        assert_ne!(
+            "claude", failure.backend_family,
+            "implementer failure should report the attempted opposite family, not 'claude': {:?}",
+            failure
+        );
+    }
+}
+
+/// Regression: `backend probe --role implementer` must report the opposite-family
+/// failure, not claim the base backend is unavailable.
+#[test]
+fn probe_singular_opposite_role_reports_correct_family() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    workspace
+        .backends
+        .insert("codex".to_owned(), empty_backend_settings(false));
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("implementer", FlowPreset::Standard, 1);
+    assert!(result.is_err(), "probe should fail when no opposite family is enabled");
+    let err_msg = result.unwrap_err().to_string();
+    // The outer error should identify the opposite-family target, not plain 'claude'.
+    // The inner error detail naturally mentions claude as the base family, which is fine.
+    assert!(
+        err_msg.contains("opposite_of(claude)") || err_msg.contains("opposite"),
+        "probe error should identify the opposite-family resolution path, not blame 'claude' directly: {}",
+        err_msg
+    );
+    // The error must also mention the resolution failure reason
+    assert!(
+        err_msg.contains("no opposite backend family is enabled"),
+        "probe error should include the opposite-family failure reason: {}",
+        err_msg
+    );
+}
+
+// ── implicit completion-panel availability config source ──────────────────
+
+/// Regression: when completion backends are implicit and availability checks
+/// run, the config source reported for completion panel failures must reflect
+/// the actual resolution source (Completer role → default_backend), not the
+/// hard-coded "completion.backends".
+#[tokio::test]
+async fn check_with_availability_implicit_completion_reports_correct_source() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for codex backends
+    struct CodexUnavailableAdapter;
+    impl AgentExecutionPort for CodexUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::Codex {
+                Err(AppError::BackendUnavailable {
+                    backend: "codex".to_owned(),
+                    details: "codex binary not found".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    // No explicit completion.backends — implicit resolution uses Completer role
+    // which resolves to opposite_family(claude) = codex
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = CodexUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    // Completion panel members should report source from Completer role
+    // resolution, NOT "completion.backends"
+    let completion_failures: Vec<_> = result
+        .failures
+        .iter()
+        .filter(|f| f.role.contains("completion_panel"))
+        .collect();
+    for failure in &completion_failures {
+        assert_ne!(
+            "completion.backends", failure.config_source,
+            "implicit completion members should not report 'completion.backends' as source: {:?}",
+            failure
+        );
+    }
+}
+
+/// Regression: when completion backends are implicit, `backend probe --role
+/// completion_panel` availability failures must report the Completer role
+/// source, not "completion.backends".
+#[tokio::test]
+async fn probe_with_availability_implicit_completion_reports_correct_source() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for codex backends only
+    struct CodexUnavailableAdapter;
+    impl AgentExecutionPort for CodexUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::Codex {
+                Err(AppError::BackendUnavailable {
+                    backend: "codex".to_owned(),
+                    details: "codex binary not found".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    // No explicit completion.backends — implicit
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = CodexUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    // Probe should fail because codex (opposite family = completers) is unavailable
+    assert!(result.is_err(), "probe should fail when completion backend is unavailable");
+    let err_msg = result.unwrap_err().to_string();
+    // The error should NOT reference "completion.backends" as the source
+    assert!(
+        !err_msg.contains("completion.backends"),
+        "implicit completion probe failure should not reference 'completion.backends': {}",
+        err_msg
+    );
+}
+
 // ── build-sensitive compile_only for stub ────────────────────────────────
 
 #[cfg(feature = "test-stub")]

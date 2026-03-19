@@ -333,13 +333,14 @@ impl<'a> BackendDiagnosticsService<'a> {
         if flow_def.stages.contains(&StageId::CompletionPanel) {
             if let Ok(res) = self.policy.resolve_completion_panel(1) {
                 let minimum = self.config.completion_policy().min_completers;
+                let completion_source = self.completion_panel_config_source();
                 self.check_panel_availability(
                     adapter,
                     &res.completers.iter()
                         .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "completion_panel",
-                    "completion.backends",
+                    &completion_source,
                     minimum,
                     &mut result,
                 )
@@ -837,12 +838,13 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         let configured_specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
+        let completion_source = self.completion_panel_config_source();
 
         // Try the full panel resolution; if it fails, identify the exact
         // failing member (planner already succeeded above).
         let resolution = self.policy.resolve_completion_panel(cycle)
             .map_err(|err| self.identify_failing_panel_member(
-                "completion_panel", "member", "completion.backends",
+                "completion_panel", "member", &completion_source,
                 configured_specs, minimum, &err,
             ))?;
 
@@ -1061,7 +1063,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 }
             }
 
-            let members_source = Self::panel_members_config_source(&panel.panel_type);
+            let members_source = self.panel_members_config_source(&panel.panel_type);
 
             // Check panel members: required unavailable → fail; optional unavailable → omit
             let member_label_prefix = Self::panel_member_label_prefix(&panel.panel_type);
@@ -1225,14 +1227,26 @@ impl<'a> BackendDiagnosticsService<'a> {
     }
 
     /// Return the config field that governs panel member selection.
-    fn panel_members_config_source(panel_type: &str) -> String {
+    /// For completion panels, uses the actual source when backends are implicit.
+    fn panel_members_config_source(&self, panel_type: &str) -> String {
         match panel_type {
-            "completion" => "completion.backends",
-            "final_review" => "final_review.backends",
-            "prompt_review" => "prompt_review.validator_backends",
-            _ => "default_backend",
+            "completion" => self.completion_panel_config_source(),
+            "final_review" => "final_review.backends".to_owned(),
+            "prompt_review" => "prompt_review.validator_backends".to_owned(),
+            _ => "default_backend".to_owned(),
         }
-        .to_owned()
+    }
+
+    /// Return the effective config source for completion panel members.
+    /// When `completion.backends` is explicitly configured, returns
+    /// `"completion.backends"`. When implicit, returns the config source
+    /// for the Completer role (matching runtime's `default_completion_targets()`).
+    fn completion_panel_config_source(&self) -> String {
+        if self.config.completion_backends_are_explicit() {
+            "completion.backends".to_owned()
+        } else {
+            self.config_source_for_role(BackendPolicyRole::Completer)
+        }
     }
 
     fn build_panel_member_views(
@@ -1271,42 +1285,54 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     // ── Helper methods ──────────────────────────────────────────────────
 
+    /// Return the backend family that runtime resolution would attempt for
+    /// a given role (assuming cycle 1). This mirrors the resolution path in
+    /// `BackendPolicyService::resolve_role_target()`:
+    /// - Roles with explicit overrides → override family
+    /// - Planner-family roles (Planner, Reviewer, PromptReviewer, etc.) → base_backend.family
+    /// - Opposite-family roles (Implementer, Qa, AcceptanceQa, Completer) → opposite_family(base)
     fn family_for_role(&self, role: BackendPolicyRole) -> String {
         let bp = self.config.backend_policy();
-        match role {
-            BackendPolicyRole::Planner => bp
-                .planner_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            BackendPolicyRole::Implementer => bp
-                .implementer_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            BackendPolicyRole::Reviewer => bp
-                .reviewer_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => bp
-                .qa_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            BackendPolicyRole::PromptReviewer => bp
-                .prompt_review_refiner_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            BackendPolicyRole::Arbiter => bp
-                .final_review_arbiter_backend
-                .as_ref()
-                .map(|s| s.family.as_str())
-                .unwrap_or(bp.base_backend.family.as_str()),
-            _ => bp.base_backend.family.as_str(),
+
+        // Check explicit override first
+        let explicit = match role {
+            BackendPolicyRole::Planner => bp.planner_backend.as_ref(),
+            BackendPolicyRole::Implementer => bp.implementer_backend.as_ref(),
+            BackendPolicyRole::Reviewer => bp.reviewer_backend.as_ref(),
+            BackendPolicyRole::Qa | BackendPolicyRole::AcceptanceQa => bp.qa_backend.as_ref(),
+            BackendPolicyRole::PromptReviewer => bp.prompt_review_refiner_backend.as_ref(),
+            BackendPolicyRole::Arbiter => bp.final_review_arbiter_backend.as_ref(),
+            _ => None,
+        };
+        if let Some(sel) = explicit {
+            return sel.family.as_str().to_owned();
         }
-        .to_owned()
+
+        // No explicit override — mirror runtime resolution path (cycle 1).
+        // Opposite-family roles use opposite_family(planner_family).
+        let planner_family = bp.base_backend.family;
+        if Self::role_uses_opposite_family(role) {
+            match self.policy.opposite_family(planner_family) {
+                Ok(family) => family.as_str().to_owned(),
+                // When no opposite family is enabled, report the attempted
+                // resolution path so operators understand the failure.
+                Err(_) => format!("opposite_of({})", planner_family.as_str()),
+            }
+        } else {
+            planner_family.as_str().to_owned()
+        }
+    }
+
+    /// Returns true if the given role resolves to the opposite family of
+    /// the planner in the runtime resolution path.
+    fn role_uses_opposite_family(role: BackendPolicyRole) -> bool {
+        matches!(
+            role,
+            BackendPolicyRole::Implementer
+                | BackendPolicyRole::Qa
+                | BackendPolicyRole::AcceptanceQa
+                | BackendPolicyRole::Completer
+        )
     }
 
     fn config_source_for_role(&self, role: BackendPolicyRole) -> String {

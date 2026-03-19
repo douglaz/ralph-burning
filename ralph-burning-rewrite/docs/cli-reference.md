@@ -178,7 +178,9 @@ When `completion.backends` is not explicitly configured, `backend check`
 validates the same implicit resolution path that run execution uses
 (`default_completion_targets()` via the Completer role), not the built-in
 default backend list. This prevents false failures on default-list
-backends that runtime would never use.
+backends that runtime would never use. Availability-time failures for
+implicit completion backends report the actual Completer-role resolution
+source (e.g. `default_backend`), not `completion.backends`.
 
 Final review is validated whenever the flow's stage plan includes the
 `FinalReview` stage, regardless of `final_review.enabled`. This matches
@@ -259,6 +261,13 @@ Roles whose configured backend cannot resolve (e.g., a disabled backend)
 are still included in the output with `resolution_error` set, so
 operators can see the broken selection and its source. They are never
 silently dropped.
+
+Opposite-family roles (implementer, qa, acceptance_qa, completer) reflect
+the runtime resolution path: when no explicit override is set, they report
+the attempted opposite family (e.g. `codex` when `default_backend=claude`),
+not the base backend. When no opposite family is enabled, `backend_family`
+reports the attempted resolution target (e.g. `opposite_of(claude)`) and
+`resolution_error` is set, so operators can see the exact failure path.
 
 Flags:
 - `--json` — emit a stable JSON object for scripts
