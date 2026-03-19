@@ -481,6 +481,27 @@ ralph-burning backend show-effective
 (`/api/v1/models`) using the configured API key. A 401/403 response maps to
 `BackendUnavailable`; a 429 maps to rate-limit failure.
 
+### Strict-Mode Schema Compliance
+
+Codex (OpenAI) and OpenRouter both use **strict-mode structured output**, which
+imposes requirements beyond standard JSON Schema:
+
+1. Every object schema must have `"additionalProperties": false`
+2. Every property key in `"properties"` must also appear in `"required"`
+
+The `enforce_strict_mode_schema()` function in `process_backend.rs` recursively
+applies both constraints to the `schemars`-generated schemas before they are
+sent to the backend. This is necessary because `schemars` honours
+`#[serde(default)]` by omitting the field from `required`, which is correct for
+standard JSON Schema but violates the strict-mode contract.
+
+This enforcement is applied:
+- **Codex**: in `ProcessBackendAdapter::build_command()` before writing the
+  schema file (`process_backend.rs:429`)
+- **OpenRouter**: in `OpenRouterBackendAdapter::request_body()` before
+  embedding the schema in the `response_format` payload
+  (`openrouter_backend.rs:134`)
+
 ### Live Smoke Validation
 
 A repeatable smoke procedure is available at `scripts/live-backend-smoke.sh`.

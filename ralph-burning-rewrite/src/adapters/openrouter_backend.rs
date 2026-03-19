@@ -128,6 +128,12 @@ impl OpenRouterBackendAdapter {
     }
 
     fn request_body(request: &InvocationRequest) -> Value {
+        let mut schema = request.contract.json_schema_value();
+        // OpenRouter uses strict: true, which requires the same schema
+        // constraints as OpenAI strict mode: additionalProperties: false on
+        // every object and all property keys present in the required array.
+        super::process_backend::enforce_strict_mode_schema(&mut schema);
+
         json!({
             "model": request.resolved_target.model.model_id,
             "messages": [
@@ -145,7 +151,7 @@ impl OpenRouterBackendAdapter {
                 "json_schema": {
                     "name": "stage_output",
                     "strict": true,
-                    "schema": request.contract.json_schema_value(),
+                    "schema": schema,
                 }
             }
         })
@@ -714,9 +720,13 @@ mod tests {
             body["response_format"]["json_schema"]["strict"],
             json!(true)
         );
+        // The schema sent to OpenRouter has strict-mode enforcement applied
+        // (additionalProperties: false + all properties in required).
+        let mut expected_schema = request.contract.json_schema_value();
+        crate::adapters::process_backend::enforce_strict_mode_schema(&mut expected_schema);
         assert_eq!(
             body["response_format"]["json_schema"]["schema"],
-            request.contract.json_schema_value()
+            expected_schema
         );
         clear_openrouter_env();
     }

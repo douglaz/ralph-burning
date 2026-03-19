@@ -72,12 +72,29 @@ impl PreparedCommand {
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     structured
+                } else if envelope.result.trim().is_empty() {
+                    return Err(ProcessBackendAdapter::invocation_failed(
+                        request,
+                        FailureClass::SchemaValidationFailure,
+                        format!(
+                            "Claude returned empty result with no structured_output \
+                             (contract: {}, stdout_len: {}, session_policy: {:?})",
+                            request.contract.label(),
+                            output.stdout.len(),
+                            request.session_policy,
+                        ),
+                    ));
                 } else {
                     serde_json::from_str(&envelope.result).map_err(|error| {
                         ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
-                            format!("invalid Claude result JSON: {error}"),
+                            format!(
+                                "invalid Claude result JSON: {error} \
+                                 (contract: {}, result_len: {})",
+                                request.contract.label(),
+                                envelope.result.len(),
+                            ),
                         )
                     })?
                 };
@@ -426,7 +443,7 @@ impl ProcessBackendAdapter {
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
                 let mut schema_value = request.contract.json_schema_value();
-                inject_additional_properties_false(&mut schema_value);
+                enforce_strict_mode_schema(&mut schema_value);
                 let schema_json = serde_json::to_string_pretty(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
 
@@ -832,25 +849,57 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
     let _ = tokio::fs::remove_file(message_path).await;
 }
 
-/// Recursively inject `"additionalProperties": false` into all object-type
-/// schemas. OpenAI's structured output API requires this on every object.
-fn inject_additional_properties_false(value: &mut serde_json::Value) {
+/// Recursively enforce OpenAI strict-mode schema requirements:
+/// 1. Inject `"additionalProperties": false` on every object schema.
+/// 2. Ensure `"required"` includes every key from `"properties"` — strict mode
+///    rejects schemas where a property key is missing from the required array.
+///
+/// This is needed because `schemars` honours `#[serde(default)]` by omitting
+/// the field from `required`, which is correct for general JSON Schema but
+/// violates OpenAI's strict-mode contract.
+pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
         let is_object = map
             .get("type")
             .and_then(|t| t.as_str())
             .map_or(false, |t| t == "object");
-        if is_object && !map.contains_key("additionalProperties") {
-            map.insert(
-                "additionalProperties".to_owned(),
-                serde_json::Value::Bool(false),
-            );
+        if is_object {
+            // 1. additionalProperties: false
+            if !map.contains_key("additionalProperties") {
+                map.insert(
+                    "additionalProperties".to_owned(),
+                    serde_json::Value::Bool(false),
+                );
+            }
+
+            // 2. Ensure required contains every property key
+            if let Some(serde_json::Value::Object(props_map)) = map.get("properties") {
+                let all_keys: Vec<serde_json::Value> = props_map
+                    .keys()
+                    .map(|k| serde_json::Value::String(k.clone()))
+                    .collect();
+                match map.get_mut("required") {
+                    Some(serde_json::Value::Array(required)) => {
+                        for key in &all_keys {
+                            if !required.contains(key) {
+                                required.push(key.clone());
+                            }
+                        }
+                    }
+                    _ => {
+                        map.insert(
+                            "required".to_owned(),
+                            serde_json::Value::Array(all_keys),
+                        );
+                    }
+                }
+            }
         }
         // Recurse into properties
         if let Some(props) = map.get_mut("properties") {
             if let serde_json::Value::Object(props_map) = props {
                 for prop_value in props_map.values_mut() {
-                    inject_additional_properties_false(prop_value);
+                    enforce_strict_mode_schema(prop_value);
                 }
             }
         }
@@ -858,13 +907,13 @@ fn inject_additional_properties_false(value: &mut serde_json::Value) {
         if let Some(defs) = map.get_mut("definitions") {
             if let serde_json::Value::Object(defs_map) = defs {
                 for def_value in defs_map.values_mut() {
-                    inject_additional_properties_false(def_value);
+                    enforce_strict_mode_schema(def_value);
                 }
             }
         }
         // Recurse into items (for array types)
         if let Some(items) = map.get_mut("items") {
-            inject_additional_properties_false(items);
+            enforce_strict_mode_schema(items);
         }
     }
 }
