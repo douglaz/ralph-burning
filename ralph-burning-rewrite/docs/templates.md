@@ -1,12 +1,23 @@
 # Prompt Templates
 
-All prompt surfaces (workflow stages, panels, requirements) are routed through a shared template catalog. Templates use `{{placeholder}}` syntax and follow a deterministic three-tier precedence resolution.
+All prompt surfaces (workflow stages, panels, requirements) are routed through a shared template catalog. Templates use `{{placeholder}}` syntax and follow deterministic precedence resolution.
 
 ## Resolution Order
+
+### Workflow and Panel Templates
+
+Workflow stage and panel templates use three-tier precedence:
 
 1. **Project override**: `.ralph-burning/projects/<project-id>/templates/<template-id>.md`
 2. **Workspace override**: `.ralph-burning/templates/<template-id>.md`
 3. **Built-in default** (compiled into the binary)
+
+### Requirements Templates
+
+Requirements templates use two-tier precedence (workspace and built-in only). Project-level overrides do not apply to requirements templates because requirements drafting operates at the workspace level before any project exists.
+
+1. **Workspace override**: `.ralph-burning/templates/<template-id>.md`
+2. **Built-in default** (compiled into the binary)
 
 Resolution is singular — layers are never merged. The first match wins.
 
@@ -64,8 +75,8 @@ These IDs correspond to `StageId::as_str()`:
 ## Creating Overrides
 
 1. Create the override file at the appropriate path:
-   - Workspace: `.ralph-burning/templates/<template-id>.md`
-   - Project: `.ralph-burning/projects/<project-id>/templates/<template-id>.md`
+   - Workspace: `.ralph-burning/templates/<template-id>.md` (applies to all template types)
+   - Project: `.ralph-burning/projects/<project-id>/templates/<template-id>.md` (workflow and panel templates only)
 
 2. Include all required placeholders using `{{placeholder_name}}` syntax.
 

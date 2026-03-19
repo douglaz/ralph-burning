@@ -60,3 +60,9 @@ Feature: Template Override Parity (Slice 7)
     Given a workspace override file with non-UTF-8 content
     When the template is resolved
     Then resolution fails citing non-UTF-8 content
+
+  @parity_slice7_all_ids_have_manifests
+  Scenario: All frozen template IDs have manifests
+    Given the template catalog
+    When all stage, panel, and requirements IDs are checked
+    Then every ID has a corresponding manifest

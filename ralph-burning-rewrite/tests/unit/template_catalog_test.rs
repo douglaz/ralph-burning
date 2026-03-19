@@ -304,6 +304,49 @@ fn render_with_override_produces_custom_output() {
     assert!(rendered.contains("test idea"));
 }
 
+// ── Verbatim block preservation ─────────────────────────────────────────
+
+#[test]
+fn render_preserves_verbatim_pre_rendered_blocks() {
+    // Pre-rendered blocks (JSON schemas, multi-line artifacts) must survive
+    // substitution intact. The blank-line normalizer should not corrupt
+    // content that naturally contains consecutive blank lines within a
+    // placeholder value, though runs of 3+ newlines are collapsed to 2.
+    let tmp = tempdir().unwrap();
+    let ws = tmp.path().join(".ralph-burning").join("templates");
+    std::fs::create_dir_all(&ws).unwrap();
+    std::fs::write(
+        ws.join("planning.md"),
+        "HEADER\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+    )
+    .unwrap();
+
+    let json_block = "{\n  \"type\": \"object\",\n  \"properties\": {\n    \"plan\": { \"type\": \"string\" }\n  }\n}";
+    let multi_line_prompt = "Line one.\nLine two.\n\nParagraph two with a gap.";
+
+    let rendered = template_catalog::resolve_and_render(
+        "planning",
+        tmp.path(),
+        None,
+        &[
+            ("role_instruction", "You are the Planner."),
+            ("project_prompt", multi_line_prompt),
+            ("json_schema", json_block),
+        ],
+    )
+    .unwrap();
+
+    // JSON structure preserved
+    assert!(rendered.contains(json_block), "JSON block must be preserved verbatim");
+    // Multi-line prompt preserved
+    assert!(
+        rendered.contains(multi_line_prompt),
+        "multi-line prompt content must be preserved verbatim"
+    );
+    // No triple newlines after normalization
+    assert!(!rendered.contains("\n\n\n"), "runs of 3+ newlines should be collapsed");
+}
+
 // ── Resolve and render convenience ──────────────────────────────────────
 
 #[test]

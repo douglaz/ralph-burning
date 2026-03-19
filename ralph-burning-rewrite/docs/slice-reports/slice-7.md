@@ -67,6 +67,25 @@ Added two CLI integration tests in `tests/cli.rs`:
 - `run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change`: verifies malformed override causes non-zero exit, mentions the error in stderr, writes no stage_entered events, and creates no payloads
 - `run_start_malformed_project_override_does_not_fall_back_to_workspace`: verifies a malformed project override is not silently replaced by a valid workspace override
 
+## Review Response (Iteration 2)
+
+### Required Change 1 — CLI regression test fix
+Fixed the `run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change` test in `tests/cli.rs`:
+- Changed broad `!post_journal.contains("stage_entered")` assertion to planning-specific checks: no `stage_entered` or `stage_completed` for the `planning` stage specifically
+- Removed pre-journal line-count comparison that was too strict — earlier stages like `prompt_review` legitimately enter and complete before the malformed `planning` template is reached
+- Removed unused `pre_journal` variable
+
+### Required Change 2 — Requirements project-override wiring (narrowed docs)
+Requirements drafting operates at the workspace level before any project exists, so project-level template overrides are architecturally inapplicable. Updated `docs/templates.md`:
+- Split resolution order documentation into workflow/panel (three-tier) and requirements (two-tier: workspace + built-in only)
+- Clarified that project override paths apply to workflow and panel templates only
+- The `None` project_id in all `resolve_and_render()` calls in `service.rs` is correct behavior, not a bug
+
+### Recommended Improvement — Verbatim block preservation test
+Added `render_preserves_verbatim_pre_rendered_blocks` in `tests/unit/template_catalog_test.rs`:
+- Verifies multi-line JSON schema blocks and multi-paragraph prompt text survive substitution intact
+- Pins the blank-line normalization behavior (3+ consecutive newlines collapsed to 2)
+
 ## Remaining Known Gaps
 
 - Template path helpers were placed in `template_catalog.rs` rather than `adapters/fs.rs` as specified. The deviation keeps template logic self-contained in one module rather than splitting between the catalog and the filesystem adapter.
