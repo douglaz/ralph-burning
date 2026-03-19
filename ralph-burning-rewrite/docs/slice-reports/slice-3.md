@@ -239,6 +239,39 @@ and workflow-stage sources:
 4. **Docs updated**: `amendments.md` lease conflict section now documents that
    all mutating commands (not just `add`) honor the writer-lease contract.
 
+### Iteration 8
+
+1. **Shared batch journal atomicity (Required Change 1)**:
+   `stage_amendment_batch` now tracks successful journal appends. If a later
+   append fails after earlier lines are already on disk, the orphaned journal
+   entries cannot be un-appended. Instead of reporting a clean rollback, the
+   function returns `CorruptRecord` describing partial-journal persistence
+   (e.g. "batch journal append failed after 1 of 2 events") while still
+   rolling back the snapshot and amendment files.
+2. **Rollback failure handling (Required Change 2)**: Both
+   `add_manual_amendment` and `stage_amendment_batch` no longer swallow
+   rollback failures with `let _ =`. If snapshot restore or file cleanup fails
+   after a journal append error, a `CorruptRecord` error is returned that
+   includes both the original journal error and the rollback failure details,
+   matching the composite-error pattern in `execute_rollback`.
+3. **Failure-injection test coverage (Recommended Improvement)**: Added 2 new
+   test fixtures and 4 new unit tests:
+   - `FailAfterNAppendsJournalStore` — journal read succeeds, first N appends
+     succeed, then fails.
+   - `FailingRollbackSnapshotStore` — first write succeeds (canonical commit),
+     subsequent writes fail (rollback).
+   - `stage_amendment_batch_surfaces_partial_journal_as_corrupt_record` —
+     verifies `CorruptRecord` on mid-batch journal failure with partial
+     appends.
+   - `add_manual_amendment_returns_corrupt_record_when_rollback_fails` —
+     verifies `CorruptRecord` when snapshot restore fails after journal error.
+   - `stage_amendment_batch_returns_corrupt_record_when_rollback_fails` —
+     verifies `CorruptRecord` when snapshot restore fails during batch.
+   - `add_manual_amendment_returns_corrupt_record_when_file_rollback_fails` —
+     verifies `CorruptRecord` when file cleanup fails after journal error.
+4. **Docs updated**: `amendments.md` failure safety section updated to
+   describe partial-journal and rollback-failure error reporting.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

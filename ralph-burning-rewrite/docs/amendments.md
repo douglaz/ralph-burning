@@ -52,8 +52,10 @@ from `run.json`:
   If the snapshot write fails after file creation, the amendment file is rolled
   back. If the journal append fails after the snapshot is committed, the
   snapshot is restored to its pre-mutation state and the amendment file is
-  removed — a successful add always records the history event and a failed add
-  never leaves a committed amendment behind.
+  removed. If rollback itself fails (snapshot restore or file cleanup), a
+  `CorruptRecord` error is returned that includes both the original journal
+  error and the rollback failure details. A successful add always records the
+  history event and a failed add never leaves a committed amendment behind.
 - **remove**: deletes the amendment file first, then updates the snapshot. If
   file deletion fails, no mutation is visible. If the snapshot write fails after
   a successful file deletion, the file is restored.
@@ -69,9 +71,14 @@ from `run.json`:
   then writes amendment files. If a file write fails mid-batch, all earlier
   files in the same batch are rolled back. The snapshot is committed after all
   files are written; if it fails, all files are rolled back. Journal events are
-  pre-serialized and then durably appended after the snapshot commit. If any
-  journal append fails, the snapshot is restored and all staged files are
-  removed.
+  pre-serialized and then durably appended after the snapshot commit. If a
+  journal append fails and earlier appends already succeeded, the journal has
+  orphaned entries that cannot be un-appended; the snapshot and files are rolled
+  back and a `CorruptRecord` error is returned describing the partial-journal
+  state. If the journal append fails on the first event but rollback itself
+  fails, a `CorruptRecord` error is returned with both error details. Only when
+  the first journal append fails and rollback fully succeeds is a plain I/O
+  error returned.
 
 This ensures `run.json` is always the canonical source of truth for pending
 amendments, and that completion gating, resume reconciliation, and snapshot

@@ -861,9 +861,30 @@ pub fn add_manual_amendment(
     // amendment_queued event. If the append fails, roll back the snapshot
     // and amendment file so no amendment is visible without its history.
     if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
-        // Restore pre-mutation snapshot (best-effort).
-        let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
-        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        // Attempt to restore pre-mutation state.
+        let snap_result =
+            run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+        let file_result =
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+
+        // If rollback itself failed, return a composite error so the caller
+        // knows canonical state may be inconsistent, matching the pattern
+        // used in execute_rollback.
+        if snap_result.is_err() || file_result.is_err() {
+            let snap_detail =
+                snap_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            let file_detail =
+                file_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "amendment journal append failed: {journal_err}; \
+                     rollback also failed — snapshot restore: {snap_detail}, \
+                     file cleanup: {file_detail}"
+                ),
+            });
+        }
+
         return Err(journal_err);
     }
 
@@ -1141,14 +1162,52 @@ pub fn stage_amendment_batch(
     // Durably append all journal events. A successful staging must record all
     // amendment_queued events. If any append fails, roll back the snapshot
     // and amendment files so no amendments are visible without history.
+    //
+    // Track successful appends so we can detect partial-journal state: if
+    // earlier lines are already on disk when a later append fails, the
+    // journal has orphaned entries that cannot be un-appended.
+    let mut appended_count: usize = 0;
     for line in &journal_lines {
         if let Err(journal_err) = journal_port.append_event(base_dir, project_id, line) {
-            let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+            // Attempt rollback: restore snapshot and remove amendment files.
+            let snap_result =
+                run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+            let mut file_failures: Vec<String> = Vec::new();
             for id in &staged_ids {
-                let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+                if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                    file_failures.push(format!("{id}: {e}"));
+                }
             }
+
+            let rollback_failed = snap_result.is_err() || !file_failures.is_empty();
+
+            // If earlier journal lines were already appended, canonical state
+            // (snapshot + files) was rolled back but the journal still contains
+            // orphaned amendment_queued entries. Surface this as an unrecovered
+            // consistency failure rather than implying a clean rollback.
+            // Similarly, if rollback itself failed, the caller needs to know
+            // that canonical state may be inconsistent.
+            if appended_count > 0 || rollback_failed {
+                let snap_detail =
+                    snap_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
+                let file_detail = if file_failures.is_empty() {
+                    "ok".to_owned()
+                } else {
+                    file_failures.join("; ")
+                };
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "batch journal append failed after {appended_count} of {} events: \
+                         {journal_err}; snapshot restore: {snap_detail}, file cleanup: {file_detail}",
+                        journal_lines.len()
+                    ),
+                });
+            }
+
             return Err(journal_err);
         }
+        appended_count += 1;
     }
 
     Ok(staged_ids)

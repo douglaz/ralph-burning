@@ -2741,3 +2741,310 @@ fn stage_amendment_batch_fails_when_journal_append_fails() {
         "snapshot must be restored when journal append fails during batch staging"
     );
 }
+
+// -- FailAfterNAppendsJournalStore: first N appends succeed, then fail --
+
+struct FailAfterNAppendsJournalStore {
+    appends_before_failure: usize,
+    append_count: RefCell<usize>,
+}
+
+impl FailAfterNAppendsJournalStore {
+    fn new(appends_before_failure: usize) -> Self {
+        Self {
+            appends_before_failure,
+            append_count: RefCell::new(0),
+        }
+    }
+}
+
+impl JournalStorePort for FailAfterNAppendsJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Ok(vec![make_project_created_event()])
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        let mut count = self.append_count.borrow_mut();
+        if *count >= self.appends_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated journal append failure after N successes",
+            )));
+        }
+        *count += 1;
+        Ok(())
+    }
+}
+
+// -- FailingRollbackSnapshotStore: first write succeeds, subsequent writes fail --
+
+struct FailingRollbackSnapshotStore {
+    snapshot: RefCell<RunSnapshot>,
+    write_count: RefCell<usize>,
+}
+
+impl FailingRollbackSnapshotStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+            write_count: RefCell::new(0),
+        }
+    }
+
+    fn initial() -> Self {
+        Self::new(RunSnapshot::initial())
+    }
+}
+
+impl RunSnapshotPort for FailingRollbackSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for FailingRollbackSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        let mut count = self.write_count.borrow_mut();
+        if *count == 0 {
+            // First write succeeds (canonical commit).
+            *count += 1;
+            self.snapshot.replace(snapshot.clone());
+            Ok(())
+        } else {
+            // Subsequent writes fail (rollback attempt).
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated rollback snapshot write failure",
+            )))
+        }
+    }
+}
+
+#[test]
+fn stage_amendment_batch_surfaces_partial_journal_as_corrupt_record() {
+    // Two amendments: first journal append succeeds, second fails.
+    // The first journal line is permanent — canonical state (snapshot + files)
+    // is rolled back but the journal has orphaned entries.
+    // Must return CorruptRecord, not a plain I/O error.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailAfterNAppendsJournalStore::new(1); // succeed once, then fail
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail with CorruptRecord because the first journal line persisted
+    // but canonical state was rolled back.
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("batch journal append failed after 1 of 2 events"),
+                "CorruptRecord should describe partial journal state, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord for partial journal persistence, got: {other:?}"
+        ),
+    }
+
+    // Amendment files must still be rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment files must be rolled back even with partial journal"
+    );
+
+    // Snapshot must be restored to pre-mutation state.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored after partial journal rollback"
+    );
+}
+
+#[test]
+fn add_manual_amendment_returns_corrupt_record_when_rollback_fails() {
+    // Journal append fails, then the rollback snapshot write also fails.
+    // Must return CorruptRecord with both error details.
+    let queue = FakeAmendmentQueue::empty();
+    let store = FailingRollbackSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should trigger rollback failure",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("amendment journal append failed"),
+                "CorruptRecord should mention journal append failure, got: {details}"
+            );
+            assert!(
+                details.contains("rollback also failed"),
+                "CorruptRecord should mention rollback failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when rollback fails after journal error, got: {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn stage_amendment_batch_returns_corrupt_record_when_rollback_fails() {
+    // Journal append fails on the first event, but rollback snapshot write
+    // also fails. Must return CorruptRecord even though no partial journal
+    // entries exist.
+    let queue = FakeAmendmentQueue::empty();
+    let store = FailingRollbackSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("batch journal append failed"),
+                "CorruptRecord should describe the journal failure, got: {details}"
+            );
+            assert!(
+                details.contains("snapshot restore:") && !details.contains("snapshot restore: ok"),
+                "CorruptRecord should indicate snapshot restore failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when rollback fails after journal error, got: {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn add_manual_amendment_returns_corrupt_record_when_file_rollback_fails() {
+    // Journal append fails, snapshot restore succeeds, but amendment file
+    // removal fails. Must still return CorruptRecord with file cleanup detail.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should trigger file rollback failure",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("amendment journal append failed"),
+                "CorruptRecord should mention journal append failure, got: {details}"
+            );
+            assert!(
+                details.contains("file cleanup:") && !details.contains("file cleanup: ok"),
+                "CorruptRecord should indicate file cleanup failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when file cleanup fails after journal error, got: {other:?}"
+        ),
+    }
+}
