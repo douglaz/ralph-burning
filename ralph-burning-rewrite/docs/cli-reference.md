@@ -235,7 +235,8 @@ resolution (`timeout_source`), so operators can trace every resolved
 value back to its originating config layer. Models embedded in the
 `default_backend` setting (e.g. `default_backend = "codex(custom-model)"`)
 are correctly attributed to the `default_backend` source, not reported
-as `"default"`.
+as `"default"`. This applies to both the top-level `default_model` field
+and the per-role `model_source` fields.
 
 Roles whose configured backend cannot resolve (e.g., a disabled backend)
 are still included in the output with `resolution_error` set, so

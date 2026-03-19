@@ -18618,6 +18618,19 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             return Err("base_backend must have value and source".into());
         }
 
+        // Source labels must be concrete precedence strings, not empty
+        let base_source = base.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if base_source.is_empty() {
+            return Err("base_backend.source must be a non-empty string".into());
+        }
+
+        // default_model must have value and source
+        let dm = view.get("default_model").ok_or("missing default_model")?;
+        let dm_source = dm.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if dm_source.is_empty() {
+            return Err("default_model.source must be a non-empty string".into());
+        }
+
         let roles = view
             .get("roles")
             .and_then(|v| v.as_array())
@@ -18626,12 +18639,20 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             return Err("roles should not be empty".into());
         }
 
-        // Each role should have required fields
+        // Each role should have required fields including source labels
         for role in roles {
-            for field in &["role", "backend_family", "model_id", "timeout_seconds", "override_source"] {
+            for field in &[
+                "role", "backend_family", "model_id", "timeout_seconds",
+                "override_source", "model_source", "timeout_source",
+            ] {
                 if role.get(*field).is_none() {
                     return Err(format!("role entry missing field '{field}'"));
                 }
+            }
+            // Source labels must be non-empty strings
+            let ms = role.get("model_source").and_then(|v| v.as_str()).unwrap_or("");
+            if ms.is_empty() {
+                return Err("role model_source must be a non-empty string".into());
             }
         }
 
@@ -18673,12 +18694,27 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             return Err("completion panel should have at least one member".into());
         }
 
-        // Each member must have required/optional status
+        // Each member must have required/optional status and backend_family
         for member in members {
             if member.get("required").is_none() {
                 return Err("member missing required field".into());
             }
+            if member.get("backend_family").is_none() {
+                return Err("member missing backend_family field".into());
+            }
         }
+
+        // Verify probe failure semantics: disabled required backend exits non-zero
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(
+            &["backend", "probe", "--role", "completion_panel", "--flow", "standard"],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
 
         Ok(())
     });
@@ -18713,6 +18749,25 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         if members.is_empty() {
             return Err("final review panel should have at least one member".into());
         }
+
+        // Each member must have backend_family
+        for member in members {
+            if member.get("backend_family").is_none() {
+                return Err("member missing backend_family field".into());
+            }
+        }
+
+        // Verify probe failure semantics: disabled required backend exits non-zero
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(
+            &["backend", "probe", "--role", "final_review_panel", "--flow", "standard"],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
 
         Ok(())
     });

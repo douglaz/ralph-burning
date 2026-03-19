@@ -6976,3 +6976,140 @@ fn backend_show_effective_with_cli_override() {
         base_value
     );
 }
+
+#[test]
+fn backend_probe_nonzero_exit_on_disabled_backend() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Disable the base backend so probing any role that depends on it fails
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args([
+            "backend", "probe", "--role", "planner", "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend probe should exit non-zero when required backend is disabled"
+    );
+}
+
+#[test]
+fn backend_probe_nonzero_exit_on_panel_minimum_violation() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Configure completion panel with min_completers=2 but only one backend
+    // enabled (claude required + openrouter optional but disabled).
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[backends.openrouter]
+enabled = false
+
+[completion]
+backends = ["claude", "?openrouter"]
+min_completers = 2
+consensus_threshold = 0.66
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args([
+            "backend", "probe", "--role", "completion_panel", "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe with insufficient panel members");
+
+    assert!(
+        !output.status.success(),
+        "backend probe should exit non-zero when optional omission drops panel below minimum"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("insufficient") || stderr.contains("panel") || stderr.contains("minimum"),
+        "error output should mention panel minimum violation: {}",
+        stderr
+    );
+}
+
+#[test]
+fn backend_check_nonzero_exit_json_reports_failures() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Disable the base backend
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args(["backend", "check", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check --json with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend check --json should exit non-zero when base backend is disabled"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON even on failure");
+    assert_eq!(
+        parsed["passed"].as_bool(),
+        Some(false),
+        "passed should be false"
+    );
+    let failures = parsed["failures"]
+        .as_array()
+        .expect("failures should be an array");
+    assert!(
+        !failures.is_empty(),
+        "failures array should contain at least one entry"
+    );
+    // Each failure should have the expected contract fields
+    let failure = &failures[0];
+    assert!(failure.get("role").is_some(), "failure should have 'role'");
+    assert!(
+        failure.get("backend_family").is_some(),
+        "failure should have 'backend_family'"
+    );
+    assert!(
+        failure.get("failure_kind").is_some(),
+        "failure should have 'failure_kind'"
+    );
+}

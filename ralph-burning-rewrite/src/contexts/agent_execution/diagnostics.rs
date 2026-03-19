@@ -644,12 +644,20 @@ impl<'a> BackendDiagnosticsService<'a> {
             source: self.source_for_base_backend(),
         };
 
-        let default_model = EffectiveFieldView {
-            value: bp
-                .default_model
-                .clone()
-                .unwrap_or_else(|| bp.base_backend.family.default_model_id().to_owned()),
-            source: self.source_for_default_model(),
+        // Effective default model follows the same resolution priority as
+        // target_for_family(): base_backend.model (set from either
+        // default_backend="family(model)" or merged from default_model)
+        // takes precedence over the compile-time family default.
+        let default_model = if let Some(ref model) = bp.base_backend.model {
+            EffectiveFieldView {
+                value: model.clone(),
+                source: self.source_for_base_backend(),
+            }
+        } else {
+            EffectiveFieldView {
+                value: bp.base_backend.family.default_model_id().to_owned(),
+                source: "default".to_owned(),
+            }
         };
 
         let roles = BackendPolicyRole::ALL

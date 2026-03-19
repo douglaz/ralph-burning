@@ -42,8 +42,8 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (62 tests), `backend_policy_test` (3 new tests)
-- CLI integration tests: 12 new `backend_*` tests
+- Unit tests: `backend_diagnostics_test` (64 tests), `backend_policy_test` (3 new tests)
+- CLI integration tests: 15 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
   `parity_slice5_backend_probe_final_review_panel`
@@ -90,3 +90,11 @@
 - `backend show-effective` now correctly reports `model_source` for
   models embedded in `default_backend` (e.g. `default_backend = "codex(model)"`)
   by tracing to the `default_backend` source, not misreporting as `"default"`.
+- `backend show-effective` top-level `default_model` field now correctly
+  reflects the model embedded in `default_backend` (both value and source),
+  instead of falling through to the compile-time family default.
+- CLI failure-path coverage expanded: `backend probe` non-zero exit on
+  disabled backend, panel minimum violation, and `backend check --json`
+  failure contract are now tested.
+- Conformance scenarios strengthened with source label assertions and
+  probe failure semantics checks.

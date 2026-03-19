@@ -2455,6 +2455,54 @@ fn show_effective_model_source_from_default_backend_embedded_model() {
         "model_source should NOT be 'default' when model comes from default_backend; got: {}",
         planner.model_source
     );
+
+    // The top-level default_model field must also reflect the embedded model
+    // value and source, not the compile-time family default.
+    assert_eq!(
+        "custom-model-x", view.default_model.value,
+        "default_model.value should be the embedded model, not the family default"
+    );
+    assert!(
+        view.default_model.source != "default",
+        "default_model.source should NOT be 'default' when model comes from default_backend; got: {}",
+        view.default_model.source
+    );
+}
+
+#[test]
+fn show_effective_default_model_field_matches_base_backend_model() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Set default_backend with an embedded model
+    workspace.settings.default_backend = Some("codex(my-custom-model)".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // The top-level default_model field must report the embedded model value
+    // and trace its source to default_backend, not to default_model or "default".
+    assert_eq!(
+        "my-custom-model", view.default_model.value,
+        "default_model.value should match the model embedded in default_backend"
+    );
+    assert_ne!(
+        "default", view.default_model.source,
+        "default_model.source should trace to default_backend, not 'default'"
+    );
+
+    // base_backend should show the full selection string
+    assert!(
+        view.base_backend.value.contains("codex"),
+        "base_backend.value should contain 'codex'"
+    );
+    assert!(
+        view.base_backend.value.contains("my-custom-model"),
+        "base_backend.value should contain the embedded model"
+    );
 }
 
 #[test]
