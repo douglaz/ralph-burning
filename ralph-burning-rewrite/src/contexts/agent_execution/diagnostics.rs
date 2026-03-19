@@ -338,21 +338,29 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         // Panel-specific targets: final review panel (planner + arbiter required,
-        // reviewers may be optional)
+        // reviewers may be optional).
+        // Arbiter is resolved independently so its availability is always
+        // checked even when reviewer resolution fails.
         if flow_def.stages.contains(&StageId::FinalReview)
             && self.config.final_review_policy().enabled
         {
+            // Arbiter — always required, resolved independently of panel
+            if let Ok(arbiter_target) = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, 1) {
+                required_targets.push((
+                    arbiter_target,
+                    "final_review_panel.arbiter".to_owned(),
+                    "final_review.arbiter_backend".to_owned(),
+                ));
+            }
+
+            // Full panel resolution for planner + reviewers
             if let Ok(res) = self.policy.resolve_final_review_panel(1) {
-                // Planner and arbiter are always required
+                // Planner is already checked via stage roles, but include it
+                // with panel-specific identity for completeness
                 required_targets.push((
                     res.planner.clone(),
                     "final_review_panel.planner".to_owned(),
                     "workflow.planner_backend".to_owned(),
-                ));
-                required_targets.push((
-                    res.arbiter.clone(),
-                    "final_review_panel.arbiter".to_owned(),
-                    "final_review.arbiter_backend".to_owned(),
                 ));
 
                 let minimum = self.config.final_review_policy().min_reviewers;
@@ -371,18 +379,23 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         // Panel-specific targets: prompt review panel (refiner required,
-        // validators may be optional)
+        // validators may be optional).
+        // Refiner is resolved independently so its availability is always
+        // checked even when validator resolution fails.
         if flow_def.stages.contains(&StageId::PromptReview)
             && self.config.prompt_review_policy().enabled
         {
-            if let Ok(res) = self.policy.resolve_prompt_review_panel(1) {
-                // Refiner is always required
+            // Refiner — always required, resolved independently of panel
+            if let Ok(refiner_target) = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, 1) {
                 required_targets.push((
-                    res.refiner.clone(),
+                    refiner_target,
                     "prompt_review_panel.refiner".to_owned(),
                     "prompt_review.refiner_backend".to_owned(),
                 ));
+            }
 
+            // Full panel resolution for validators
+            if let Ok(res) = self.policy.resolve_prompt_review_panel(1) {
                 let minimum = self.config.prompt_review_policy().min_reviewers;
                 self.check_panel_availability(
                     adapter,
@@ -708,22 +721,26 @@ impl<'a> BackendDiagnosticsService<'a> {
         match role_str {
             "completion_panel" => {
                 validate_flow_has_stage(flow_def, StageId::CompletionPanel)?;
-                return self.probe_completion_panel(flow, cycle);
+                return self.probe_completion_panel(flow, cycle)
+                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
             }
             "final_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::FinalReview)?;
-                return self.probe_final_review_panel(flow, cycle);
+                return self.probe_final_review_panel(flow, cycle)
+                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
             }
             "prompt_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::PromptReview)?;
-                return self.probe_prompt_review_panel(flow, cycle);
+                return self.probe_prompt_review_panel(flow, cycle)
+                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
             }
             _ => {}
         }
 
         // Parse as a policy role
         let role: BackendPolicyRole = role_str.parse()?;
-        let target = self.policy.resolve_role_target(role, cycle)?;
+        let target = self.policy.resolve_role_target(role, cycle)
+            .map_err(|err| self.wrap_probe_config_error(role_str, err))?;
         let timeout = self.policy.timeout_for_role(target.backend.family, role);
 
         Ok(BackendProbeResult {
@@ -895,19 +912,9 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
         adapter: &A,
     ) -> AppResult<BackendProbeResult> {
-        // Wrap config-time probe failures with exact target identity and source
-        let mut result = self.probe(role_str, flow, cycle).map_err(|err| {
-            let primary_target = self.probe_primary_target_label(role_str);
-            let primary_source = self.probe_primary_config_source(role_str);
-            let family = self.probe_primary_family(role_str);
-            AppError::BackendUnavailable {
-                backend: family,
-                details: format!(
-                    "required target '{}' ({}) unavailable: {} [source: {}]",
-                    role_str, primary_target, err, primary_source
-                ),
-            }
-        })?;
+        // Config-time probe failures are already wrapped with target identity
+        // and source by `probe()` itself via `wrap_probe_config_error`.
+        let mut result = self.probe(role_str, flow, cycle)?;
 
         // Resolve config source for the primary target role
         let primary_source = self.probe_primary_config_source(role_str);
@@ -991,6 +998,23 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         Ok(result)
+    }
+
+    /// Wrap a raw config-time probe error with exact target identity, backend
+    /// family, and selecting config source field. This is applied in `probe()`
+    /// so both direct callers and `probe_with_availability()` get properly
+    /// shaped errors.
+    fn wrap_probe_config_error(&self, role_str: &str, err: AppError) -> AppError {
+        let primary_target = self.probe_primary_target_label(role_str);
+        let primary_source = self.probe_primary_config_source(role_str);
+        let family = self.probe_primary_family(role_str);
+        AppError::BackendUnavailable {
+            backend: family,
+            details: format!(
+                "required target '{}' ({}) unavailable: {} [source: {}]",
+                role_str, primary_target, err, primary_source
+            ),
+        }
     }
 
     /// Return a human-readable label for the primary target of a probe,

@@ -2108,3 +2108,217 @@ async fn probe_with_availability_final_review_failure_reports_planner_not_generi
         err_msg
     );
 }
+
+// ── backend check aggregation tests ──────────────────────────────────────
+
+#[tokio::test]
+async fn check_with_availability_aggregates_arbiter_failure_independently_of_reviewer_resolution() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that reports all backends as unavailable
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Configure final_review with reviewer using codex (which we'll also disable
+    // at the config level to make resolve_final_review_panel fail) and
+    // arbiter using openrouter. Both codex and openrouter are enabled so
+    // config-time resolution succeeds, but all backends are unavailable at
+    // the adapter level.
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Codex),
+        ]),
+        arbiter_backend: Some("openrouter".to_owned()),
+        min_reviewers: Some(1),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    assert!(!result.passed, "all backends unavailable should fail");
+
+    // The arbiter must be independently reported as an availability failure
+    let arbiter_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "final_review_panel.arbiter");
+    assert!(
+        arbiter_failure.is_some(),
+        "arbiter availability should be checked independently of reviewer resolution; failures: {:?}",
+        result.failures
+    );
+    assert_eq!(
+        BackendCheckFailureKind::AvailabilityFailure,
+        arbiter_failure.unwrap().failure_kind
+    );
+    assert_eq!("openrouter", arbiter_failure.unwrap().backend_family);
+}
+
+#[tokio::test]
+async fn check_with_availability_aggregates_refiner_failure_independently_of_validator_resolution() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that reports all backends as unavailable
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    workspace.prompt_review = PromptReviewSettings {
+        enabled: Some(true),
+        refiner_backend: Some("openrouter".to_owned()),
+        validator_backends: None,
+        min_reviewers: None,
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    assert!(!result.passed, "all backends unavailable should fail");
+
+    // The refiner must be independently reported as an availability failure
+    let refiner_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role == "prompt_review_panel.refiner");
+    assert!(
+        refiner_failure.is_some(),
+        "refiner availability should be checked independently of validator resolution; failures: {:?}",
+        result.failures
+    );
+    assert_eq!(
+        BackendCheckFailureKind::AvailabilityFailure,
+        refiner_failure.unwrap().failure_kind
+    );
+    assert_eq!("openrouter", refiner_failure.unwrap().backend_family);
+}
+
+// ── CLI coverage for probe config-time failures ──────────────────────────
+
+#[test]
+fn probe_config_time_failure_for_disabled_final_review_arbiter() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        arbiter_backend: Some("openrouter".to_owned()),
+        backends: None,
+        min_reviewers: None,
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Config-time failure: arbiter backend is disabled — probing the
+    // final_review_panel should fail with target/source identity.
+    let result = service.probe("final_review_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+
+    assert!(
+        err_msg.contains("final_review_panel"),
+        "config-time failure should identify the target panel: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("[source:"),
+        "config-time failure should include source field: {}",
+        err_msg
+    );
+}

@@ -183,6 +183,13 @@ Required availability failures are reported per role/member — if the
 same backend target is shared by multiple roles (e.g., planner and
 final-review arbiter), each role is checked and reported independently.
 
+Required panel targets such as the final-review arbiter and the
+prompt-review refiner are resolved and checked independently of the full
+panel resolution (reviewer/validator list). If reviewer resolution fails
+(e.g., a required reviewer backend is disabled), the arbiter is still
+checked for availability and its failure is reported separately. This
+ensures all blocking failures are aggregated in a single run.
+
 Config-time panel failures identify the exact failing member and its
 selecting config field: `final_review_panel.arbiter` with source
 `final_review.arbiter_backend`, `prompt_review_panel.refiner` with source
