@@ -16,7 +16,7 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
-use crate::contexts::project_run_record::model::{ActiveRun, RunStatus};
+use crate::contexts::project_run_record::model::RunStatus;
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
@@ -328,34 +328,30 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 
 async fn handle_attach() -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
-    let effective_config = EffectiveConfig::load_for_project(
-        &current_dir,
-        Some(&project_id),
-        CliBackendOverrides::default(),
-    )?;
-
-    if effective_config.effective_execution_mode() != ExecutionMode::Tmux {
-        println!("No active tmux session exists for the current invocation.");
-        return Ok(());
-    }
-
-    let snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
-    let Some(active_run) = snapshot.active_run.as_ref() else {
+    let project_root = crate::adapters::fs::FileSystem::project_root(&current_dir, &project_id);
+    let Some(active_session) = crate::adapters::tmux::TmuxAdapter::read_active_session(
+        &project_root,
+    )?
+    else {
         println!("No active tmux session exists for the current invocation.");
         return Ok(());
     };
 
-    let invocation_id = active_run_invocation_id(active_run);
-    let session_name =
-        crate::adapters::tmux::TmuxAdapter::session_name(project_id.as_str(), &invocation_id);
-
-    if !crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)? {
+    crate::adapters::tmux::TmuxAdapter::check_tmux_available()?;
+    if !crate::adapters::tmux::TmuxAdapter::session_exists(&active_session.session_name)? {
+        crate::adapters::tmux::TmuxAdapter::clear_active_session(
+            &project_root,
+            &active_session.invocation_id,
+        )?;
         println!("No active tmux session exists for the current invocation.");
         return Ok(());
     }
 
-    println!("Attaching to tmux session '{session_name}'. Detach with Ctrl-b d.");
-    crate::adapters::tmux::TmuxAdapter::attach_to_session(&session_name)
+    println!(
+        "Attaching to tmux session '{}'. Detach with Ctrl-b d.",
+        active_session.session_name
+    );
+    crate::adapters::tmux::TmuxAdapter::attach_to_session(&active_session.session_name)
 }
 
 async fn handle_status(as_json: bool) -> AppResult<()> {
@@ -484,7 +480,7 @@ async fn handle_tail_follow(
     );
 
     if include_logs && stream_output {
-        if let Some(mut rx) = build_follow_watcher(current_dir, project_id)? {
+        if let Some(mut watcher) = build_follow_watcher(current_dir, project_id)? {
             loop {
                 tokio::select! {
                     result = tokio::signal::ctrl_c() => {
@@ -492,7 +488,7 @@ async fn handle_tail_follow(
                         println!("Stopped following.");
                         return Ok(());
                     }
-                    maybe_event = rx.recv() => {
+                    maybe_event = watcher.rx.recv() => {
                         if maybe_event.is_none() {
                             break;
                         }
@@ -653,10 +649,15 @@ fn load_active_project_context() -> AppResult<(std::path::PathBuf, crate::shared
     Ok((current_dir, project_id))
 }
 
+struct FollowWatcher {
+    _watcher: RecommendedWatcher,
+    rx: tokio::sync::mpsc::UnboundedReceiver<notify::Event>,
+}
+
 fn build_follow_watcher(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
-) -> AppResult<Option<tokio::sync::mpsc::UnboundedReceiver<notify::Event>>> {
+) -> AppResult<Option<FollowWatcher>> {
     let project_root = current_dir
         .join(".ralph-burning/projects")
         .join(project_id.as_str());
@@ -679,8 +680,10 @@ fn build_follow_watcher(
         return Ok(None);
     }
 
-    std::mem::forget(watcher);
-    Ok(Some(rx))
+    Ok(Some(FollowWatcher {
+        _watcher: watcher,
+        rx,
+    }))
 }
 
 fn render_follow_delta(
@@ -728,17 +731,6 @@ fn render_follow_delta(
         .unwrap_or(*last_seen_sequence);
     *last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
     Ok(())
-}
-
-fn active_run_invocation_id(active_run: &ActiveRun) -> String {
-    format!(
-        "{}-{}-c{}-a{}-cr{}",
-        active_run.run_id,
-        active_run.stage_cursor.stage.as_str(),
-        active_run.stage_cursor.cycle,
-        active_run.stage_cursor.attempt,
-        active_run.stage_cursor.completion_round
-    )
 }
 
 fn maybe_filter_history_by_stage(

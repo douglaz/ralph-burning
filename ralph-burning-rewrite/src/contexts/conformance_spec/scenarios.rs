@@ -18839,6 +18839,262 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
 // Tmux And Streaming Parity (Slice 6)
 // ===========================================================================
 
+fn tmux_write_executable(path: &Path, contents: &str) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| format!("write executable: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path)
+            .map_err(|e| format!("stat executable: {e}"))?
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| format!("chmod executable: {e}"))?;
+    }
+    Ok(())
+}
+
+fn tmux_planning_payload() -> serde_json::Value {
+    serde_json::json!({
+        "problem_framing": "tmux plan",
+        "assumptions_or_open_questions": ["none"],
+        "proposed_work": [{"order": 1, "summary": "do it", "details": "details"}],
+        "readiness": {"ready": true, "risks": []}
+    })
+}
+
+fn write_tmux_fake_claude(bin_dir: &Path, envelope_file: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("claude"),
+        &format!(
+            r#"#!/usr/bin/env bash
+echo "$@" > "$PWD/claude-args.txt"
+cat > "$PWD/claude-stdin.txt"
+cat "{}"
+"#,
+            envelope_file.display()
+        ),
+    )
+}
+
+fn write_tmux_sleeping_claude(bin_dir: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("claude"),
+        r#"#!/usr/bin/env bash
+trap 'exit 130' INT TERM
+while true; do
+  sleep 0.1
+done
+"#,
+    )
+}
+
+fn write_tmux_fake_tmux(bin_dir: &Path, state_dir: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("tmux"),
+        &format!(
+            r#"#!/usr/bin/env bash
+set -eu
+STATE_DIR="{}"
+mkdir -p "$STATE_DIR"
+cmd="$1"
+shift
+
+pid_file() {{
+  printf '%s/%s.pid' "$STATE_DIR" "$1"
+}}
+
+live_session() {{
+  local session="$1"
+  local file
+  file="$(pid_file "$session")"
+  if [ ! -f "$file" ]; then
+    return 1
+  fi
+  local pid
+  pid="$(cat "$file")"
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$file"
+  return 1
+}}
+
+case "$cmd" in
+  new-session)
+    session=""
+    shell_cmd=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -d)
+          shift
+          ;;
+        -s)
+          session="$2"
+          shift 2
+          ;;
+        -x|-y|-c)
+          shift 2
+          ;;
+        *)
+          shell_cmd="$1"
+          shift
+          ;;
+      esac
+    done
+    setsid bash -c "$shell_cmd" >/dev/null 2>&1 &
+    echo "$!" > "$(pid_file "$session")"
+    ;;
+  has-session)
+    session="$2"
+    if live_session "$session"; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  kill-session)
+    session="$2"
+    file="$(pid_file "$session")"
+    if [ -f "$file" ]; then
+      pid="$(cat "$file")"
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.1
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      rm -f "$file"
+    fi
+    ;;
+  send-keys)
+    session="$2"
+    file="$(pid_file "$session")"
+    if [ -f "$file" ]; then
+      pid="$(cat "$file")"
+      kill -INT "-$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
+    fi
+    ;;
+  attach-session)
+    session="$2"
+    if live_session "$session"; then
+      printf 'attached:%s\n' "$session"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+            state_dir.display()
+        ),
+    )
+}
+
+fn write_tmux_claude_envelope(path: &Path, result_json: &serde_json::Value) -> Result<(), String> {
+    let envelope = serde_json::json!({
+        "type": "result",
+        "result": "{}",
+        "structured_output": result_json,
+        "session_id": "ses-tmux"
+    });
+    std::fs::write(path, serde_json::to_string(&envelope).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("write envelope: {e}"))
+}
+
+fn tmux_request_fixture(
+    invocation_id: &str,
+) -> Result<
+    (
+        TempWorkspace,
+        crate::contexts::agent_execution::model::InvocationRequest,
+    ),
+    String,
+> {
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{
+        BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+    };
+
+    let temp_dir = TempWorkspace::new()?;
+    std::fs::create_dir_all(temp_dir.path().join("runtime/temp"))
+        .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+    let request = InvocationRequest {
+        invocation_id: invocation_id.to_owned(),
+        project_root: temp_dir.path().to_path_buf(),
+        working_dir: temp_dir.path().to_path_buf(),
+        contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+        role: BackendRole::Planner,
+        resolved_target: ResolvedBackendTarget::new(
+            BackendFamily::Claude,
+            BackendFamily::Claude.default_model_id(),
+        ),
+        payload: InvocationPayload {
+            prompt: "Tmux adapter prompt".to_owned(),
+            context: serde_json::json!({"stage": "planning"}),
+        },
+        timeout: std::time::Duration::from_secs(5),
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
+    Ok((temp_dir, request))
+}
+
+fn tmux_session_name_for_request(
+    request: &crate::contexts::agent_execution::model::InvocationRequest,
+) -> String {
+    let project_name = request
+        .project_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workspace");
+    crate::adapters::tmux::TmuxAdapter::session_name(project_name, &request.invocation_id)
+}
+
+#[derive(Clone, Copy)]
+struct ConformanceInlineRawOutputStore;
+
+impl crate::contexts::agent_execution::service::RawOutputPort for ConformanceInlineRawOutputStore {
+    fn persist_raw_output(
+        &self,
+        _project_root: &Path,
+        _invocation_id: &str,
+        contents: &str,
+    ) -> crate::shared::error::AppResult<
+        crate::contexts::agent_execution::model::RawOutputReference,
+    > {
+        Ok(crate::contexts::agent_execution::model::RawOutputReference::Inline(
+            contents.to_owned(),
+        ))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ConformanceNoopSessionStore;
+
+impl crate::contexts::agent_execution::session::SessionStorePort for ConformanceNoopSessionStore {
+    fn load_sessions(
+        &self,
+        _project_root: &Path,
+    ) -> crate::shared::error::AppResult<
+        crate::contexts::agent_execution::session::PersistedSessions,
+    > {
+        Ok(crate::contexts::agent_execution::session::PersistedSessions::empty())
+    }
+
+    fn save_sessions(
+        &self,
+        _project_root: &Path,
+        _sessions: &crate::contexts::agent_execution::session::PersistedSessions,
+    ) -> crate::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
 fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "SC-TMUX-001", || {
         let ws = TempWorkspace::new()?;
@@ -18873,6 +19129,16 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
             return Err("execution.mode should resolve from CLI override".into());
         }
+        let source = effective
+            .get("execution.mode")
+            .map_err(|e| format!("execution.mode source: {e}"))?;
+        if source.source != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        {
+            return Err(format!(
+                "execution.mode source should be cli override, got {}",
+                source.source
+            ));
+        }
         Ok(())
     });
 
@@ -18901,6 +19167,16 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
 
         if !effective.effective_stream_output() {
             return Err("execution.stream_output should resolve from CLI override".into());
+        }
+        let source = effective
+            .get("execution.stream_output")
+            .map_err(|e| format!("execution.stream_output source: {e}"))?;
+        if source.source != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        {
+            return Err(format!(
+                "execution.stream_output source should be cli override, got {}",
+                source.source
+            ));
         }
         Ok(())
     });
@@ -18974,10 +19250,182 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
-    reg!(m, "SC-TMUX-006", || Ok(()));
-    reg!(m, "SC-TMUX-007", || Ok(()));
-    reg!(m, "SC-TMUX-008", || Ok(()));
-    reg!(m, "SC-TMUX-009", || Ok(()));
+    reg!(m, "SC-TMUX-006", || {
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionPort;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        let (_direct_dir, direct_request) = tmux_request_fixture("direct-claude")?;
+        let direct_envelope = direct_request.working_dir.join("claude-envelope.json");
+        write_tmux_claude_envelope(&direct_envelope, &tmux_planning_payload())?;
+        write_tmux_fake_claude(bin_dir.path(), &direct_envelope)?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_tmux_dir, tmux_request) = tmux_request_fixture("tmux-claude")?;
+        let tmux_envelope = tmux_request.working_dir.join("claude-envelope.json");
+        write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        let result = block_on_result(async {
+            let direct = ProcessBackendAdapter::new()
+                .invoke(direct_request)
+                .await
+                .map_err(|e| format!("direct invoke: {e}"))?;
+            let tmux = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true)
+                .invoke(tmux_request)
+                .await
+                .map_err(|e| format!("tmux invoke: {e}"))?;
+
+            if direct.parsed_payload != tmux.parsed_payload {
+                return Err("parsed payloads should be identical".into());
+            }
+            if direct.raw_output_reference != tmux.raw_output_reference {
+                return Err("raw output references should be identical".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-007", || {
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionPort;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        write_tmux_sleeping_claude(bin_dir.path())?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_dir, request) = tmux_request_fixture("tmux-cancel")?;
+        let session_name = tmux_session_name_for_request(&request);
+        let adapter = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+        let invocation_id = request.invocation_id.clone();
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        let result = block_on_result(async {
+            let join = tokio::spawn({
+                let adapter = adapter.clone();
+                let request = request.clone();
+                async move { adapter.invoke(request).await }
+            });
+
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if !crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should exist while invocation is running".into());
+            }
+
+            adapter
+                .cancel(&invocation_id)
+                .await
+                .map_err(|e| format!("cancel invocation: {e}"))?;
+            let _ = join.await.map_err(|e| format!("join invoke task: {e}"))?;
+
+            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should be cleaned up after cancel".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-008", || {
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionService;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        write_tmux_sleeping_claude(bin_dir.path())?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_dir, mut request) = tmux_request_fixture("tmux-timeout")?;
+        request.timeout = std::time::Duration::from_millis(200);
+        let session_name = tmux_session_name_for_request(&request);
+        let service = AgentExecutionService::new(
+            crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true),
+            ConformanceInlineRawOutputStore,
+            ConformanceNoopSessionStore,
+        );
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        let result = block_on_result(async {
+            match service.invoke(request.clone()).await {
+                Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
+                Err(other) => return Err(format!("expected timeout, got {other}")),
+                Ok(_) => return Err("timeout should have failed the invocation".into()),
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should be cleaned up after timeout".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-009", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "watchable-stream", "standard")?;
+        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
+            &std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?,
+        )
+        .map_err(|e| format!("parse workspace.toml: {e}"))?;
+        workspace.execution.stream_output = Some(true);
+        std::fs::write(
+            &workspace_toml,
+            toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let log_dir = conformance_project_root(&ws, "watchable-stream").join("runtime/logs");
+        std::fs::write(
+            log_dir.join("002.ndjson"),
+            r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"watcher log"}"#.to_owned()
+                + "\n",
+        )
+        .map_err(|e| format!("write runtime log: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(700));
+
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("watcher log") {
+            return Err(
+                "follow --logs should surface the appended runtime log before the 2-second polling fallback".into(),
+            );
+        }
+        Ok(())
+    });
     reg!(m, "SC-TMUX-010", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;

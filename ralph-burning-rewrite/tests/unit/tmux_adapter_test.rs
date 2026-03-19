@@ -245,6 +245,12 @@ fn session_name_for_request(request: &InvocationRequest) -> String {
     TmuxAdapter::session_name(project_name, &request.invocation_id)
 }
 
+fn read_active_session(
+    request: &InvocationRequest,
+) -> Option<ralph_burning::adapters::tmux::ActiveTmuxSession> {
+    TmuxAdapter::read_active_session(&request.project_root).expect("read active session state")
+}
+
 #[test]
 fn tmux_session_name_is_deterministic() {
     assert_eq!(
@@ -320,6 +326,9 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
         TmuxAdapter::session_exists(&session_name).expect("query session"),
         "session should exist while invocation is running"
     );
+    let active_session = read_active_session(&request).expect("active session should be recorded");
+    assert_eq!(active_session.invocation_id, invocation_id);
+    assert_eq!(active_session.session_name, session_name);
     TmuxAdapter::attach_to_session(&session_name).expect("attach should succeed");
 
     adapter
@@ -331,6 +340,10 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
     assert!(
         !TmuxAdapter::session_exists(&session_name).expect("query session"),
         "session should be cleaned up after cancel"
+    );
+    assert!(
+        read_active_session(&request).is_none(),
+        "active session state should be cleared after cancel"
     );
 }
 
@@ -355,7 +368,10 @@ async fn tmux_adapter_timeout_cleans_up_session() {
         NoopSessionStore,
     );
 
-    let error = service.invoke(request).await.expect_err("timeout expected");
+    let error = service
+        .invoke(request.clone())
+        .await
+        .expect_err("timeout expected");
     match error {
         AppError::InvocationTimeout { .. } => {}
         other => panic!("expected InvocationTimeout, got {other:?}"),
@@ -365,6 +381,10 @@ async fn tmux_adapter_timeout_cleans_up_session() {
     assert!(
         !TmuxAdapter::session_exists(&session_name).expect("query session"),
         "timeout should clean up the tmux session"
+    );
+    assert!(
+        read_active_session(&request).is_none(),
+        "active session state should be cleared after timeout"
     );
 }
 

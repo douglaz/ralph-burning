@@ -1,5 +1,25 @@
 # CLI Reference
 
+## Execution Configuration
+
+Workspace and project configs both accept an `[execution]` table:
+
+```toml
+[execution]
+mode = "direct"        # or "tmux"
+stream_output = false  # or true
+```
+
+Resolution follows the standard precedence order: built-in defaults, then
+`workspace.toml`, then project `config.toml`, then CLI overrides.
+
+- `execution.mode` defaults to `direct`
+- `execution.stream_output` defaults to `false`
+- `stream_output = true` enables live incremental runtime-log capture during
+  execution so `run tail --follow --logs` can surface new output as it arrives
+- `mode = "tmux"` requires `tmux` on `PATH`; `backend check` reports
+  `tmux_unavailable` when that requirement is not met
+
 ## Run Commands
 
 ### `ralph-burning run status`
@@ -102,11 +122,25 @@ runtime log file.
 Flags:
 - `--logs` — append runtime log entries after durable history
 - `--last <n>` — limit durable output to the most recent `n` visible journal events and their associated payloads/artifacts
-- `--follow` — poll every 2 seconds for new journal events until interrupted with `Ctrl-C`
+- `--follow` — continue streaming new history until interrupted with `Ctrl-C`
 
 Notes:
 - `--last` and `--follow` are mutually exclusive
-- `--follow --logs` prints new runtime log entries as they appear
+- `--follow --logs` uses file watching for runtime-log updates when
+  `execution.stream_output = true` and the project root is watchable, with a
+  polling fallback when watching is unavailable
+
+### `ralph-burning run attach`
+
+Attaches the operator terminal to the currently active tmux-backed invocation
+for the selected project.
+
+Notes:
+- `run attach` reads the recorded live tmux session from project runtime state;
+  it does not recompute a session name from the current stage cursor
+- the command exits successfully with a clear message when no active tmux
+  session is recorded
+- detaching from tmux leaves the run itself unaffected
 
 ### `ralph-burning run show-payload <payload-id>`
 
@@ -235,7 +269,7 @@ Flags:
     {
       "role": "string",
       "backend_family": "string",
-      "failure_kind": "backend_disabled | panel_minimum_violation | required_member_unavailable | availability_failure",
+      "failure_kind": "backend_disabled | panel_minimum_violation | required_member_unavailable | availability_failure | tmux_unavailable",
       "details": "string",
       "config_source": "string"
     }

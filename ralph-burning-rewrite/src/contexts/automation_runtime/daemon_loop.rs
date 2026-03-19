@@ -47,6 +47,10 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
+type ConfiguredAgentServiceBuilder = fn(
+    &EffectiveConfig,
+) -> AppResult<crate::composition::agent_execution_builder::ProductionAgentService>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {
     pub poll_interval: Duration,
@@ -81,6 +85,7 @@ pub struct DaemonLoop<'a, A, R, S> {
     routing_engine: RoutingEngine,
     watcher: Option<&'a dyn IssueWatcherPort>,
     requirements_store: Option<&'a dyn RequirementsStorePort>,
+    configured_agent_service_builder: Option<ConfiguredAgentServiceBuilder>,
     /// Multi-repo registrations. When non-empty, the daemon iterates across
     /// registered repos each cycle instead of using the file watcher.
     registrations: Vec<RepoRegistration>,
@@ -118,6 +123,7 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
             routing_engine: RoutingEngine::new(),
             watcher: None,
             requirements_store: None,
+            configured_agent_service_builder: None,
             registrations: Vec::new(),
             data_dir: None,
         }
@@ -130,6 +136,14 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
 
     pub fn with_requirements_store(mut self, store: &'a dyn RequirementsStorePort) -> Self {
         self.requirements_store = Some(store);
+        self
+    }
+
+    pub fn with_configured_agent_service_builder(
+        mut self,
+        builder: ConfiguredAgentServiceBuilder,
+    ) -> Self {
+        self.configured_agent_service_builder = Some(builder);
         self
     }
 
@@ -149,7 +163,7 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
     }
 }
 
-impl<A, R, S> DaemonLoop<'_, A, R, S>
+impl<'a, A, R, S> DaemonLoop<'a, A, R, S>
 where
     A: AgentExecutionPort + Sync,
     R: RawOutputPort + Sync,
@@ -1898,57 +1912,46 @@ where
         worktree_path: &Path,
         cancellation_token: CancellationToken,
     ) -> AppResult<()> {
-        match run_status {
-            RunStatus::NotStarted => {
-                engine::execute_run_with_retry(
-                    self.agent_service,
-                    self.run_snapshot_read,
-                    self.run_snapshot_write,
-                    self.journal_store,
-                    self.artifact_write,
-                    self.log_write,
-                    self.amendment_queue,
-                    base_dir,
-                    Some(worktree_path),
-                    project_id,
-                    flow,
-                    effective_config,
-                    &RetryPolicy::default_policy(),
-                    cancellation_token,
-                )
-                .await
-            }
-            RunStatus::Failed | RunStatus::Paused => {
-                engine::resume_run_with_retry(
-                    self.agent_service,
-                    self.run_snapshot_read,
-                    self.run_snapshot_write,
-                    self.journal_store,
-                    self.artifact_store,
-                    self.artifact_write,
-                    self.log_write,
-                    self.amendment_queue,
-                    base_dir,
-                    Some(worktree_path),
-                    project_id,
-                    flow,
-                    effective_config,
-                    &RetryPolicy::default_policy(),
-                    cancellation_token,
-                )
-                .await
-            }
-            RunStatus::Running => Err(AppError::TaskStateTransitionInvalid {
-                task_id: project_id.to_string(),
-                from: "run_running".to_owned(),
-                to: "daemon_dispatch".to_owned(),
-            }),
-            RunStatus::Completed => Err(AppError::TaskStateTransitionInvalid {
-                task_id: project_id.to_string(),
-                from: "run_completed".to_owned(),
-                to: "daemon_dispatch".to_owned(),
-            }),
+        if let Some(builder) = self.configured_agent_service_builder {
+            let agent_service = builder(effective_config)?;
+            return dispatch_in_worktree_with_service(
+                &agent_service,
+                self.run_snapshot_read,
+                self.run_snapshot_write,
+                self.journal_store,
+                self.artifact_store,
+                self.artifact_write,
+                self.log_write,
+                self.amendment_queue,
+                base_dir,
+                project_id,
+                flow,
+                run_status,
+                effective_config,
+                worktree_path,
+                cancellation_token,
+            )
+            .await;
         }
+
+        dispatch_in_worktree_with_service(
+            self.agent_service,
+            self.run_snapshot_read,
+            self.run_snapshot_write,
+            self.journal_store,
+            self.artifact_store,
+            self.artifact_write,
+            self.log_write,
+            self.amendment_queue,
+            base_dir,
+            project_id,
+            flow,
+            run_status,
+            effective_config,
+            worktree_path,
+            cancellation_token,
+        )
+        .await
     }
 
     fn ensure_project(&self, base_dir: &Path, task: &DaemonTask) -> AppResult<()> {
@@ -2096,7 +2099,7 @@ where
             effective_config.rebase_policy(),
             resolver
                 .as_ref()
-                .map(|resolver| resolver as &dyn RebaseConflictResolver),
+                .map(|resolver| resolver.as_ref() as &dyn RebaseConflictResolver),
         )?;
 
         match outcome {
@@ -2254,7 +2257,7 @@ where
         worktree_path: &Path,
         task: &DaemonTask,
         effective_config: &EffectiveConfig,
-    ) -> AppResult<DaemonRebaseConflictResolver<'_, A, R, S>> {
+    ) -> AppResult<Box<dyn RebaseConflictResolver + 'a>> {
         let project_id = ProjectId::new(task.project_id.clone())?;
         let cycle = self
             .run_snapshot_read
@@ -2265,19 +2268,32 @@ where
             .max(1);
         let policy = BackendPolicyService::new(effective_config);
         let target = policy.resolve_role_target(BackendPolicyRole::Implementer, cycle)?;
+        let project_root = repo_root
+            .join(WORKSPACE_DIR)
+            .join("runtime")
+            .join("rebase-agent")
+            .join(&task.task_id);
+        let timeout = Duration::from_secs(effective_config.rebase_policy().agent_timeout);
 
-        Ok(DaemonRebaseConflictResolver {
+        if let Some(builder) = self.configured_agent_service_builder {
+            return Ok(Box::new(ConfiguredDaemonRebaseConflictResolver {
+                agent_service: builder(effective_config)?,
+                project_root,
+                working_dir: worktree_path.to_path_buf(),
+                target,
+                timeout,
+                task_id: task.task_id.clone(),
+            }));
+        }
+
+        Ok(Box::new(DaemonRebaseConflictResolver {
             agent_service: self.agent_service,
-            project_root: repo_root
-                .join(WORKSPACE_DIR)
-                .join("runtime")
-                .join("rebase-agent")
-                .join(&task.task_id),
+            project_root,
             working_dir: worktree_path.to_path_buf(),
             target,
-            timeout: Duration::from_secs(effective_config.rebase_policy().agent_timeout),
+            timeout,
             task_id: task.task_id.clone(),
-        })
+        }))
     }
 
     fn handle_post_claim_failure(
@@ -2384,8 +2400,93 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_in_worktree_with_service<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    run_snapshot_read: &dyn RunSnapshotPort,
+    run_snapshot_write: &dyn RunSnapshotWritePort,
+    journal_store: &dyn JournalStorePort,
+    artifact_store: &dyn ArtifactStorePort,
+    artifact_write: &dyn PayloadArtifactWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    amendment_queue: &dyn AmendmentQueuePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    flow: FlowPreset,
+    run_status: RunStatus,
+    effective_config: &EffectiveConfig,
+    worktree_path: &Path,
+    cancellation_token: CancellationToken,
+) -> AppResult<()>
+where
+    A: AgentExecutionPort + Sync,
+    R: RawOutputPort + Sync,
+    S: SessionStorePort + Sync,
+{
+    match run_status {
+        RunStatus::NotStarted => {
+            engine::execute_run_with_retry(
+                agent_service,
+                run_snapshot_read,
+                run_snapshot_write,
+                journal_store,
+                artifact_write,
+                log_write,
+                amendment_queue,
+                base_dir,
+                Some(worktree_path),
+                project_id,
+                flow,
+                effective_config,
+                &RetryPolicy::default_policy(),
+                cancellation_token,
+            )
+            .await
+        }
+        RunStatus::Failed | RunStatus::Paused => {
+            engine::resume_run_with_retry(
+                agent_service,
+                run_snapshot_read,
+                run_snapshot_write,
+                journal_store,
+                artifact_store,
+                artifact_write,
+                log_write,
+                amendment_queue,
+                base_dir,
+                Some(worktree_path),
+                project_id,
+                flow,
+                effective_config,
+                &RetryPolicy::default_policy(),
+                cancellation_token,
+            )
+            .await
+        }
+        RunStatus::Running => Err(AppError::TaskStateTransitionInvalid {
+            task_id: project_id.to_string(),
+            from: "run_running".to_owned(),
+            to: "daemon_dispatch".to_owned(),
+        }),
+        RunStatus::Completed => Err(AppError::TaskStateTransitionInvalid {
+            task_id: project_id.to_string(),
+            from: "run_completed".to_owned(),
+            to: "daemon_dispatch".to_owned(),
+        }),
+    }
+}
+
 struct DaemonRebaseConflictResolver<'a, A, R, S> {
     agent_service: &'a AgentExecutionService<A, R, S>,
+    project_root: PathBuf,
+    working_dir: PathBuf,
+    target: ResolvedBackendTarget,
+    timeout: Duration,
+    task_id: String,
+}
+
+struct ConfiguredDaemonRebaseConflictResolver {
+    agent_service: crate::composition::agent_execution_builder::ProductionAgentService,
     project_root: PathBuf,
     working_dir: PathBuf,
     target: ResolvedBackendTarget,
@@ -2403,86 +2504,125 @@ where
         &self,
         request: &RebaseConflictRequest,
     ) -> AppResult<RebaseConflictResolution> {
-        let context = json!({
-            "branch_name": request.branch_name,
-            "upstream": request.upstream,
-            "failure_details": request.failure_details,
-            "conflicted_files": request.conflicted_files,
-        });
-        let schema = json!({
-            "type": "object",
-            "required": ["summary", "resolved_files"],
-            "properties": {
-                "summary": { "type": "string" },
-                "resolved_files": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "required": ["path", "content"],
-                        "properties": {
-                            "path": { "type": "string" },
-                            "content": { "type": "string" }
-                        }
+        resolve_rebase_conflicts_with_service(
+            self.agent_service,
+            &self.project_root,
+            &self.working_dir,
+            &self.target,
+            self.timeout,
+            &self.task_id,
+            request,
+        )
+    }
+}
+
+impl RebaseConflictResolver for ConfiguredDaemonRebaseConflictResolver {
+    fn resolve_conflicts(
+        &self,
+        request: &RebaseConflictRequest,
+    ) -> AppResult<RebaseConflictResolution> {
+        resolve_rebase_conflicts_with_service(
+            &self.agent_service,
+            &self.project_root,
+            &self.working_dir,
+            &self.target,
+            self.timeout,
+            &self.task_id,
+            request,
+        )
+    }
+}
+
+fn resolve_rebase_conflicts_with_service<A, R, S>(
+    agent_service: &AgentExecutionService<A, R, S>,
+    project_root: &Path,
+    working_dir: &Path,
+    target: &ResolvedBackendTarget,
+    timeout: Duration,
+    task_id: &str,
+    request: &RebaseConflictRequest,
+) -> AppResult<RebaseConflictResolution>
+where
+    A: AgentExecutionPort + Sync,
+    R: RawOutputPort + Sync,
+    S: SessionStorePort + Sync,
+{
+    let context = json!({
+        "branch_name": request.branch_name,
+        "upstream": request.upstream,
+        "failure_details": request.failure_details,
+        "conflicted_files": request.conflicted_files,
+    });
+    let schema = json!({
+        "type": "object",
+        "required": ["summary", "resolved_files"],
+        "properties": {
+            "summary": { "type": "string" },
+            "resolved_files": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["path", "content"],
+                    "properties": {
+                        "path": { "type": "string" },
+                        "content": { "type": "string" }
                     }
                 }
             }
-        });
-        let prompt = format!(
-            "# Rebase Conflict Resolution\n\n\
+        }
+    });
+    let prompt = format!(
+        "# Rebase Conflict Resolution\n\n\
 Resolve the Git rebase conflicts described in the context JSON.\n\
 Return full resolved file contents for every conflicted file.\n\
 Do not omit any conflicted file and do not include extra files.\n\n\
 ## Output Schema\n\n```json\n{}\n```",
-            serde_json::to_string_pretty(&schema)?
-        );
-        let request = InvocationRequest {
-            invocation_id: format!("rebase-{}-{}", self.task_id, Utc::now().timestamp_millis()),
-            project_root: self.project_root.clone(),
-            working_dir: self.working_dir.clone(),
-            contract: InvocationContract::Requirements {
-                label: "daemon:rebase_resolution".to_owned(),
-            },
-            role: BackendRole::Implementer,
-            resolved_target: self.target.clone(),
-            payload: InvocationPayload { prompt, context },
-            timeout: self.timeout,
-            cancellation_token: CancellationToken::new(),
-            session_policy: SessionPolicy::NewSession,
-            prior_session: None,
-            attempt_number: 1,
-        };
+        serde_json::to_string_pretty(&schema)?
+    );
+    let request = InvocationRequest {
+        invocation_id: format!("rebase-{task_id}-{}", Utc::now().timestamp_millis()),
+        project_root: project_root.to_path_buf(),
+        working_dir: working_dir.to_path_buf(),
+        contract: InvocationContract::Requirements {
+            label: "daemon:rebase_resolution".to_owned(),
+        },
+        role: BackendRole::Implementer,
+        resolved_target: target.clone(),
+        payload: InvocationPayload { prompt, context },
+        timeout,
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
 
-        let envelope = thread::scope(|scope| {
-            let agent_service = self.agent_service;
-            scope
-                .spawn(move || {
-                    let runtime = tokio::runtime::Builder::new_current_thread()
-                        .enable_all()
-                        .build()
-                        .map_err(|error| {
-                            AppError::Io(std::io::Error::other(format!(
-                                "build rebase agent runtime: {error}"
-                            )))
-                        })?;
-                    runtime.block_on(agent_service.invoke(request))
-                })
-                .join()
-                .map_err(|_| {
-                    AppError::Io(std::io::Error::other(
-                        "rebase agent resolution thread panicked",
-                    ))
-                })?
-        })?;
+    let envelope = thread::scope(|scope| {
+        scope
+            .spawn(move || {
+                let runtime = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|error| {
+                        AppError::Io(std::io::Error::other(format!(
+                            "build rebase agent runtime: {error}"
+                        )))
+                    })?;
+                runtime.block_on(agent_service.invoke(request))
+            })
+            .join()
+            .map_err(|_| {
+                AppError::Io(std::io::Error::other(
+                    "rebase agent resolution thread panicked",
+                ))
+            })?
+    })?;
 
-        serde_json::from_value(envelope.parsed_payload).map_err(|error| {
-            AppError::InvocationFailed {
-                backend: self.target.backend.family.to_string(),
-                contract_id: "daemon:rebase_resolution".to_owned(),
-                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                details: format!("invalid rebase agent response: {error}"),
-            }
-        })
-    }
+    serde_json::from_value(envelope.parsed_payload).map_err(|error| AppError::InvocationFailed {
+        backend: target.backend.family.to_string(),
+        contract_id: "daemon:rebase_resolution".to_owned(),
+        failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+        details: format!("invalid rebase agent response: {error}"),
+    })
 }
 
 fn rebase_cycle_from_snapshot(

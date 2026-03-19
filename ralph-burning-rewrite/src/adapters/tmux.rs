@@ -6,9 +6,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use tokio::process::Command;
 use tokio::sync::Mutex;
 
+use crate::adapters::fs::FileSystem;
 use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
 use crate::adapters::process_backend::{ChildOutput, ProcessBackendAdapter};
 use crate::contexts::agent_execution::model::{
@@ -21,6 +23,14 @@ use crate::shared::error::{AppError, AppResult};
 
 const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
+const ACTIVE_SESSION_STATE_FILE: &str = "runtime/active-tmux-session.json";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActiveTmuxSession {
+    pub invocation_id: String,
+    pub session_name: String,
+    pub recorded_at: chrono::DateTime<chrono::Utc>,
+}
 
 #[derive(Clone)]
 pub struct TmuxAdapter {
@@ -77,6 +87,54 @@ impl TmuxAdapter {
                 details: format!("session '{session_name}' is not available for attachment"),
             })
         }
+    }
+
+    pub fn read_active_session(project_root: &Path) -> AppResult<Option<ActiveTmuxSession>> {
+        let path = Self::active_session_state_path(project_root);
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(error.into()),
+        };
+
+        serde_json::from_str(&contents).map(Some).map_err(|error| AppError::CorruptRecord {
+            file: path.display().to_string(),
+            details: format!("invalid active tmux session state: {error}"),
+        })
+    }
+
+    pub fn clear_active_session(project_root: &Path, invocation_id: &str) -> AppResult<()> {
+        let Some(current) = Self::read_active_session(project_root)? else {
+            return Ok(());
+        };
+
+        if current.invocation_id != invocation_id {
+            return Ok(());
+        }
+
+        match fs::remove_file(Self::active_session_state_path(project_root)) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    fn active_session_state_path(project_root: &Path) -> PathBuf {
+        project_root.join(ACTIVE_SESSION_STATE_FILE)
+    }
+
+    fn record_active_session(
+        project_root: &Path,
+        invocation_id: &str,
+        session_name: &str,
+    ) -> AppResult<()> {
+        let state = ActiveTmuxSession {
+            invocation_id: invocation_id.to_owned(),
+            session_name: session_name.to_owned(),
+            recorded_at: Utc::now(),
+        };
+        let contents = serde_json::to_string_pretty(&state)?;
+        FileSystem::write_atomic(&Self::active_session_state_path(project_root), &contents)
     }
 
     async fn register_session(&self, invocation_id: &str, session: Arc<ManagedTmuxSession>) {
@@ -164,6 +222,10 @@ impl TmuxAdapter {
             }
 
             if !self.has_session(&session.session_name).await? {
+                tokio::time::sleep(SESSION_POLL_INTERVAL).await;
+                if let Some(exit_code) = read_exit_code(&session.exit_status_path)? {
+                    return Ok(exit_code);
+                }
                 return Err(AppError::InvocationFailed {
                     backend: "tmux".to_owned(),
                     contract_id: session.session_name.clone(),
@@ -314,6 +376,19 @@ impl AgentExecutionPort for TmuxAdapter {
             return Err(error);
         }
 
+        if let Err(error) = Self::record_active_session(
+            &request.project_root,
+            &request.invocation_id,
+            &session.session_name,
+        ) {
+            let _ = self.kill_session(&session.session_name).await;
+            self.remove_session_if_same(&request.invocation_id, &session)
+                .await;
+            prepared.cleanup().await;
+            session.cleanup();
+            return Err(error);
+        }
+
         let exit_code = match self
             .wait_for_session_exit(&session, &mut stdout_tail, &mut stderr_tail)
             .await
@@ -323,14 +398,25 @@ impl AgentExecutionPort for TmuxAdapter {
                 let _ = self.kill_session(&session.session_name).await;
                 self.remove_session_if_same(&request.invocation_id, &session)
                     .await;
+                let _ = Self::clear_active_session(&request.project_root, &request.invocation_id);
                 prepared.cleanup().await;
                 session.cleanup();
                 return Err(error);
             }
         };
 
-        self.finalize_captured_output(&session, &mut stdout_tail, &mut stderr_tail)
-            .await?;
+        if let Err(error) = self
+            .finalize_captured_output(&session, &mut stdout_tail, &mut stderr_tail)
+            .await
+        {
+            let _ = self.kill_session(&session.session_name).await;
+            self.remove_session_if_same(&request.invocation_id, &session)
+                .await;
+            let _ = Self::clear_active_session(&request.project_root, &request.invocation_id);
+            prepared.cleanup().await;
+            session.cleanup();
+            return Err(error);
+        }
 
         let output = ChildOutput {
             status: exit_status_from_code(exit_code),
@@ -345,6 +431,7 @@ impl AgentExecutionPort for TmuxAdapter {
         self.remove_session_if_same(&request.invocation_id, &session)
             .await;
         let _ = self.kill_session(&session.session_name).await;
+        let _ = Self::clear_active_session(&request.project_root, &request.invocation_id);
         session.cleanup();
 
         if !output.status.success() {
@@ -401,6 +488,7 @@ impl AgentExecutionPort for TmuxAdapter {
             "tmux.lifecycle",
             &format!("session cleaned up: {}", session.session_name),
         )?;
+        Self::clear_active_session(&session.project_root, invocation_id)?;
         session.cleanup();
         Ok(())
     }
