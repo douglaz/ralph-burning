@@ -70,7 +70,7 @@ and workflow-stage sources:
 - `src/contexts/conformance_spec/scenarios.rs` — 16 conformance scenarios
 - `src/adapters/fs.rs` — `project_root` visibility
 - `tests/unit/project_run_record_test.rs` — 34 Slice 3 unit tests
-- `tests/cli.rs` — 17 CLI integration tests
+- `tests/cli.rs` — 18 CLI integration tests
 - `tests/unit/adapter_contract_test.rs` — updated QueuedAmendment constructors
 - `tests/unit/prompt_builder_test.rs` — updated amendment helper
 - `tests/unit/journal_test.rs` — updated event builder call
@@ -95,9 +95,10 @@ and workflow-stage sources:
 - 34 Slice 3 unit tests for dedup key computation, AmendmentSource serialization,
   backwards-compatible deserialization, all service operations, failure-injection
   rollback, journal atomicity, and composite `CorruptRecord` error reporting passed
-- 17 CLI integration tests covering add/list/remove/clear, duplicate detection,
+- 18 CLI integration tests covering add/list/remove/clear, duplicate detection,
   completed-project reopen, journal recording, lease conflict rejection for
-  all mutating commands, and writer-lease close-failure regression passed
+  all mutating commands, writer-lease close-failure regression, and combined
+  partial-clear with close-failure passed
 - 16 conformance scenarios: manual add/list/remove/clear, duplicate manual add,
   completed-project reopen, journal event recording, remove-missing failure,
   restart persistence, completion blocking, lease-conflict rejection (add/remove/clear),
