@@ -18997,8 +18997,11 @@ fn write_tmux_claude_envelope(path: &Path, result_json: &serde_json::Value) -> R
         "structured_output": result_json,
         "session_id": "ses-tmux"
     });
-    std::fs::write(path, serde_json::to_string(&envelope).map_err(|e| e.to_string())?)
-        .map_err(|e| format!("write envelope: {e}"))
+    std::fs::write(
+        path,
+        serde_json::to_string(&envelope).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("write envelope: {e}"))
 }
 
 fn tmux_request_fixture(
@@ -19064,12 +19067,13 @@ impl crate::contexts::agent_execution::service::RawOutputPort for ConformanceInl
         _project_root: &Path,
         _invocation_id: &str,
         contents: &str,
-    ) -> crate::shared::error::AppResult<
-        crate::contexts::agent_execution::model::RawOutputReference,
-    > {
-        Ok(crate::contexts::agent_execution::model::RawOutputReference::Inline(
-            contents.to_owned(),
-        ))
+    ) -> crate::shared::error::AppResult<crate::contexts::agent_execution::model::RawOutputReference>
+    {
+        Ok(
+            crate::contexts::agent_execution::model::RawOutputReference::Inline(
+                contents.to_owned(),
+            ),
+        )
     }
 }
 
@@ -19080,9 +19084,8 @@ impl crate::contexts::agent_execution::session::SessionStorePort for Conformance
     fn load_sessions(
         &self,
         _project_root: &Path,
-    ) -> crate::shared::error::AppResult<
-        crate::contexts::agent_execution::session::PersistedSessions,
-    > {
+    ) -> crate::shared::error::AppResult<crate::contexts::agent_execution::session::PersistedSessions>
+    {
         Ok(crate::contexts::agent_execution::session::PersistedSessions::empty())
     }
 
@@ -19132,7 +19135,8 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let source = effective
             .get("execution.mode")
             .map_err(|e| format!("execution.mode source: {e}"))?;
-        if source.source != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        if source.source
+            != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
         {
             return Err(format!(
                 "execution.mode source should be cli override, got {}",
@@ -19171,7 +19175,8 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let source = effective
             .get("execution.stream_output")
             .map_err(|e| format!("execution.stream_output source: {e}"))?;
-        if source.source != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        if source.source
+            != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
         {
             return Err(format!(
                 "execution.stream_output source should be cli override, got {}",
@@ -19267,7 +19272,10 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
         let result = block_on_result(async {
             let direct = ProcessBackendAdapter::new()
                 .invoke(direct_request)
@@ -19304,7 +19312,10 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let invocation_id = request.invocation_id.clone();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
         let result = block_on_result(async {
             let join = tokio::spawn({
                 let adapter = adapter.clone();
@@ -19354,7 +19365,10 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         );
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.path().display()));
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
         let result = block_on_result(async {
             match service.invoke(request.clone()).await {
                 Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}

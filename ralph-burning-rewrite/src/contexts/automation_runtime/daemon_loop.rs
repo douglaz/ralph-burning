@@ -47,9 +47,10 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
-type ConfiguredAgentServiceBuilder = fn(
-    &EffectiveConfig,
-) -> AppResult<crate::composition::agent_execution_builder::ProductionAgentService>;
+type ConfiguredAgentServiceBuilder =
+    fn(
+        &EffectiveConfig,
+    ) -> AppResult<crate::composition::agent_execution_builder::ProductionAgentService>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {

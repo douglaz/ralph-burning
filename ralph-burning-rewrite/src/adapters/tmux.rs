@@ -17,7 +17,6 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
-use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
 use crate::adapters::process_backend::{ChildOutput, ProcessBackendAdapter};
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
@@ -32,6 +31,8 @@ const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 const SIGNAL_TARGET_WAIT: Duration = Duration::from_millis(250);
 const SIGNAL_TARGET_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const ACTIVE_SESSION_STATE_FILE: &str = "runtime/active-tmux-session.json";
+const OPENROUTER_TMUX_UNSUPPORTED_DETAILS: &str =
+    "execution.mode = \"tmux\" is not supported for OpenRouter-backed invocations; OpenRouter does not spawn an attachable local process. Use execution.mode = \"direct\"";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActiveTmuxSession {
@@ -66,6 +67,27 @@ impl TmuxAdapter {
 
     pub fn check_tmux_available() -> AppResult<()> {
         ProcessBackendAdapter::ensure_binary_available("tmux", "tmux")
+    }
+
+    fn ensure_supported_backend(
+        backend: &ResolvedBackendTarget,
+        contract: Option<&InvocationContract>,
+    ) -> AppResult<()> {
+        if backend.backend.family != BackendFamily::OpenRouter {
+            return Ok(());
+        }
+
+        match contract {
+            Some(contract) => Err(AppError::CapabilityMismatch {
+                backend: backend.backend.family.to_string(),
+                contract_id: contract.label(),
+                details: OPENROUTER_TMUX_UNSUPPORTED_DETAILS.to_owned(),
+            }),
+            None => Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.to_string(),
+                details: OPENROUTER_TMUX_UNSUPPORTED_DETAILS.to_owned(),
+            }),
+        }
     }
 
     pub fn session_exists(session_name: &str) -> AppResult<bool> {
@@ -357,38 +379,19 @@ impl AgentExecutionPort for TmuxAdapter {
         backend: &ResolvedBackendTarget,
         contract: &InvocationContract,
     ) -> AppResult<()> {
-        match backend.backend.family {
-            BackendFamily::OpenRouter => {
-                OpenRouterBackendAdapter::new()
-                    .check_capability(backend, contract)
-                    .await
-            }
-            _ => self.process.check_capability(backend, contract).await,
-        }
+        Self::ensure_supported_backend(backend, Some(contract))?;
+        self.process.check_capability(backend, contract).await
     }
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
-        match backend.backend.family {
-            BackendFamily::OpenRouter => {
-                OpenRouterBackendAdapter::new()
-                    .check_availability(backend)
-                    .await
-            }
-            _ => {
-                Self::check_tmux_available()?;
-                self.process.check_availability(backend).await
-            }
-        }
+        Self::ensure_supported_backend(backend, None)?;
+        Self::check_tmux_available()?;
+        self.process.check_availability(backend).await
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
-
-        if request.resolved_target.backend.family == BackendFamily::OpenRouter {
-            return OpenRouterBackendAdapter::new().invoke(request).await;
-        }
-
         Self::check_tmux_available()?;
 
         let prepared = self.process.build_command(&request).await?;

@@ -329,9 +329,8 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
 async fn handle_attach() -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
     let project_root = crate::adapters::fs::FileSystem::project_root(&current_dir, &project_id);
-    let Some(active_session) = crate::adapters::tmux::TmuxAdapter::read_active_session(
-        &project_root,
-    )?
+    let Some(active_session) =
+        crate::adapters::tmux::TmuxAdapter::read_active_session(&project_root)?
     else {
         println!("No active tmux session exists for the current invocation.");
         return Ok(());

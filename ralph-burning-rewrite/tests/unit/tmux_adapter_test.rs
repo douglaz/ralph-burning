@@ -56,6 +56,28 @@ impl SessionStorePort for NoopSessionStore {
     }
 }
 
+struct EnvVarGuard {
+    key: &'static str,
+    original: Option<std::ffi::OsString>,
+}
+
+impl EnvVarGuard {
+    fn remove(key: &'static str) -> Self {
+        let original = std::env::var_os(key);
+        std::env::remove_var(key);
+        Self { key, original }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var(self.key, value),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
 fn request_fixture(invocation_id: &str) -> (tempfile::TempDir, InvocationRequest) {
     let temp_dir = tempdir().expect("create temp dir");
     fs::create_dir_all(temp_dir.path().join("runtime/temp")).expect("create runtime/temp");
@@ -501,5 +523,73 @@ async fn tmux_availability_check_fails_cleanly_when_binary_missing() {
             assert!(details.contains("tmux"));
         }
         other => panic!("expected BackendUnavailable, got {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tmux_mode_rejects_openrouter_without_falling_back_to_direct_execution() {
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let (_dir, mut request) = request_fixture("tmux-openrouter");
+    let empty_dir = tempdir().expect("create empty bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::replace(empty_dir.path());
+    let _api_key_guard = EnvVarGuard::remove("OPENROUTER_API_KEY");
+
+    request.resolved_target = ResolvedBackendTarget::new(
+        BackendFamily::OpenRouter,
+        BackendFamily::OpenRouter.default_model_id(),
+    );
+
+    let availability_error = adapter
+        .check_availability(&request.resolved_target)
+        .await
+        .expect_err("tmux mode should reject openrouter availability");
+
+    match &availability_error {
+        AppError::BackendUnavailable { backend, details } => {
+            assert_eq!(backend, "openrouter");
+            assert!(
+                details.contains("execution.mode = \"tmux\""),
+                "availability error should mention tmux mode: {details}"
+            );
+            assert!(
+                details.contains("execution.mode = \"direct\""),
+                "availability error should guide the operator to direct mode: {details}"
+            );
+            assert!(
+                !details.contains("OPENROUTER_API_KEY"),
+                "availability should fail before direct OpenRouter readiness checks: {details}"
+            );
+        }
+        other => panic!("expected BackendUnavailable, got {other:?}"),
+    }
+
+    let invoke_error = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("tmux mode should reject openrouter invocation");
+
+    match invoke_error {
+        AppError::CapabilityMismatch {
+            backend,
+            contract_id,
+            details,
+        } => {
+            assert_eq!(backend, "openrouter");
+            assert_eq!(contract_id, request.contract.label());
+            assert!(
+                details.contains("execution.mode = \"tmux\""),
+                "invoke error should mention tmux mode: {details}"
+            );
+            assert!(
+                details.contains("execution.mode = \"direct\""),
+                "invoke error should guide the operator to direct mode: {details}"
+            );
+            assert!(
+                !details.contains("OPENROUTER_API_KEY"),
+                "invoke should fail before any direct OpenRouter path: {details}"
+            );
+        }
+        other => panic!("expected CapabilityMismatch, got {other:?}"),
     }
 }
