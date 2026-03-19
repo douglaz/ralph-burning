@@ -139,6 +139,10 @@ pub struct PanelMemberView {
     pub backend_family: String,
     pub model_id: String,
     pub required: bool,
+    /// The index of this member in the original configured spec list.
+    /// Preserved through optional-member filtering so failure messages
+    /// always reference the exact configured position.
+    pub configured_index: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,7 +185,12 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let enabled = self.policy.backend_enabled_public(*family);
                 let transport = transport_mechanism(*family);
                 let compile_only = if *family == BackendFamily::Stub {
-                    Some(true)
+                    // Only mark stub as compile-time-only when the current
+                    // binary was built without stub support (no test-stub feature).
+                    #[cfg(feature = "test-stub")]
+                    { None }
+                    #[cfg(not(feature = "test-stub"))]
+                    { Some(true) }
                 } else {
                     None
                 };
@@ -326,7 +335,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 self.check_panel_availability(
                     adapter,
                     &res.completers.iter()
-                        .map(|m| (m.target.clone(), m.required))
+                        .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "completion_panel",
                     "completion.backends",
@@ -367,7 +376,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 self.check_panel_availability(
                     adapter,
                     &res.reviewers.iter()
-                        .map(|m| (m.target.clone(), m.required))
+                        .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "final_review_panel",
                     "final_review.backends",
@@ -400,7 +409,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 self.check_panel_availability(
                     adapter,
                     &res.validators.iter()
-                        .map(|m| (m.target.clone(), m.required))
+                        .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "prompt_review_panel",
                     "prompt_review.validator_backends",
@@ -433,10 +442,14 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// Required members that fail availability → `AvailabilityFailure`.
     /// Optional members that fail availability → omitted silently.
     /// If the remaining available count drops below `minimum` → `PanelMinimumViolation`.
+    ///
+    /// Each member tuple carries `(target, required, configured_index)` where
+    /// `configured_index` is the member's position in the original configured
+    /// spec list, preserved through optional-member filtering.
     async fn check_panel_availability<A: AgentExecutionPort>(
         &self,
         adapter: &A,
-        members: &[(ResolvedBackendTarget, bool)],
+        members: &[(ResolvedBackendTarget, bool, usize)],
         panel_name: &str,
         config_source: &str,
         minimum: usize,
@@ -444,14 +457,14 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) {
         let mut available_count = 0;
 
-        for (idx, (target, required)) in members.iter().enumerate() {
+        for (target, required, configured_index) in members {
             match adapter.check_availability(target).await {
                 Ok(()) => {
                     available_count += 1;
                 }
                 Err(error) => {
                     if *required {
-                        let member_role = format!("{}.member[{}]", panel_name, idx);
+                        let member_role = format!("{}.member[{}]", panel_name, configured_index);
                         result.failures.push(BackendCheckFailure {
                             role: member_role,
                             backend_family: target.backend.family.as_str().to_owned(),
@@ -802,7 +815,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             &resolution
                 .completers
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required))
+                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -870,7 +883,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             &resolution
                 .reviewers
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required))
+                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -879,6 +892,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             backend_family: arbiter_target.backend.family.as_str().to_owned(),
             model_id: arbiter_target.model.model_id.clone(),
             required: true,
+            configured_index: 0, // arbiter is a single component, not indexed
         };
 
         Ok(BackendProbeResult {
@@ -935,7 +949,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             &resolution
                 .validators
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required))
+                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -1017,7 +1031,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             // Check panel members: required unavailable → fail; optional unavailable → omit
             let member_label_prefix = Self::panel_member_label_prefix(&panel.panel_type);
             let mut available_members = Vec::new();
-            for (idx, member) in panel.members.drain(..).enumerate() {
+            for member in panel.members.drain(..) {
                 let family: BackendFamily = member.backend_family.parse()?;
                 let target = ResolvedBackendTarget::new(family, member.model_id.clone());
                 match adapter.check_availability(&target).await {
@@ -1034,7 +1048,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                             backend: member.backend_family.clone(),
                             details: format!(
                                 "required '{}[{}]' ({}:{}) unavailable: {} [source: {}]",
-                                member_label_prefix, idx,
+                                member_label_prefix, member.configured_index,
                                 member.backend_family, member.model_id,
                                 err, members_source
                             ),
@@ -1188,17 +1202,18 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     fn build_panel_member_views(
         &self,
-        resolved: &[(BackendFamily, String, bool)],
+        resolved: &[(BackendFamily, String, bool, usize)],
         configured_specs: &[PanelBackendSpec],
     ) -> (Vec<PanelMemberView>, Vec<PanelOmittedView>) {
         let mut members = Vec::new();
         let mut omitted = Vec::new();
 
-        for (family, model_id, required) in resolved {
+        for (family, model_id, required, configured_index) in resolved {
             members.push(PanelMemberView {
                 backend_family: family.as_str().to_owned(),
                 model_id: model_id.clone(),
                 required: *required,
+                configured_index: *configured_index,
             });
         }
 
@@ -1206,7 +1221,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         // A member is omitted if its backend is disabled (not enabled in config).
         for spec in configured_specs {
             let backend = spec.backend();
-            let already_resolved = resolved.iter().any(|(f, _, _)| *f == backend);
+            let already_resolved = resolved.iter().any(|(f, _, _, _)| *f == backend);
             if spec.is_optional() && !already_resolved && !self.policy.backend_enabled_public(backend) {
                 omitted.push(PanelOmittedView {
                     backend_family: backend.as_str().to_owned(),

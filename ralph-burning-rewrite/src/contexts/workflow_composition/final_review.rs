@@ -1242,10 +1242,12 @@ mod tests {
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                     required: true,
+                    configured_index: 0,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
                     required: true,
+                    configured_index: 1,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(
@@ -1253,6 +1255,7 @@ mod tests {
                         "reviewer-3-model",
                     ),
                     required: false,
+                    configured_index: 2,
                 },
             ],
             arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
@@ -1319,10 +1322,12 @@ mod tests {
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                     required: true,
+                    configured_index: 0,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
                     required: true,
+                    configured_index: 1,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(
@@ -1330,6 +1335,7 @@ mod tests {
                         "reviewer-3-model",
                     ),
                     required: false,
+                    configured_index: 2,
                 },
             ],
             arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),

@@ -11579,10 +11579,16 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 crate::shared::domain::BackendFamily::Codex,
                 "codex-1".to_owned(),
             );
-            let to_member = |t: ResolvedBackendTarget| -> crate::contexts::agent_execution::policy::ResolvedPanelMember {
-                crate::contexts::agent_execution::policy::ResolvedPanelMember {
-                    target: t,
-                    required: true,
+            let mut to_member = {
+                let mut idx = 0usize;
+                move |t: ResolvedBackendTarget| -> crate::contexts::agent_execution::policy::ResolvedPanelMember {
+                    let m = crate::contexts::agent_execution::policy::ResolvedPanelMember {
+                        target: t,
+                        required: true,
+                        configured_index: idx,
+                    };
+                    idx += 1;
+                    m
                 }
             };
 
@@ -12044,10 +12050,12 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1"),
                     required: true,
+                    configured_index: 0,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2"),
                     required: true,
+                    configured_index: 1,
                 },
             ];
             let arbiter = ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter");

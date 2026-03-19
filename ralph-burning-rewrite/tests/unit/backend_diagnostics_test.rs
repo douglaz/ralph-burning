@@ -65,7 +65,10 @@ fn list_backends_returns_all_families() {
     assert!(!entries[2].enabled);
     assert_eq!("stub", entries[3].family);
     assert!(!entries[3].enabled);
+    #[cfg(not(feature = "test-stub"))]
     assert_eq!(Some(true), entries[3].compile_only);
+    #[cfg(feature = "test-stub")]
+    assert_eq!(None, entries[3].compile_only);
 }
 
 #[test]
@@ -2748,5 +2751,209 @@ async fn probe_with_availability_optional_omission_below_minimum_reports_insuffi
             if panel == "completion" && *resolved == 1 && *minimum == 2),
         "expected InsufficientPanelMembers for availability-time minimum violation, got: {}",
         err_msg
+    );
+}
+
+// ── configured-index identity after optional member omission ─────────────
+
+#[tokio::test]
+async fn probe_with_availability_reports_correct_configured_index_after_optional_omission() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for claude backends (spec[1] after
+    /// the optional openrouter at spec[0] is omitted).
+    struct ClaudeUnavailableAdapter;
+    impl AgentExecutionPort for ClaudeUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::Claude {
+                Err(AppError::BackendUnavailable {
+                    backend: "claude".to_owned(),
+                    details: "claude binary not found".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // prompt_review.validator_backends = ["?openrouter", "claude"]
+    // openrouter is optional+disabled (will be omitted at config time),
+    // claude is required (spec index 1) and will fail at availability time.
+    // refiner is explicitly set to codex so it passes availability.
+    workspace.prompt_review = PromptReviewSettings {
+        enabled: Some(true),
+        validator_backends: Some(vec![
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+            PanelBackendSpec::required(BackendFamily::Claude),
+        ]),
+        min_reviewers: Some(1),
+        refiner_backend: Some("codex".to_owned()),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = ClaudeUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("prompt_review_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(
+        result.is_err(),
+        "probe should fail when required member is unavailable"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    // The failing member is at configured spec index 1 (not 0, which would be
+    // the index from the filtered list after optional openrouter was omitted).
+    assert!(
+        err_msg.contains("[1]"),
+        "error should reference configured spec index 1, not filtered index 0: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("[0]"),
+        "error must NOT reference filtered index 0 for spec-index-1 member: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn check_with_availability_reports_correct_configured_index_for_panel_member() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails codex availability. Claude (optional, disabled at config
+    /// time) is at spec[0], codex (required) is at spec[1].
+    struct CodexUnavailableAdapter;
+    impl AgentExecutionPort for CodexUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::Codex {
+                Err(AppError::BackendUnavailable {
+                    backend: "codex".to_owned(),
+                    details: "codex binary not found".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter (optional spec[0]), enable codex (required spec[1])
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+            PanelBackendSpec::required(BackendFamily::Codex),
+        ]),
+        min_completers: Some(1),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = CodexUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+
+    assert!(!result.passed, "should fail when required member is unavailable");
+    let panel_failure = result
+        .failures
+        .iter()
+        .find(|f| f.role.contains("completion_panel.member"))
+        .expect("expected panel member failure");
+    // The codex member is at configured spec index 1, not filtered index 0
+    assert!(
+        panel_failure.role.contains("[1]"),
+        "failure role should reference configured spec index 1: {}",
+        panel_failure.role
+    );
+    assert_eq!("codex", panel_failure.backend_family);
+}
+
+// ── build-sensitive compile_only for stub ────────────────────────────────
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn list_backends_stub_not_compile_only_in_stub_build() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let entries = service.list_backends();
+
+    let stub = entries.iter().find(|e| e.family == "stub").unwrap();
+    assert_eq!(
+        None, stub.compile_only,
+        "stub should not be compile_only in test-stub build"
     );
 }

@@ -14,6 +14,10 @@ use crate::shared::error::{AppError, AppResult};
 pub struct ResolvedPanelMember {
     pub target: ResolvedBackendTarget,
     pub required: bool,
+    /// The index of this member in the original configured spec list.
+    /// Used by diagnostics to report the exact configured member identity,
+    /// even after optional members have been filtered out.
+    pub configured_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -200,7 +204,7 @@ impl<'a> BackendPolicyService<'a> {
     ) -> AppResult<Vec<ResolvedPanelMember>> {
         let mut resolved = Vec::new();
 
-        for spec in specs {
+        for (idx, spec) in specs.iter().enumerate() {
             let backend = spec.backend();
             if !self.panel_backend_resolvable(backend) {
                 if spec.is_optional() {
@@ -215,6 +219,7 @@ impl<'a> BackendPolicyService<'a> {
             resolved.push(ResolvedPanelMember {
                 target: self.target_for_family(role, backend, None)?,
                 required: !spec.is_optional(),
+                configured_index: idx,
             });
         }
 
@@ -234,13 +239,13 @@ impl<'a> BackendPolicyService<'a> {
     fn default_completion_targets(&self, cycle: u32) -> AppResult<Vec<ResolvedPanelMember>> {
         let target = self.resolve_role_target(BackendPolicyRole::Completer, cycle)?;
         let count = self.config.completion_policy().min_completers.max(1);
-        Ok(vec![
-            ResolvedPanelMember {
-                target,
+        Ok((0..count)
+            .map(|i| ResolvedPanelMember {
+                target: target.clone(),
                 required: true,
-            };
-            count
-        ])
+                configured_index: i,
+            })
+            .collect())
     }
 
     fn selection_to_target(

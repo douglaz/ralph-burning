@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (64 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (67 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 15 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -98,3 +98,14 @@
   failure contract are now tested.
 - Conformance scenarios strengthened with source label assertions and
   probe failure semantics checks.
+- Panel member failure identity now uses the original configured-spec
+  index, not the post-filtering enumeration index. This means that
+  when a disabled optional member at spec[0] is omitted, a failing
+  required member at spec[1] correctly reports `member[1]`, not
+  `member[0]`. This applies to both `backend check` availability-time
+  failures and `backend probe --role` availability-time failures.
+- `backend list` `compile_only` field for `stub` is now build-sensitive:
+  only `true` when the current binary was built without stub support
+  (`test-stub` feature absent). In test-stub builds, `stub` reports
+  `null` for `compile_only`, consistent with its actually being
+  operational.

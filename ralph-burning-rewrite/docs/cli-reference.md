@@ -138,6 +138,10 @@ ralph-burning run rollback --to <stage> [--hard]
 ### `ralph-burning backend list`
 
 Shows all supported backend families, their enablement state, and transport mechanism.
+The `compile_only` field is build-sensitive: `stub` is reported as compile-time-only
+only when the current binary was built without stub support. Builds with the
+`test-stub` feature report `null` for stub's `compile_only`, matching the fact
+that the stub backend is fully operational.
 
 Flags:
 - `--json` — emit a stable JSON array for scripts
@@ -288,6 +292,8 @@ cannot be constructed, the command exits non-zero. For panel probes:
   member identity (e.g. `completion_panel.member[0]`,
   `final_review_panel.reviewer[1]`), backend family, and effective
   config source field (e.g. `[source: completion.backends]`).
+  Member indices always reference the position in the original configured
+  spec list, even when earlier optional members have been omitted.
 - Optional unavailable members are moved to `omitted`.
 - The planner, arbiter (final-review), and refiner (prompt-review)
   targets are checked for availability and fail the probe if unavailable,

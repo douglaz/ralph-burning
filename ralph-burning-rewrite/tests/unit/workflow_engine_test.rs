@@ -197,6 +197,7 @@ fn final_review_planner_drift_is_detected_without_breaking_old_snapshots() {
     let reviewers = [ResolvedPanelMember {
         target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-model"),
         required: true,
+        configured_index: 0,
     }];
     let arbiter = ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-model");
     let planner_a = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a");
