@@ -1,8 +1,10 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use chrono::{Duration, Utc};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use ralph_burning::contexts::automation_runtime::model::{
     CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, RoutingSource, TaskStatus, WorktreeLease,
 };
@@ -25,7 +27,7 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
 }
 
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
-    let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
+    let project_root = project_root(base_dir, project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
     let prompt_contents = "# Fixture prompt\n";
     // Write a complete canonical ProjectRecord so validation passes
@@ -66,6 +68,135 @@ status_summary = "created"
     ] {
         fs::create_dir_all(project_root.join(subdir)).expect("create project subdirectory");
     }
+}
+
+fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
+    base_dir.join(".ralph-burning/projects").join(project_id)
+}
+
+fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
+    let project_root = project_root(base_dir, project_id);
+    let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"stage_entered","details":{{"stage_id":"planning","run_id":"run-1"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"stage_completed","details":{{"stage_id":"planning","cycle":1,"attempt":1,"payload_id":"p1","artifact_id":"a1"}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"stage_entered","details":{{"stage_id":"implementation","run_id":"run-1"}}}}
+{{"sequence":5,"timestamp":"2026-03-19T03:04:00Z","event_type":"stage_completed","details":{{"stage_id":"implementation","cycle":1,"attempt":1,"payload_id":"p2","artifact_id":"a2"}}}}"#,
+        ),
+    )
+    .expect("write journal");
+    fs::write(
+        project_root.join("history/payloads/p1.json"),
+        r#"{
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:02:00Z",
+  "payload": { "summary": "planning payload", "steps": ["one", "two"] },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write payload p1");
+    fs::write(
+        project_root.join("history/payloads/p2.json"),
+        r#"{
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:04:00Z",
+  "payload": { "summary": "implementation payload", "diff": "full" },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write payload p2");
+    fs::write(
+        project_root.join("history/artifacts/a1.json"),
+        format!(
+            r#"{{
+  "artifact_id": "a1",
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "created_at": "2026-03-19T03:02:00Z",
+  "content": {},
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}}"#,
+            serde_json::to_string(&long_artifact).expect("serialize artifact content")
+        ),
+    )
+    .expect("write artifact a1");
+    fs::write(
+        project_root.join("history/artifacts/a2.json"),
+        r##"{
+  "artifact_id": "a2",
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "created_at": "2026-03-19T03:04:00Z",
+  "content": "# Implementation\nvisible artifact\n",
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"##,
+    )
+    .expect("write artifact a2");
+}
+
+fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
+    let project_root = project_root(base_dir, project_id);
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-planning","stage_id":"planning","cycle":1,"git_sha":"abc123"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}}}"#,
+        ),
+    )
+    .expect("write rollback journal");
+    fs::write(
+        project_root.join("rollback/rb-planning.json"),
+        r#"{
+  "rollback_id": "rb-planning",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "git_sha": "abc123",
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .expect("write rollback point planning");
+    fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        r#"{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .expect("write rollback point implementation");
 }
 
 fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
@@ -2434,6 +2565,337 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
         !stdout.contains("old log entry"),
         "older log files should not be included"
     );
+}
+
+#[test]
+fn run_status_json_outputs_stable_fields() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let run_json = r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 4,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "am-1",
+        "source_stage": "planning",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Fix it",
+        "created_at": "2026-03-19T03:00:00Z",
+        "batch_sequence": 0,
+        "source": "manual",
+        "dedup_key": "dedup-1"
+      }
+    ],
+    "processed_count": 0
+  },
+  "status_summary": "paused for review"
+}"#;
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        run_json,
+    )
+    .expect("write paused snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json should parse");
+    assert_eq!(value["project_id"], "alpha");
+    assert_eq!(value["status"], "paused");
+    assert!(value["stage"].is_null());
+    assert_eq!(value["completion_round"], serde_json::Value::Null);
+    assert_eq!(value["summary"], "paused for review");
+    assert_eq!(value["amendment_queue_depth"], 1);
+}
+
+#[test]
+fn run_history_verbose_shows_details_metadata_and_preview() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--verbose"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --verbose");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("details:"));
+    assert!(stdout.contains("\"stage_id\": \"planning\""));
+    assert!(stdout.contains("metadata:"));
+    assert!(stdout.contains("\"payload_id\": \"p1\""));
+    assert!(stdout.contains("preview: # Planning"));
+    assert!(
+        stdout.contains("..."),
+        "long artifact preview should be truncated"
+    );
+}
+
+#[test]
+fn run_history_json_outputs_parseable_json() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("history json should parse");
+    assert_eq!(value["project_id"], "alpha");
+    assert_eq!(value["events"].as_array().expect("events array").len(), 5);
+    assert_eq!(
+        value["payloads"].as_array().expect("payloads array").len(),
+        2
+    );
+    assert!(
+        value["payloads"][0].get("payload").is_none(),
+        "compact history json should omit payload bodies"
+    );
+    assert!(
+        value["artifacts"][0].get("content").is_none(),
+        "compact history json should omit artifact content"
+    );
+}
+
+#[test]
+fn run_history_json_verbose_includes_payload_and_content() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--json", "--verbose"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json --verbose");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("history json should parse");
+    assert_eq!(
+        value["payloads"][0]["payload"]["summary"],
+        "planning payload"
+    );
+    assert!(value["artifacts"][0]["content"]
+        .as_str()
+        .expect("artifact content")
+        .starts_with("# Planning"));
+}
+
+#[test]
+fn run_history_stage_filters_records() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--stage", "planning"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --stage planning");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("p1"));
+    assert!(stdout.contains("a1"));
+    assert!(!stdout.contains("p2"));
+    assert!(!stdout.contains("a2"));
+    assert!(!stdout.contains("ProjectCreated"));
+}
+
+#[test]
+fn run_history_stage_unknown_stage_fails_cleanly() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--stage", "unknown_stage"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --stage unknown_stage");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown stage identifier"));
+}
+
+#[test]
+fn run_tail_last_limits_to_most_recent_events() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "tail", "--last", "2"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail --last 2");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("ProjectCreated"));
+    assert!(!stdout.contains("p1"));
+    assert!(stdout.contains("p2"));
+    assert!(stdout.contains("a2"));
+}
+
+#[test]
+fn run_tail_follow_starts_and_interrupts_cleanly() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Following project 'alpha'"));
+    assert!(stdout.contains("Stopped following."));
+}
+
+#[test]
+fn run_show_payload_prints_payload_json() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-payload", "p1"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-payload");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("payload output should parse");
+    assert_eq!(value["summary"], "planning payload");
+}
+
+#[test]
+fn run_show_payload_unknown_id_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-payload", "missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-payload missing");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("payload not found"));
+}
+
+#[test]
+fn run_show_artifact_prints_content() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-artifact", "a2"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-artifact");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("# Implementation"));
+    assert!(stdout.contains("visible artifact"));
+}
+
+#[test]
+fn run_show_artifact_unknown_id_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-artifact", "missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-artifact missing");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("artifact not found"));
+}
+
+#[test]
+fn run_rollback_list_shows_visible_targets() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_rollback_targets_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "rollback", "--list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run rollback --list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Rollback ID"));
+    assert!(stdout.contains("rb-planning"));
+    assert!(stdout.contains("rb-implementation"));
+    assert!(stdout.contains("abc123"));
+}
+
+#[test]
+fn run_rollback_list_with_no_targets_reports_empty_state() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "rollback", "--list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run rollback --list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No rollback targets available."));
 }
 
 // ── Fail-fast on missing canonical files ──
@@ -5504,14 +5966,27 @@ fn project_amend_add_text_succeeds_and_prints_id() {
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     let output = Command::new(binary())
-        .args(["project", "amend", "add", "--text", "Fix the widget alignment"])
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Fix the widget alignment",
+        ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run amend add");
 
-    assert!(output.status.success(), "amend add should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "amend add should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Amendment: manual-"), "should print 'Amendment: <id>' starting with 'manual-', got: {stdout}");
+    assert!(
+        stdout.contains("Amendment: manual-"),
+        "should print 'Amendment: <id>' starting with 'manual-', got: {stdout}"
+    );
 }
 
 #[test]
@@ -5521,7 +5996,8 @@ fn project_amend_add_file_succeeds() {
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     let amendment_file = temp_dir.path().join("amendment.md");
-    fs::write(&amendment_file, "# Amendment\nPlease fix the button color.").expect("write amendment file");
+    fs::write(&amendment_file, "# Amendment\nPlease fix the button color.")
+        .expect("write amendment file");
 
     let output = Command::new(binary())
         .args(["project", "amend", "add", "--file", "amendment.md"])
@@ -5529,9 +6005,16 @@ fn project_amend_add_file_succeeds() {
         .output()
         .expect("run amend add --file");
 
-    assert!(output.status.success(), "amend add --file should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "amend add --file should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Amendment: manual-"), "should print 'Amendment: <id>', got: {stdout}");
+    assert!(
+        stdout.contains("Amendment: manual-"),
+        "should print 'Amendment: <id>', got: {stdout}"
+    );
 }
 
 #[test]
@@ -5546,9 +6029,15 @@ fn project_amend_add_rejects_empty_body() {
         .output()
         .expect("run amend add empty");
 
-    assert!(!output.status.success(), "amend add with empty text should fail");
+    assert!(
+        !output.status.success(),
+        "amend add with empty text should fail"
+    );
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("empty"), "should mention empty body: {stderr}");
+    assert!(
+        stderr.contains("empty"),
+        "should mention empty body: {stderr}"
+    );
 }
 
 #[test]
@@ -5565,7 +6054,10 @@ fn project_amend_list_empty() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("No pending amendments"), "should say no pending: {stdout}");
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should say no pending: {stdout}"
+    );
 }
 
 #[test]
@@ -5596,8 +6088,14 @@ fn project_amend_add_then_list_shows_amendment() {
         .expect("run amend list");
     assert!(list_output.status.success());
     let stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(stdout.contains(&amendment_id), "list should contain amendment id: {stdout}");
-    assert!(stdout.contains("[manual]"), "list should show [manual] source: {stdout}");
+    assert!(
+        stdout.contains(&amendment_id),
+        "list should contain amendment id: {stdout}"
+    );
+    assert!(
+        stdout.contains("[manual]"),
+        "list should show [manual] source: {stdout}"
+    );
 }
 
 #[test]
@@ -5626,7 +6124,10 @@ fn project_amend_remove_existing() {
         .expect("run amend remove");
     assert!(remove_output.status.success());
     let stdout = String::from_utf8_lossy(&remove_output.stdout);
-    assert!(stdout.contains("Removed"), "should confirm removal: {stdout}");
+    assert!(
+        stdout.contains("Removed"),
+        "should confirm removal: {stdout}"
+    );
 
     // Verify it's gone
     let list_output = Command::new(binary())
@@ -5636,7 +6137,10 @@ fn project_amend_remove_existing() {
         .expect("run amend list");
     assert!(list_output.status.success());
     let stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(stdout.contains("No pending amendments"), "should be empty after remove: {stdout}");
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should be empty after remove: {stdout}"
+    );
 }
 
 #[test]
@@ -5652,7 +6156,10 @@ fn project_amend_remove_missing_fails() {
         .expect("run amend remove missing");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("not found"), "should mention not found: {stderr}");
+    assert!(
+        stderr.contains("not found"),
+        "should mention not found: {stderr}"
+    );
 }
 
 #[test]
@@ -5678,7 +6185,10 @@ fn project_amend_clear_removes_all() {
         .expect("run amend clear");
     assert!(clear_output.status.success());
     let stdout = String::from_utf8_lossy(&clear_output.stdout);
-    assert!(stdout.contains("Cleared 2"), "should clear 2 amendments: {stdout}");
+    assert!(
+        stdout.contains("Cleared 2"),
+        "should clear 2 amendments: {stdout}"
+    );
 
     // Verify empty
     let list_output = Command::new(binary())
@@ -5687,7 +6197,10 @@ fn project_amend_clear_removes_all() {
         .output()
         .expect("run amend list");
     let stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(stdout.contains("No pending amendments"), "should be empty after clear");
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should be empty after clear"
+    );
 }
 
 #[test]
@@ -5718,8 +6231,14 @@ fn project_amend_duplicate_manual_add_is_noop() {
         .expect("second add");
     assert!(second.status.success());
     let second_stdout = String::from_utf8_lossy(&second.stdout);
-    assert!(second_stdout.contains("Duplicate"), "should report duplicate: {second_stdout}");
-    assert!(second_stdout.contains(&first_id), "should reference original id: {second_stdout}");
+    assert!(
+        second_stdout.contains("Duplicate"),
+        "should report duplicate: {second_stdout}"
+    );
+    assert!(
+        second_stdout.contains(&first_id),
+        "should reference original id: {second_stdout}"
+    );
 
     // Only one amendment should exist
     let list = Command::new(binary())
@@ -5729,7 +6248,10 @@ fn project_amend_duplicate_manual_add_is_noop() {
         .expect("list");
     let stdout = String::from_utf8_lossy(&list.stdout);
     let count = stdout.lines().filter(|l| l.contains("manual-")).count();
-    assert_eq!(count, 1, "should have exactly 1 amendment after dup add: {stdout}");
+    assert_eq!(
+        count, 1,
+        "should have exactly 1 amendment after dup add: {stdout}"
+    );
 }
 
 #[test]
@@ -5750,13 +6272,23 @@ fn project_amend_add_reopens_completed_project() {
         .current_dir(temp_dir.path())
         .output()
         .expect("run amend add on completed");
-    assert!(output.status.success(), "should succeed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 
     // Verify the project is now paused
     let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
     let snapshot: serde_json::Value = serde_json::from_str(&run_json).expect("parse run.json");
-    assert_eq!(snapshot["status"], "paused", "project should be paused after reopen");
-    assert!(snapshot["interrupted_run"].is_object(), "should have interrupted_run");
+    assert_eq!(
+        snapshot["status"], "paused",
+        "project should be paused after reopen"
+    );
+    assert!(
+        snapshot["interrupted_run"].is_object(),
+        "should have interrupted_run"
+    );
 }
 
 #[test]
@@ -5766,21 +6298,36 @@ fn project_amend_add_journal_records_event() {
     select_active_project_fixture(temp_dir.path(), "alpha");
 
     let output = Command::new(binary())
-        .args(["project", "amend", "add", "--text", "Journal test amendment"])
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Journal test amendment",
+        ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run amend add");
     assert!(output.status.success());
 
     let journal = fs::read_to_string(
-        temp_dir.path().join(".ralph-burning/projects/alpha/journal.ndjson"),
-    ).expect("read journal");
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+    )
+    .expect("read journal");
     let last_line = journal.lines().last().expect("journal has lines");
     let event: serde_json::Value = serde_json::from_str(last_line).expect("parse event");
     assert_eq!(event["event_type"], "amendment_queued");
     assert_eq!(event["details"]["source"], "manual");
-    assert!(event["details"]["dedup_key"].is_string(), "should have dedup_key");
-    assert!(event["details"]["amendment_id"].is_string(), "should have amendment_id");
+    assert!(
+        event["details"]["dedup_key"].is_string(),
+        "should have dedup_key"
+    );
+    assert!(
+        event["details"]["amendment_id"].is_string(),
+        "should have amendment_id"
+    );
 }
 
 #[test]
@@ -5792,10 +6339,7 @@ fn project_amend_add_lease_conflict_rejects() {
     // Create a writer lock file to simulate an active lease.
     let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
-    fs::write(
-        leases_dir.join("writer-alpha.lock"),
-        "fake-lease-id",
-    ).expect("write lock");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
     let output = Command::new(binary())
         .args(["project", "amend", "add", "--text", "Should be rejected"])
@@ -5804,7 +6348,10 @@ fn project_amend_add_lease_conflict_rejects() {
         .expect("run amend add during lease");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
 }
 
 #[test]
@@ -5830,10 +6377,7 @@ fn project_amend_remove_lease_conflict_rejects() {
     // Create a writer lock file to simulate an active lease.
     let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
-    fs::write(
-        leases_dir.join("writer-alpha.lock"),
-        "fake-lease-id",
-    ).expect("write lock");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
     let output = Command::new(binary())
         .args(["project", "amend", "remove", &amendment_id])
@@ -5842,7 +6386,10 @@ fn project_amend_remove_lease_conflict_rejects() {
         .expect("run amend remove during lease");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
 
     // Verify the amendment was NOT removed.
     fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
@@ -5852,7 +6399,10 @@ fn project_amend_remove_lease_conflict_rejects() {
         .output()
         .expect("run amend list");
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(list_stdout.contains(&amendment_id), "amendment should still be pending: {list_stdout}");
+    assert!(
+        list_stdout.contains(&amendment_id),
+        "amendment should still be pending: {list_stdout}"
+    );
 }
 
 #[test]
@@ -5872,10 +6422,7 @@ fn project_amend_clear_lease_conflict_rejects() {
     // Create a writer lock file to simulate an active lease.
     let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
     fs::create_dir_all(&leases_dir).expect("create leases dir");
-    fs::write(
-        leases_dir.join("writer-alpha.lock"),
-        "fake-lease-id",
-    ).expect("write lock");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
 
     let output = Command::new(binary())
         .args(["project", "amend", "clear"])
@@ -5884,7 +6431,10 @@ fn project_amend_clear_lease_conflict_rejects() {
         .expect("run amend clear during lease");
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
 
     // Verify amendments were NOT cleared.
     fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
@@ -5894,7 +6444,10 @@ fn project_amend_clear_lease_conflict_rejects() {
         .output()
         .expect("run amend list");
     let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-    assert!(!list_stdout.contains("No pending amendments"), "amendments should still be pending: {list_stdout}");
+    assert!(
+        !list_stdout.contains("No pending amendments"),
+        "amendments should still be pending: {list_stdout}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -5939,7 +6492,13 @@ fn cli_project_amend_remove_close_failure_exits_nonzero() {
 
     // Add an amendment first (without close-failure seam).
     let add_output = Command::new(binary())
-        .args(["project", "amend", "add", "--text", "Amendment for close-rm test"])
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Amendment for close-rm test",
+        ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run amend add");
@@ -5985,7 +6544,13 @@ fn cli_project_amend_clear_close_failure_exits_nonzero() {
 
     // Add an amendment first (without close-failure seam).
     let add_output = Command::new(binary())
-        .args(["project", "amend", "add", "--text", "Amendment for close-clr test"])
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Amendment for close-clr test",
+        ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run amend add");

@@ -1,6 +1,9 @@
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::{Args, Subcommand};
+use serde::Serialize;
+use serde_json::Value;
 
 use crate::adapters::fs::{
     FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
@@ -30,17 +33,57 @@ pub struct RunCommand {
 pub enum RunSubcommand {
     Start(RunBackendOverrideArgs),
     Resume(RunBackendOverrideArgs),
-    Status,
-    History,
+    /// Show canonical run status for the active project.
+    Status {
+        /// Emit a stable JSON object for scripts.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show durable run history for the active project.
+    History {
+        /// Include full event details, payload metadata, and artifact previews.
+        #[arg(long)]
+        verbose: bool,
+        /// Emit a stable JSON object for scripts.
+        #[arg(long)]
+        json: bool,
+        /// Filter events, payloads, and artifacts to a single stage.
+        #[arg(long, value_name = "STAGE")]
+        stage: Option<String>,
+    },
+    /// Show durable history tail, optionally including runtime logs.
     Tail {
+        /// Include runtime log entries from the newest runtime log file.
         #[arg(long)]
         logs: bool,
+        /// Limit output to the most recent N visible journal events.
+        #[arg(long, value_name = "N", conflicts_with = "follow")]
+        last: Option<usize>,
+        /// Poll for new journal events every 2 seconds until interrupted.
+        #[arg(long, conflicts_with = "last")]
+        follow: bool,
     },
+    /// Show or perform run rollback operations.
     Rollback {
-        #[arg(long)]
-        to: String,
-        #[arg(long)]
+        /// List visible rollback targets instead of performing a rollback.
+        #[arg(long, conflicts_with = "to")]
+        list: bool,
+        /// Roll back to the latest visible checkpoint for a stage.
+        #[arg(long, required_unless_present = "list")]
+        to: Option<String>,
+        /// Also reset the repository to the rollback point git SHA.
+        #[arg(long, requires = "to")]
         hard: bool,
+    },
+    /// Show a visible payload record by ID.
+    ShowPayload {
+        /// The payload ID to print as pretty JSON.
+        payload_id: String,
+    },
+    /// Show a visible artifact record by ID.
+    ShowArtifact {
+        /// The artifact ID to print as rendered markdown.
+        artifact_id: String,
     },
 }
 
@@ -60,12 +103,18 @@ pub struct RunBackendOverrideArgs {
 
 pub async fn handle(command: RunCommand) -> AppResult<()> {
     match command.command {
-        RunSubcommand::Status => handle_status().await,
-        RunSubcommand::History => handle_history().await,
-        RunSubcommand::Tail { logs } => handle_tail(logs).await,
+        RunSubcommand::Status { json } => handle_status(json).await,
+        RunSubcommand::History {
+            verbose,
+            json,
+            stage,
+        } => handle_history(verbose, json, stage).await,
+        RunSubcommand::Tail { logs, last, follow } => handle_tail(logs, last, follow).await,
         RunSubcommand::Start(args) => handle_start(args).await,
         RunSubcommand::Resume(args) => handle_resume(args).await,
-        RunSubcommand::Rollback { to, hard } => handle_rollback(to, hard).await,
+        RunSubcommand::Rollback { list, to, hard } => handle_rollback(list, to, hard).await,
+        RunSubcommand::ShowPayload { payload_id } => handle_show_payload(payload_id).await,
+        RunSubcommand::ShowArtifact { artifact_id } => handle_show_artifact(artifact_id).await,
     }
 }
 
@@ -272,21 +321,16 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_status() -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
+async fn handle_status(as_json: bool) -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
 
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
+    if as_json {
+        let status = service::run_status_json(&FsRunSnapshotStore, &current_dir, &project_id)?;
+        println!("{}", format_json_status(&status)?);
+        return Ok(());
+    }
 
-    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
-
-    // Validate canonical project record before proceeding with run queries
-    let project_store = FsProjectStore;
-    let _ = project_store.read_project_record(&current_dir, &project_id)?;
-
-    let run_store = FsRunSnapshotStore;
-    let status = service::run_status(&run_store, &current_dir, &project_id)?;
-
+    let status = service::run_status(&FsRunSnapshotStore, &current_dir, &project_id)?;
     println!("Project: {}", status.project_id);
     println!("Status: {}", status.status);
     if let Some(ref stage) = status.stage {
@@ -303,167 +347,167 @@ async fn handle_status() -> AppResult<()> {
     Ok(())
 }
 
-async fn handle_history() -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
+async fn handle_history(verbose: bool, as_json: bool, stage: Option<String>) -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
+    let history =
+        service::run_history(&FsJournalStore, &FsArtifactStore, &current_dir, &project_id)?;
+    let history = maybe_filter_history_by_stage(history, stage)?;
 
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
-
-    // Validate canonical project record before proceeding with run queries
-    let project_store = FsProjectStore;
-    let _ = project_store.read_project_record(&current_dir, &project_id)?;
-
-    let journal_store = FsJournalStore;
-    let artifact_store = FsArtifactStore;
-
-    let history = service::run_history(&journal_store, &artifact_store, &current_dir, &project_id)?;
-
-    println!("Project: {}", history.project_id);
-    println!("--- Journal Events ---");
-    for event in &history.events {
-        println!(
-            "  [{}] {} - {:?}",
-            event.sequence, event.timestamp, event.event_type
-        );
-    }
-
-    if !history.payloads.is_empty() {
-        println!("--- Payloads ---");
-        for payload in &history.payloads {
-            let producer_str = payload
-                .producer
-                .as_ref()
-                .map(|p| format!(" producer={p}"))
-                .unwrap_or_default();
-            println!(
-                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
-                payload.payload_id,
-                payload.stage_id,
-                payload.cycle,
-                payload.attempt,
-                payload.record_kind,
-                payload.completion_round,
-                producer_str,
-            );
-        }
-    }
-
-    if !history.artifacts.is_empty() {
-        println!("--- Artifacts ---");
-        for artifact in &history.artifacts {
-            let producer_str = artifact
-                .producer
-                .as_ref()
-                .map(|p| format!(" producer={p}"))
-                .unwrap_or_default();
-            println!(
-                "  {} (payload: {}, stage: {}, kind={}{})",
-                artifact.artifact_id,
-                artifact.payload_id,
-                artifact.stage_id,
-                artifact.record_kind,
-                producer_str,
-            );
-        }
+    if as_json {
+        println!("{}", format_json_history(&history, verbose)?);
+    } else {
+        print_history_text(&history, verbose);
     }
 
     Ok(())
 }
 
-async fn handle_tail(include_logs: bool) -> AppResult<()> {
-    let current_dir = std::env::current_dir()?;
+async fn handle_tail(include_logs: bool, last: Option<usize>, follow: bool) -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
 
-    let config = workspace_governance::load_workspace_config(&current_dir)?;
-    workspace_governance::ensure_supported_workspace_version(&config)?;
-
-    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
-
-    // Validate canonical project record before proceeding with run queries
-    let project_store = FsProjectStore;
-    let _ = project_store.read_project_record(&current_dir, &project_id)?;
-
-    let journal_store = FsJournalStore;
-    let artifact_store = FsArtifactStore;
-    let log_store = FsRuntimeLogStore;
+    if follow {
+        return handle_tail_follow(&current_dir, &project_id, include_logs).await;
+    }
 
     let tail = service::run_tail(
-        &journal_store,
-        &artifact_store,
-        &log_store,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsRuntimeLogStore,
         &current_dir,
         &project_id,
         include_logs,
     )?;
-
-    println!("Project: {}", tail.project_id);
-    println!("--- Durable History ---");
-    for event in &tail.events {
-        println!(
-            "  [{}] {} - {:?}",
-            event.sequence, event.timestamp, event.event_type
-        );
-    }
-
-    if !tail.payloads.is_empty() {
-        println!("--- Payloads ---");
-        for payload in &tail.payloads {
-            let producer_str = payload
-                .producer
-                .as_ref()
-                .map(|p| format!(" producer={p}"))
-                .unwrap_or_default();
-            println!(
-                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
-                payload.payload_id,
-                payload.stage_id,
-                payload.cycle,
-                payload.attempt,
-                payload.record_kind,
-                payload.completion_round,
-                producer_str,
+    let tail = if let Some(count) = last {
+        let (events, payloads, artifacts) =
+            crate::contexts::project_run_record::queries::tail_last_n(
+                &tail.events,
+                &tail.payloads,
+                &tail.artifacts,
+                count,
             );
-        }
-    }
+        crate::contexts::project_run_record::queries::build_tail_view(
+            &tail.project_id,
+            events,
+            payloads,
+            artifacts,
+            include_logs,
+            tail.runtime_logs.clone().unwrap_or_default(),
+        )
+    } else {
+        tail
+    };
 
-    if !tail.artifacts.is_empty() {
-        println!("--- Artifacts ---");
-        for artifact in &tail.artifacts {
-            let producer_str = artifact
-                .producer
-                .as_ref()
-                .map(|p| format!(" producer={p}"))
-                .unwrap_or_default();
-            println!(
-                "  {} (payload: {}, stage: {}, kind={}{})",
-                artifact.artifact_id,
-                artifact.payload_id,
-                artifact.stage_id,
-                artifact.record_kind,
-                producer_str,
-            );
-        }
-    }
-
-    if let Some(ref logs) = tail.runtime_logs {
-        println!("--- Runtime Logs ---");
-        if logs.is_empty() {
-            println!("  (no runtime logs)");
-        } else {
-            for log in logs {
-                println!(
-                    "  [{}] {:?} [{}] {}",
-                    log.timestamp, log.level, log.source, log.message
-                );
-            }
-        }
-    }
-
+    print_tail_text(&tail);
     Ok(())
 }
 
-async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
+async fn handle_tail_follow(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    include_logs: bool,
+) -> AppResult<()> {
+    let initial_tail = service::run_tail(
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsRuntimeLogStore,
+        current_dir,
+        project_id,
+        include_logs,
+    )?;
+    let mut last_seen_sequence = initial_tail
+        .events
+        .last()
+        .map(|event| event.sequence)
+        .unwrap_or(0);
+    let mut last_runtime_log_count = initial_tail
+        .runtime_logs
+        .as_ref()
+        .map_or(0, std::vec::Vec::len);
+
+    println!(
+        "Following project '{}' for new durable history{}; press Ctrl-C to stop.",
+        project_id,
+        if include_logs {
+            " and runtime logs"
+        } else {
+            ""
+        }
+    );
+
+    loop {
+        tokio::select! {
+            result = tokio::signal::ctrl_c() => {
+                result?;
+                println!("Stopped following.");
+                return Ok(());
+            }
+            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+                let tail = service::run_tail(
+                    &FsJournalStore,
+                    &FsArtifactStore,
+                    &FsRuntimeLogStore,
+                    current_dir,
+                    project_id,
+                    include_logs,
+                )?;
+                let new_event_count = tail
+                    .events
+                    .iter()
+                    .filter(|event| event.sequence > last_seen_sequence)
+                    .count();
+                let (events, payloads, artifacts) =
+                    crate::contexts::project_run_record::queries::tail_last_n(
+                        &tail.events,
+                        &tail.payloads,
+                        &tail.artifacts,
+                        new_event_count,
+                    );
+                let new_logs = match tail.runtime_logs.as_ref() {
+                    Some(logs) if logs.len() >= last_runtime_log_count => {
+                        logs[last_runtime_log_count..].to_vec()
+                    }
+                    Some(logs) => logs.clone(),
+                    None => Vec::new(),
+                };
+
+                if !events.is_empty() || !payloads.is_empty() || !artifacts.is_empty() || !new_logs.is_empty() {
+                    print_follow_update(&events, &payloads, &artifacts, &new_logs);
+                }
+
+                last_seen_sequence = tail.events.last().map(|event| event.sequence).unwrap_or(last_seen_sequence);
+                last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
+            }
+        }
+    }
+}
+
+async fn handle_show_payload(payload_id: String) -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
+    let payload = service::get_payload_by_id(
+        &FsJournalStore,
+        &FsArtifactStore,
+        &current_dir,
+        &project_id,
+        &payload_id,
+    )?;
+    println!("{}", serde_json::to_string_pretty(&payload.payload)?);
+    Ok(())
+}
+
+async fn handle_show_artifact(artifact_id: String) -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
+    let artifact = service::get_artifact_by_id(
+        &FsJournalStore,
+        &FsArtifactStore,
+        &current_dir,
+        &project_id,
+        &artifact_id,
+    )?;
+    println!("{}", artifact.content);
+    Ok(())
+}
+
+async fn handle_rollback(list: bool, target: Option<String>, hard: bool) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
 
     let config = workspace_governance::load_workspace_config(&current_dir)?;
@@ -474,6 +518,11 @@ async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
     let project_store = FsProjectStore;
     let project_record = project_store.read_project_record(&current_dir, &project_id)?;
 
+    if list {
+        return handle_rollback_list(&current_dir, &project_id).await;
+    }
+
+    let target = target.expect("clap enforces rollback target when --list is absent");
     let target_stage = match target.parse::<StageId>() {
         Ok(stage_id) => stage_id,
         Err(_) => {
@@ -507,6 +556,334 @@ async fn handle_rollback(target: String, hard: bool) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+async fn handle_rollback_list(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+) -> AppResult<()> {
+    let targets = service::list_rollback_targets(
+        &FsRollbackPointStore,
+        &FsJournalStore,
+        current_dir,
+        project_id,
+    )?;
+
+    if targets.is_empty() {
+        println!("No rollback targets available.");
+        return Ok(());
+    }
+
+    println!(
+        "{:<24} {:<20} {:<5} {:<25} {}",
+        "Rollback ID", "Stage", "Cycle", "Created At", "Git SHA"
+    );
+    for target in targets {
+        println!(
+            "{:<24} {:<20} {:<5} {:<25} {}",
+            target.rollback_id,
+            target.stage_id,
+            target.cycle,
+            target.created_at.to_rfc3339(),
+            target.git_sha.unwrap_or_else(|| "-".to_owned()),
+        );
+    }
+
+    Ok(())
+}
+
+fn load_active_project_context() -> AppResult<(std::path::PathBuf, crate::shared::domain::ProjectId)>
+{
+    let current_dir = std::env::current_dir()?;
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+    let project_store = FsProjectStore;
+    let _ = project_store.read_project_record(&current_dir, &project_id)?;
+
+    Ok((current_dir, project_id))
+}
+
+fn maybe_filter_history_by_stage(
+    history: crate::contexts::project_run_record::queries::RunHistoryView,
+    stage: Option<String>,
+) -> AppResult<crate::contexts::project_run_record::queries::RunHistoryView> {
+    let Some(stage) = stage else {
+        return Ok(history);
+    };
+    let stage_id = stage.parse::<StageId>()?;
+    let (events, payloads, artifacts) =
+        crate::contexts::project_run_record::queries::filter_by_stage(
+            &history.events,
+            &history.payloads,
+            &history.artifacts,
+            stage_id,
+        );
+
+    Ok(
+        crate::contexts::project_run_record::queries::build_history_view(
+            &history.project_id,
+            events,
+            payloads,
+            artifacts,
+        ),
+    )
+}
+
+fn format_json_status(
+    status: &crate::contexts::project_run_record::queries::RunStatusJsonView,
+) -> AppResult<String> {
+    Ok(serde_json::to_string_pretty(status)?)
+}
+
+fn format_json_history(
+    history: &crate::contexts::project_run_record::queries::RunHistoryView,
+    verbose: bool,
+) -> AppResult<String> {
+    #[derive(Serialize)]
+    struct HistoryPayloadJsonView {
+        payload_id: String,
+        stage_id: String,
+        cycle: u32,
+        attempt: u32,
+        created_at: chrono::DateTime<chrono::Utc>,
+        record_kind: String,
+        producer: Option<String>,
+        completion_round: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        payload: Option<Value>,
+    }
+
+    #[derive(Serialize)]
+    struct HistoryArtifactJsonView {
+        artifact_id: String,
+        payload_id: String,
+        stage_id: String,
+        created_at: chrono::DateTime<chrono::Utc>,
+        record_kind: String,
+        producer: Option<String>,
+        completion_round: u32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        content: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    struct HistoryJsonView {
+        project_id: String,
+        events: Vec<crate::contexts::project_run_record::model::JournalEvent>,
+        payloads: Vec<HistoryPayloadJsonView>,
+        artifacts: Vec<HistoryArtifactJsonView>,
+    }
+
+    let payloads = history
+        .payloads
+        .iter()
+        .map(|payload| HistoryPayloadJsonView {
+            payload_id: payload.payload_id.clone(),
+            stage_id: payload.stage_id.as_str().to_owned(),
+            cycle: payload.cycle,
+            attempt: payload.attempt,
+            created_at: payload.created_at,
+            record_kind: payload.record_kind.to_string(),
+            producer: payload.producer.as_ref().map(ToString::to_string),
+            completion_round: payload.completion_round,
+            payload: verbose.then(|| payload.payload.clone()),
+        })
+        .collect();
+    let artifacts = history
+        .artifacts
+        .iter()
+        .map(|artifact| HistoryArtifactJsonView {
+            artifact_id: artifact.artifact_id.clone(),
+            payload_id: artifact.payload_id.clone(),
+            stage_id: artifact.stage_id.as_str().to_owned(),
+            created_at: artifact.created_at,
+            record_kind: artifact.record_kind.to_string(),
+            producer: artifact.producer.as_ref().map(ToString::to_string),
+            completion_round: artifact.completion_round,
+            content: verbose.then(|| artifact.content.clone()),
+        })
+        .collect();
+    let output = HistoryJsonView {
+        project_id: history.project_id.clone(),
+        events: history.events.clone(),
+        payloads,
+        artifacts,
+    };
+
+    Ok(serde_json::to_string_pretty(&output)?)
+}
+
+fn print_history_text(
+    history: &crate::contexts::project_run_record::queries::RunHistoryView,
+    verbose: bool,
+) {
+    println!("Project: {}", history.project_id);
+    print_durable_records(
+        &history.events,
+        &history.payloads,
+        &history.artifacts,
+        verbose,
+        false,
+    );
+}
+
+fn print_tail_text(tail: &crate::contexts::project_run_record::queries::RunTailView) {
+    println!("Project: {}", tail.project_id);
+    print_durable_records(&tail.events, &tail.payloads, &tail.artifacts, false, true);
+    print_runtime_logs(tail.runtime_logs.as_deref());
+}
+
+fn print_follow_update(
+    events: &[crate::contexts::project_run_record::model::JournalEvent],
+    payloads: &[crate::contexts::project_run_record::model::PayloadRecord],
+    artifacts: &[crate::contexts::project_run_record::model::ArtifactRecord],
+    runtime_logs: &[crate::contexts::project_run_record::model::RuntimeLogEntry],
+) {
+    if !events.is_empty() || !payloads.is_empty() || !artifacts.is_empty() {
+        print_durable_records(events, payloads, artifacts, false, true);
+    }
+    if !runtime_logs.is_empty() {
+        println!("--- Runtime Logs ---");
+        for log in runtime_logs {
+            println!(
+                "  [{}] {:?} [{}] {}",
+                log.timestamp, log.level, log.source, log.message
+            );
+        }
+    }
+}
+
+fn print_durable_records(
+    events: &[crate::contexts::project_run_record::model::JournalEvent],
+    payloads: &[crate::contexts::project_run_record::model::PayloadRecord],
+    artifacts: &[crate::contexts::project_run_record::model::ArtifactRecord],
+    verbose: bool,
+    durable_heading: bool,
+) {
+    println!(
+        "{}",
+        if durable_heading {
+            "--- Durable History ---"
+        } else {
+            "--- Journal Events ---"
+        }
+    );
+    for event in events {
+        println!(
+            "  [{}] {} - {:?}",
+            event.sequence, event.timestamp, event.event_type
+        );
+        if verbose {
+            print_json_block("    details:", &event.details);
+        }
+    }
+
+    if !payloads.is_empty() {
+        println!("--- Payloads ---");
+        for payload in payloads {
+            let producer_str = payload
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
+            println!(
+                "  {} ({}, cycle {}, attempt {}, kind={}, round={}{})",
+                payload.payload_id,
+                payload.stage_id,
+                payload.cycle,
+                payload.attempt,
+                payload.record_kind,
+                payload.completion_round,
+                producer_str,
+            );
+            if verbose {
+                print_json_block(
+                    "    metadata:",
+                    &serde_json::json!({
+                        "payload_id": payload.payload_id,
+                        "stage_id": payload.stage_id.as_str(),
+                        "cycle": payload.cycle,
+                        "attempt": payload.attempt,
+                        "created_at": payload.created_at,
+                        "record_kind": payload.record_kind.to_string(),
+                        "producer": payload.producer.as_ref().map(ToString::to_string),
+                        "completion_round": payload.completion_round,
+                    }),
+                );
+            }
+        }
+    }
+
+    if !artifacts.is_empty() {
+        println!("--- Artifacts ---");
+        for artifact in artifacts {
+            let producer_str = artifact
+                .producer
+                .as_ref()
+                .map(|p| format!(" producer={p}"))
+                .unwrap_or_default();
+            println!(
+                "  {} (payload: {}, stage: {}, kind={}{})",
+                artifact.artifact_id,
+                artifact.payload_id,
+                artifact.stage_id,
+                artifact.record_kind,
+                producer_str,
+            );
+            if verbose {
+                print_json_block(
+                    "    metadata:",
+                    &serde_json::json!({
+                        "artifact_id": artifact.artifact_id,
+                        "payload_id": artifact.payload_id,
+                        "stage_id": artifact.stage_id.as_str(),
+                        "created_at": artifact.created_at,
+                        "record_kind": artifact.record_kind.to_string(),
+                        "producer": artifact.producer.as_ref().map(ToString::to_string),
+                        "completion_round": artifact.completion_round,
+                    }),
+                );
+                println!("    preview: {}", truncate_preview(&artifact.content, 120));
+            }
+        }
+    }
+}
+
+fn print_runtime_logs(
+    runtime_logs: Option<&[crate::contexts::project_run_record::model::RuntimeLogEntry]>,
+) {
+    if let Some(logs) = runtime_logs {
+        println!("--- Runtime Logs ---");
+        if logs.is_empty() {
+            println!("  (no runtime logs)");
+        } else {
+            for log in logs {
+                println!(
+                    "  [{}] {:?} [{}] {}",
+                    log.timestamp, log.level, log.source, log.message
+                );
+            }
+        }
+    }
+}
+
+fn print_json_block(label: &str, value: &Value) {
+    println!("{label}");
+    let rendered = serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string());
+    for line in rendered.lines() {
+        println!("      {line}");
+    }
+}
+
+fn truncate_preview(content: &str, max_chars: usize) -> String {
+    let preview: String = content.chars().take(max_chars).collect();
+    if content.chars().count() > max_chars {
+        format!("{preview}...")
+    } else {
+        preview
+    }
 }
 
 fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBackendOverrides> {

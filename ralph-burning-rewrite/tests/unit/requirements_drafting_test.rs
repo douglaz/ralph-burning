@@ -1451,8 +1451,13 @@ mod service_integration {
 
         // Verify all seven full-mode stages are committed
         let expected_stages = [
-            "ideation", "research", "synthesis", "implementation_spec",
-            "gap_analysis", "validation", "project_seed",
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
         ];
         for stage in &expected_stages {
             assert!(
@@ -1536,8 +1541,13 @@ mod service_integration {
 
         // All seven stages should be committed after answer completes
         let expected_stages = [
-            "ideation", "research", "synthesis", "implementation_spec",
-            "gap_analysis", "validation", "project_seed",
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
         ];
         for stage in &expected_stages {
             assert!(
@@ -3116,7 +3126,9 @@ fn parity_slice1_validation_pass_contract_validates() {
     });
 
     let contract = RequirementsContract::validation();
-    let bundle = contract.evaluate(&raw).expect("validation pass should validate");
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("validation pass should validate");
     assert!(bundle.artifact.contains("# Validation"));
     assert!(bundle.artifact.contains("**pass**"));
 }
@@ -3283,8 +3295,7 @@ fn parity_slice1_committed_stage_entry_serialization() {
     };
 
     let json = serde_json::to_value(&entry).expect("serialize");
-    let roundtripped: CommittedStageEntry =
-        serde_json::from_value(json).expect("deserialize");
+    let roundtripped: CommittedStageEntry = serde_json::from_value(json).expect("deserialize");
     assert_eq!(entry, roundtripped);
 }
 

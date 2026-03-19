@@ -716,6 +716,56 @@ impl JournalStorePort for FsJournalStore {
 /// Filesystem-backed implementation of `ArtifactStorePort`.
 pub struct FsArtifactStore;
 
+impl FsArtifactStore {
+    pub fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("history/payloads")
+            .join(format!("{payload_id}.json"));
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::PayloadNotFound {
+                    payload_id: payload_id.to_owned(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("history/payloads/{payload_id}.json"),
+            details: error.to_string(),
+        })
+    }
+
+    pub fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("history/artifacts")
+            .join(format!("{artifact_id}.json"));
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::ArtifactNotFound {
+                    artifact_id: artifact_id.to_owned(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("history/artifacts/{artifact_id}.json"),
+            details: error.to_string(),
+        })
+    }
+}
+
 impl ArtifactStorePort for FsArtifactStore {
     fn list_payloads(
         &self,
@@ -779,6 +829,24 @@ impl ArtifactStorePort for FsArtifactStore {
 
         records.sort_by_key(|r| r.created_at);
         Ok(records)
+    }
+
+    fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        FsArtifactStore::read_payload_by_id(self, base_dir, project_id, payload_id)
+    }
+
+    fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        FsArtifactStore::read_artifact_by_id(self, base_dir, project_id, artifact_id)
     }
 }
 

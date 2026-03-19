@@ -428,8 +428,7 @@ impl RequirementsContract {
                 }
                 // Check that blocking_gaps references correspond to actual gaps
                 for gap in &p.gaps {
-                    if gap.severity == GapSeverity::Blocking
-                        && !p.blocking_gaps.contains(&gap.area)
+                    if gap.severity == GapSeverity::Blocking && !p.blocking_gaps.contains(&gap.area)
                     {
                         // Non-fatal: blocking gaps list may use different wording
                     }

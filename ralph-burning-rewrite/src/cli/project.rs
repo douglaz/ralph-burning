@@ -688,10 +688,7 @@ async fn handle_amend_list() -> AppResult<()> {
         let body_preview = truncate_utf8(&amendment.body, 80);
         println!(
             "  {} [{}] dedup={} {}",
-            amendment.amendment_id,
-            amendment.source,
-            amendment.dedup_key,
-            body_preview
+            amendment.amendment_id, amendment.source, amendment.dedup_key, body_preview
         );
     }
 
@@ -820,9 +817,7 @@ async fn handle_amend_clear() -> AppResult<()> {
             }
         }
         Err(AppError::AmendmentClearPartial {
-            removed,
-            remaining,
-            ..
+            removed, remaining, ..
         }) => {
             // Always surface partial-clear IDs, even if close also failed.
             eprintln!("Partial clear failure:");

@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
 use super::runner::ScenarioExecutor;
 
@@ -483,6 +486,191 @@ fn setup_workspace_with_project(
     init_workspace(ws)?;
     create_project_fixture(ws.path(), project_id, flow);
     select_project(ws.path(), project_id);
+    Ok(())
+}
+
+fn conformance_project_root(ws: &TempWorkspace, project_id: &str) -> PathBuf {
+    ws.path()
+        .join(format!(".ralph-burning/projects/{project_id}"))
+}
+
+fn write_run_query_history_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"stage_entered","details":{{"stage_id":"planning","run_id":"run-1"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"stage_completed","details":{{"stage_id":"planning","cycle":1,"attempt":1,"payload_id":"p1","artifact_id":"a1"}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"stage_entered","details":{{"stage_id":"implementation","run_id":"run-1"}}}}
+{{"sequence":5,"timestamp":"2026-03-19T03:04:00Z","event_type":"stage_completed","details":{{"stage_id":"implementation","cycle":1,"attempt":1,"payload_id":"p2","artifact_id":"a2"}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write run query journal: {e}"))?;
+    std::fs::write(
+        project_root.join("history/payloads/p1.json"),
+        r#"{
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:02:00Z",
+  "payload": { "summary": "planning payload", "steps": ["one", "two"] },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .map_err(|e| format!("write payload p1: {e}"))?;
+    std::fs::write(
+        project_root.join("history/payloads/p2.json"),
+        r#"{
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:04:00Z",
+  "payload": { "summary": "implementation payload", "diff": "full" },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .map_err(|e| format!("write payload p2: {e}"))?;
+    std::fs::write(
+        project_root.join("history/artifacts/a1.json"),
+        format!(
+            r#"{{
+  "artifact_id": "a1",
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "created_at": "2026-03-19T03:02:00Z",
+  "content": {},
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}}"#,
+            serde_json::to_string(&long_artifact).map_err(|e| e.to_string())?
+        ),
+    )
+    .map_err(|e| format!("write artifact a1: {e}"))?;
+    std::fs::write(
+        project_root.join("history/artifacts/a2.json"),
+        r##"{
+  "artifact_id": "a2",
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "created_at": "2026-03-19T03:04:00Z",
+  "content": "# Implementation\nvisible artifact\n",
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"##,
+    )
+    .map_err(|e| format!("write artifact a2: {e}"))?;
+    Ok(())
+}
+
+fn write_rollback_targets_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-planning","stage_id":"planning","cycle":1,"git_sha":"abc123"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write rollback journal: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-planning.json"),
+        r#"{
+  "rollback_id": "rb-planning",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "git_sha": "abc123",
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write rollback point planning: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        r#"{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write rollback point implementation: {e}"))?;
+    Ok(())
+}
+
+fn write_rollback_visibility_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-visible","stage_id":"planning","cycle":1}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-hidden","stage_id":"implementation","cycle":1}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"rollback_performed","details":{{"rollback_id":"rb-visible","stage_id":"planning","cycle":1,"visible_through_sequence":2,"hard":false,"rollback_count":1}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write rollback visibility journal: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-visible.json"),
+        r#"{
+  "rollback_id": "rb-visible",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write visible rollback point: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-hidden.json"),
+        r#"{
+  "rollback_id": "rb-hidden",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write hidden rollback point: {e}"))?;
     Ok(())
 }
 
@@ -2183,7 +2371,7 @@ fn register_run_start_ci_improvement(m: &mut HashMap<String, ScenarioExecutor>) 
 }
 
 // ===========================================================================
-// Run Queries (28 scenarios)
+// Run Queries (46 scenarios)
 // ===========================================================================
 
 fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -2532,6 +2720,309 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(log_dir.join("newest.log"), "newest log\n").map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail", "--logs"], ws.path())?;
         assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-029", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-status-json", "standard")?;
+        std::fs::write(
+            conformance_project_root(&ws, "rq-status-json").join("run.json"),
+            r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 0,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "am-1",
+        "source_stage": "planning",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Fix it",
+        "created_at": "2026-03-19T03:00:00Z",
+        "batch_sequence": 0,
+        "source": "manual",
+        "dedup_key": "dedup-1"
+      }
+    ],
+    "processed_count": 0
+  },
+  "status_summary": "paused for review"
+}"#,
+        )
+        .map_err(|e| format!("write run.json: {e}"))?;
+        let out = run_cli(&["run", "status", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse status json: {e}"))?;
+        for key in [
+            "project_id",
+            "status",
+            "stage",
+            "cycle",
+            "completion_round",
+            "summary",
+            "amendment_queue_depth",
+        ] {
+            if json.get(key).is_none() {
+                return Err(format!("status json missing key '{key}'"));
+            }
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-030", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-verbose", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-verbose")?;
+        let out = run_cli(&["run", "history", "--verbose"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "details:", "stdout")?;
+        assert_contains(&out.stdout, "metadata:", "stdout")?;
+        assert_contains(&out.stdout, "preview:", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-031", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-json", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-json")?;
+        let out = run_cli(&["run", "history", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse history json: {e}"))?;
+        if !json.get("events").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain an events array".into());
+        }
+        if !json.get("payloads").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain a payloads array".into());
+        }
+        if !json.get("artifacts").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain an artifacts array".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-032", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-json-verbose", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-json-verbose")?;
+        let out = run_cli(&["run", "history", "--json", "--verbose"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("parse verbose history json: {e}"))?;
+        if json["payloads"][0].get("payload").is_none() {
+            return Err("verbose history json should include payload".into());
+        }
+        if json["artifacts"][0].get("content").is_none() {
+            return Err("verbose history json should include content".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-033", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-stage-filter", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-stage-filter")?;
+        let out = run_cli(&["run", "history", "--stage", "planning"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "p1", "stdout")?;
+        if out.stdout.contains("p2") {
+            return Err("stage-filtered history should exclude implementation payloads".into());
+        }
+        if out.stdout.contains("ProjectCreated") {
+            return Err("stage-filtered history should exclude non-stage events".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-034", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-tail-last", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-tail-last")?;
+        let out = run_cli(&["run", "tail", "--last", "2"], ws.path())?;
+        assert_success(&out)?;
+        if out.stdout.contains("ProjectCreated") {
+            return Err("tail --last 2 should exclude older project_created event".into());
+        }
+        assert_contains(&out.stdout, "p2", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-035", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow", "standard")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow command should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("Following project 'rq-follow'") {
+            return Err("follow output should include startup text".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-036", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-payload", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-show-payload")?;
+        let out = run_cli(&["run", "show-payload", "p1"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse payload json: {e}"))?;
+        if json.get("summary").and_then(|value| value.as_str()) != Some("planning payload") {
+            return Err("show-payload should print the payload body".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-037", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-payload-missing", "standard")?;
+        let out = run_cli(&["run", "show-payload", "missing"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "payload not found", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-038", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-artifact", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-show-artifact")?;
+        let out = run_cli(&["run", "show-artifact", "a2"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "# Implementation", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-039", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-artifact-missing", "standard")?;
+        let out = run_cli(&["run", "show-artifact", "missing"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "artifact not found", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-040", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-list", "standard")?;
+        write_rollback_targets_fixture(&ws, "rq-rollback-list")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "rb-planning", "stdout")?;
+        assert_contains(&out.stdout, "rb-implementation", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-041", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-empty", "standard")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "No rollback targets available.", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-042", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-visible", "standard")?;
+        write_rollback_visibility_fixture(&ws, "rq-rollback-visible")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "rb-visible", "stdout")?;
+        if out.stdout.contains("rb-hidden") {
+            return Err(
+                "rollback --list should hide rollback points from abandoned branches".into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-043", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-stage-bad", "standard")?;
+        let out = run_cli(&["run", "history", "--stage", "unknown_stage"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "unknown stage identifier", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-044", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-parse-history", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-parse-history")?;
+        let out = run_cli(&["run", "history", "--json"], ws.path())?;
+        assert_success(&out)?;
+        serde_json::from_str::<serde_json::Value>(&out.stdout)
+            .map_err(|e| format!("history --json should parse cleanly: {e}"))?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-045", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-parse-status", "standard")?;
+        let out = run_cli(&["run", "status", "--json"], ws.path())?;
+        assert_success(&out)?;
+        serde_json::from_str::<serde_json::Value>(&out.stdout)
+            .map_err(|e| format!("status --json should parse cleanly: {e}"))?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-046", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-logs", "standard")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let log_dir = conformance_project_root(&ws, "rq-follow-logs").join("runtime/logs");
+        std::fs::write(
+            log_dir.join("002.ndjson"),
+            r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"new follow log"}"#.to_owned() + "\n",
+        )
+        .map_err(|e| format!("write runtime log: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("new follow log") {
+            return Err(
+                "follow --logs output should include the appended runtime log entry".into(),
+            );
+        }
         Ok(())
     });
 }
@@ -11908,10 +12399,11 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 created_at: chrono::Utc::now(),
                 batch_sequence: 1,
                 source: crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
-                dedup_key: crate::contexts::project_run_record::model::QueuedAmendment::compute_dedup_key(
-                    &crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
-                    "Implement the final amendment.",
-                ),
+                dedup_key:
+                    crate::contexts::project_run_record::model::QueuedAmendment::compute_dedup_key(
+                        &crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                        "Implement the final amendment.",
+                    ),
             };
             crate::adapters::fs::FsAmendmentQueueStore
                 .write_amendment(ws.path(), &pid, &amendment)
@@ -17374,7 +17866,11 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
-        assert_contains(&list.stdout, "No pending amendments", "amend list after remove")?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "amend list after remove",
+        )?;
 
         Ok(())
     });
@@ -17389,21 +17885,19 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         )?;
         assert_success(&boot)?;
 
-        run_cli(
-            &["project", "amend", "add", "--text", "Fix A"],
-            ws.path(),
-        )?;
-        run_cli(
-            &["project", "amend", "add", "--text", "Fix B"],
-            ws.path(),
-        )?;
+        run_cli(&["project", "amend", "add", "--text", "Fix A"], ws.path())?;
+        run_cli(&["project", "amend", "add", "--text", "Fix B"], ws.path())?;
 
         let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
         assert_success(&clear)?;
 
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
-        assert_contains(&list.stdout, "No pending amendments", "amend list after clear")?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "amend list after clear",
+        )?;
 
         Ok(())
     });
@@ -17515,11 +18009,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         let journal = read_journal(&ws, "stub-project")?;
         let amendment_event = journal
             .iter()
-            .find(|e| {
-                e.get("event_type")
-                    .and_then(|v| v.as_str())
-                    == Some("amendment_queued")
-            })
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
             .ok_or_else(|| "missing amendment_queued event in journal".to_owned())?;
 
         let details = amendment_event
@@ -17569,7 +18059,13 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         assert_success(&boot)?;
 
         let add = run_cli(
-            &["project", "amend", "add", "--text", "Persist across restart"],
+            &[
+                "project",
+                "amend",
+                "add",
+                "--text",
+                "Persist across restart",
+            ],
             ws.path(),
         )?;
         assert_success(&add)?;
@@ -17682,9 +18178,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
             }
         } else if !resume.success {
             // Engine failed — verify the error mentions completion blocking.
-            if !resume.stderr.contains("blocked")
-                && !resume.stderr.contains("pending amendment")
-            {
+            if !resume.stderr.contains("blocked") && !resume.stderr.contains("pending amendment") {
                 return Err(format!(
                     "run failed but error does not mention blocking: {}",
                     resume.stderr
@@ -17725,7 +18219,11 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // Verify no amendment was created.
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
-        assert_contains(&list.stdout, "No pending amendments", "no amendment created")?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "no amendment created",
+        )?;
 
         Ok(())
     });
@@ -17735,7 +18233,12 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         init_workspace(&ws)?;
 
         let boot = run_cli(
-            &["project", "bootstrap", "--idea", "Slice 3 lease conflict remove"],
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 lease conflict remove",
+            ],
             ws.path(),
         )?;
         assert_success(&boot)?;
@@ -17761,10 +18264,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
         std::fs::write(&lock_path, "held-by-test").ok();
 
-        let remove = run_cli(
-            &["project", "amend", "remove", &amendment_id],
-            ws.path(),
-        )?;
+        let remove = run_cli(&["project", "amend", "remove", &amendment_id], ws.path())?;
         assert_failure(&remove)?;
         assert_contains(&remove.stderr, "lease", "remove lease conflict stderr")?;
 
@@ -17772,7 +18272,11 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         std::fs::remove_file(&lock_path).ok();
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
-        assert_contains(&list.stdout, &amendment_id, "amendment should still be pending")?;
+        assert_contains(
+            &list.stdout,
+            &amendment_id,
+            "amendment should still be pending",
+        )?;
 
         Ok(())
     });
@@ -17782,7 +18286,12 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         init_workspace(&ws)?;
 
         let boot = run_cli(
-            &["project", "bootstrap", "--idea", "Slice 3 lease conflict clear"],
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 lease conflict clear",
+            ],
             ws.path(),
         )?;
         assert_success(&boot)?;
@@ -17870,10 +18379,10 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // complete pair. Either ordering is valid since amendments are sorted
         // by (created_at, batch_sequence).
         let stderr = &clear.stderr;
-        let ordering_a =
-            stderr.contains(&format!("removed: {id1}")) && stderr.contains(&format!("remaining: {id2}"));
-        let ordering_b =
-            stderr.contains(&format!("removed: {id2}")) && stderr.contains(&format!("remaining: {id1}"));
+        let ordering_a = stderr.contains(&format!("removed: {id1}"))
+            && stderr.contains(&format!("remaining: {id2}"));
+        let ordering_b = stderr.contains(&format!("removed: {id2}"))
+            && stderr.contains(&format!("remaining: {id1}"));
         if !ordering_a && !ordering_b {
             return Err(format!(
                 "partial clear must report both exact removed AND remaining IDs.\n\
@@ -17939,7 +18448,9 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
                 let first = &arr[0];
                 let body = first.get("body").and_then(|b| b.as_str()).unwrap_or("");
                 if body != "Sync body" {
-                    return Err(format!("expected body 'Sync body' in run.json pending, got: {body}"));
+                    return Err(format!(
+                        "expected body 'Sync body' in run.json pending, got: {body}"
+                    ));
                 }
             }
             _ => {
@@ -17973,9 +18484,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         let list = run_cli(&["project", "amend", "list"], ws.path())?;
         assert_success(&list)?;
         if list.stdout.contains("Should not persist") {
-            return Err(
-                "amendment should not be visible after journal append failure".to_owned(),
-            );
+            return Err("amendment should not be visible after journal append failure".to_owned());
         }
 
         // run.json must have no pending amendments.

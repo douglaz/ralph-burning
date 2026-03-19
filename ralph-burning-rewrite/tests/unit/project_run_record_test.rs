@@ -1437,22 +1437,14 @@ impl AmendmentQueuePort for FakeAmendmentQueue {
         }
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         let mut amendments = self.amendments.borrow_mut();
         let count = amendments.len() as u32;
         amendments.clear();
         Ok(count)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -1500,19 +1492,11 @@ impl AmendmentQueuePort for FailingRemoveAmendmentQueue {
         )))
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         Ok(0)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -1665,8 +1649,14 @@ fn amendment_source_round_trips() {
 fn amendment_source_display_matches_as_str() {
     assert_eq!(format!("{}", AmendmentSource::Manual), "manual");
     assert_eq!(format!("{}", AmendmentSource::PrReview), "pr_review");
-    assert_eq!(format!("{}", AmendmentSource::IssueCommand), "issue_command");
-    assert_eq!(format!("{}", AmendmentSource::WorkflowStage), "workflow_stage");
+    assert_eq!(
+        format!("{}", AmendmentSource::IssueCommand),
+        "issue_command"
+    );
+    assert_eq!(
+        format!("{}", AmendmentSource::WorkflowStage),
+        "workflow_stage"
+    );
 }
 
 // -- QueuedAmendment backwards-compat deserialization --
@@ -1790,7 +1780,10 @@ fn add_manual_amendment_deduplicates() {
         "fix the bug",
     )
     .unwrap();
-    assert!(matches!(second, service::AmendmentAddResult::Duplicate { .. }));
+    assert!(matches!(
+        second,
+        service::AmendmentAddResult::Duplicate { .. }
+    ));
 
     // Only one amendment should be on disk
     assert_eq!(queue.amendments.borrow().len(), 1);
@@ -1806,18 +1799,33 @@ fn add_manual_amendment_dedup_normalizes_whitespace() {
     let pid = ProjectId::new("alpha").unwrap();
 
     service::add_manual_amendment(
-        &queue, &shared_store, &shared_store, &journal, &project_store,
-        &base, &pid, "fix  the\nbug",
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix  the\nbug",
     )
     .unwrap();
 
     let second = service::add_manual_amendment(
-        &queue, &shared_store, &shared_store, &journal, &project_store,
-        &base, &pid, "fix the bug",
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
     )
     .unwrap();
 
-    assert!(matches!(second, service::AmendmentAddResult::Duplicate { .. }));
+    assert!(matches!(
+        second,
+        service::AmendmentAddResult::Duplicate { .. }
+    ));
 }
 
 // -- list_amendments service tests --
@@ -1872,8 +1880,14 @@ fn remove_amendment_succeeds_for_existing() {
     let pid = ProjectId::new("alpha").unwrap();
 
     let result = service::add_manual_amendment(
-        &queue, &shared_store, &shared_store, &journal, &project_store,
-        &base, &pid, "fix bug",
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix bug",
     )
     .unwrap();
     let amendment_id = match result {
@@ -1900,7 +1914,8 @@ fn remove_amendment_fails_for_missing() {
 
     let run_store = FakeRunSnapshotStore::no_run();
     let run_write = FakeRunSnapshotWriteStore::new();
-    let result = service::remove_amendment(&queue, &run_store, &run_write, &base, &pid, "nonexistent");
+    let result =
+        service::remove_amendment(&queue, &run_store, &run_write, &base, &pid, "nonexistent");
     assert!(result.is_err());
     assert!(matches!(
         result.unwrap_err(),
@@ -1932,17 +1947,30 @@ fn clear_amendments_removes_all() {
     let pid = ProjectId::new("alpha").unwrap();
 
     service::add_manual_amendment(
-        &queue, &shared_store, &shared_store, &journal, &project_store,
-        &base, &pid, "fix A",
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix A",
     )
     .unwrap();
     service::add_manual_amendment(
-        &queue, &shared_store, &shared_store, &journal, &project_store,
-        &base, &pid, "fix B",
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix B",
     )
     .unwrap();
 
-    let removed = service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
+    let removed =
+        service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
     assert_eq!(removed.len(), 2);
 }
 
@@ -2131,10 +2159,7 @@ fn remove_amendment_fails_when_file_deletion_fails() {
         source,
         dedup_key,
     };
-    snapshot
-        .amendment_queue
-        .pending
-        .push(amendment.clone());
+    snapshot.amendment_queue.pending.push(amendment.clone());
     let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
     let run_write = FakeRunSnapshotWriteStore::new();
 
@@ -2145,7 +2170,12 @@ fn remove_amendment_fails_when_file_deletion_fails() {
     let pid = ProjectId::new("alpha").unwrap();
 
     let result = service::remove_amendment(
-        &queue, &run_store, &run_write, &base, &pid, "manual-test-123",
+        &queue,
+        &run_store,
+        &run_write,
+        &base,
+        &pid,
+        "manual-test-123",
     );
 
     // Remove must fail because the file couldn't be deleted.
@@ -2340,22 +2370,14 @@ impl AmendmentQueuePort for FailAfterNWritesAmendmentQueue {
         }
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         let mut amendments = self.amendments.borrow_mut();
         let count = amendments.len() as u32;
         amendments.clear();
         Ok(count)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -2492,10 +2514,8 @@ fn clear_partial_failure_restores_files_when_repair_write_fails() {
     };
 
     // Use FailAfterNRemovesAmendmentQueue: first remove succeeds, second fails.
-    let queue = FailAfterNRemovesAmendmentQueue::new(
-        vec![amendment_a.clone(), amendment_b.clone()],
-        1,
-    );
+    let queue =
+        FailAfterNRemovesAmendmentQueue::new(vec![amendment_a.clone(), amendment_b.clone()], 1);
 
     let mut snapshot = RunSnapshot::initial();
     snapshot.amendment_queue.pending = vec![amendment_a.clone(), amendment_b.clone()];
@@ -2593,22 +2613,14 @@ impl AmendmentQueuePort for FailAfterNRemovesAmendmentQueue {
         }
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         let mut amendments = self.amendments.borrow_mut();
         let count = amendments.len() as u32;
         amendments.clear();
         Ok(count)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -2897,9 +2909,7 @@ fn stage_amendment_batch_surfaces_partial_journal_as_corrupt_record() {
                 "CorruptRecord should describe partial journal state, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord for partial journal persistence, got: {other:?}"
-        ),
+        other => panic!("expected CorruptRecord for partial journal persistence, got: {other:?}"),
     }
 
     // Amendment files must still be rolled back.
@@ -2950,9 +2960,9 @@ fn add_manual_amendment_returns_corrupt_record_when_rollback_fails() {
                 "CorruptRecord should mention rollback failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when rollback fails after journal error, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when rollback fails after journal error, got: {other:?}")
+        }
     }
 }
 
@@ -3003,9 +3013,9 @@ fn stage_amendment_batch_returns_corrupt_record_when_rollback_fails() {
                 "CorruptRecord should indicate snapshot restore failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when rollback fails after journal error, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when rollback fails after journal error, got: {other:?}")
+        }
     }
 }
 
@@ -3145,22 +3155,14 @@ impl AmendmentQueuePort for FailingWriteAmendmentQueue {
         }
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         let mut amendments = self.amendments.borrow_mut();
         let count = amendments.len() as u32;
         amendments.clear();
         Ok(count)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -3179,7 +3181,13 @@ fn add_manual_amendment_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
     let pid = ProjectId::new("alpha").unwrap();
 
     let result = service::add_manual_amendment(
-        &queue, &store, &store, &journal, &project_store, &base, &pid,
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
         "should fail on snapshot then fail on cleanup",
     );
 
@@ -3195,9 +3203,9 @@ fn add_manual_amendment_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
                 "CorruptRecord should mention cleanup failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}")
+        }
     }
 }
 
@@ -3224,7 +3232,14 @@ fn stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
     }];
 
     let result = service::stage_amendment_batch(
-        &queue, &store, &store, &journal, &project_store, &base, &pid, &amendments,
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
     );
 
     assert!(result.is_err());
@@ -3239,9 +3254,9 @@ fn stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
                 "CorruptRecord should mention cleanup failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}")
+        }
     }
 }
 
@@ -3274,9 +3289,7 @@ fn remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail() {
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::remove_amendment(
-        &queue, &store, &store, &base, &pid, "manual-test-123",
-    );
+    let result = service::remove_amendment(&queue, &store, &store, &base, &pid, "manual-test-123");
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -3290,9 +3303,9 @@ fn remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail() {
                 "CorruptRecord should mention restore failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when both snapshot and restore fail, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when both snapshot and restore fail, got: {other:?}")
+        }
     }
 }
 
@@ -3321,9 +3334,7 @@ fn clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail() {
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::clear_amendments(
-        &queue, &store, &store, &base, &pid,
-    );
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -3337,9 +3348,9 @@ fn clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail() {
                 "CorruptRecord should mention restore failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when both snapshot and restore fail, got: {other:?}"
-        ),
+        other => {
+            panic!("expected CorruptRecord when both snapshot and restore fail, got: {other:?}")
+        }
     }
 }
 
@@ -3403,19 +3414,11 @@ impl AmendmentQueuePort for PartialRemoveFailingWriteQueue {
         }
     }
 
-    fn drain_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<u32> {
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
         Ok(0)
     }
 
-    fn has_pending_amendments(
-        &self,
-        _base_dir: &Path,
-        _project_id: &ProjectId,
-    ) -> AppResult<bool> {
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
@@ -3459,9 +3462,7 @@ fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() 
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::clear_amendments(
-        &queue, &store, &store, &base, &pid,
-    );
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -3475,9 +3476,6 @@ fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() 
                 "CorruptRecord should mention restore failure, got: {details}"
             );
         }
-        other => panic!(
-            "expected CorruptRecord when both repair and restore fail, got: {other:?}"
-        ),
+        other => panic!("expected CorruptRecord when both repair and restore fail, got: {other:?}"),
     }
 }
-

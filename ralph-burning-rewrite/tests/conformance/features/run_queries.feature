@@ -204,3 +204,125 @@ Feature: Run Queries
     When the user runs "run tail --logs"
     Then the runtime logs section contains entries from the newest file only
     And the runtime logs section does not contain entries from older files
+
+  # SC-RUN-029
+  Scenario: Run status --json emits the stable status schema
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has one pending amendment
+    When the user runs "run status --json"
+    Then the output is a JSON object containing project_id, status, stage, cycle, completion_round, summary, and amendment_queue_depth
+
+  # SC-RUN-030
+  Scenario: Run history --verbose shows full event details and artifact previews
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run history --verbose"
+    Then the output includes JSON event details
+    And the output includes payload metadata
+    And the output includes truncated artifact previews
+
+  # SC-RUN-031
+  Scenario: Run history --json emits a single parseable JSON object
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run history --json"
+    Then the output is a JSON object with events, payloads, and artifacts arrays
+
+  # SC-RUN-032
+  Scenario: Run history --json --verbose includes heavy payload and artifact fields
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run history --json --verbose"
+    Then payload objects include the full payload field
+    And artifact objects include the full content field
+
+  # SC-RUN-033
+  Scenario: Run history --stage filters all durable sections to one stage
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run history --stage planning"
+    Then the output includes only planning-stage events, payloads, and artifacts
+
+  # SC-RUN-034
+  Scenario: Run tail --last N limits output to the most recent visible events
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run tail --last 2"
+    Then the durable history output includes only the most recent 2 visible events and their associated payloads/artifacts
+
+  # SC-RUN-035
+  Scenario: Run tail --follow starts polling and exits cleanly on Ctrl-C
+    Given an initialized workspace with project "alpha" selected as active
+    When the user starts "run tail --follow" and interrupts it with Ctrl-C
+    Then the command exits successfully after printing follow startup text
+
+  # SC-RUN-036
+  Scenario: Run show-payload prints full payload JSON for a visible payload
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run show-payload p1"
+    Then the output is the pretty-printed payload JSON content for "p1"
+
+  # SC-RUN-037
+  Scenario: Run show-payload fails clearly for an unknown payload ID
+    Given an initialized workspace with project "alpha" selected as active
+    When the user runs "run show-payload missing"
+    Then the command fails with error containing "payload not found"
+
+  # SC-RUN-038
+  Scenario: Run show-artifact prints full markdown content for a visible artifact
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run show-artifact a2"
+    Then the output is the full artifact content for "a2"
+
+  # SC-RUN-039
+  Scenario: Run show-artifact fails clearly for an unknown artifact ID
+    Given an initialized workspace with project "alpha" selected as active
+    When the user runs "run show-artifact missing"
+    Then the command fails with error containing "artifact not found"
+
+  # SC-RUN-040
+  Scenario: Run rollback --list enumerates visible rollback targets
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has visible rollback points
+    When the user runs "run rollback --list"
+    Then the output lists rollback_id, stage, cycle, created_at, and optional git_sha for each visible target
+
+  # SC-RUN-041
+  Scenario: Run rollback --list reports when no visible rollback targets exist
+    Given an initialized workspace with project "alpha" selected as active
+    When the user runs "run rollback --list"
+    Then the output reports that no rollback targets are available
+
+  # SC-RUN-042
+  Scenario: Run rollback --list respects rollback visibility boundaries
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has rollback points on an abandoned branch and on the visible branch
+    When the user runs "run rollback --list"
+    Then the output lists only rollback targets from the visible branch
+
+  # SC-RUN-043
+  Scenario: Run history --stage rejects unknown stages cleanly
+    Given an initialized workspace with project "alpha" selected as active
+    When the user runs "run history --stage unknown_stage"
+    Then the command fails with error containing "unknown stage identifier"
+
+  # SC-RUN-044
+  Scenario: Run history --json is parseable by jq-dot style JSON parsing
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user runs "run history --json"
+    Then the output parses as JSON without trailing data
+
+  # SC-RUN-045
+  Scenario: Run status --json is parseable by jq-dot style JSON parsing
+    Given an initialized workspace with project "alpha" selected as active
+    When the user runs "run status --json"
+    Then the output parses as JSON without trailing data
+
+  # SC-RUN-046
+  Scenario: Run tail --follow --logs prints new runtime log entries
+    Given an initialized workspace with project "alpha" selected as active
+    When the user starts "run tail --follow --logs", appends a new runtime log entry, and interrupts it with Ctrl-C
+    Then the follow output includes the appended runtime log entry

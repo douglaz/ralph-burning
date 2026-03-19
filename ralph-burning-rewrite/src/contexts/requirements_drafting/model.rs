@@ -79,7 +79,6 @@ pub struct RequirementsRun {
     pub status_summary: String,
 
     // ── Slice 1: stage-aware fields ─────────────────────────────────────
-
     /// Current full-mode stage (None for quick mode or pre-pipeline).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_stage: Option<FullModeStage>,
@@ -242,11 +241,7 @@ impl FullModeStage {
                 Self::Validation,
                 Self::ProjectSeed,
             ],
-            Self::ImplementationSpec => &[
-                Self::GapAnalysis,
-                Self::Validation,
-                Self::ProjectSeed,
-            ],
+            Self::ImplementationSpec => &[Self::GapAnalysis, Self::Validation, Self::ProjectSeed],
             Self::GapAnalysis => &[Self::Validation, Self::ProjectSeed],
             Self::Validation => &[Self::ProjectSeed],
             Self::ProjectSeed => &[],

@@ -31,6 +31,9 @@ mod journal_test;
 #[path = "unit/query_test.rs"]
 mod query_test;
 
+#[path = "unit/run_queries_test.rs"]
+mod run_queries_test;
+
 #[path = "unit/rollback_test.rs"]
 mod rollback_test;
 

@@ -14,7 +14,9 @@ use super::model::{
     ProjectDetail, ProjectListEntry, ProjectRecord, ProjectStatusSummary, QueuedAmendment,
     RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry, SessionStore,
 };
-use super::queries::{self, RunHistoryView, RunStatusView, RunTailView};
+use super::queries::{
+    self, RunHistoryView, RunRollbackTargetView, RunStatusJsonView, RunStatusView, RunTailView,
+};
 
 /// Port for reading and writing project records.
 pub trait ProjectStorePort {
@@ -68,6 +70,34 @@ pub trait ArtifactStorePort {
         base_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<Vec<ArtifactRecord>>;
+
+    fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        self.list_payloads(base_dir, project_id)?
+            .into_iter()
+            .find(|payload| payload.payload_id == payload_id)
+            .ok_or_else(|| AppError::PayloadNotFound {
+                payload_id: payload_id.to_owned(),
+            })
+    }
+
+    fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        self.list_artifacts(base_dir, project_id)?
+            .into_iter()
+            .find(|artifact| artifact.artifact_id == artifact_id)
+            .ok_or_else(|| AppError::ArtifactNotFound {
+                artifact_id: artifact_id.to_owned(),
+            })
+    }
 }
 
 /// Port for reading runtime logs (separate from durable history).
@@ -477,6 +507,19 @@ pub fn run_status(
     Ok(queries::build_status_view(project_id.as_str(), &snapshot))
 }
 
+/// Get stable JSON run status for the active project.
+pub fn run_status_json(
+    run_port: &dyn RunSnapshotPort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<RunStatusJsonView> {
+    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(RunStatusJsonView::from_snapshot(
+        project_id.as_str(),
+        &snapshot,
+    ))
+}
+
 /// Get run history (durable only, no runtime logs).
 pub fn run_history(
     journal_port: &dyn JournalStorePort,
@@ -556,6 +599,27 @@ pub fn list_rollback_points(
     Ok(points)
 }
 
+/// List visible rollback targets in a CLI-ready view format.
+pub fn list_rollback_targets(
+    rollback_store: &dyn RollbackPointStorePort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<RunRollbackTargetView>> {
+    Ok(
+        list_rollback_points(rollback_store, journal_port, base_dir, project_id)?
+            .into_iter()
+            .map(|point| RunRollbackTargetView {
+                rollback_id: point.rollback_id,
+                stage_id: point.stage_id.as_str().to_owned(),
+                cycle: point.cycle,
+                created_at: point.created_at,
+                git_sha: point.git_sha,
+            })
+            .collect(),
+    )
+}
+
 /// Look up the latest visible rollback point for a stage.
 pub fn get_rollback_point_for_stage(
     rollback_store: &dyn RollbackPointStorePort,
@@ -574,6 +638,64 @@ pub fn get_rollback_point_for_stage(
         .filter(|point| point.stage_id == stage_id)
         .filter(|point| visible_ids.contains(point.rollback_id.as_str()))
         .max_by_key(|point| point.created_at))
+}
+
+/// Resolve a visible payload record by ID.
+pub fn get_payload_by_id(
+    journal_port: &dyn JournalStorePort,
+    artifact_port: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    payload_id: &str,
+) -> AppResult<PayloadRecord> {
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
+    queries::validate_history_consistency(&payloads, &artifacts)?;
+
+    if !payloads
+        .iter()
+        .any(|payload| payload.payload_id == payload_id)
+    {
+        return Err(AppError::PayloadNotFound {
+            payload_id: payload_id.to_owned(),
+        });
+    }
+
+    artifact_port.read_payload_by_id(base_dir, project_id, payload_id)
+}
+
+/// Resolve a visible artifact record by ID.
+pub fn get_artifact_by_id(
+    journal_port: &dyn JournalStorePort,
+    artifact_port: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    artifact_id: &str,
+) -> AppResult<ArtifactRecord> {
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
+    queries::validate_history_consistency(&payloads, &artifacts)?;
+
+    if !artifacts
+        .iter()
+        .any(|artifact| artifact.artifact_id == artifact_id)
+    {
+        return Err(AppError::ArtifactNotFound {
+            artifact_id: artifact_id.to_owned(),
+        });
+    }
+
+    artifact_port.read_artifact_by_id(base_dir, project_id, artifact_id)
 }
 
 /// Perform a logical or hard rollback to a visible checkpoint.
@@ -874,19 +996,19 @@ pub fn add_manual_amendment(
     // and amendment file so no amendment is visible without its history.
     if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
         // Attempt to restore pre-mutation state.
-        let snap_result =
-            run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
-        let file_result =
-            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        let snap_result = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+        let file_result = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
 
         // If rollback itself failed, return a composite error so the caller
         // knows canonical state may be inconsistent, matching the pattern
         // used in execute_rollback.
         if snap_result.is_err() || file_result.is_err() {
-            let snap_detail =
-                snap_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
-            let file_detail =
-                file_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            let snap_detail = snap_result
+                .err()
+                .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            let file_detail = file_result
+                .err()
+                .map_or_else(|| "ok".to_owned(), |e| e.to_string());
             return Err(AppError::CorruptRecord {
                 file: format!("projects/{}/run.json", project_id.as_str()),
                 details: format!(
@@ -965,8 +1087,7 @@ pub fn remove_amendment(
         // Restore the amendment file so disk and snapshot stay consistent.
         // If restore also fails, return a composite error so the caller knows
         // the amendment file is missing while the snapshot still lists it.
-        if let Err(restore_err) =
-            amendment_queue.write_amendment(base_dir, project_id, &amendment)
+        if let Err(restore_err) = amendment_queue.write_amendment(base_dir, project_id, &amendment)
         {
             return Err(AppError::CorruptRecord {
                 file: format!("projects/{}/run.json", project_id.as_str()),
@@ -1005,8 +1126,7 @@ pub fn clear_amendments(
         });
     }
 
-    let pending: Vec<QueuedAmendment> =
-        std::mem::take(&mut snapshot.amendment_queue.pending);
+    let pending: Vec<QueuedAmendment> = std::mem::take(&mut snapshot.amendment_queue.pending);
     if pending.is_empty() {
         return Ok(Vec::new());
     }
@@ -1289,8 +1409,9 @@ pub fn stage_amendment_batch(
             // Similarly, if rollback itself failed, the caller needs to know
             // that canonical state may be inconsistent.
             if appended_count > 0 || rollback_failed {
-                let snap_detail =
-                    snap_result.err().map_or_else(|| "ok".to_owned(), |e| e.to_string());
+                let snap_detail = snap_result
+                    .err()
+                    .map_or_else(|| "ok".to_owned(), |e| e.to_string());
                 let file_detail = if file_failures.is_empty() {
                     "ok".to_owned()
                 } else {

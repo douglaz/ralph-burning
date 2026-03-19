@@ -131,6 +131,10 @@ pub enum AppError {
     DuplicateAmendment { amendment_id: String },
     #[error("amendment not found: '{amendment_id}'")]
     AmendmentNotFound { amendment_id: String },
+    #[error("payload not found: '{payload_id}'")]
+    PayloadNotFound { payload_id: String },
+    #[error("artifact not found: '{artifact_id}'")]
+    ArtifactNotFound { artifact_id: String },
     #[error(
         "cannot modify amendments for project '{project_id}': a writer lease is currently held"
     )]

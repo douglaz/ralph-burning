@@ -12,8 +12,8 @@ use crate::contexts::automation_runtime::{
 };
 use crate::contexts::project_run_record::model::QueuedAmendment;
 use crate::contexts::project_run_record::service::{
-    self as record_service, AmendmentQueuePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
-    RunSnapshotWritePort,
+    self as record_service, AmendmentQueuePort, JournalStorePort, ProjectStorePort,
+    RunSnapshotPort, RunSnapshotWritePort,
 };
 use crate::shared::domain::{ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
