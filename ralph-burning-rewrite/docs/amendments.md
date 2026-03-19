@@ -46,19 +46,28 @@ All amendment mutations (add, remove, clear, reopen) are failure-safe against
 the canonical `run.json` snapshot. Mutations drive existence checks and dedup
 from `run.json`:
 
-- **add**: writes the amendment file, commits the snapshot, then appends the
-  journal event. If the snapshot write fails after file creation, the amendment
-  file is rolled back. The journal event is written last (best-effort) so a
-  snapshot failure never leaves an orphaned journal entry.
+- **add**: prepares the journal line first (reading the journal and serializing
+  the event), then writes the amendment file, commits the snapshot, and appends
+  the journal event (best-effort). If journal preparation fails, no mutation
+  occurs. If the snapshot write fails after file creation, the amendment file is
+  rolled back. Because the journal line is prepared before any mutations, a
+  successful add always records the history event and a failed add never leaves
+  a committed amendment behind.
 - **remove**: deletes the amendment file first, then updates the snapshot. If
   file deletion fails, no mutation is visible. If the snapshot write fails after
   a successful file deletion, the file is restored.
 - **clear**: deletes amendment files first, tracking which succeed and which
   fail. Then updates the snapshot to contain only remaining (un-deletable)
   amendments. If all files are deleted but the snapshot write fails, the files
-  are restored. On partial failure, `AmendmentClearPartial` is returned with
-  the exact removed and remaining IDs regardless of whether the snapshot
-  repair write succeeds.
+  are restored. On partial failure, the snapshot repair write must succeed
+  before `AmendmentClearPartial` is returned with exact removed and remaining
+  IDs. If the repair write fails, deleted files are restored and the underlying
+  I/O error is returned instead, ensuring `run.json` always reflects the true
+  pending set.
+- **stage_amendment_batch**: prepares the journal sequence before mutations,
+  then writes amendment files. If a file write fails mid-batch, all earlier
+  files in the same batch are rolled back. The snapshot is committed after all
+  files are written; if it fails, all files are rolled back.
 
 This ensures `run.json` is always the canonical source of truth for pending
 amendments, and that completion gating, resume reconciliation, and snapshot

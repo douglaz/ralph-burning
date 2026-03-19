@@ -2208,3 +2208,407 @@ fn clear_amendments_preserves_all_on_snapshot_write_failure() {
         "amendment files must be restored when snapshot write fails"
     );
 }
+
+// -- FailingJournalStore: read_journal always fails --
+
+struct FailingJournalStore;
+
+impl JournalStorePort for FailingJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated journal read failure",
+        )))
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn add_manual_amendment_fails_cleanly_on_journal_read_failure() {
+    // With the journal preparation happening before mutations, a journal
+    // read failure should prevent any mutation from occurring.
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FailingJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should not persist",
+    );
+
+    // Must fail (journal read fails before any mutation).
+    assert!(result.is_err());
+
+    // No amendment file should have been written.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "no amendment file should be written when journal read fails"
+    );
+
+    // No snapshot should have been written.
+    assert!(
+        run_write.written_snapshot().is_none(),
+        "no snapshot should be written when journal read fails"
+    );
+}
+
+// -- FailAfterNWritesAmendmentQueue: write_amendment fails after N successes --
+
+struct FailAfterNWritesAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    writes_before_failure: usize,
+    write_count: RefCell<usize>,
+}
+
+impl FailAfterNWritesAmendmentQueue {
+    fn new(writes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(Vec::new()),
+            writes_before_failure,
+            write_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailAfterNWritesAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        let mut count = self.write_count.borrow_mut();
+        if *count >= self.writes_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated write failure",
+            )));
+        }
+        *count += 1;
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+#[test]
+fn stage_amendment_batch_rolls_back_earlier_files_on_mid_batch_write_failure() {
+    // The second write will fail, so the first file must be rolled back.
+    let queue = FailAfterNWritesAmendmentQueue::new(1);
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the second write fails.
+    assert!(result.is_err());
+
+    // The first file must be rolled back — no amendment files should remain.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "earlier files must be rolled back when a later write fails in the batch"
+    );
+
+    // Canonical snapshot must not have been updated.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must not be updated when batch staging fails"
+    );
+}
+
+// -- FailingRepairWriteStore: first write succeeds, second (repair) fails --
+
+struct FailingRepairWriteStore {
+    snapshot: RefCell<RunSnapshot>,
+}
+
+impl FailingRepairWriteStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+        }
+    }
+}
+
+impl RunSnapshotPort for FailingRepairWriteStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for FailingRepairWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        // All writes fail — simulates the repair write failing during
+        // partial clear.
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated repair write failure",
+        )))
+    }
+}
+
+#[test]
+fn clear_partial_failure_restores_files_when_repair_write_fails() {
+    // Build a scenario where one remove succeeds and one fails, then the
+    // repair snapshot write also fails.
+    let source = AmendmentSource::Manual;
+    let amendment_a = QueuedAmendment {
+        amendment_id: "amend-a".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "fix A".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: source.clone(),
+        dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix A"),
+    };
+    let amendment_b = QueuedAmendment {
+        amendment_id: "amend-b".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "fix B".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: source.clone(),
+        dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix B"),
+    };
+
+    // Use FailAfterNRemovesAmendmentQueue: first remove succeeds, second fails.
+    let queue = FailAfterNRemovesAmendmentQueue::new(
+        vec![amendment_a.clone(), amendment_b.clone()],
+        1,
+    );
+
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = vec![amendment_a.clone(), amendment_b.clone()];
+
+    // Use FailingRepairWriteStore so the repair snapshot write also fails.
+    let store = FailingRepairWriteStore::new(snapshot);
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
+
+    // Must fail with an I/O error (not AmendmentClearPartial), because the
+    // repair write failed.
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::AmendmentClearPartial { .. } => {
+            panic!("should return I/O error, not AmendmentClearPartial, when repair write fails");
+        }
+        AppError::Io(_) => {} // expected
+        other => panic!("unexpected error type: {:?}", other),
+    }
+
+    // The deleted file must be restored — both amendments should be on disk.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        2,
+        "deleted files must be restored when repair write fails"
+    );
+}
+
+// -- FailAfterNRemovesAmendmentQueue: remove fails after N successes --
+
+struct FailAfterNRemovesAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    removes_before_failure: usize,
+    remove_count: RefCell<usize>,
+}
+
+impl FailAfterNRemovesAmendmentQueue {
+    fn new(amendments: Vec<QueuedAmendment>, removes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+            removes_before_failure,
+            remove_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailAfterNRemovesAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut count = self.remove_count.borrow_mut();
+        if *count >= self.removes_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated remove failure",
+            )));
+        }
+        *count += 1;
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}

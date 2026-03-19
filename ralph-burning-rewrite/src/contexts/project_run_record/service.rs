@@ -808,6 +808,23 @@ pub fn add_manual_amendment(
         dedup_key: dedup_key.clone(),
     };
 
+    // Prepare the journal line BEFORE any mutations so that fallible
+    // read_journal / serialize_event calls cannot fail after canonical state
+    // is already committed.
+    let journal_line = {
+        let events = journal_port.read_journal(base_dir, project_id)?;
+        let seq = journal::last_sequence(&events) + 1;
+        let journal_event = journal::amendment_queued_manual_event(
+            seq,
+            now,
+            &amendment_id,
+            body,
+            "manual",
+            &dedup_key,
+        );
+        journal::serialize_event(&journal_event)?
+    };
+
     // Write durable amendment file.
     amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
 
@@ -839,22 +856,12 @@ pub fn add_manual_amendment(
         return Err(snap_err);
     }
 
-    // Emit journal event AFTER canonical state is committed. If this fails,
-    // the amendment is still visible in run.json and will function correctly;
-    // the journal entry is informational history, not a gating artifact.
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let seq = journal::last_sequence(&events) + 1;
-    let journal_event = journal::amendment_queued_manual_event(
-        seq,
-        now,
-        &amendment_id,
-        body,
-        "manual",
-        &dedup_key,
-    );
-    let line = journal::serialize_event(&journal_event)?;
-    // Best-effort: canonical state is already committed.
-    let _ = journal_port.append_event(base_dir, project_id, &line);
+    // Emit journal event AFTER canonical state is committed. Best-effort:
+    // the amendment is already in run.json and will function correctly even
+    // if the append fails. Because the journal line was prepared before any
+    // mutations, this path cannot fail in a way that reports error to the
+    // caller after the amendment is already committed.
+    let _ = journal_port.append_event(base_dir, project_id, &journal_line);
 
     Ok(AmendmentAddResult::Created { amendment_id })
 }
@@ -972,9 +979,21 @@ pub fn clear_amendments(
                 snapshot.amendment_queue.pending.push(a.clone());
             }
         }
-        // Best-effort snapshot update. Even if this write fails, we still
-        // return AmendmentClearPartial so the caller gets the exact IDs.
-        let _ = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot);
+        // The snapshot MUST reflect only the remaining amendments before we
+        // report partial success. If this repair write fails, restore the
+        // deleted files so disk matches the unmodified snapshot and return the
+        // underlying I/O error instead of AmendmentClearPartial.
+        if let Err(repair_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+        {
+            // Restore deleted amendment files so disk stays consistent with
+            // the unmodified on-disk snapshot.
+            for a in &pending {
+                if !remaining_set.contains(a.amendment_id.as_str()) {
+                    let _ = amendment_queue.write_amendment(base_dir, project_id, a);
+                }
+            }
+            return Err(repair_err);
+        }
 
         return Err(AppError::AmendmentClearPartial {
             removed_count: removed.len(),
@@ -1006,8 +1025,15 @@ pub fn stage_amendment_batch(
         return Ok(Vec::new());
     }
 
+    // Prepare the journal sequence number BEFORE any mutations so that the
+    // fallible read_journal call cannot fail after canonical state is committed.
+    let base_journal_seq = {
+        let events = journal_port.read_journal(base_dir, project_id)?;
+        journal::last_sequence(&events)
+    };
+
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
-    let mut staged_ids = Vec::new();
+    let mut staged_ids: Vec<String> = Vec::new();
     let mut staged_amendments: Vec<&QueuedAmendment> = Vec::new();
 
     for amendment in amendments {
@@ -1021,8 +1047,14 @@ pub fn stage_amendment_batch(
             continue;
         }
 
-        // Write durable amendment file.
-        amendment_queue.write_amendment(base_dir, project_id, amendment)?;
+        // Write durable amendment file. If this fails mid-batch, roll back
+        // all earlier file writes so no pre-commit files leak.
+        if let Err(write_err) = amendment_queue.write_amendment(base_dir, project_id, amendment) {
+            for id in &staged_ids {
+                let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+            }
+            return Err(write_err);
+        }
 
         // Sync canonical snapshot (in memory — committed below).
         snapshot.amendment_queue.pending.push(amendment.clone());
@@ -1058,9 +1090,10 @@ pub fn stage_amendment_batch(
 
     // Emit journal events AFTER canonical state is committed. Best-effort:
     // the amendments are already in run.json and will function correctly
-    // even if journal writes fail.
-    let events = journal_port.read_journal(base_dir, project_id)?;
-    let mut seq = journal::last_sequence(&events);
+    // even if journal writes fail. The base sequence was read before any
+    // mutations so these calls cannot fail in a way that reports error to the
+    // caller after amendments are already committed.
+    let mut seq = base_journal_seq;
     for amendment in &staged_amendments {
         seq += 1;
         let journal_event = journal::amendment_queued_manual_event(

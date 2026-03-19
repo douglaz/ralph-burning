@@ -165,6 +165,36 @@ and workflow-stage sources:
    the actual write ordering (file → snapshot → journal for add; file → snapshot
    for remove/clear).
 
+## Review Response Changes (Iteration 5)
+
+1. **Durable history persistence**: Journal preparation (`read_journal`,
+   `serialize_event`) now happens BEFORE any mutations in both
+   `add_manual_amendment` and `stage_amendment_batch`. This eliminates the
+   split outcome where a command could fail after the amendment was already
+   committed to `run.json`, or succeed without the required history event.
+   The journal append itself remains best-effort after canonical commit.
+2. **Shared staging atomicity**: `stage_amendment_batch` now rolls back all
+   earlier amendment files if a mid-batch `write_amendment` call fails. Previously,
+   earlier files would leak if a later write in the same batch failed.
+3. **Clear partial-failure invariant**: When `clear` reports partial success,
+   the repair snapshot write must succeed before `AmendmentClearPartial` is
+   returned. If the repair write fails, deleted amendment files are restored and
+   the underlying I/O error is returned instead, ensuring `run.json` always
+   reflects the actual pending set.
+4. **Failure-injection test coverage**: Added 4 new unit tests with dedicated
+   test fixtures:
+   - `add_manual_amendment_fails_cleanly_on_journal_read_failure` — verifies no
+     mutation occurs when journal preparation fails.
+   - `stage_amendment_batch_rolls_back_earlier_files_on_mid_batch_write_failure`
+     — verifies earlier files are cleaned up when a later write fails.
+   - `clear_partial_failure_restores_files_when_repair_write_fails` — verifies
+     deleted files are restored when the repair snapshot write fails.
+   New fixtures: `FailingJournalStore`, `FailAfterNWritesAmendmentQueue`,
+   `FailAfterNRemovesAmendmentQueue`, `FailingRepairWriteStore`.
+5. **Docs updated**: `amendments.md` failure safety section rewritten to describe
+   the journal-preparation-first ordering and the repair-write-failure behavior
+   for `clear`.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope
