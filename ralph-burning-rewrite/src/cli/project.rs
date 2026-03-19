@@ -497,7 +497,8 @@ async fn start_created_project(base_dir: &Path, project_id: &ProjectId) -> AppRe
         Some(project_id),
         CliBackendOverrides::default(),
     )?;
-    let agent_service = agent_execution_builder::build_agent_execution_service()?;
+    let agent_service =
+        agent_execution_builder::build_agent_execution_service_for_config(&effective_config)?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;

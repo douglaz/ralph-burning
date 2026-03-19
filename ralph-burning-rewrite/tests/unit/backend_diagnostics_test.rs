@@ -7,11 +7,12 @@ use ralph_burning::contexts::agent_execution::diagnostics::{
 };
 use ralph_burning::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
 use ralph_burning::shared::domain::{
-    BackendFamily, BackendRoleModels, BackendRoleTimeouts, BackendRuntimeSettings, BackendSelection,
-    CompletionSettings, FlowPreset, PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
-    PromptReviewSettings,
+    BackendFamily, BackendRoleModels, BackendRoleTimeouts, BackendRuntimeSettings,
+    BackendSelection, CompletionSettings, ExecutionMode, FinalReviewSettings, FlowPreset,
+    PanelBackendSpec, PromptReviewSettings, WorkspaceConfig,
 };
 
+use super::env_test_support::{lock_path_mutex, PathGuard};
 use super::workspace_test::initialize_workspace_fixture;
 
 fn write_workspace_config(base_dir: &std::path::Path, config: &WorkspaceConfig) {
@@ -109,7 +110,11 @@ fn check_passes_with_default_config() {
     let service = BackendDiagnosticsService::new(&config);
     let result = service.check_backends(FlowPreset::Standard);
 
-    assert!(result.passed, "default config should pass check: {:?}", result.failures);
+    assert!(
+        result.passed,
+        "default config should pass check: {:?}",
+        result.failures
+    );
 }
 
 #[test]
@@ -130,9 +135,45 @@ fn check_fails_when_base_backend_disabled() {
 
     assert!(!result.passed);
     assert!(
-        result.failures.iter().any(|f| f.failure_kind == BackendCheckFailureKind::BackendDisabled),
+        result
+            .failures
+            .iter()
+            .any(|f| f.failure_kind == BackendCheckFailureKind::BackendDisabled),
         "expected at least one BackendDisabled failure: {:?}",
         result.failures
+    );
+}
+
+#[test]
+fn check_reports_tmux_unavailable_when_tmux_mode_is_configured() {
+    let _path_lock = lock_path_mutex();
+    let isolated_path = tempdir().expect("create isolated path");
+    let _path_guard = PathGuard::replace(isolated_path.path());
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.execution.mode = Some(ExecutionMode::Tmux);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service.check_backends(FlowPreset::Standard);
+
+    assert!(!result.passed, "tmux mode without tmux should fail check");
+    let failure = result
+        .failures
+        .iter()
+        .find(|failure| failure.failure_kind == BackendCheckFailureKind::TmuxUnavailable)
+        .expect("tmux-unavailable failure");
+    assert_eq!("execution", failure.role);
+    assert_eq!("tmux", failure.backend_family);
+    assert_eq!("workspace.toml", failure.config_source);
+    assert!(
+        failure.details.contains("tmux"),
+        "failure should mention tmux: {}",
+        failure.details
     );
 }
 
@@ -373,7 +414,10 @@ fn probe_required_member_failure_is_exact() {
     let service = BackendDiagnosticsService::new(&config);
     let result = service.probe("completion_panel", FlowPreset::Standard, 1);
 
-    assert!(result.is_err(), "required disabled member should fail probe");
+    assert!(
+        result.is_err(),
+        "required disabled member should fail probe"
+    );
     let error = result.unwrap_err();
     let msg = error.to_string();
     assert!(
@@ -602,7 +646,9 @@ fn probe_final_review_panel_includes_arbiter() {
 
     let panel = result.panel.expect("should have panel view");
     assert_eq!("final_review", panel.panel_type);
-    let arbiter = panel.arbiter.expect("should have arbiter in final_review panel");
+    let arbiter = panel
+        .arbiter
+        .expect("should have arbiter in final_review panel");
     assert!(!arbiter.backend_family.is_empty());
     assert!(!arbiter.model_id.is_empty());
     assert!(arbiter.required);
@@ -713,10 +759,10 @@ fn show_effective_explicit_role_override_beats_inheritance() {
 
 #[tokio::test]
 async fn check_with_availability_covers_panel_targets() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
 
     struct AlwaysAvailableAdapter;
@@ -758,15 +804,83 @@ async fn check_with_availability_covers_panel_targets() {
     let result = service
         .check_backends_with_availability(FlowPreset::Standard, &adapter)
         .await;
-    assert!(result.passed, "all-available adapter should pass: {:?}", result.failures);
+    assert!(
+        result.passed,
+        "all-available adapter should pass: {:?}",
+        result.failures
+    );
+}
+
+#[tokio::test]
+async fn check_with_availability_short_circuits_on_tmux_unavailable() {
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+
+    struct PanicAdapter;
+
+    impl AgentExecutionPort for PanicAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            panic!("availability adapter should not be queried when tmux is unavailable");
+        }
+
+        async fn check_availability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            panic!("availability adapter should not be queried when tmux is unavailable");
+        }
+
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let _path_lock = lock_path_mutex();
+    let isolated_path = tempdir().expect("create isolated path");
+    let _path_guard = PathGuard::replace(isolated_path.path());
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.execution.mode = Some(ExecutionMode::Tmux);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &PanicAdapter)
+        .await;
+
+    assert!(
+        result
+            .failures
+            .iter()
+            .any(|failure| failure.failure_kind == BackendCheckFailureKind::TmuxUnavailable),
+        "tmux-unavailable failure should be preserved"
+    );
 }
 
 #[tokio::test]
 async fn check_with_availability_reports_panel_member_failure() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -833,10 +947,10 @@ async fn check_with_availability_reports_panel_member_failure() {
 
 #[tokio::test]
 async fn probe_with_availability_omits_unavailable_optional_member() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -948,7 +1062,9 @@ fn check_with_adapter_failure_reports_availability_error() {
         adapter_failure.failure_kind
     );
     assert!(
-        adapter_failure.details.contains("adapter construction failed"),
+        adapter_failure
+            .details
+            .contains("adapter construction failed"),
         "details should mention adapter construction: {}",
         adapter_failure.details
     );
@@ -959,10 +1075,10 @@ fn check_with_adapter_failure_reports_availability_error() {
 
 #[tokio::test]
 async fn probe_with_availability_fails_on_required_unavailable_member() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1041,10 +1157,10 @@ async fn probe_with_availability_fails_on_required_unavailable_member() {
 
 #[tokio::test]
 async fn probe_with_availability_fails_on_unavailable_planner() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1109,10 +1225,10 @@ async fn probe_with_availability_fails_on_unavailable_planner() {
 
 #[tokio::test]
 async fn check_with_availability_reports_all_role_aliases_for_shared_target() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1272,10 +1388,10 @@ fn check_does_not_fail_on_final_reviewer_when_explicit_panel_backends() {
 
 #[tokio::test]
 async fn probe_prompt_review_panel_failure_reports_refiner_source() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1322,7 +1438,10 @@ async fn probe_prompt_review_panel_failure_reports_refiner_source() {
         .probe_with_availability("prompt_review_panel", FlowPreset::Standard, 1, &adapter)
         .await;
 
-    assert!(result.is_err(), "probe should fail when refiner is unavailable");
+    assert!(
+        result.is_err(),
+        "probe should fail when refiner is unavailable"
+    );
     let err_msg = result.unwrap_err().to_string();
     // No explicit refiner override set, so refiner inherits from default_backend
     assert!(
@@ -1433,10 +1552,10 @@ fn probe_completion_panel_uses_planner_timeout_not_completer() {
 
 #[tokio::test]
 async fn probe_failure_includes_config_source_for_planner() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1483,7 +1602,10 @@ async fn probe_failure_includes_config_source_for_planner() {
         .probe_with_availability("final_review_panel", FlowPreset::Standard, 1, &adapter)
         .await;
 
-    assert!(result.is_err(), "probe should fail when planner is unavailable");
+    assert!(
+        result.is_err(),
+        "probe should fail when planner is unavailable"
+    );
     let err_msg = result.unwrap_err().to_string();
     // No explicit planner override set, so planner inherits from default_backend
     assert!(
@@ -1495,10 +1617,10 @@ async fn probe_failure_includes_config_source_for_planner() {
 
 #[tokio::test]
 async fn probe_failure_includes_config_source_for_required_member() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1562,7 +1684,10 @@ async fn probe_failure_includes_config_source_for_required_member() {
         .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
         .await;
 
-    assert!(result.is_err(), "probe should fail on required unavailable member");
+    assert!(
+        result.is_err(),
+        "probe should fail on required unavailable member"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("[source: completion.backends]"),
@@ -1599,7 +1724,10 @@ fn check_arbiter_failure_reports_exact_member_and_source() {
     let service = BackendDiagnosticsService::new(&config);
     let result = service.check_backends(FlowPreset::Standard);
 
-    assert!(!result.passed, "should fail when arbiter backend is disabled");
+    assert!(
+        !result.passed,
+        "should fail when arbiter backend is disabled"
+    );
     let arbiter_failure = result
         .failures
         .iter()
@@ -1632,7 +1760,10 @@ fn check_refiner_failure_reports_exact_member_and_source() {
     let service = BackendDiagnosticsService::new(&config);
     let result = service.check_backends(FlowPreset::Standard);
 
-    assert!(!result.passed, "should fail when refiner backend is disabled");
+    assert!(
+        !result.passed,
+        "should fail when refiner backend is disabled"
+    );
     let refiner_failure = result
         .failures
         .iter()
@@ -1734,10 +1865,10 @@ fn show_effective_default_model_and_timeout_source() {
 
 #[tokio::test]
 async fn check_with_availability_passes_when_optional_member_unavailable_but_minimum_satisfied() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -1813,10 +1944,10 @@ async fn check_with_availability_passes_when_optional_member_unavailable_but_min
 
 #[tokio::test]
 async fn check_with_availability_fails_when_optional_omission_violates_minimum() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2046,10 +2177,10 @@ fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
 
 #[tokio::test]
 async fn probe_with_availability_final_review_failure_reports_planner_not_generic() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2116,10 +2247,10 @@ async fn probe_with_availability_final_review_failure_reports_planner_not_generi
 
 #[tokio::test]
 async fn check_with_availability_aggregates_arbiter_failure_independently_of_reviewer_resolution() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2167,9 +2298,7 @@ async fn check_with_availability_aggregates_arbiter_failure_independently_of_rev
         .insert("openrouter".to_owned(), empty_backend_settings(true));
     workspace.final_review = FinalReviewSettings {
         enabled: Some(true),
-        backends: Some(vec![
-            PanelBackendSpec::required(BackendFamily::Codex),
-        ]),
+        backends: Some(vec![PanelBackendSpec::required(BackendFamily::Codex)]),
         arbiter_backend: Some("openrouter".to_owned()),
         min_reviewers: Some(1),
         ..Default::default()
@@ -2204,11 +2333,12 @@ async fn check_with_availability_aggregates_arbiter_failure_independently_of_rev
 }
 
 #[tokio::test]
-async fn check_with_availability_aggregates_refiner_failure_independently_of_validator_resolution() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+async fn check_with_availability_aggregates_refiner_failure_independently_of_validator_resolution()
+{
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2634,7 +2764,10 @@ fn probe_completion_panel_optional_omission_below_minimum_reports_insufficient_m
     let service = BackendDiagnosticsService::new(&config);
 
     let result = service.probe("completion_panel", FlowPreset::Standard, 1);
-    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    assert!(
+        result.is_err(),
+        "should fail when optional omission drops below minimum"
+    );
     let err = result.unwrap_err();
     let err_msg = err.to_string();
 
@@ -2679,7 +2812,10 @@ fn probe_final_review_panel_optional_omission_below_minimum_reports_insufficient
     let service = BackendDiagnosticsService::new(&config);
 
     let result = service.probe("final_review_panel", FlowPreset::Standard, 1);
-    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    assert!(
+        result.is_err(),
+        "should fail when optional omission drops below minimum"
+    );
     let err = result.unwrap_err();
     let err_msg = err.to_string();
 
@@ -2724,7 +2860,10 @@ fn probe_prompt_review_panel_optional_omission_below_minimum_reports_insufficien
     let service = BackendDiagnosticsService::new(&config);
 
     let result = service.probe("prompt_review_panel", FlowPreset::Standard, 1);
-    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    assert!(
+        result.is_err(),
+        "should fail when optional omission drops below minimum"
+    );
     let err = result.unwrap_err();
     let err_msg = err.to_string();
 
@@ -2745,10 +2884,10 @@ fn probe_prompt_review_panel_optional_omission_below_minimum_reports_insufficien
 
 #[tokio::test]
 async fn probe_with_availability_optional_omission_below_minimum_reports_insufficient_members() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2815,7 +2954,10 @@ async fn probe_with_availability_optional_omission_below_minimum_reports_insuffi
         .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
         .await;
 
-    assert!(result.is_err(), "should fail when optional unavailable member drops below minimum");
+    assert!(
+        result.is_err(),
+        "should fail when optional unavailable member drops below minimum"
+    );
     let err = result.unwrap_err();
     let err_msg = err.to_string();
 
@@ -2832,10 +2974,10 @@ async fn probe_with_availability_optional_omission_below_minimum_reports_insuffi
 
 #[tokio::test]
 async fn probe_with_availability_reports_correct_configured_index_after_optional_omission() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2926,10 +3068,10 @@ async fn probe_with_availability_reports_correct_configured_index_after_optional
 
 #[tokio::test]
 async fn check_with_availability_reports_correct_configured_index_for_panel_member() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -2995,7 +3137,10 @@ async fn check_with_availability_reports_correct_configured_index_for_panel_memb
         .check_backends_with_availability(FlowPreset::Standard, &adapter)
         .await;
 
-    assert!(!result.passed, "should fail when required member is unavailable");
+    assert!(
+        !result.passed,
+        "should fail when required member is unavailable"
+    );
     let panel_failure = result
         .failures
         .iter()
@@ -3124,9 +3269,7 @@ fn check_validates_final_review_even_when_final_review_enabled_is_false() {
         // Configure arbiter/reviewers on a disabled backend so check would fail
         // IF it actually validates final review
         arbiter_backend: Some("openrouter".to_owned()),
-        backends: Some(vec![
-            PanelBackendSpec::required(BackendFamily::OpenRouter),
-        ]),
+        backends: Some(vec![PanelBackendSpec::required(BackendFamily::OpenRouter)]),
         min_reviewers: Some(1),
         ..Default::default()
     };
@@ -3167,9 +3310,7 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
     workspace.final_review = FinalReviewSettings {
         enabled: Some(true),
         arbiter_backend: Some("openrouter".to_owned()),
-        backends: Some(vec![
-            PanelBackendSpec::required(BackendFamily::OpenRouter),
-        ]),
+        backends: Some(vec![PanelBackendSpec::required(BackendFamily::OpenRouter)]),
         min_reviewers: Some(1),
         ..Default::default()
     };
@@ -3308,10 +3449,7 @@ fn check_reports_opposite_family_not_base_for_failed_opposite_roles() {
     let result = service.check_backends(FlowPreset::Standard);
 
     // Implementer failures should NOT report backend_family="claude"
-    let impl_failure = result
-        .failures
-        .iter()
-        .find(|f| f.role == "implementer");
+    let impl_failure = result.failures.iter().find(|f| f.role == "implementer");
     if let Some(failure) = impl_failure {
         assert_ne!(
             "claude", failure.backend_family,
@@ -3342,7 +3480,10 @@ fn probe_singular_opposite_role_reports_correct_family() {
     let service = BackendDiagnosticsService::new(&config);
 
     let result = service.probe("implementer", FlowPreset::Standard, 1);
-    assert!(result.is_err(), "probe should fail when no opposite family is enabled");
+    assert!(
+        result.is_err(),
+        "probe should fail when no opposite family is enabled"
+    );
     let err_msg = result.unwrap_err().to_string();
     // The outer error should identify the opposite-family target, not plain 'claude'.
     // The inner error detail naturally mentions claude as the base family, which is fine.
@@ -3367,10 +3508,10 @@ fn probe_singular_opposite_role_reports_correct_family() {
 /// hard-coded "completion.backends".
 #[tokio::test]
 async fn check_with_availability_implicit_completion_reports_correct_source() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -3446,10 +3587,10 @@ async fn check_with_availability_implicit_completion_reports_correct_source() {
 /// source, not "completion.backends".
 #[tokio::test]
 async fn probe_with_availability_implicit_completion_reports_correct_source() {
-    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::contexts::agent_execution::model::{
         InvocationContract, InvocationEnvelope, InvocationRequest,
     };
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
     use ralph_burning::shared::domain::ResolvedBackendTarget;
     use ralph_burning::shared::error::AppError;
 
@@ -3504,7 +3645,10 @@ async fn probe_with_availability_implicit_completion_reports_correct_source() {
         .await;
 
     // Probe should fail because codex (opposite family = completers) is unavailable
-    assert!(result.is_err(), "probe should fail when completion backend is unavailable");
+    assert!(
+        result.is_err(),
+        "probe should fail when completion backend is unavailable"
+    );
     let err_msg = result.unwrap_err().to_string();
     // The error should NOT reference "completion.backends" as the source
     assert!(

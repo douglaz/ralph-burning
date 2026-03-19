@@ -9,14 +9,16 @@ use std::fmt;
 
 use serde::Serialize;
 
-use crate::contexts::agent_execution::policy::{BackendPolicyService, stage_to_policy_role};
+use crate::adapters::tmux::TmuxAdapter;
+use crate::contexts::agent_execution::policy::{stage_to_policy_role, BackendPolicyService};
 use crate::contexts::agent_execution::service::AgentExecutionPort;
+use crate::contexts::workflow_composition::{flow_definition, FlowDefinition};
 use crate::contexts::workspace_governance::config::{
     EffectiveConfig, DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS,
 };
-use crate::contexts::workflow_composition::{flow_definition, FlowDefinition};
 use crate::shared::domain::{
-    BackendFamily, BackendPolicyRole, FlowPreset, PanelBackendSpec, ResolvedBackendTarget, StageId,
+    BackendFamily, BackendPolicyRole, ExecutionMode, FlowPreset, PanelBackendSpec,
+    ResolvedBackendTarget, StageId,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -56,6 +58,7 @@ pub enum BackendCheckFailureKind {
     PanelMinimumViolation,
     RequiredMemberUnavailable,
     AvailabilityFailure,
+    TmuxUnavailable,
 }
 
 impl fmt::Display for BackendCheckFailureKind {
@@ -65,6 +68,7 @@ impl fmt::Display for BackendCheckFailureKind {
             Self::PanelMinimumViolation => f.write_str("panel_minimum_violation"),
             Self::RequiredMemberUnavailable => f.write_str("required_member_unavailable"),
             Self::AvailabilityFailure => f.write_str("availability_failure"),
+            Self::TmuxUnavailable => f.write_str("tmux_unavailable"),
         }
     }
 }
@@ -187,9 +191,13 @@ impl<'a> BackendDiagnosticsService<'a> {
                     // Only mark stub as compile-time-only when the current
                     // binary was built without stub support (no test-stub feature).
                     #[cfg(feature = "test-stub")]
-                    { None }
+                    {
+                        None
+                    }
                     #[cfg(not(feature = "test-stub"))]
-                    { Some(true) }
+                    {
+                        Some(true)
+                    }
                 } else {
                     None
                 };
@@ -211,13 +219,32 @@ impl<'a> BackendDiagnosticsService<'a> {
         let mut failures = Vec::new();
         let flow_def = flow_definition(flow);
 
+        if self.config.effective_execution_mode() == ExecutionMode::Tmux {
+            if let Err(error) = TmuxAdapter::check_tmux_available() {
+                let source = self
+                    .config
+                    .get("execution.mode")
+                    .map(|entry| entry.source.to_string())
+                    .unwrap_or_else(|_| "execution.mode".to_owned());
+                failures.push(BackendCheckFailure {
+                    role: "execution".to_owned(),
+                    backend_family: "tmux".to_owned(),
+                    failure_kind: BackendCheckFailureKind::TmuxUnavailable,
+                    details: error.to_string(),
+                    config_source: source,
+                });
+            }
+        }
+
         // Get stage-derived roles, excluding panel-specific ones (Completer,
         // FinalReviewer) which are validated by the dedicated panel checks below.
         let flow_roles = effectively_required_stage_roles(flow_def);
 
         // Only check base backend if at least one effectively-required stage
         // role would actually fall through to it (no explicit override).
-        let base_backend_needed = flow_roles.iter().any(|role| !self.policy.has_explicit_override(*role));
+        let base_backend_needed = flow_roles
+            .iter()
+            .any(|role| !self.policy.has_explicit_override(*role));
         if base_backend_needed {
             let base = &self.config.backend_policy().base_backend;
             if !self.policy.backend_enabled_public(base.family) {
@@ -311,6 +338,14 @@ impl<'a> BackendDiagnosticsService<'a> {
         adapter: &A,
     ) -> BackendCheckResult {
         let mut result = self.check_backends(flow);
+        if result
+            .failures
+            .iter()
+            .any(|failure| failure.failure_kind == BackendCheckFailureKind::TmuxUnavailable)
+        {
+            result.passed = false;
+            return result;
+        }
 
         // Required targets: stage roles, panel planners/arbiters/refiners.
         // These always fail on unavailability.
@@ -336,7 +371,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let completion_source = self.completion_panel_config_source();
                 self.check_panel_availability(
                     adapter,
-                    &res.completers.iter()
+                    &res.completers
+                        .iter()
                         .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "completion_panel",
@@ -356,7 +392,10 @@ impl<'a> BackendDiagnosticsService<'a> {
         // FinalReview based on final_review.enabled.
         if flow_def.stages.contains(&StageId::FinalReview) {
             // Arbiter — always required, resolved independently of panel
-            if let Ok(arbiter_target) = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, 1) {
+            if let Ok(arbiter_target) = self
+                .policy
+                .resolve_role_target(BackendPolicyRole::Arbiter, 1)
+            {
                 required_targets.push((
                     arbiter_target,
                     "final_review_panel.arbiter".to_owned(),
@@ -377,7 +416,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let minimum = self.config.final_review_policy().min_reviewers;
                 self.check_panel_availability(
                     adapter,
-                    &res.reviewers.iter()
+                    &res.reviewers
+                        .iter()
                         .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "final_review_panel",
@@ -397,7 +437,10 @@ impl<'a> BackendDiagnosticsService<'a> {
             && self.config.prompt_review_policy().enabled
         {
             // Refiner — always required, resolved independently of panel
-            if let Ok(refiner_target) = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, 1) {
+            if let Ok(refiner_target) = self
+                .policy
+                .resolve_role_target(BackendPolicyRole::PromptReviewer, 1)
+            {
                 required_targets.push((
                     refiner_target,
                     "prompt_review_panel.refiner".to_owned(),
@@ -410,7 +453,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let minimum = self.config.prompt_review_policy().min_reviewers;
                 self.check_panel_availability(
                     adapter,
-                    &res.validators.iter()
+                    &res.validators
+                        .iter()
                         .map(|m| (m.target.clone(), m.required, m.configured_index))
                         .collect::<Vec<_>>(),
                     "prompt_review_panel",
@@ -504,15 +548,15 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// of iterating the built-in default backend list. This prevents false
     /// failures when the default list contains backends that runtime would never
     /// use.
-    fn check_completion_panel_config(
-        &self,
-        failures: &mut Vec<BackendCheckFailure>,
-    ) {
+    fn check_completion_panel_config(&self, failures: &mut Vec<BackendCheckFailure>) {
         if !self.config.completion_backends_are_explicit() {
             // Implicit completion backends: runtime uses default_completion_targets(),
             // which resolves the Completer role and replicates it min_completers times.
             // Validate that the Completer role can actually resolve.
-            if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::Completer, 1) {
+            if let Err(e) = self
+                .policy
+                .resolve_role_target(BackendPolicyRole::Completer, 1)
+            {
                 failures.push(BackendCheckFailure {
                     role: "completion_panel".to_owned(),
                     backend_family: self.family_for_role(BackendPolicyRole::Completer),
@@ -562,14 +606,14 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Check final review panel members individually: planner, each reviewer,
     /// and arbiter each get their own failure identity and config source.
-    fn check_final_review_panel_config(
-        &self,
-        failures: &mut Vec<BackendCheckFailure>,
-    ) {
+    fn check_final_review_panel_config(&self, failures: &mut Vec<BackendCheckFailure>) {
         let policy = self.config.final_review_policy();
 
         // Check arbiter separately — this was previously collapsed into the panel
-        if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, 1) {
+        if let Err(e) = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::Arbiter, 1)
+        {
             failures.push(BackendCheckFailure {
                 role: "final_review_panel.arbiter".to_owned(),
                 backend_family: self.family_for_role(BackendPolicyRole::Arbiter),
@@ -618,14 +662,14 @@ impl<'a> BackendDiagnosticsService<'a> {
 
     /// Check prompt review panel members individually: refiner and each
     /// validator get their own failure identity and config source.
-    fn check_prompt_review_panel_config(
-        &self,
-        failures: &mut Vec<BackendCheckFailure>,
-    ) {
+    fn check_prompt_review_panel_config(&self, failures: &mut Vec<BackendCheckFailure>) {
         let policy = self.config.prompt_review_policy();
 
         // Check refiner separately — this was previously collapsed into the panel
-        if let Err(e) = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, 1) {
+        if let Err(e) = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::PromptReviewer, 1)
+        {
             failures.push(BackendCheckFailure {
                 role: "prompt_review_panel.refiner".to_owned(),
                 backend_family: self.family_for_role(BackendPolicyRole::PromptReviewer),
@@ -795,13 +839,18 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         // Parse as a policy role
         let role: BackendPolicyRole = role_str.parse()?;
-        let target = self.policy.resolve_role_target(role, cycle)
-            .map_err(|err| self.make_probe_target_error(
-                role_str, role_str,
-                &self.family_for_role(role),
-                &self.config_source_for_role(role),
-                &err,
-            ))?;
+        let target = self
+            .policy
+            .resolve_role_target(role, cycle)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    role_str,
+                    role_str,
+                    &self.family_for_role(role),
+                    &self.config_source_for_role(role),
+                    &err,
+                )
+            })?;
         let timeout = self.policy.timeout_for_role(target.backend.family, role);
 
         Ok(BackendProbeResult {
@@ -823,18 +872,22 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Resolve planner separately for exact error identity
-        let planner = self.policy.resolve_role_target(BackendPolicyRole::Planner, cycle)
-            .map_err(|err| self.make_probe_target_error(
-                "completion_panel", "planner",
-                &self.family_for_role(BackendPolicyRole::Planner),
-                &self.config_source_for_role(BackendPolicyRole::Planner),
-                &err,
-            ))?;
+        let planner = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    "completion_panel",
+                    "planner",
+                    &self.family_for_role(BackendPolicyRole::Planner),
+                    &self.config_source_for_role(BackendPolicyRole::Planner),
+                    &err,
+                )
+            })?;
 
-        let timeout = self.policy.timeout_for_role(
-            planner.backend.family,
-            BackendPolicyRole::Planner,
-        );
+        let timeout = self
+            .policy
+            .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
 
         let configured_specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
@@ -842,17 +895,29 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         // Try the full panel resolution; if it fails, identify the exact
         // failing member (planner already succeeded above).
-        let resolution = self.policy.resolve_completion_panel(cycle)
-            .map_err(|err| self.identify_failing_panel_member(
-                "completion_panel", "member", &completion_source,
-                configured_specs, minimum, &err,
-            ))?;
+        let resolution = self.policy.resolve_completion_panel(cycle).map_err(|err| {
+            self.identify_failing_panel_member(
+                "completion_panel",
+                "member",
+                &completion_source,
+                configured_specs,
+                minimum,
+                &err,
+            )
+        })?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
                 .completers
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
+                .map(|m| {
+                    (
+                        m.target.backend.family,
+                        m.target.model.model_id.clone(),
+                        m.required,
+                        m.configured_index,
+                    )
+                })
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -883,44 +948,68 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Resolve planner separately for exact error identity
-        let planner = self.policy.resolve_role_target(BackendPolicyRole::Planner, cycle)
-            .map_err(|err| self.make_probe_target_error(
-                "final_review_panel", "planner",
-                &self.family_for_role(BackendPolicyRole::Planner),
-                &self.config_source_for_role(BackendPolicyRole::Planner),
-                &err,
-            ))?;
+        let planner = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    "final_review_panel",
+                    "planner",
+                    &self.family_for_role(BackendPolicyRole::Planner),
+                    &self.config_source_for_role(BackendPolicyRole::Planner),
+                    &err,
+                )
+            })?;
 
         // Resolve arbiter separately for exact error identity
-        let arbiter_target = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, cycle)
-            .map_err(|err| self.make_probe_target_error(
-                "final_review_panel", "arbiter",
-                &self.family_for_role(BackendPolicyRole::Arbiter),
-                &self.config_source_for_role(BackendPolicyRole::Arbiter),
-                &err,
-            ))?;
+        let arbiter_target = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::Arbiter, cycle)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    "final_review_panel",
+                    "arbiter",
+                    &self.family_for_role(BackendPolicyRole::Arbiter),
+                    &self.config_source_for_role(BackendPolicyRole::Arbiter),
+                    &err,
+                )
+            })?;
 
-        let timeout = self.policy.timeout_for_role(
-            planner.backend.family,
-            BackendPolicyRole::Planner,
-        );
+        let timeout = self
+            .policy
+            .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
 
         let configured_specs = &self.config.final_review_policy().backends;
         let minimum = self.config.final_review_policy().min_reviewers;
 
         // Try the full panel resolution; if it fails, identify the exact
         // failing reviewer (planner and arbiter already succeeded above).
-        let resolution = self.policy.resolve_final_review_panel(cycle)
-            .map_err(|err| self.identify_failing_panel_member(
-                "final_review_panel", "reviewer", "final_review.backends",
-                configured_specs, minimum, &err,
-            ))?;
+        let resolution = self
+            .policy
+            .resolve_final_review_panel(cycle)
+            .map_err(|err| {
+                self.identify_failing_panel_member(
+                    "final_review_panel",
+                    "reviewer",
+                    "final_review.backends",
+                    configured_specs,
+                    minimum,
+                    &err,
+                )
+            })?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
                 .reviewers
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
+                .map(|m| {
+                    (
+                        m.target.backend.family,
+                        m.target.model.model_id.clone(),
+                        m.required,
+                        m.configured_index,
+                    )
+                })
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -958,35 +1047,54 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Resolve refiner separately for exact error identity
-        let refiner = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
-            .map_err(|err| self.make_probe_target_error(
-                "prompt_review_panel", "refiner",
-                &self.family_for_role(BackendPolicyRole::PromptReviewer),
-                &self.config_source_for_role(BackendPolicyRole::PromptReviewer),
-                &err,
-            ))?;
+        let refiner = self
+            .policy
+            .resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
+            .map_err(|err| {
+                self.make_probe_target_error(
+                    "prompt_review_panel",
+                    "refiner",
+                    &self.family_for_role(BackendPolicyRole::PromptReviewer),
+                    &self.config_source_for_role(BackendPolicyRole::PromptReviewer),
+                    &err,
+                )
+            })?;
 
-        let timeout = self.policy.timeout_for_role(
-            refiner.backend.family,
-            BackendPolicyRole::PromptReviewer,
-        );
+        let timeout = self
+            .policy
+            .timeout_for_role(refiner.backend.family, BackendPolicyRole::PromptReviewer);
 
         let configured_specs = &self.config.prompt_review_policy().validator_backends;
         let minimum = self.config.prompt_review_policy().min_reviewers;
 
         // Try the full panel resolution; if it fails, identify the exact
         // failing validator (refiner already succeeded above).
-        let resolution = self.policy.resolve_prompt_review_panel(cycle)
-            .map_err(|err| self.identify_failing_panel_member(
-                "prompt_review_panel", "validator", "prompt_review.validator_backends",
-                configured_specs, minimum, &err,
-            ))?;
+        let resolution = self
+            .policy
+            .resolve_prompt_review_panel(cycle)
+            .map_err(|err| {
+                self.identify_failing_panel_member(
+                    "prompt_review_panel",
+                    "validator",
+                    "prompt_review.validator_backends",
+                    configured_specs,
+                    minimum,
+                    &err,
+                )
+            })?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
                 .validators
                 .iter()
-                .map(|m| (m.target.backend.family, m.target.model.model_id.clone(), m.required, m.configured_index))
+                .map(|m| {
+                    (
+                        m.target.backend.family,
+                        m.target.model.model_id.clone(),
+                        m.required,
+                        m.configured_index,
+                    )
+                })
                 .collect::<Vec<_>>(),
             configured_specs,
         );
@@ -1085,9 +1193,12 @@ impl<'a> BackendDiagnosticsService<'a> {
                             backend: member.backend_family.clone(),
                             details: format!(
                                 "required '{}[{}]' ({}:{}) unavailable: {} [source: {}]",
-                                member_label_prefix, member.configured_index,
-                                member.backend_family, member.model_id,
-                                err, members_source
+                                member_label_prefix,
+                                member.configured_index,
+                                member.backend_family,
+                                member.model_id,
+                                err,
+                                members_source
                             ),
                         });
                     }
@@ -1205,9 +1316,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                 self.config_source_for_role(BackendPolicyRole::Planner)
             }
             // Prompt-review panel uses the refiner as primary target
-            "prompt_review_panel" => {
-                self.config_source_for_role(BackendPolicyRole::PromptReviewer)
-            }
+            "prompt_review_panel" => self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             // Singular role probe — parse to get the actual role's config source
             _ => match role_str.parse::<BackendPolicyRole>() {
                 Ok(role) => self.config_source_for_role(role),
@@ -1271,7 +1380,10 @@ impl<'a> BackendDiagnosticsService<'a> {
         for spec in configured_specs {
             let backend = spec.backend();
             let already_resolved = resolved.iter().any(|(f, _, _, _)| *f == backend);
-            if spec.is_optional() && !already_resolved && !self.policy.backend_enabled_public(backend) {
+            if spec.is_optional()
+                && !already_resolved
+                && !self.policy.backend_enabled_public(backend)
+            {
                 omitted.push(PanelOmittedView {
                     backend_family: backend.as_str().to_owned(),
                     reason: "backend disabled".to_owned(),
@@ -1391,7 +1503,9 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         match self.config.get(key) {
             Ok(entry) => {
-                if entry.source == crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                if entry.source
+                    == crate::contexts::workspace_governance::config::ConfigValueSource::Default
+                {
                     // No explicit override set — role inherits from default_backend
                     let base_source = self.source_for_base_backend();
                     format!("default_backend ({})", base_source)
@@ -1437,9 +1551,14 @@ impl<'a> BackendDiagnosticsService<'a> {
         // 2. Check role-specific model from runtime settings
         let key = format!("backends.{}.role_models.{}", family.as_str(), role.as_str());
         if let Ok(entry) = self.config.get(&key) {
-            if !matches!(entry.value, crate::contexts::workspace_governance::config::ConfigValue::String(None)) {
+            if !matches!(
+                entry.value,
+                crate::contexts::workspace_governance::config::ConfigValue::String(None)
+            ) {
                 let source = entry.source;
-                if source != crate::contexts::workspace_governance::config::ConfigValueSource::Default {
+                if source
+                    != crate::contexts::workspace_governance::config::ConfigValueSource::Default
+                {
                     return source.to_string();
                 }
             }
@@ -1551,7 +1670,12 @@ fn roles_for_flow(flow_def: &FlowDefinition) -> Vec<BackendPolicyRole> {
 fn effectively_required_stage_roles(flow_def: &FlowDefinition) -> Vec<BackendPolicyRole> {
     roles_for_flow(flow_def)
         .into_iter()
-        .filter(|role| !matches!(role, BackendPolicyRole::Completer | BackendPolicyRole::FinalReviewer))
+        .filter(|role| {
+            !matches!(
+                role,
+                BackendPolicyRole::Completer | BackendPolicyRole::FinalReviewer
+            )
+        })
         .collect()
 }
 
@@ -1571,4 +1695,3 @@ fn validate_flow_has_stage(flow_def: &FlowDefinition, stage_id: StageId) -> AppR
         })
     }
 }
-

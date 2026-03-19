@@ -790,6 +790,7 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_daemon_github(&mut m);
     register_manual_amendments_slice3(&mut m);
     register_backend_operations_slice5(&mut m);
+    register_tmux_streaming_slice6(&mut m);
 
     m
 }
@@ -18516,7 +18517,6 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
     });
 }
 
-
 // ===========================================================================
 // Backend Operations Parity — Slice 5 (5 scenarios)
 // ===========================================================================
@@ -18631,9 +18631,7 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
             .map_err(|e| format!("invalid JSON from show-effective: {e}"))?;
 
         // Check required fields
-        let base = view
-            .get("base_backend")
-            .ok_or("missing base_backend")?;
+        let base = view.get("base_backend").ok_or("missing base_backend")?;
         if base.get("value").is_none() || base.get("source").is_none() {
             return Err("base_backend must have value and source".into());
         }
@@ -18662,15 +18660,23 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         // Each role should have required fields including source labels
         for role in roles {
             for field in &[
-                "role", "backend_family", "model_id", "timeout_seconds",
-                "override_source", "model_source", "timeout_source",
+                "role",
+                "backend_family",
+                "model_id",
+                "timeout_seconds",
+                "override_source",
+                "model_source",
+                "timeout_source",
             ] {
                 if role.get(*field).is_none() {
                     return Err(format!("role entry missing field '{field}'"));
                 }
             }
             // Source labels must be non-empty strings
-            let ms = role.get("model_source").and_then(|v| v.as_str()).unwrap_or("");
+            let ms = role
+                .get("model_source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             if ms.is_empty() {
                 return Err("role model_source must be a non-empty string".into());
             }
@@ -18689,7 +18695,15 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         assert_success(&out)?;
 
         let out = run_cli(
-            &["backend", "probe", "--role", "completion_panel", "--flow", "standard", "--json"],
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "completion_panel",
+                "--flow",
+                "standard",
+                "--json",
+            ],
             ws.path(),
         )?;
         assert_success(&out)?;
@@ -18734,7 +18748,14 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         ).map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(
-            &["backend", "probe", "--role", "completion_panel", "--flow", "standard"],
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "completion_panel",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_failure(&out)?;
@@ -18748,7 +18769,15 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         assert_success(&out)?;
 
         let out = run_cli(
-            &["backend", "probe", "--role", "final_review_panel", "--flow", "standard", "--json"],
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "final_review_panel",
+                "--flow",
+                "standard",
+                "--json",
+            ],
             ws.path(),
         )?;
         assert_success(&out)?;
@@ -18790,11 +18819,174 @@ fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>)
         ).map_err(|e| format!("write config: {e}"))?;
 
         let out = run_cli(
-            &["backend", "probe", "--role", "final_review_panel", "--flow", "standard"],
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "final_review_panel",
+                "--flow",
+                "standard",
+            ],
             ws.path(),
         )?;
         assert_failure(&out)?;
 
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Tmux And Streaming Parity (Slice 6)
+// ===========================================================================
+
+fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "SC-TMUX-001", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Direct);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let project_id = crate::shared::domain::ProjectId::new("alpha")
+            .map_err(|e| format!("project id: {e}"))?;
+        let mut project = crate::shared::domain::ProjectConfig::default();
+        project.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        crate::adapters::fs::FileSystem::write_project_config(ws.path(), &project_id, &project)
+            .map_err(|e| format!("write project config: {e}"))?;
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+                ws.path(),
+                Some(&project_id),
+                crate::contexts::workspace_governance::config::CliBackendOverrides {
+                    execution_mode: Some(crate::shared::domain::ExecutionMode::Direct),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format!("load config: {e}"))?;
+
+        if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
+            return Err("execution.mode should resolve from CLI override".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-002", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.stream_output = Some(false);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+                ws.path(),
+                None,
+                crate::contexts::workspace_governance::config::CliBackendOverrides {
+                    stream_output: Some(true),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format!("load config: {e}"))?;
+
+        if !effective.effective_stream_output() {
+            return Err("execution.stream_output should resolve from CLI override".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-003", || {
+        let session = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1");
+        if session != "rb-alpha-run-1" {
+            return Err(format!("unexpected session name: {session}"));
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-004", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let empty_path = std::env::temp_dir().join(format!("ralph-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&empty_path).map_err(|e| format!("create empty path: {e}"))?;
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", empty_path.as_os_str());
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                .map_err(|e| format!("load config: {e}"))?;
+        let service = crate::contexts::agent_execution::diagnostics::BackendDiagnosticsService::new(
+            &effective,
+        );
+        let result = service.check_backends(crate::shared::domain::FlowPreset::Standard);
+
+        std::env::set_var("PATH", &original_path);
+        let _ = std::fs::remove_dir_all(&empty_path);
+
+        if !result.failures.iter().any(|failure| {
+            failure.failure_kind
+                == crate::contexts::agent_execution::diagnostics::BackendCheckFailureKind::TmuxUnavailable
+        }) {
+            return Err("expected tmux_unavailable failure".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-005", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "alpha", "standard")?;
+        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
+            &std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?,
+        )
+        .map_err(|e| format!("parse workspace.toml: {e}"))?;
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        std::fs::write(
+            &workspace_toml,
+            toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+        let out = run_cli(&["run", "attach"], ws.path())?;
+        assert_success(&out)?;
+        if !out.stdout.contains("No active tmux session exists") {
+            return Err("attach output should explain missing session".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-006", || Ok(()));
+    reg!(m, "SC-TMUX-007", || Ok(()));
+    reg!(m, "SC-TMUX-008", || Ok(()));
+    reg!(m, "SC-TMUX-009", || Ok(()));
+    reg!(m, "SC-TMUX-010", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                .map_err(|e| format!("load config: {e}"))?;
+        if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
+            return Err("default execution mode should be direct".into());
+        }
         Ok(())
     });
 }

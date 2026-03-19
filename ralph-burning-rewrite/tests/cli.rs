@@ -6678,8 +6678,7 @@ fn backend_list_json_is_valid() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     assert!(parsed.is_array(), "JSON output should be an array");
     let arr = parsed.as_array().unwrap();
     assert_eq!(4, arr.len(), "should have 4 backend families");
@@ -6726,8 +6725,7 @@ fn backend_check_json_contract() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     assert!(
         parsed.get("passed").is_some(),
         "JSON should have 'passed' field"
@@ -6779,8 +6777,7 @@ fn backend_show_effective_json_contract() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     assert!(
         parsed.get("base_backend").is_some(),
         "JSON should have 'base_backend'"
@@ -6797,7 +6794,9 @@ fn backend_probe_singular_role() {
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
-        .args(["backend", "probe", "--role", "planner", "--flow", "standard"])
+        .args([
+            "backend", "probe", "--role", "planner", "--flow", "standard",
+        ])
         .current_dir(temp_dir.path())
         .output()
         .expect("run backend probe");
@@ -6810,10 +6809,7 @@ fn backend_probe_singular_role() {
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("planner"), "should show probed role");
-    assert!(
-        stdout.contains("standard"),
-        "should show flow"
-    );
+    assert!(stdout.contains("standard"), "should show flow");
 }
 
 #[test]
@@ -6884,13 +6880,7 @@ fn backend_probe_json_contract() {
 
     let output = Command::new(binary())
         .args([
-            "backend",
-            "probe",
-            "--role",
-            "planner",
-            "--flow",
-            "standard",
-            "--json",
+            "backend", "probe", "--role", "planner", "--flow", "standard", "--json",
         ])
         .current_dir(temp_dir.path())
         .output()
@@ -6903,8 +6893,7 @@ fn backend_probe_json_contract() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     assert!(parsed.get("role").is_some(), "JSON should have 'role'");
     assert!(parsed.get("flow").is_some(), "JSON should have 'flow'");
     assert!(parsed.get("target").is_some(), "JSON should have 'target'");
@@ -6947,13 +6936,7 @@ fn backend_show_effective_with_cli_override() {
     let temp_dir = initialize_workspace_fixture();
 
     let output = Command::new(binary())
-        .args([
-            "backend",
-            "show-effective",
-            "--json",
-            "--backend",
-            "codex",
-        ])
+        .args(["backend", "show-effective", "--json", "--backend", "codex"])
         .current_dir(temp_dir.path())
         .output()
         .expect("run backend show-effective with override");
@@ -6965,8 +6948,7 @@ fn backend_show_effective_with_cli_override() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&stdout).expect("should be valid JSON");
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
     let base_value = parsed["base_backend"]["value"]
         .as_str()
         .expect("base_backend.value");
@@ -7036,7 +7018,12 @@ consensus_threshold = 0.66
 
     let output = Command::new(binary())
         .args([
-            "backend", "probe", "--role", "completion_panel", "--flow", "standard",
+            "backend",
+            "probe",
+            "--role",
+            "completion_panel",
+            "--flow",
+            "standard",
         ])
         .current_dir(temp_dir.path())
         .output()

@@ -21,6 +21,159 @@ use crate::shared::error::{AppError, AppResult};
 const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 
+pub(crate) struct PreparedCommand {
+    binary: String,
+    args: Vec<String>,
+    stdin_payload: String,
+    response_decoder: ResponseDecoder,
+}
+
+impl PreparedCommand {
+    pub(crate) fn binary(&self) -> &str {
+        &self.binary
+    }
+
+    pub(crate) fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub(crate) fn stdin_payload(&self) -> &str {
+        &self.stdin_payload
+    }
+
+    pub(crate) async fn cleanup(&self) {
+        match &self.response_decoder {
+            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => best_effort_cleanup(Some(schema_path), message_path).await,
+        }
+    }
+
+    pub(crate) async fn finish(
+        self,
+        request: &InvocationRequest,
+        output: ChildOutput,
+    ) -> AppResult<InvocationEnvelope> {
+        match self.response_decoder {
+            ResponseDecoder::Claude { session_resuming } => {
+                let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+                let envelope: ClaudeEnvelope =
+                    serde_json::from_str(&stdout_text).map_err(|error| {
+                        ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!("invalid Claude envelope JSON: {error}"),
+                        )
+                    })?;
+
+                let parsed_payload = if let Some(structured) = envelope.structured_output {
+                    structured
+                } else {
+                    serde_json::from_str(&envelope.result).map_err(|error| {
+                        ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!("invalid Claude result JSON: {error}"),
+                        )
+                    })?
+                };
+
+                let session_id = envelope.session_id.or_else(|| {
+                    if session_resuming {
+                        request.prior_session.as_ref().map(|s| s.session_id.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                Ok(InvocationEnvelope {
+                    raw_output_reference: RawOutputReference::Inline(stdout_text),
+                    parsed_payload,
+                    metadata: InvocationMetadata {
+                        invocation_id: request.invocation_id.clone(),
+                        duration: Duration::from_millis(0),
+                        token_counts: TokenCounts::default(),
+                        backend_used: request.resolved_target.backend.clone(),
+                        model_used: request.resolved_target.model.clone(),
+                        attempt_number: request.attempt_number,
+                        session_id,
+                        session_reused: session_resuming,
+                    },
+                    timestamp: Utc::now(),
+                })
+            }
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                session_resuming,
+            } => {
+                let last_message_text = match tokio::fs::read_to_string(&message_path).await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::TransportFailure,
+                            format!("failed to read codex last-message file: {error}"),
+                        ));
+                    }
+                };
+
+                let parsed_payload = match serde_json::from_str(&last_message_text) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!("invalid Codex last-message JSON: {error}"),
+                        ));
+                    }
+                };
+
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
+
+                let session_id = if session_resuming {
+                    request.prior_session.as_ref().map(|s| s.session_id.clone())
+                } else {
+                    None
+                };
+
+                Ok(InvocationEnvelope {
+                    raw_output_reference: RawOutputReference::Inline(last_message_text),
+                    parsed_payload,
+                    metadata: InvocationMetadata {
+                        invocation_id: request.invocation_id.clone(),
+                        duration: Duration::from_millis(0),
+                        token_counts: TokenCounts::default(),
+                        backend_used: request.resolved_target.backend.clone(),
+                        model_used: request.resolved_target.model.clone(),
+                        attempt_number: request.attempt_number,
+                        session_id,
+                        session_reused: session_resuming,
+                    },
+                    timestamp: Utc::now(),
+                })
+            }
+        }
+    }
+}
+
+enum ResponseDecoder {
+    Claude {
+        session_resuming: bool,
+    },
+    Codex {
+        schema_path: std::path::PathBuf,
+        message_path: std::path::PathBuf,
+        session_resuming: bool,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
     pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
@@ -220,6 +373,106 @@ impl ProcessBackendAdapter {
         input
     }
 
+    pub(crate) async fn build_command(
+        &self,
+        request: &InvocationRequest,
+    ) -> AppResult<PreparedCommand> {
+        match request.resolved_target.backend.family {
+            BackendFamily::Claude => {
+                let model_id = &request.resolved_target.model.model_id;
+                let schema_json = serde_json::to_string(&request.contract.json_schema_value())
+                    .unwrap_or_else(|_| "{}".to_owned());
+                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                    && request.prior_session.is_some();
+
+                let mut args = vec![
+                    "-p".to_owned(),
+                    "--output-format".to_owned(),
+                    "json".to_owned(),
+                    "--model".to_owned(),
+                    model_id.clone(),
+                    "--permission-mode".to_owned(),
+                    "acceptEdits".to_owned(),
+                    "--allowedTools".to_owned(),
+                    "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
+                    "--json-schema".to_owned(),
+                    schema_json,
+                ];
+
+                if session_resuming {
+                    if let Some(ref session) = request.prior_session {
+                        args.push("--resume".to_owned());
+                        args.push(session.session_id.clone());
+                    }
+                }
+
+                Ok(PreparedCommand {
+                    binary: "claude".to_owned(),
+                    args,
+                    stdin_payload: Self::assemble_stdin(request),
+                    response_decoder: ResponseDecoder::Claude { session_resuming },
+                })
+            }
+            BackendFamily::Codex => {
+                let model_id = &request.resolved_target.model.model_id;
+                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                    && request.prior_session.is_some();
+
+                let temp_dir = request.project_root.join("runtime/temp");
+                let _ = tokio::fs::create_dir_all(&temp_dir).await;
+
+                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let message_path =
+                    temp_dir.join(format!("{}.last-message.json", request.invocation_id));
+
+                let mut schema_value = request.contract.json_schema_value();
+                inject_additional_properties_false(&mut schema_value);
+                let schema_json = serde_json::to_string_pretty(&schema_value)
+                    .unwrap_or_else(|_| "{}".to_owned());
+
+                if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+                    best_effort_cleanup(Some(&schema_path), &message_path).await;
+                    return Err(Self::invocation_failed(
+                        request,
+                        FailureClass::TransportFailure,
+                        format!("failed to write schema file: {error}"),
+                    ));
+                }
+
+                let args = if session_resuming {
+                    let session = request
+                        .prior_session
+                        .as_ref()
+                        .expect("session_resuming requires a prior session");
+                    Self::codex_resume_args(
+                        model_id,
+                        &schema_path,
+                        &message_path,
+                        &session.session_id,
+                    )
+                } else {
+                    Self::codex_new_session_args(model_id, &schema_path, &message_path)
+                };
+
+                Ok(PreparedCommand {
+                    binary: "codex".to_owned(),
+                    args,
+                    stdin_payload: Self::assemble_stdin(request),
+                    response_decoder: ResponseDecoder::Codex {
+                        schema_path,
+                        message_path,
+                        session_resuming,
+                    },
+                })
+            }
+            _ => Err(Self::capability_mismatch(
+                &request.resolved_target,
+                &request.contract,
+                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
+            )),
+        }
+    }
+
     fn invocation_failed(
         request: &InvocationRequest,
         failure_class: FailureClass,
@@ -231,6 +484,62 @@ impl ProcessBackendAdapter {
             failure_class,
             details,
         }
+    }
+
+    pub(crate) fn ensure_binary_available(binary_name: &str, backend: &str) -> AppResult<()> {
+        let path_entries = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        #[cfg(unix)]
+        let mut non_executable_candidate = None;
+
+        for candidate in path_entries
+            .into_iter()
+            .map(|entry| entry.join(binary_name))
+        {
+            let Ok(metadata) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
+
+                if non_executable_candidate.is_none() {
+                    non_executable_candidate = Some(candidate);
+                }
+                continue;
+            }
+
+            #[cfg(not(unix))]
+            {
+                return Ok(());
+            }
+        }
+
+        #[cfg(unix)]
+        if let Some(candidate) = non_executable_candidate {
+            return Err(AppError::BackendUnavailable {
+                backend: backend.to_owned(),
+                details: format!(
+                    "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
+                    candidate.display()
+                ),
+            });
+        }
+
+        Err(AppError::BackendUnavailable {
+            backend: backend.to_owned(),
+            details: format!("required binary '{binary_name}' was not found on PATH"),
+        })
     }
 
     /// Spawn a command, write stdin, register the child handle before I/O,
@@ -345,108 +654,6 @@ impl ProcessBackendAdapter {
         }
     }
 
-    async fn invoke_claude(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        let model_id = &request.resolved_target.model.model_id;
-        let schema_json = serde_json::to_string(&request.contract.json_schema_value())
-            .unwrap_or_else(|_| "{}".to_owned());
-
-        let mut args = vec![
-            "-p".to_owned(),
-            "--output-format".to_owned(),
-            "json".to_owned(),
-            "--model".to_owned(),
-            model_id.clone(),
-            "--permission-mode".to_owned(),
-            "acceptEdits".to_owned(),
-            "--allowedTools".to_owned(),
-            "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
-            "--json-schema".to_owned(),
-            schema_json,
-        ];
-
-        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-            && request.prior_session.is_some();
-
-        if session_resuming {
-            if let Some(ref session) = request.prior_session {
-                args.push("--resume".to_owned());
-                args.push(session.session_id.clone());
-            }
-        }
-
-        let stdin_payload = Self::assemble_stdin(&request);
-        let output = self
-            .spawn_and_wait(&request, "claude", &args, &stdin_payload)
-            .await?;
-
-        match output.status {
-            s if !s.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!(
-                        "claude exited with code {code}{}",
-                        if stderr.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {stderr}")
-                        }
-                    ),
-                ));
-            }
-            _ => {}
-        }
-
-        let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
-
-        let envelope: ClaudeEnvelope = serde_json::from_str(&stdout_text).map_err(|error| {
-            Self::invocation_failed(
-                &request,
-                FailureClass::SchemaValidationFailure,
-                format!("invalid Claude envelope JSON: {error}"),
-            )
-        })?;
-
-        let parsed_payload: serde_json::Value = if let Some(structured) = envelope.structured_output
-        {
-            structured
-        } else {
-            serde_json::from_str(&envelope.result).map_err(|error| {
-                Self::invocation_failed(
-                    &request,
-                    FailureClass::SchemaValidationFailure,
-                    format!("invalid Claude result JSON: {error}"),
-                )
-            })?
-        };
-
-        let session_id = envelope.session_id.or_else(|| {
-            if session_resuming {
-                request.prior_session.as_ref().map(|s| s.session_id.clone())
-            } else {
-                None
-            }
-        });
-
-        Ok(InvocationEnvelope {
-            raw_output_reference: RawOutputReference::Inline(stdout_text),
-            parsed_payload,
-            metadata: InvocationMetadata {
-                invocation_id: request.invocation_id.clone(),
-                duration: Duration::from_millis(0),
-                token_counts: TokenCounts::default(),
-                backend_used: request.resolved_target.backend.clone(),
-                model_used: request.resolved_target.model.clone(),
-                attempt_number: request.attempt_number,
-                session_id,
-                session_reused: session_resuming,
-            },
-            timestamp: Utc::now(),
-        })
-    }
-
     fn codex_new_session_args(
         model_id: &str,
         schema_path: &Path,
@@ -487,123 +694,6 @@ impl ProcessBackendAdapter {
             "-".to_owned(),
         ]
     }
-
-    async fn invoke_codex(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        let model_id = &request.resolved_target.model.model_id;
-        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-            && request.prior_session.is_some();
-
-        let temp_dir = request.project_root.join("runtime/temp");
-        let _ = tokio::fs::create_dir_all(&temp_dir).await;
-
-        let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
-        let message_path = temp_dir.join(format!("{}.last-message.json", request.invocation_id));
-
-        let mut schema_value = request.contract.json_schema_value();
-        inject_additional_properties_false(&mut schema_value);
-        let schema_json =
-            serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
-
-        if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-            best_effort_cleanup(Some(&schema_path), &message_path).await;
-            return Err(Self::invocation_failed(
-                &request,
-                FailureClass::TransportFailure,
-                format!("failed to write schema file: {error}"),
-            ));
-        }
-
-        let args = if session_resuming {
-            let session = request
-                .prior_session
-                .as_ref()
-                .expect("session_resuming requires a prior session");
-            Self::codex_resume_args(model_id, &schema_path, &message_path, &session.session_id)
-        } else {
-            Self::codex_new_session_args(model_id, &schema_path, &message_path)
-        };
-
-        let stdin_payload = Self::assemble_stdin(&request);
-        let output = match self
-            .spawn_and_wait(&request, "codex", &args, &stdin_payload)
-            .await
-        {
-            Ok(o) => o,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(error);
-            }
-        };
-
-        match output.status {
-            s if !s.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!(
-                        "codex exited with code {code}{}",
-                        if stderr.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {stderr}")
-                        }
-                    ),
-                ));
-            }
-            _ => {}
-        }
-
-        let last_message_text = match tokio::fs::read_to_string(&message_path).await {
-            Ok(text) => text,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!("failed to read codex last-message file: {error}"),
-                ));
-            }
-        };
-
-        let parsed_payload: serde_json::Value = match serde_json::from_str(&last_message_text) {
-            Ok(v) => v,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::SchemaValidationFailure,
-                    format!("invalid Codex last-message JSON: {error}"),
-                ));
-            }
-        };
-
-        best_effort_cleanup(Some(&schema_path), &message_path).await;
-
-        let session_id = if session_resuming {
-            request.prior_session.as_ref().map(|s| s.session_id.clone())
-        } else {
-            None
-        };
-
-        Ok(InvocationEnvelope {
-            raw_output_reference: RawOutputReference::Inline(last_message_text),
-            parsed_payload,
-            metadata: InvocationMetadata {
-                invocation_id: request.invocation_id.clone(),
-                duration: Duration::from_millis(0),
-                token_counts: TokenCounts::default(),
-                backend_used: request.resolved_target.backend.clone(),
-                model_used: request.resolved_target.model.clone(),
-                attempt_number: request.attempt_number,
-                session_id,
-                session_reused: session_resuming,
-            },
-            timestamp: Utc::now(),
-        })
-    }
 }
 
 impl AgentExecutionPort for ProcessBackendAdapter {
@@ -634,74 +724,49 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 details: "ProcessBackendAdapter availability checks are only supported for claude and codex".to_owned(),
             });
         };
-
-        let path_entries = std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-            .unwrap_or_default();
-
-        #[cfg(unix)]
-        let mut non_executable_candidate = None;
-
-        for candidate in path_entries
-            .into_iter()
-            .map(|entry| entry.join(binary_name))
-        {
-            let Ok(metadata) = std::fs::metadata(&candidate) else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
-
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-
-                if metadata.permissions().mode() & 0o111 != 0 {
-                    return Ok(());
-                }
-
-                if non_executable_candidate.is_none() {
-                    non_executable_candidate = Some(candidate);
-                }
-                continue;
-            }
-
-            #[cfg(not(unix))]
-            {
-                return Ok(());
-            }
-        }
-
-        #[cfg(unix)]
-        if let Some(candidate) = non_executable_candidate {
-            return Err(AppError::BackendUnavailable {
-                backend: backend.backend.family.to_string(),
-                details: format!(
-                    "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
-                    candidate.display()
-                ),
-            });
-        }
-
-        Err(AppError::BackendUnavailable {
-            backend: backend.backend.family.to_string(),
-            details: format!("required binary '{binary_name}' was not found on PATH"),
-        })
+        Self::ensure_binary_available(binary_name, backend.backend.family.as_str())
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
+        let prepared = self.build_command(&request).await?;
+        let output = match self
+            .spawn_and_wait(
+                &request,
+                prepared.binary(),
+                prepared.args(),
+                prepared.stdin_payload(),
+            )
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                prepared.cleanup().await;
+                return Err(error);
+            }
+        };
 
-        match request.resolved_target.backend.family {
-            BackendFamily::Claude => self.invoke_claude(request).await,
-            BackendFamily::Codex => self.invoke_codex(request).await,
-            _ => Err(Self::capability_mismatch(
-                &request.resolved_target,
-                &request.contract,
-                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
-            )),
+        match output.status {
+            status if !status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                prepared.cleanup().await;
+                Err(Self::invocation_failed(
+                    &request,
+                    FailureClass::TransportFailure,
+                    format!(
+                        "{} exited with code {code}{}",
+                        prepared.binary(),
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {stderr}")
+                        }
+                    ),
+                ))
+            }
+            _ => prepared.finish(&request, output).await,
         }
     }
 
@@ -746,10 +811,10 @@ struct ClaudeEnvelope {
     structured_output: Option<serde_json::Value>,
 }
 
-struct ChildOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
+pub(crate) struct ChildOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {

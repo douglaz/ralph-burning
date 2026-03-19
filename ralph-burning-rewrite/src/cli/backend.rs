@@ -10,7 +10,7 @@ use crate::contexts::agent_execution::diagnostics::{
 use crate::contexts::project_run_record::service::ProjectStorePort;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
-use crate::shared::domain::{BackendSelection, FlowPreset};
+use crate::shared::domain::{BackendSelection, ExecutionMode, FlowPreset};
 use crate::shared::error::{AppError, AppResult};
 
 // ── CLI arg structs ─────────────────────────────────────────────────────────
@@ -49,6 +49,12 @@ pub enum BackendSubcommand {
         /// Override the QA backend for this check.
         #[arg(long = "qa-backend")]
         qa_backend: Option<String>,
+        /// Override execution mode for this check.
+        #[arg(long = "execution-mode")]
+        execution_mode: Option<String>,
+        /// Override whether backend output streams into runtime logs.
+        #[arg(long = "stream-output")]
+        stream_output: Option<bool>,
     },
     /// Show resolved backend selection with source precedence.
     ShowEffective {
@@ -70,6 +76,12 @@ pub enum BackendSubcommand {
         /// Override the QA backend for this view.
         #[arg(long = "qa-backend")]
         qa_backend: Option<String>,
+        /// Override execution mode for this view.
+        #[arg(long = "execution-mode")]
+        execution_mode: Option<String>,
+        /// Override whether backend output streams into runtime logs.
+        #[arg(long = "stream-output")]
+        stream_output: Option<bool>,
     },
     /// Probe backend resolution for a given role and flow.
     Probe {
@@ -100,6 +112,12 @@ pub enum BackendSubcommand {
         /// Override the QA backend for this probe.
         #[arg(long = "qa-backend")]
         qa_backend: Option<String>,
+        /// Override execution mode for this probe.
+        #[arg(long = "execution-mode")]
+        execution_mode: Option<String>,
+        /// Override whether backend output streams into runtime logs.
+        #[arg(long = "stream-output")]
+        stream_output: Option<bool>,
     },
 }
 
@@ -115,6 +133,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
             implementer_backend,
             reviewer_backend,
             qa_backend,
+            execution_mode,
+            stream_output,
         } => {
             let overrides = build_overrides(
                 backend.as_deref(),
@@ -122,6 +142,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
                 implementer_backend.as_deref(),
                 reviewer_backend.as_deref(),
                 qa_backend.as_deref(),
+                execution_mode.as_deref(),
+                stream_output,
             )?;
             handle_check(json, overrides).await
         }
@@ -132,6 +154,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
             implementer_backend,
             reviewer_backend,
             qa_backend,
+            execution_mode,
+            stream_output,
         } => {
             let overrides = build_overrides(
                 backend.as_deref(),
@@ -139,6 +163,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
                 implementer_backend.as_deref(),
                 reviewer_backend.as_deref(),
                 qa_backend.as_deref(),
+                execution_mode.as_deref(),
+                stream_output,
             )?;
             handle_show_effective(json, overrides).await
         }
@@ -152,6 +178,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
             implementer_backend,
             reviewer_backend,
             qa_backend,
+            execution_mode,
+            stream_output,
         } => {
             let overrides = build_overrides(
                 backend.as_deref(),
@@ -159,6 +187,8 @@ pub async fn handle(command: BackendCommand) -> AppResult<()> {
                 implementer_backend.as_deref(),
                 reviewer_backend.as_deref(),
                 qa_backend.as_deref(),
+                execution_mode.as_deref(),
+                stream_output,
             )?;
             handle_probe(role, flow, cycle, json, overrides).await
         }
@@ -189,10 +219,17 @@ async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<(
     // Use adapter availability checks when possible. If the adapter cannot be
     // constructed at all, that is itself a readiness failure — surface it
     // instead of silently falling back to config-only checks.
-    let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
-        Ok(adapter) => service.check_backends_with_availability(flow, &adapter).await,
-        Err(adapter_err) => service.check_backends_with_adapter_failure(flow, &adapter_err),
-    };
+    let result =
+        match crate::composition::agent_execution_builder::build_backend_adapter_with_config(Some(
+            &config,
+        )) {
+            Ok(adapter) => {
+                service
+                    .check_backends_with_availability(flow, &adapter)
+                    .await
+            }
+            Err(adapter_err) => service.check_backends_with_adapter_failure(flow, &adapter_err),
+        };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -238,22 +275,25 @@ async fn handle_probe(
     // are correctly reported as omitted and required unavailable members fail.
     // If the adapter cannot be constructed, surface that as an error instead of
     // silently falling back to config-only resolution.
-    let result = match crate::composition::agent_execution_builder::build_backend_adapter() {
-        Ok(adapter) => {
-            service
-                .probe_with_availability(&role, flow, cycle.unwrap_or(1), &adapter)
-                .await?
-        }
-        Err(adapter_err) => {
-            return Err(AppError::BackendUnavailable {
-                backend: "adapter".to_owned(),
-                details: format!(
-                    "cannot construct backend adapter for probe: {}",
-                    adapter_err
-                ),
-            });
-        }
-    };
+    let result =
+        match crate::composition::agent_execution_builder::build_backend_adapter_with_config(Some(
+            &config,
+        )) {
+            Ok(adapter) => {
+                service
+                    .probe_with_availability(&role, flow, cycle.unwrap_or(1), &adapter)
+                    .await?
+            }
+            Err(adapter_err) => {
+                return Err(AppError::BackendUnavailable {
+                    backend: "adapter".to_owned(),
+                    details: format!(
+                        "cannot construct backend adapter for probe: {}",
+                        adapter_err
+                    ),
+                });
+            }
+        };
 
     if json {
         println!("{}", serde_json::to_string_pretty(&result)?);
@@ -292,9 +332,13 @@ fn build_overrides(
     implementer_backend: Option<&str>,
     reviewer_backend: Option<&str>,
     qa_backend: Option<&str>,
+    execution_mode: Option<&str>,
+    stream_output: Option<bool>,
 ) -> AppResult<CliBackendOverrides> {
     Ok(CliBackendOverrides {
-        backend: backend.map(BackendSelection::from_backend_name).transpose()?,
+        backend: backend
+            .map(BackendSelection::from_backend_name)
+            .transpose()?,
         planner_backend: planner_backend
             .map(BackendSelection::from_backend_name)
             .transpose()?,
@@ -307,6 +351,10 @@ fn build_overrides(
         qa_backend: qa_backend
             .map(BackendSelection::from_backend_name)
             .transpose()?,
+        execution_mode: execution_mode
+            .map(str::parse::<ExecutionMode>)
+            .transpose()?,
+        stream_output,
     })
 }
 
@@ -354,7 +402,10 @@ fn render_check_text(result: &BackendCheckResult) {
         return;
     }
 
-    println!("Backend check FAILED ({} failure(s)):", result.failures.len());
+    println!(
+        "Backend check FAILED ({} failure(s)):",
+        result.failures.len()
+    );
     println!();
     for failure in &result.failures {
         println!(
@@ -380,14 +431,8 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
         "  Default model:    {} (source: {})",
         view.default_model.value, view.default_model.source
     );
-    println!(
-        "  Default session:  {}",
-        view.default_session_policy
-    );
-    println!(
-        "  Default timeout:  {}s",
-        view.default_timeout_seconds
-    );
+    println!("  Default session:  {}", view.default_session_policy);
+    println!("  Default timeout:  {}s", view.default_timeout_seconds);
     println!();
     println!("  Per-role resolution:");
     for role in &view.roles {
@@ -396,10 +441,7 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
                 "    {:<20} {}/{} [UNRESOLVED: {}]",
                 role.role, role.backend_family, role.model_id, err,
             );
-            println!(
-                "    {:<20} sources: backend={}",
-                "", role.override_source,
-            );
+            println!("    {:<20} sources: backend={}", "", role.override_source,);
         } else {
             println!(
                 "    {:<20} {}/{} timeout={}s session={}",
@@ -411,17 +453,17 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
             );
             println!(
                 "    {:<20} sources: backend={}, model={}, timeout={}",
-                "",
-                role.override_source,
-                role.model_source,
-                role.timeout_source,
+                "", role.override_source, role.model_source, role.timeout_source,
             );
         }
     }
 }
 
 fn render_probe_text(result: &BackendProbeResult) {
-    println!("Probe: role={} flow={} cycle={}", result.role, result.flow, result.cycle);
+    println!(
+        "Probe: role={} flow={} cycle={}",
+        result.role, result.flow, result.cycle
+    );
     println!("{:-<60}", "");
     println!(
         "  Target: {}/{}  timeout={}s",
@@ -435,11 +477,12 @@ fn render_probe_text(result: &BackendProbeResult) {
             panel.panel_type, panel.minimum, panel.resolved_count,
         );
         for member in &panel.members {
-            let req = if member.required { "required" } else { "optional" };
-            println!(
-                "    [{req}] {}/{}",
-                member.backend_family, member.model_id,
-            );
+            let req = if member.required {
+                "required"
+            } else {
+                "optional"
+            };
+            println!("    [{req}] {}/{}", member.backend_family, member.model_id,);
         }
         if let Some(arbiter) = &panel.arbiter {
             println!(

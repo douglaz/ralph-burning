@@ -8,8 +8,9 @@ use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRoleModels, BackendRoleTimeouts,
     BackendRuntimeSettings, BackendSelection, EffectiveBackendPolicy, EffectiveCompletionPolicy,
     EffectiveDaemonPrPolicy, EffectiveFinalReviewPolicy, EffectivePromptReviewPolicy,
-    EffectiveRebasePolicy, EffectiveRunPolicy, EffectiveValidationPolicy, FlowPreset,
-    PanelBackendSpec, PrPolicy, ProjectConfig, ProjectId, PromptChangeAction, WorkspaceConfig,
+    EffectiveRebasePolicy, EffectiveRunPolicy, EffectiveValidationPolicy, ExecutionMode,
+    FlowPreset, PanelBackendSpec, PrPolicy, ProjectConfig, ProjectId, PromptChangeAction,
+    WorkspaceConfig,
 };
 use crate::shared::error::{AppError, AppResult};
 
@@ -30,6 +31,8 @@ pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_PR_NO_DIFF_ACTION: PrPolicy = PrPolicy::SkipOnNoDiff;
 pub const DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED: bool = false;
 pub const DEFAULT_REBASE_AGENT_TIMEOUT_SECS: u64 = 300;
+pub const DEFAULT_EXECUTION_MODE: ExecutionMode = ExecutionMode::Direct;
+pub const DEFAULT_STREAM_OUTPUT: bool = false;
 
 const DEFAULT_BASE_BACKEND: BackendFamily = BackendFamily::Claude;
 const UNSET_LITERALS: &[&str] = &["unset", "none", "null"];
@@ -117,6 +120,8 @@ pub struct CliBackendOverrides {
     pub implementer_backend: Option<BackendSelection>,
     pub reviewer_backend: Option<BackendSelection>,
     pub qa_backend: Option<BackendSelection>,
+    pub execution_mode: Option<ExecutionMode>,
+    pub stream_output: Option<bool>,
 }
 
 impl CliBackendOverrides {
@@ -126,6 +131,8 @@ impl CliBackendOverrides {
             && self.implementer_backend.is_none()
             && self.reviewer_backend.is_none()
             && self.qa_backend.is_none()
+            && self.execution_mode.is_none()
+            && self.stream_output.is_none()
     }
 }
 
@@ -142,6 +149,8 @@ pub struct EffectiveConfig {
     daemon_pr_policy: EffectiveDaemonPrPolicy,
     rebase_policy: EffectiveRebasePolicy,
     backend_policy: EffectiveBackendPolicy,
+    execution_mode: ExecutionMode,
+    stream_output: bool,
 }
 
 impl EffectiveConfig {
@@ -347,6 +356,19 @@ impl EffectiveConfig {
             ),
         };
 
+        let execution_mode = resolve_scalar(
+            workspace_config.execution.mode,
+            project_config.execution.mode,
+            cli_overrides.execution_mode,
+            DEFAULT_EXECUTION_MODE,
+        );
+        let stream_output = resolve_scalar(
+            workspace_config.execution.stream_output,
+            project_config.execution.stream_output,
+            cli_overrides.stream_output,
+            DEFAULT_STREAM_OUTPUT,
+        );
+
         let base_backend_string = cli_overrides
             .backend
             .as_ref()
@@ -430,6 +452,8 @@ impl EffectiveConfig {
             daemon_pr_policy,
             rebase_policy,
             backend_policy,
+            execution_mode,
+            stream_output,
         })
     }
 
@@ -468,6 +492,14 @@ impl EffectiveConfig {
 
     pub fn backend_policy(&self) -> &EffectiveBackendPolicy {
         &self.backend_policy
+    }
+
+    pub fn effective_execution_mode(&self) -> ExecutionMode {
+        self.execution_mode
+    }
+
+    pub fn effective_stream_output(&self) -> bool {
+        self.stream_output
     }
 
     pub fn get(&self, key: &str) -> AppResult<ConfigEntry> {
@@ -602,6 +634,22 @@ impl EffectiveConfig {
                         .as_ref()
                         .and_then(|selection| selection.model.clone())
                         .map(|_| ()),
+                ),
+            ),
+            ["execution", "mode"] => (
+                ConfigValue::String(Some(self.execution_mode.as_str().to_owned())),
+                source_for_option(
+                    self.workspace_config.execution.mode,
+                    self.project_config.execution.mode,
+                    self.cli_overrides.execution_mode,
+                ),
+            ),
+            ["execution", "stream_output"] => (
+                ConfigValue::Bool(self.stream_output),
+                source_for_option(
+                    self.workspace_config.execution.stream_output,
+                    self.project_config.execution.stream_output,
+                    self.cli_overrides.stream_output,
                 ),
             ),
             ["prompt_review", "enabled"] => (
@@ -1531,6 +1579,8 @@ fn known_config_keys() -> Vec<String> {
         "default_flow".to_owned(),
         "default_backend".to_owned(),
         "default_model".to_owned(),
+        "execution.mode".to_owned(),
+        "execution.stream_output".to_owned(),
         "prompt_review.enabled".to_owned(),
         "prompt_review.refiner_backend".to_owned(),
         "prompt_review.validator_backends".to_owned(),
@@ -1594,6 +1644,17 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
                 let parsed = parse_flow_preset(key, raw_value)?;
                 document["settings"]["default_flow"] = value(parsed.as_str());
             }
+        }
+        ["execution", "mode"] => {
+            if is_unset(raw_value) {
+                document["execution"]["mode"] = Item::None;
+            } else {
+                let parsed = parse_execution_mode(key, raw_value)?;
+                document["execution"]["mode"] = value(parsed.as_str());
+            }
+        }
+        ["execution", "stream_output"] => {
+            apply_optional_bool(document, &["execution", "stream_output"], key, raw_value)?
         }
         ["default_backend"] => {
             apply_optional_string(document, &["settings", "default_backend"], raw_value)?
@@ -1914,6 +1975,17 @@ fn parse_flow_preset(key: &str, raw_value: &str) -> AppResult<FlowPreset> {
             key: key.to_owned(),
             value: raw_value.to_owned(),
             reason: "expected a built-in flow preset".to_owned(),
+        })
+}
+
+fn parse_execution_mode(key: &str, raw_value: &str) -> AppResult<ExecutionMode> {
+    raw_value
+        .trim()
+        .parse::<ExecutionMode>()
+        .map_err(|_| AppError::InvalidConfigValue {
+            key: key.to_owned(),
+            value: raw_value.to_owned(),
+            reason: "expected direct or tmux".to_owned(),
         })
 }
 

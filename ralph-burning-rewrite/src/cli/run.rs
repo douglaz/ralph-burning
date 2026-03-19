@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use clap::{Args, Subcommand};
+use notify::{Config as NotifyConfig, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -15,12 +16,12 @@ use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
-use crate::contexts::project_run_record::model::RunStatus;
+use crate::contexts::project_run_record::model::{ActiveRun, RunStatus};
 use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
-use crate::shared::domain::{BackendSelection, StageId};
+use crate::shared::domain::{BackendSelection, ExecutionMode, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Args)]
@@ -33,6 +34,8 @@ pub struct RunCommand {
 pub enum RunSubcommand {
     Start(RunBackendOverrideArgs),
     Resume(RunBackendOverrideArgs),
+    /// Attach to the active tmux-backed invocation for the selected project.
+    Attach,
     /// Show canonical run status for the active project.
     Status {
         /// Emit a stable JSON object for scripts.
@@ -99,6 +102,10 @@ pub struct RunBackendOverrideArgs {
     pub reviewer_backend: Option<String>,
     #[arg(long = "qa-backend")]
     pub qa_backend: Option<String>,
+    #[arg(long = "execution-mode")]
+    pub execution_mode: Option<String>,
+    #[arg(long = "stream-output")]
+    pub stream_output: Option<bool>,
 }
 
 pub async fn handle(command: RunCommand) -> AppResult<()> {
@@ -112,15 +119,11 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         RunSubcommand::Tail { logs, last, follow } => handle_tail(logs, last, follow).await,
         RunSubcommand::Start(args) => handle_start(args).await,
         RunSubcommand::Resume(args) => handle_resume(args).await,
+        RunSubcommand::Attach => handle_attach().await,
         RunSubcommand::Rollback { list, to, hard } => handle_rollback(list, to, hard).await,
         RunSubcommand::ShowPayload { payload_id } => handle_show_payload(payload_id).await,
         RunSubcommand::ShowArtifact { artifact_id } => handle_show_artifact(artifact_id).await,
     }
-}
-
-pub fn build_agent_execution_service() -> AppResult<agent_execution_builder::ProductionAgentService>
-{
-    agent_execution_builder::build_agent_execution_service()
 }
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
@@ -182,7 +185,8 @@ async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let effective_config =
         EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
 
-    let agent_service = build_agent_execution_service()?;
+    let agent_service =
+        agent_execution_builder::build_agent_execution_service_for_config(&effective_config)?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;
@@ -281,7 +285,8 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let cli_overrides = parse_cli_backend_overrides(&overrides)?;
     let effective_config =
         EffectiveConfig::load_for_project(&current_dir, Some(&project_id), cli_overrides)?;
-    let agent_service = build_agent_execution_service()?;
+    let agent_service =
+        agent_execution_builder::build_agent_execution_service_for_config(&effective_config)?;
     let run_snapshot_write = FsRunSnapshotWriteStore;
     let journal_store = FsJournalStore;
     let artifact_write = FsPayloadArtifactWriteStore;
@@ -319,6 +324,38 @@ async fn handle_resume(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+async fn handle_attach() -> AppResult<()> {
+    let (current_dir, project_id) = load_active_project_context()?;
+    let effective_config = EffectiveConfig::load_for_project(
+        &current_dir,
+        Some(&project_id),
+        CliBackendOverrides::default(),
+    )?;
+
+    if effective_config.effective_execution_mode() != ExecutionMode::Tmux {
+        println!("No active tmux session exists for the current invocation.");
+        return Ok(());
+    }
+
+    let snapshot = FsRunSnapshotStore.read_run_snapshot(&current_dir, &project_id)?;
+    let Some(active_run) = snapshot.active_run.as_ref() else {
+        println!("No active tmux session exists for the current invocation.");
+        return Ok(());
+    };
+
+    let invocation_id = active_run_invocation_id(active_run);
+    let session_name =
+        crate::adapters::tmux::TmuxAdapter::session_name(project_id.as_str(), &invocation_id);
+
+    if !crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)? {
+        println!("No active tmux session exists for the current invocation.");
+        return Ok(());
+    }
+
+    println!("Attaching to tmux session '{session_name}'. Detach with Ctrl-b d.");
+    crate::adapters::tmux::TmuxAdapter::attach_to_session(&session_name)
 }
 
 async fn handle_status(as_json: bool) -> AppResult<()> {
@@ -364,9 +401,20 @@ async fn handle_history(verbose: bool, as_json: bool, stage: Option<String>) -> 
 
 async fn handle_tail(include_logs: bool, last: Option<usize>, follow: bool) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
+    let effective_config = EffectiveConfig::load_for_project(
+        &current_dir,
+        Some(&project_id),
+        CliBackendOverrides::default(),
+    )?;
 
     if follow {
-        return handle_tail_follow(&current_dir, &project_id, include_logs).await;
+        return handle_tail_follow(
+            &current_dir,
+            &project_id,
+            include_logs,
+            effective_config.effective_stream_output(),
+        )
+        .await;
     }
 
     let tail = service::run_tail(
@@ -405,6 +453,7 @@ async fn handle_tail_follow(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
     include_logs: bool,
+    stream_output: bool,
 ) -> AppResult<()> {
     let initial_tail = service::run_tail(
         &FsJournalStore,
@@ -434,6 +483,32 @@ async fn handle_tail_follow(
         }
     );
 
+    if include_logs && stream_output {
+        if let Some(mut rx) = build_follow_watcher(current_dir, project_id)? {
+            loop {
+                tokio::select! {
+                    result = tokio::signal::ctrl_c() => {
+                        result?;
+                        println!("Stopped following.");
+                        return Ok(());
+                    }
+                    maybe_event = rx.recv() => {
+                        if maybe_event.is_none() {
+                            break;
+                        }
+                        render_follow_delta(
+                            current_dir,
+                            project_id,
+                            include_logs,
+                            &mut last_seen_sequence,
+                            &mut last_runtime_log_count,
+                        )?;
+                    }
+                }
+            }
+        }
+    }
+
     loop {
         tokio::select! {
             result = tokio::signal::ctrl_c() => {
@@ -442,40 +517,13 @@ async fn handle_tail_follow(
                 return Ok(());
             }
             _ = tokio::time::sleep(Duration::from_secs(2)) => {
-                let tail = service::run_tail(
-                    &FsJournalStore,
-                    &FsArtifactStore,
-                    &FsRuntimeLogStore,
+                render_follow_delta(
                     current_dir,
                     project_id,
                     include_logs,
+                    &mut last_seen_sequence,
+                    &mut last_runtime_log_count,
                 )?;
-                let new_event_count = tail
-                    .events
-                    .iter()
-                    .filter(|event| event.sequence > last_seen_sequence)
-                    .count();
-                let (events, payloads, artifacts) =
-                    crate::contexts::project_run_record::queries::tail_last_n(
-                        &tail.events,
-                        &tail.payloads,
-                        &tail.artifacts,
-                        new_event_count,
-                    );
-                let new_logs = match tail.runtime_logs.as_ref() {
-                    Some(logs) if logs.len() >= last_runtime_log_count => {
-                        logs[last_runtime_log_count..].to_vec()
-                    }
-                    Some(logs) => logs.clone(),
-                    None => Vec::new(),
-                };
-
-                if !events.is_empty() || !payloads.is_empty() || !artifacts.is_empty() || !new_logs.is_empty() {
-                    print_follow_update(&events, &payloads, &artifacts, &new_logs);
-                }
-
-                last_seen_sequence = tail.events.last().map(|event| event.sequence).unwrap_or(last_seen_sequence);
-                last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
             }
         }
     }
@@ -603,6 +651,94 @@ fn load_active_project_context() -> AppResult<(std::path::PathBuf, crate::shared
     let _ = project_store.read_project_record(&current_dir, &project_id)?;
 
     Ok((current_dir, project_id))
+}
+
+fn build_follow_watcher(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+) -> AppResult<Option<tokio::sync::mpsc::UnboundedReceiver<notify::Event>>> {
+    let project_root = current_dir
+        .join(".ralph-burning/projects")
+        .join(project_id.as_str());
+    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+    let callback = move |result: Result<notify::Event, notify::Error>| {
+        if let Ok(event) = result {
+            let _ = tx.send(event);
+        }
+    };
+
+    let mut watcher = match RecommendedWatcher::new(callback, NotifyConfig::default()) {
+        Ok(watcher) => watcher,
+        Err(_) => return Ok(None),
+    };
+
+    if watcher
+        .watch(&project_root, RecursiveMode::Recursive)
+        .is_err()
+    {
+        return Ok(None);
+    }
+
+    std::mem::forget(watcher);
+    Ok(Some(rx))
+}
+
+fn render_follow_delta(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    include_logs: bool,
+    last_seen_sequence: &mut u64,
+    last_runtime_log_count: &mut usize,
+) -> AppResult<()> {
+    let tail = service::run_tail(
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsRuntimeLogStore,
+        current_dir,
+        project_id,
+        include_logs,
+    )?;
+    let new_event_count = tail
+        .events
+        .iter()
+        .filter(|event| event.sequence > *last_seen_sequence)
+        .count();
+    let (events, payloads, artifacts) = crate::contexts::project_run_record::queries::tail_last_n(
+        &tail.events,
+        &tail.payloads,
+        &tail.artifacts,
+        new_event_count,
+    );
+    let new_logs = match tail.runtime_logs.as_ref() {
+        Some(logs) if logs.len() >= *last_runtime_log_count => {
+            logs[*last_runtime_log_count..].to_vec()
+        }
+        Some(logs) => logs.clone(),
+        None => Vec::new(),
+    };
+
+    if !events.is_empty() || !payloads.is_empty() || !artifacts.is_empty() || !new_logs.is_empty() {
+        print_follow_update(&events, &payloads, &artifacts, &new_logs);
+    }
+
+    *last_seen_sequence = tail
+        .events
+        .last()
+        .map(|event| event.sequence)
+        .unwrap_or(*last_seen_sequence);
+    *last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
+    Ok(())
+}
+
+fn active_run_invocation_id(active_run: &ActiveRun) -> String {
+    format!(
+        "{}-{}-c{}-a{}-cr{}",
+        active_run.run_id,
+        active_run.stage_cursor.stage.as_str(),
+        active_run.stage_cursor.cycle,
+        active_run.stage_cursor.attempt,
+        active_run.stage_cursor.completion_round
+    )
 }
 
 fn maybe_filter_history_by_stage(
@@ -902,6 +1038,12 @@ fn parse_cli_backend_overrides(args: &RunBackendOverrideArgs) -> AppResult<CliBa
             args.reviewer_backend.as_deref(),
         )?,
         qa_backend: parse_backend_selection_arg("qa_backend", args.qa_backend.as_deref())?,
+        execution_mode: args
+            .execution_mode
+            .as_deref()
+            .map(str::parse::<ExecutionMode>)
+            .transpose()?,
+        stream_output: args.stream_output,
     })
 }
 

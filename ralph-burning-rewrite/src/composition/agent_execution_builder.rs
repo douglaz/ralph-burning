@@ -15,10 +15,12 @@ use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
 use crate::adapters::process_backend::ProcessBackendAdapter;
 #[cfg(feature = "test-stub")]
 use crate::adapters::stub_backend::StubBackendAdapter;
+use crate::adapters::tmux::TmuxAdapter;
 use crate::adapters::BackendAdapter;
 use crate::contexts::agent_execution::service::{AgentExecutionService, BackendSelectionConfig};
 use crate::contexts::requirements_drafting::service::RequirementsService;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::shared::domain::ExecutionMode;
 #[cfg(feature = "test-stub")]
 use crate::shared::domain::StageId;
 use crate::shared::error::{AppError, AppResult};
@@ -48,6 +50,12 @@ fn backend_selector_reason() -> &'static str {
 /// Build a `BackendAdapter` from the `RALPH_BURNING_BACKEND` environment variable.
 /// Defaults to `process` when the variable is unset.
 pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
+    build_backend_adapter_with_config(None)
+}
+
+pub fn build_backend_adapter_with_config(
+    effective_config: Option<&EffectiveConfig>,
+) -> AppResult<BackendAdapter> {
     let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
         Ok(value) => value,
         Err(std::env::VarError::NotPresent) => "process".to_owned(),
@@ -69,7 +77,21 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
             value: "stub".to_owned(),
             reason: "stub backend requires the test-stub cargo feature".to_owned(),
         }),
-        "process" => Ok(BackendAdapter::Process(ProcessBackendAdapter::new())),
+        "process" => {
+            let process = ProcessBackendAdapter::new();
+            if effective_config
+                .is_some_and(|config| config.effective_execution_mode() == ExecutionMode::Tmux)
+            {
+                Ok(BackendAdapter::Tmux(TmuxAdapter::new(
+                    process,
+                    effective_config
+                        .map(|config| config.effective_stream_output())
+                        .unwrap_or(false),
+                )))
+            } else {
+                Ok(BackendAdapter::Process(process))
+            }
+        }
         "openrouter" => Ok(BackendAdapter::OpenRouter(OpenRouterBackendAdapter::new())),
         other => Err(AppError::InvalidConfigValue {
             key: "RALPH_BURNING_BACKEND".to_owned(),
@@ -89,6 +111,17 @@ pub fn build_agent_execution_service() -> AppResult<ProductionAgentService> {
     ))
 }
 
+pub fn build_agent_execution_service_for_config(
+    effective_config: &EffectiveConfig,
+) -> AppResult<ProductionAgentService> {
+    let adapter = build_backend_adapter_with_config(Some(effective_config))?;
+    Ok(AgentExecutionService::new(
+        adapter,
+        FsRawOutputStore,
+        FsSessionStore,
+    ))
+}
+
 // ── Requirements service builder ────────────────────────────────────────────
 
 /// Build a `RequirementsService` backed by the environment-selected adapter and
@@ -97,7 +130,7 @@ pub fn build_agent_execution_service() -> AppResult<ProductionAgentService> {
 pub fn build_requirements_service(
     effective_config: &EffectiveConfig,
 ) -> AppResult<ProductionRequirementsService> {
-    let adapter = build_backend_adapter()?;
+    let adapter = build_backend_adapter_with_config(Some(effective_config))?;
 
     #[cfg(feature = "test-stub")]
     // When using the stub adapter, apply test-only label overrides.

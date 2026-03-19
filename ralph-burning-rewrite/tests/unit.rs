@@ -49,6 +49,12 @@ mod stub_backend_test;
 #[path = "unit/process_backend_test.rs"]
 mod process_backend_test;
 
+#[path = "unit/env_test_support.rs"]
+mod env_test_support;
+
+#[path = "unit/tmux_adapter_test.rs"]
+mod tmux_adapter_test;
+
 #[path = "unit/prompt_builder_test.rs"]
 mod prompt_builder_test;
 
@@ -81,3 +87,6 @@ mod checkpoint_test;
 
 #[path = "unit/backend_diagnostics_test.rs"]
 mod backend_diagnostics_test;
+
+#[path = "unit/execution_config_test.rs"]
+mod execution_config_test;
