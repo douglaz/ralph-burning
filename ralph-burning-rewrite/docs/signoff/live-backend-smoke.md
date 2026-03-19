@@ -25,8 +25,12 @@ from `current_dir()` (`src/cli/project.rs:217`, `src/cli/run.rs:130`,
 - No existing workspace config, active-project selection, or checked-in state
   in the real repo is read or mutated
 
-The script initialises the scratch workspace with a minimal `workspace.toml`
-(`version = 1`) appropriate for the backend under test.
+The script initialises the scratch workspace with a `workspace.toml` that sets
+`settings.default_backend` to the backend under test (e.g. `"claude"`, `"codex"`,
+or `"openrouter"`).  This ensures that `project bootstrap`, which runs quick
+requirements internally, resolves its backend from `default_backend()` in
+`service.rs:23` → `config.rs:376` using the correct backend — not the ambient
+fallback (`DEFAULT_BASE_BACKEND = Claude` at `config.rs:37`).
 
 ## Backend Binding
 
@@ -70,14 +74,14 @@ OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter
 
 1. **Preflight**: `command -v claude` + `backend check --backend claude`
 2. **Probe**: `backend probe --role planner --flow standard --backend claude`
-3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "claude"` in scratch `workspace.toml`)
 4. **Run**: `run start --backend claude`
 
 ### Codex
 
 1. **Preflight**: `command -v codex` + `backend check --backend codex`
 2. **Probe**: `backend probe --role planner --flow standard --backend codex`
-3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+3. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "codex"` in scratch `workspace.toml`)
 4. **Run**: `run start --backend codex`
 
 ### OpenRouter
@@ -85,10 +89,11 @@ OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter
 OpenRouter has additional constraints:
 
 1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + `backend check --backend openrouter`
-2. **Config**: Scratch `workspace.toml` with `[backends.openrouter] enabled = true`
-   and `[execution] mode = "direct"`; `RALPH_BURNING_BACKEND=openrouter` exported
+2. **Config**: Scratch `workspace.toml` with `settings.default_backend = "openrouter"`,
+   `[backends.openrouter] enabled = true`, and `[execution] mode = "direct"`;
+   `RALPH_BURNING_BACKEND=openrouter` exported
 3. **Probe**: `backend probe --role planner --flow standard --backend openrouter`
-4. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD)
+4. **Bootstrap**: `project bootstrap --idea "..." --flow standard` (from scratch CWD; `settings.default_backend = "openrouter"` in scratch `workspace.toml`)
 5. **Run**: `run start --backend openrouter`
 
 **Important**: OpenRouter must run in `execution.mode = "direct"`.  The process
@@ -140,11 +145,12 @@ real workspace.
 
 After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
 
-1. From the evidence file, extract: **project_id**, **run_status** (from
-   `run status --json`), **smoke_id**, and **smoke_dir**
+1. From the evidence file, extract: **project_id**, **run_id** (from the
+   `run_started` journal event in `run history --json`, see `journal.rs:107`),
+   **run_status** (from `run status --json`), **smoke_id**, and **smoke_dir**
 2. Replace the Result column with `PASS` or `FAIL`
-3. Record the project_id, run_status (must be `completed` for PASS), and
-   smoke_id in the Follow-up Bug column
+3. Record the project_id, run_id, run_status (must be `completed` for PASS),
+   and smoke_id in the Follow-up Bug column
 4. If `FAIL`, record the exact error and leave the scratch dir for inspection
 
 Once all three backend rows are `PASS` with complete evidence, update

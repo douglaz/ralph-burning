@@ -35,7 +35,7 @@ EVIDENCE_FILE="${SMOKE_DIR}/${SMOKE_ID}-evidence.txt"
 # honour it as-is; otherwise we build an absolute path to `cargo run` so that
 # it works after we cd into the scratch workspace.
 if [ -n "${RALPH_BURNING:-}" ]; then
-    RB=( $RALPH_BURNING )
+    IFS=' ' read -ra RB <<< "$RALPH_BURNING"
 else
     RB=( cargo run --manifest-path "$(cd "$(dirname "$0")/.." && pwd)/Cargo.toml" -- )
 fi
@@ -48,7 +48,9 @@ evidence() { printf '%s\n' "$*" | tee -a "$EVIDENCE_FILE"; }
 
 cleanup_on_preflight_fail() {
     # Preflight failures must not leave any project or workspace state.
-    if [ -d "$SMOKE_DIR" ] && [ ! -f "$EVIDENCE_FILE" ]; then
+    # We check the preflight_passed flag rather than evidence file existence
+    # because early evidence lines are written before preflight completes.
+    if [ -d "$SMOKE_DIR" ]; then
         rm -rf "$SMOKE_DIR"
     fi
 }
@@ -83,6 +85,9 @@ case "$BACKEND" in
         cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
 version = 1
 
+[settings]
+default_backend = "claude"
+
 [execution]
 mode = "direct"
 TOML
@@ -91,6 +96,9 @@ TOML
         cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
 version = 1
 
+[settings]
+default_backend = "codex"
+
 [execution]
 mode = "direct"
 TOML
@@ -98,6 +106,9 @@ TOML
     openrouter)
         cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
 version = 1
+
+[settings]
+default_backend = "openrouter"
 
 [backends.openrouter]
 enabled = true
@@ -238,6 +249,9 @@ else
     evidence "run_stderr: $(cat "$SMOKE_DIR/run-stderr.txt" 2>/dev/null || echo '(empty)')"
     # Run history remains canonical and inspectable
     "${RB[@]}" run status --json > "$SMOKE_DIR/final-status.json" 2>/dev/null || true
+    "${RB[@]}" run history --json > "$SMOKE_DIR/final-history.json" 2>/dev/null || true
+    FAIL_RUN_ID=$(grep -o '"run_id":"[^"]*"' "$SMOKE_DIR/final-history.json" 2>/dev/null | head -1 | cut -d'"' -f4 || echo "(unknown)")
+    evidence "run_id: $FAIL_RUN_ID"
     evidence "final_status: $(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '(unavailable)')"
     exit 1
 fi
@@ -255,9 +269,15 @@ FINAL_STATUS=$(cat "$SMOKE_DIR/final-status.json" 2>/dev/null || echo '{}')
 PROJECT_ID=$(printf '%s' "$FINAL_STATUS" | grep -o '"project_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
 RUN_STATUS=$(printf '%s' "$FINAL_STATUS" | grep -o '"status":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
 
+# Extract run_id from journal events in run history.  The run_started event
+# stores run_id in details.run_id (journal.rs:107).
+FINAL_HISTORY=$(cat "$SMOKE_DIR/final-history.json" 2>/dev/null || echo '{}')
+RUN_ID=$(printf '%s' "$FINAL_HISTORY" | grep -o '"run_id":"[^"]*"' | head -1 | cut -d'"' -f4 || echo "(unknown)")
+
 evidence ""
 evidence "--- Final Evidence ---"
 evidence "project_id: $PROJECT_ID"
+evidence "run_id: $RUN_ID"
 evidence "run_status: $RUN_STATUS"
 evidence "final_status_json: $FINAL_STATUS"
 evidence "smoke_result: PASS"
@@ -265,6 +285,7 @@ evidence "smoke_id: $SMOKE_ID"
 
 log "Smoke PASSED for $BACKEND"
 log "  project_id: $PROJECT_ID"
+log "  run_id: $RUN_ID"
 log "  run_status: $RUN_STATUS"
 log "  Evidence file: $EVIDENCE_FILE"
 
