@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (54 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (58 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -76,3 +76,11 @@
 - `backend check` now resolves and checks arbiter and refiner availability
   independently of full panel resolution, so all blocking failures are
   aggregated even when reviewer/validator resolution fails first.
+- `backend probe` config-time panel failures now identify the exact
+  failing target/member (e.g. `completion_panel.member[1]`,
+  `final_review_panel.arbiter`), the backend family, and the selecting
+  config source field, instead of collapsing all panel errors to the
+  primary target (planner).
+- `backend show-effective` now correctly reports `model_source` for
+  models embedded in `default_backend` (e.g. `default_backend = "codex(model)"`)
+  by tracing to the `default_backend` source, not misreporting as `"default"`.

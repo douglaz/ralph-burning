@@ -2322,3 +2322,158 @@ fn probe_config_time_failure_for_disabled_final_review_arbiter() {
         err_msg
     );
 }
+
+// ── probe config-time exact member identity tests ────────────────────────
+
+#[test]
+fn probe_completion_panel_disabled_member_reports_exact_member_identity() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // claude (required) + openrouter (required, disabled) with min=2
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("completion_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+
+    // Must identify the exact failing member, not just "planner"
+    assert!(
+        err_msg.contains("completion_panel.member[1]"),
+        "should identify exact failing member completion_panel.member[1]: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("openrouter"),
+        "should identify the failing backend family 'openrouter': {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("completion.backends"),
+        "should report the config source as 'completion.backends': {}",
+        err_msg
+    );
+    // Must NOT attribute the failure to the planner
+    assert!(
+        !err_msg.contains("workflow.planner_backend"),
+        "should not misattribute to workflow.planner_backend: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn probe_final_review_panel_disabled_arbiter_reports_arbiter_identity() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        arbiter_backend: Some("openrouter".to_owned()),
+        backends: None,
+        min_reviewers: None,
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("final_review_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+
+    // Must identify "arbiter" as the failing target
+    assert!(
+        err_msg.contains("arbiter"),
+        "should identify arbiter as the failing target: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("openrouter"),
+        "should identify openrouter as the failing backend: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("final_review.arbiter_backend"),
+        "should report the config source as 'final_review.arbiter_backend': {}",
+        err_msg
+    );
+    // Must NOT attribute the failure to the planner
+    assert!(
+        !err_msg.contains("workflow.planner_backend"),
+        "should not misattribute to workflow.planner_backend: {}",
+        err_msg
+    );
+}
+
+// ── model source from default_backend tests ──────────────────────────────
+
+#[test]
+fn show_effective_model_source_from_default_backend_embedded_model() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Set default_backend with an embedded model: "claude(custom-model-x)"
+    workspace.settings.default_backend = Some("claude(custom-model-x)".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // The planner (which inherits from default_backend) should resolve to
+    // "custom-model-x" with a source that traces back to default_backend,
+    // NOT "default".
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "custom-model-x", planner.model_id,
+        "planner model should resolve to the embedded model"
+    );
+    assert!(
+        planner.model_source != "default",
+        "model_source should NOT be 'default' when model comes from default_backend; got: {}",
+        planner.model_source
+    );
+}
+
+#[test]
+fn show_effective_model_source_default_when_no_embedded_model() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    // No default_backend override, no default_model — model comes from
+    // the compile-time family default and should report "default".
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
+    assert_eq!(
+        "default", planner.model_source,
+        "model_source should be 'default' when no embedded model and no default_model"
+    );
+}

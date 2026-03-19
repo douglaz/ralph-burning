@@ -717,22 +717,21 @@ impl<'a> BackendDiagnosticsService<'a> {
         let cycle = if cycle == 0 { 1 } else { cycle };
         let flow_def = flow_definition(flow);
 
-        // Check if this is a panel target
+        // Check if this is a panel target.
+        // Panel probes handle their own error wrapping internally for exact
+        // per-component identity, so no blanket wrap_probe_config_error here.
         match role_str {
             "completion_panel" => {
                 validate_flow_has_stage(flow_def, StageId::CompletionPanel)?;
-                return self.probe_completion_panel(flow, cycle)
-                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
+                return self.probe_completion_panel(flow, cycle);
             }
             "final_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::FinalReview)?;
-                return self.probe_final_review_panel(flow, cycle)
-                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
+                return self.probe_final_review_panel(flow, cycle);
             }
             "prompt_review_panel" => {
                 validate_flow_has_stage(flow_def, StageId::PromptReview)?;
-                return self.probe_prompt_review_panel(flow, cycle)
-                    .map_err(|err| self.wrap_probe_config_error(role_str, err));
+                return self.probe_prompt_review_panel(flow, cycle);
             }
             _ => {}
         }
@@ -740,7 +739,12 @@ impl<'a> BackendDiagnosticsService<'a> {
         // Parse as a policy role
         let role: BackendPolicyRole = role_str.parse()?;
         let target = self.policy.resolve_role_target(role, cycle)
-            .map_err(|err| self.wrap_probe_config_error(role_str, err))?;
+            .map_err(|err| self.make_probe_target_error(
+                role_str, role_str,
+                &self.family_for_role(role),
+                &self.config_source_for_role(role),
+                &err,
+            ))?;
         let timeout = self.policy.timeout_for_role(target.backend.family, role);
 
         Ok(BackendProbeResult {
@@ -761,17 +765,30 @@ impl<'a> BackendDiagnosticsService<'a> {
         flow: FlowPreset,
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
-        let resolution = self.policy.resolve_completion_panel(cycle)?;
-        // The target is the planner — use Planner role for timeout, matching
-        // runtime behavior in engine.rs which resolves planner timeout via
-        // policy_role_for_stage → Planner.
+        // Resolve planner separately for exact error identity
+        let planner = self.policy.resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .map_err(|err| self.make_probe_target_error(
+                "completion_panel", "planner",
+                &self.family_for_role(BackendPolicyRole::Planner),
+                &self.config_source_for_role(BackendPolicyRole::Planner),
+                &err,
+            ))?;
+
         let timeout = self.policy.timeout_for_role(
-            resolution.planner.backend.family,
+            planner.backend.family,
             BackendPolicyRole::Planner,
         );
 
         let configured_specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
+
+        // Try the full panel resolution; if it fails, identify the exact
+        // failing member (planner already succeeded above).
+        let resolution = self.policy.resolve_completion_panel(cycle)
+            .map_err(|err| self.identify_failing_panel_member(
+                "completion_panel", "member", "completion.backends",
+                configured_specs, &err,
+            ))?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
@@ -787,8 +804,8 @@ impl<'a> BackendDiagnosticsService<'a> {
             flow: flow.as_str().to_owned(),
             cycle,
             target: ProbeTargetView {
-                backend_family: resolution.planner.backend.family.as_str().to_owned(),
-                model_id: resolution.planner.model.model_id,
+                backend_family: planner.backend.family.as_str().to_owned(),
+                model_id: planner.model.model_id,
                 timeout_seconds: timeout.as_secs(),
             },
             panel: Some(PanelProbeView {
@@ -807,16 +824,39 @@ impl<'a> BackendDiagnosticsService<'a> {
         flow: FlowPreset,
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
-        let resolution = self.policy.resolve_final_review_panel(cycle)?;
-        // The target is the planner — use Planner role for timeout, matching
-        // runtime behavior in engine.rs:6340 which uses BackendPolicyRole::Planner.
+        // Resolve planner separately for exact error identity
+        let planner = self.policy.resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .map_err(|err| self.make_probe_target_error(
+                "final_review_panel", "planner",
+                &self.family_for_role(BackendPolicyRole::Planner),
+                &self.config_source_for_role(BackendPolicyRole::Planner),
+                &err,
+            ))?;
+
+        // Resolve arbiter separately for exact error identity
+        let arbiter_target = self.policy.resolve_role_target(BackendPolicyRole::Arbiter, cycle)
+            .map_err(|err| self.make_probe_target_error(
+                "final_review_panel", "arbiter",
+                &self.family_for_role(BackendPolicyRole::Arbiter),
+                "final_review.arbiter_backend",
+                &err,
+            ))?;
+
         let timeout = self.policy.timeout_for_role(
-            resolution.planner.backend.family,
+            planner.backend.family,
             BackendPolicyRole::Planner,
         );
 
         let configured_specs = &self.config.final_review_policy().backends;
         let minimum = self.config.final_review_policy().min_reviewers;
+
+        // Try the full panel resolution; if it fails, identify the exact
+        // failing reviewer (planner and arbiter already succeeded above).
+        let resolution = self.policy.resolve_final_review_panel(cycle)
+            .map_err(|err| self.identify_failing_panel_member(
+                "final_review_panel", "reviewer", "final_review.backends",
+                configured_specs, &err,
+            ))?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
@@ -827,10 +867,9 @@ impl<'a> BackendDiagnosticsService<'a> {
             configured_specs,
         );
 
-        // Include the arbiter in the output
         let arbiter = PanelMemberView {
-            backend_family: resolution.arbiter.backend.family.as_str().to_owned(),
-            model_id: resolution.arbiter.model.model_id.clone(),
+            backend_family: arbiter_target.backend.family.as_str().to_owned(),
+            model_id: arbiter_target.model.model_id.clone(),
             required: true,
         };
 
@@ -839,8 +878,8 @@ impl<'a> BackendDiagnosticsService<'a> {
             flow: flow.as_str().to_owned(),
             cycle,
             target: ProbeTargetView {
-                backend_family: resolution.planner.backend.family.as_str().to_owned(),
-                model_id: resolution.planner.model.model_id,
+                backend_family: planner.backend.family.as_str().to_owned(),
+                model_id: planner.model.model_id,
                 timeout_seconds: timeout.as_secs(),
             },
             panel: Some(PanelProbeView {
@@ -859,17 +898,30 @@ impl<'a> BackendDiagnosticsService<'a> {
         flow: FlowPreset,
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
-        let resolution = self.policy.resolve_prompt_review_panel(cycle)?;
-        // The target is the refiner — use PromptReviewer role for timeout,
-        // matching runtime behavior in engine.rs:5878 which uses
-        // BackendPolicyRole::PromptReviewer for the refiner.
+        // Resolve refiner separately for exact error identity
+        let refiner = self.policy.resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
+            .map_err(|err| self.make_probe_target_error(
+                "prompt_review_panel", "refiner",
+                &self.family_for_role(BackendPolicyRole::PromptReviewer),
+                &self.config_source_for_role(BackendPolicyRole::PromptReviewer),
+                &err,
+            ))?;
+
         let timeout = self.policy.timeout_for_role(
-            resolution.refiner.backend.family,
+            refiner.backend.family,
             BackendPolicyRole::PromptReviewer,
         );
 
         let configured_specs = &self.config.prompt_review_policy().validator_backends;
         let minimum = self.config.prompt_review_policy().min_reviewers;
+
+        // Try the full panel resolution; if it fails, identify the exact
+        // failing validator (refiner already succeeded above).
+        let resolution = self.policy.resolve_prompt_review_panel(cycle)
+            .map_err(|err| self.identify_failing_panel_member(
+                "prompt_review_panel", "validator", "prompt_review.validator_backends",
+                configured_specs, &err,
+            ))?;
 
         let (members, omitted) = self.build_panel_member_views(
             &resolution
@@ -885,8 +937,8 @@ impl<'a> BackendDiagnosticsService<'a> {
             flow: flow.as_str().to_owned(),
             cycle,
             target: ProbeTargetView {
-                backend_family: resolution.refiner.backend.family.as_str().to_owned(),
-                model_id: resolution.refiner.model.model_id,
+                backend_family: refiner.backend.family.as_str().to_owned(),
+                model_id: refiner.model.model_id,
                 timeout_seconds: timeout.as_secs(),
             },
             panel: Some(PanelProbeView {
@@ -1000,19 +1052,57 @@ impl<'a> BackendDiagnosticsService<'a> {
         Ok(result)
     }
 
-    /// Wrap a raw config-time probe error with exact target identity, backend
-    /// family, and selecting config source field. This is applied in `probe()`
-    /// so both direct callers and `probe_with_availability()` get properly
-    /// shaped errors.
-    fn wrap_probe_config_error(&self, role_str: &str, err: AppError) -> AppError {
-        let primary_target = self.probe_primary_target_label(role_str);
-        let primary_source = self.probe_primary_config_source(role_str);
-        let family = self.probe_primary_family(role_str);
+    /// Build a probe error with exact target identity, backend family, and
+    /// selecting config source field for a specific component (planner,
+    /// arbiter, refiner, or singular role).
+    fn make_probe_target_error(
+        &self,
+        panel: &str,
+        target_label: &str,
+        family: &str,
+        config_source: &str,
+        inner: &AppError,
+    ) -> AppError {
         AppError::BackendUnavailable {
-            backend: family,
+            backend: family.to_owned(),
             details: format!(
-                "required target '{}' ({}) unavailable: {} [source: {}]",
-                role_str, primary_target, err, primary_source
+                "required target '{panel}' ({target_label}) unavailable: {inner} [source: {config_source}]",
+            ),
+        }
+    }
+
+    /// Identify which panel member spec failed resolution, and build an error
+    /// with exact `panel.member_label[N]` identity and the panel's config
+    /// source field. Used when the primary target (planner/refiner/arbiter)
+    /// succeeded but `resolve_*_panel()` still failed.
+    fn identify_failing_panel_member(
+        &self,
+        panel: &str,
+        member_label: &str,
+        config_source: &str,
+        specs: &[PanelBackendSpec],
+        inner: &AppError,
+    ) -> AppError {
+        // Scan the specs to find the first required disabled backend — that
+        // is the member whose failure caused the panel resolution to error.
+        for (idx, spec) in specs.iter().enumerate() {
+            let backend = spec.backend();
+            if !spec.is_optional() && !self.policy.backend_enabled_public(backend) {
+                return AppError::BackendUnavailable {
+                    backend: backend.as_str().to_owned(),
+                    details: format!(
+                        "required target '{panel}.{member_label}[{idx}]' ({backend}) unavailable: \
+                         backend disabled [source: {config_source}]",
+                    ),
+                };
+            }
+        }
+
+        // Fallback: cannot pinpoint the member — wrap with panel-level identity
+        AppError::BackendUnavailable {
+            backend: "unknown".to_owned(),
+            details: format!(
+                "required target '{panel}' ({member_label}) unavailable: {inner} [source: {config_source}]",
             ),
         }
     }
@@ -1025,23 +1115,6 @@ impl<'a> BackendDiagnosticsService<'a> {
             "final_review_panel" => "planner",
             "prompt_review_panel" => "refiner",
             _ => role_str,
-        }
-    }
-
-    /// Return the backend family string for the primary target of a probe,
-    /// used to annotate config-time failures before resolution succeeds.
-    fn probe_primary_family(&self, role_str: &str) -> String {
-        match role_str {
-            "completion_panel" | "final_review_panel" => {
-                self.family_for_role(BackendPolicyRole::Planner)
-            }
-            "prompt_review_panel" => {
-                self.family_for_role(BackendPolicyRole::PromptReviewer)
-            }
-            _ => match role_str.parse::<BackendPolicyRole>() {
-                Ok(role) => self.family_for_role(role),
-                Err(_) => "unknown".to_owned(),
-            },
         }
     }
 
@@ -1230,7 +1303,7 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// Model resolution order (matching `BackendPolicyService::target_for_family`):
     /// 1. Explicit model from the role's backend selection override
     /// 2. Role-specific model from `backends.<family>.role_models.<role>`
-    /// 3. Base backend model from `default_model`
+    /// 3. Base backend embedded model from `default_backend = "family(model)"`
     /// 4. Family default model
     fn model_source_for_role(&self, role: BackendPolicyRole, family: BackendFamily) -> String {
         let bp = self.config.backend_policy();
@@ -1263,7 +1336,19 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // 3. Check base backend model (only if this role resolved to the base family)
+        // 3. Check base backend embedded model — `target_for_family` resolves
+        //    from `base_backend.model` (set via `default_backend = "family(model)"`)
+        //    before falling through to the compile-time family default.
+        //    This must be checked before `default_model` because the runtime
+        //    resolution uses `base_backend.model` at this priority level.
+        if family == bp.base_backend.family && bp.base_backend.model.is_some() {
+            return self.source_for_base_backend();
+        }
+
+        // 3b. Check separate default_model setting (if set independently of
+        //     default_backend). Note: `target_for_family` does not currently
+        //     use this field, but include it for completeness if the policy
+        //     is extended to consult it.
         if family == bp.base_backend.family && bp.default_model.is_some() {
             return self.source_for_default_model();
         }

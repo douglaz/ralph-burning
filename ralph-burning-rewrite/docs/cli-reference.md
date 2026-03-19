@@ -232,7 +232,10 @@ for each field (default, workspace.toml, project config.toml, or cli override).
 Per-role entries include separate source metadata for backend selection
 (`override_source`), model resolution (`model_source`), and timeout
 resolution (`timeout_source`), so operators can trace every resolved
-value back to its originating config layer.
+value back to its originating config layer. Models embedded in the
+`default_backend` setting (e.g. `default_backend = "codex(custom-model)"`)
+are correctly attributed to the `default_backend` source, not reported
+as `"default"`.
 
 Roles whose configured backend cannot resolve (e.g., a disabled backend)
 are still included in the output with `resolution_error` set, so
@@ -292,8 +295,10 @@ cannot be constructed, the command exits non-zero. For panel probes:
   `[source: final_review.arbiter_backend]`,
   `[source: prompt_review.refiner_backend]`).
 - Config-time probe failures (e.g. a required member's backend is
-  disabled) also include exact target identity and source field, not
-  just the raw policy error.
+  disabled) include the exact failing target/member identity
+  (e.g. `completion_panel.member[1]`, `final_review_panel.arbiter`),
+  the failing backend family, and the selecting config source field,
+  not just the raw policy error or the primary target.
 - Panel target timeouts match runtime semantics: the planner target uses
   `planner` role timeout, and the refiner target uses `prompt_reviewer`
   role timeout.
