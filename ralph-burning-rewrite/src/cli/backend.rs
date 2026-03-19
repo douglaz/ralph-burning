@@ -391,21 +391,32 @@ fn render_show_effective_text(view: &EffectiveBackendView) {
     println!();
     println!("  Per-role resolution:");
     for role in &view.roles {
-        println!(
-            "    {:<20} {}/{} timeout={}s session={}",
-            role.role,
-            role.backend_family,
-            role.model_id,
-            role.timeout_seconds,
-            role.session_policy,
-        );
-        println!(
-            "    {:<20} sources: backend={}, model={}, timeout={}",
-            "",
-            role.override_source,
-            role.model_source,
-            role.timeout_source,
-        );
+        if let Some(err) = &role.resolution_error {
+            println!(
+                "    {:<20} {}/{} [UNRESOLVED: {}]",
+                role.role, role.backend_family, role.model_id, err,
+            );
+            println!(
+                "    {:<20} sources: backend={}",
+                "", role.override_source,
+            );
+        } else {
+            println!(
+                "    {:<20} {}/{} timeout={}s session={}",
+                role.role,
+                role.backend_family,
+                role.model_id,
+                role.timeout_seconds,
+                role.session_policy,
+            );
+            println!(
+                "    {:<20} sources: backend={}, model={}, timeout={}",
+                "",
+                role.override_source,
+                role.model_source,
+                role.timeout_source,
+            );
+        }
     }
 }
 

@@ -174,9 +174,14 @@ If the backend adapter itself cannot be constructed (e.g., invalid
 `availability_failure` and exits non-zero instead of silently falling
 back to config-only checks.
 
-Availability failures are reported per role/member — if the same backend
-target is shared by multiple roles (e.g., planner and final-review
-arbiter), each role is checked and reported independently.
+Optional panel members that fail availability are omitted and do not
+cause the check to fail unless their omission drops the panel below its
+configured minimum, in which case a `panel_minimum_violation` is
+reported rather than a generic `availability_failure`.
+
+Required availability failures are reported per role/member — if the
+same backend target is shared by multiple roles (e.g., planner and
+final-review arbiter), each role is checked and reported independently.
 
 Config-time panel failures identify the exact failing member and its
 selecting config field: `final_review_panel.arbiter` with source
@@ -222,6 +227,11 @@ Per-role entries include separate source metadata for backend selection
 resolution (`timeout_source`), so operators can trace every resolved
 value back to its originating config layer.
 
+Roles whose configured backend cannot resolve (e.g., a disabled backend)
+are still included in the output with `resolution_error` set, so
+operators can see the broken selection and its source. They are never
+silently dropped.
+
 Flags:
 - `--json` — emit a stable JSON object for scripts
 - `--backend <spec>` — override base backend for this view
@@ -245,7 +255,8 @@ Flags:
       "session_policy": "string",
       "override_source": "string",
       "model_source": "string",
-      "timeout_source": "string"
+      "timeout_source": "string",
+      "resolution_error": "string | null"
     }
   ],
   "default_session_policy": "string",
@@ -263,14 +274,19 @@ resolution paths as run execution. Supports both singular policy roles
 The probe checks actual backend availability. If the backend adapter
 cannot be constructed, the command exits non-zero. For panel probes:
 - Required unavailable members cause the probe to fail with the exact
-  member identity, backend family, and effective config source field
-  (e.g. `[source: completion.backends]`).
+  member identity (e.g. `completion_panel.member[0]`,
+  `final_review_panel.reviewer[1]`), backend family, and effective
+  config source field (e.g. `[source: completion.backends]`).
 - Optional unavailable members are moved to `omitted`.
 - The planner, arbiter (final-review), and refiner (prompt-review)
   targets are checked for availability and fail the probe if unavailable,
-  reporting their config source field (e.g. `[source: workflow.planner_backend]`,
+  reporting their exact target label (e.g. `(planner)`, `(refiner)`) and
+  config source field (e.g. `[source: workflow.planner_backend]`,
   `[source: final_review.arbiter_backend]`,
   `[source: prompt_review.refiner_backend]`).
+- Config-time probe failures (e.g. a required member's backend is
+  disabled) also include exact target identity and source field, not
+  just the raw policy error.
 - Panel target timeouts match runtime semantics: the planner target uses
   `planner` role timeout, and the refiner target uses `prompt_reviewer`
   role timeout.

@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (44 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (51 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -64,3 +64,12 @@
 - `backend show-effective` now reports per-field source precedence for
   model_id (`model_source`) and timeout (`timeout_source`) in addition
   to the existing backend override source.
+- `backend show-effective` now surfaces roles with broken backend
+  resolution (e.g. disabled configured backend) with `resolution_error`
+  set, instead of silently dropping them from the output.
+- `backend check` availability evaluation now correctly treats optional
+  panel members as non-blocking: optional unavailable members are omitted
+  and only cause failure if their omission drops the panel below minimum.
+- `backend probe` config-time and availability-time failures now include
+  exact target identity (e.g. `(planner)`, `(refiner)`) and config source
+  field, replacing the previous generic `(planner/primary)` label.

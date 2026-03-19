@@ -9,6 +9,7 @@ use ralph_burning::contexts::workspace_governance::config::{CliBackendOverrides,
 use ralph_burning::shared::domain::{
     BackendFamily, BackendRoleModels, BackendRoleTimeouts, BackendRuntimeSettings, BackendSelection,
     CompletionSettings, FlowPreset, PanelBackendSpec, WorkspaceConfig, FinalReviewSettings,
+    PromptReviewSettings,
 };
 
 use super::workspace_test::initialize_workspace_fixture;
@@ -1723,5 +1724,387 @@ fn show_effective_default_model_and_timeout_source() {
     assert_eq!(
         "default", planner.timeout_source,
         "default timeout should report source as 'default'"
+    );
+}
+
+// ── optional-member availability semantics tests ──────────────────────────
+
+#[tokio::test]
+async fn check_with_availability_passes_when_optional_member_unavailable_but_minimum_satisfied() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for openrouter backends
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    // Config: claude (required) + codex (required) + openrouter (optional),
+    // min_completers = 2. OpenRouter is optional and unavailable but the two
+    // required members satisfy the minimum → check should PASS.
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::Codex),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+    assert!(
+        result.passed,
+        "optional unavailable member should not block check when minimum is satisfied: {:?}",
+        result.failures
+    );
+}
+
+#[tokio::test]
+async fn check_with_availability_fails_when_optional_omission_violates_minimum() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for openrouter backends
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    // Config: claude (required) + openrouter (optional), min_completers = 2.
+    // OpenRouter is optional and unavailable, so only 1 available member
+    // remains, which is below minimum 2 → should report PanelMinimumViolation.
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .check_backends_with_availability(FlowPreset::Standard, &adapter)
+        .await;
+    assert!(
+        !result.passed,
+        "optional omission dropping below minimum should fail check"
+    );
+    let min_violation = result
+        .failures
+        .iter()
+        .find(|f| f.failure_kind == BackendCheckFailureKind::PanelMinimumViolation);
+    assert!(
+        min_violation.is_some(),
+        "should report PanelMinimumViolation, not AvailabilityFailure: {:?}",
+        result.failures
+    );
+}
+
+// ── show-effective broken role resolution tests ───────────────────────────
+
+#[test]
+fn show_effective_surfaces_broken_role_instead_of_dropping() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Configure planner to use a disabled backend
+    workspace.workflow.planner_backend = Some("openrouter".to_owned());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // The planner role must be present even though its configured backend
+    // (openrouter) is disabled — show-effective must not silently drop it.
+    let planner = view.roles.iter().find(|r| r.role == "planner");
+    assert!(
+        planner.is_some(),
+        "planner must appear in show-effective even when its backend is disabled; roles: {:?}",
+        view.roles.iter().map(|r| &r.role).collect::<Vec<_>>()
+    );
+
+    let planner = planner.unwrap();
+    assert_eq!("openrouter", planner.backend_family);
+    assert!(
+        planner.resolution_error.is_some(),
+        "planner with disabled backend should have resolution_error set"
+    );
+    // override_source should still reflect the workspace.toml configuration
+    assert_eq!("workspace.toml", planner.override_source);
+}
+
+#[test]
+fn show_effective_json_includes_resolution_error_for_disabled_role() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.workflow.planner_backend = Some("openrouter".to_owned());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let view = service.show_effective();
+
+    // Verify JSON serialization includes the resolution_error field
+    let json = serde_json::to_string(&view).expect("serialize");
+    assert!(
+        json.contains("resolution_error"),
+        "JSON output should contain resolution_error for broken roles: {}",
+        json
+    );
+}
+
+// ── probe config-time failure identity tests ──────────────────────────────
+
+#[test]
+fn probe_config_time_failure_includes_target_identity_and_source() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter and set it as a required completion member
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Config-time failure: required openrouter member is disabled
+    let result = service.probe("completion_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+
+    // Must identify the exact target and source, not just bubble up a generic error
+    assert!(
+        err_msg.contains("completion_panel"),
+        "config-time failure should identify the target: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("[source:"),
+        "config-time failure should include source field: {}",
+        err_msg
+    );
+}
+
+#[test]
+fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter and configure the prompt_review refiner to use it
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    workspace.prompt_review = PromptReviewSettings {
+        enabled: Some(true),
+        refiner_backend: Some("openrouter".to_owned()),
+        validator_backends: None,
+        min_reviewers: None,
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Config-time failure: refiner backend is disabled
+    let result = service.probe("prompt_review_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+
+    // Must report "refiner" as the target, NOT "planner/primary"
+    assert!(
+        err_msg.contains("refiner"),
+        "prompt_review_panel config failure should identify refiner as target: {}",
+        err_msg
+    );
+    assert!(
+        err_msg.contains("prompt_review"),
+        "prompt_review_panel config failure should reference prompt_review source: {}",
+        err_msg
+    );
+}
+
+#[tokio::test]
+async fn probe_with_availability_final_review_failure_reports_planner_not_generic() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("final_review_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    // Must say "planner" as the primary target label, not "planner/primary"
+    assert!(
+        err_msg.contains("(planner)"),
+        "final_review_panel availability failure should identify 'planner' as target label: {}",
+        err_msg
+    );
+    // Must NOT contain the old hard-coded "(planner/primary)" label
+    assert!(
+        !err_msg.contains("planner/primary"),
+        "should not use the old generic '(planner/primary)' label: {}",
+        err_msg
     );
 }

@@ -98,6 +98,11 @@ pub struct RoleEffectiveView {
     pub override_source: String,
     pub model_source: String,
     pub timeout_source: String,
+    /// When present, indicates this role's configured backend could not resolve.
+    /// The `backend_family` and `override_source` still reflect what was
+    /// configured, so operators can see the broken selection and its source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolution_error: Option<String>,
 }
 
 /// Result of `backend probe`.
@@ -286,6 +291,10 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// Unlike the previous implementation, this does NOT deduplicate targets by
     /// family:model — every role/member is checked and failures are reported
     /// with the exact role/member identity.
+    ///
+    /// Optional panel members that fail availability are omitted from failures
+    /// unless their omission drops the panel below its configured minimum,
+    /// in which case a `PanelMinimumViolation` is reported.
     pub async fn check_backends_with_availability<A: AgentExecutionPort>(
         &self,
         flow: FlowPreset,
@@ -293,19 +302,16 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> BackendCheckResult {
         let mut result = self.check_backends(flow);
 
-        // Collect ALL resolved targets with their role/member identity.
-        // No deduplication — every role/member that resolves to a target gets
-        // its own availability check so failures preserve exact identity.
-        let mut targets_to_check: Vec<(ResolvedBackendTarget, String, String)> = Vec::new();
+        // Required targets: stage roles, panel planners/arbiters/refiners.
+        // These always fail on unavailability.
+        let mut required_targets: Vec<(ResolvedBackendTarget, String, String)> = Vec::new();
         let flow_def = flow_definition(flow);
-        // Use the same filtered roles as check_backends — panel-specific roles
-        // (Completer, FinalReviewer) are checked via the panel sections below.
         let flow_roles = effectively_required_stage_roles(flow_def);
 
-        // Stage-role targets
+        // Stage-role targets (always required)
         for role in &flow_roles {
             if let Ok(target) = self.policy.resolve_role_target(*role, 1) {
-                targets_to_check.push((
+                required_targets.push((
                     target,
                     role.as_str().to_owned(),
                     self.config_source_for_role(*role),
@@ -313,68 +319,87 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         }
 
-        // Panel-specific targets: completion panel members
+        // Panel-specific targets: completion panel members (required vs optional)
         if flow_def.stages.contains(&StageId::CompletionPanel) {
             if let Ok(res) = self.policy.resolve_completion_panel(1) {
-                for (idx, member) in res.completers.iter().enumerate() {
-                    let member_role = format!("completion_panel.member[{}]", idx);
-                    targets_to_check.push((
-                        member.target.clone(),
-                        member_role,
-                        "completion.backends".to_owned(),
-                    ));
-                }
+                let minimum = self.config.completion_policy().min_completers;
+                self.check_panel_availability(
+                    adapter,
+                    &res.completers.iter()
+                        .map(|m| (m.target.clone(), m.required))
+                        .collect::<Vec<_>>(),
+                    "completion_panel",
+                    "completion.backends",
+                    minimum,
+                    &mut result,
+                )
+                .await;
             }
         }
 
-        // Panel-specific targets: final review panel members + planner + arbiter
+        // Panel-specific targets: final review panel (planner + arbiter required,
+        // reviewers may be optional)
         if flow_def.stages.contains(&StageId::FinalReview)
             && self.config.final_review_policy().enabled
         {
             if let Ok(res) = self.policy.resolve_final_review_panel(1) {
-                targets_to_check.push((
+                // Planner and arbiter are always required
+                required_targets.push((
                     res.planner.clone(),
                     "final_review_panel.planner".to_owned(),
                     "workflow.planner_backend".to_owned(),
                 ));
-                for (idx, member) in res.reviewers.iter().enumerate() {
-                    let member_role = format!("final_review_panel.reviewer[{}]", idx);
-                    targets_to_check.push((
-                        member.target.clone(),
-                        member_role,
-                        "final_review.backends".to_owned(),
-                    ));
-                }
-                targets_to_check.push((
+                required_targets.push((
                     res.arbiter.clone(),
                     "final_review_panel.arbiter".to_owned(),
                     "final_review.arbiter_backend".to_owned(),
                 ));
+
+                let minimum = self.config.final_review_policy().min_reviewers;
+                self.check_panel_availability(
+                    adapter,
+                    &res.reviewers.iter()
+                        .map(|m| (m.target.clone(), m.required))
+                        .collect::<Vec<_>>(),
+                    "final_review_panel",
+                    "final_review.backends",
+                    minimum,
+                    &mut result,
+                )
+                .await;
             }
         }
 
-        // Panel-specific targets: prompt review panel refiner + validators
+        // Panel-specific targets: prompt review panel (refiner required,
+        // validators may be optional)
         if flow_def.stages.contains(&StageId::PromptReview)
             && self.config.prompt_review_policy().enabled
         {
             if let Ok(res) = self.policy.resolve_prompt_review_panel(1) {
-                targets_to_check.push((
+                // Refiner is always required
+                required_targets.push((
                     res.refiner.clone(),
                     "prompt_review_panel.refiner".to_owned(),
                     "prompt_review.refiner_backend".to_owned(),
                 ));
-                for (idx, member) in res.validators.iter().enumerate() {
-                    let member_role = format!("prompt_review_panel.validator[{}]", idx);
-                    targets_to_check.push((
-                        member.target.clone(),
-                        member_role,
-                        "prompt_review.validator_backends".to_owned(),
-                    ));
-                }
+
+                let minimum = self.config.prompt_review_policy().min_reviewers;
+                self.check_panel_availability(
+                    adapter,
+                    &res.validators.iter()
+                        .map(|m| (m.target.clone(), m.required))
+                        .collect::<Vec<_>>(),
+                    "prompt_review_panel",
+                    "prompt_review.validator_backends",
+                    minimum,
+                    &mut result,
+                )
+                .await;
             }
         }
 
-        for (target, role, config_source) in &targets_to_check {
+        // Check all required targets — any failure is blocking
+        for (target, role, config_source) in &required_targets {
             if let Err(error) = adapter.check_availability(target).await {
                 result.failures.push(BackendCheckFailure {
                     role: role.clone(),
@@ -388,6 +413,58 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         result.passed = result.failures.is_empty();
         result
+    }
+
+    /// Check panel member availability with proper required/optional semantics.
+    ///
+    /// Required members that fail availability → `AvailabilityFailure`.
+    /// Optional members that fail availability → omitted silently.
+    /// If the remaining available count drops below `minimum` → `PanelMinimumViolation`.
+    async fn check_panel_availability<A: AgentExecutionPort>(
+        &self,
+        adapter: &A,
+        members: &[(ResolvedBackendTarget, bool)],
+        panel_name: &str,
+        config_source: &str,
+        minimum: usize,
+        result: &mut BackendCheckResult,
+    ) {
+        let mut available_count = 0;
+
+        for (idx, (target, required)) in members.iter().enumerate() {
+            match adapter.check_availability(target).await {
+                Ok(()) => {
+                    available_count += 1;
+                }
+                Err(error) => {
+                    if *required {
+                        let member_role = format!("{}.member[{}]", panel_name, idx);
+                        result.failures.push(BackendCheckFailure {
+                            role: member_role,
+                            backend_family: target.backend.family.as_str().to_owned(),
+                            failure_kind: BackendCheckFailureKind::AvailabilityFailure,
+                            details: error.to_string(),
+                            config_source: config_source.to_owned(),
+                        });
+                    }
+                    // Optional unavailable members are silently omitted
+                }
+            }
+        }
+
+        // Check if remaining available members satisfy the minimum
+        if available_count < minimum {
+            result.failures.push(BackendCheckFailure {
+                role: panel_name.to_owned(),
+                backend_family: "mixed".to_owned(),
+                failure_kind: BackendCheckFailureKind::PanelMinimumViolation,
+                details: format!(
+                    "only {} member(s) available but minimum is {}",
+                    available_count, minimum
+                ),
+                config_source: config_source.to_owned(),
+            });
+        }
     }
 
     /// Check completion panel members individually, reporting exact member
@@ -564,24 +641,46 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         let roles = BackendPolicyRole::ALL
             .iter()
-            .filter_map(|role| {
-                let target = self.policy.resolve_role_target(*role, 1).ok()?;
-                let family = target.backend.family;
-                let timeout = self.policy.timeout_for_role(family, *role);
+            .map(|role| {
                 let override_source = self.override_source_for_role(*role);
-                let model_source = self.model_source_for_role(*role, family);
-                let timeout_source = self.timeout_source_for_role(*role, family);
                 let session_policy = session_policy_for_role(*role);
-                Some(RoleEffectiveView {
-                    role: role.as_str().to_owned(),
-                    backend_family: family.as_str().to_owned(),
-                    model_id: target.model.model_id.clone(),
-                    timeout_seconds: timeout.as_secs(),
-                    session_policy,
-                    override_source,
-                    model_source,
-                    timeout_source,
-                })
+
+                match self.policy.resolve_role_target(*role, 1) {
+                    Ok(target) => {
+                        let family = target.backend.family;
+                        let timeout = self.policy.timeout_for_role(family, *role);
+                        let model_source = self.model_source_for_role(*role, family);
+                        let timeout_source = self.timeout_source_for_role(*role, family);
+                        RoleEffectiveView {
+                            role: role.as_str().to_owned(),
+                            backend_family: family.as_str().to_owned(),
+                            model_id: target.model.model_id.clone(),
+                            timeout_seconds: timeout.as_secs(),
+                            session_policy,
+                            override_source,
+                            model_source,
+                            timeout_source,
+                            resolution_error: None,
+                        }
+                    }
+                    Err(err) => {
+                        // Surface the configured backend family even though
+                        // resolution failed, so operators can see the broken
+                        // selection and its source.
+                        let configured_family = self.family_for_role(*role);
+                        RoleEffectiveView {
+                            role: role.as_str().to_owned(),
+                            backend_family: configured_family,
+                            model_id: "unresolved".to_owned(),
+                            timeout_seconds: 0,
+                            session_policy,
+                            override_source,
+                            model_source: "unresolved".to_owned(),
+                            timeout_source: "unresolved".to_owned(),
+                            resolution_error: Some(err.to_string()),
+                        }
+                    }
+                }
             })
             .collect();
 
@@ -796,10 +895,23 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
         adapter: &A,
     ) -> AppResult<BackendProbeResult> {
-        let mut result = self.probe(role_str, flow, cycle)?;
+        // Wrap config-time probe failures with exact target identity and source
+        let mut result = self.probe(role_str, flow, cycle).map_err(|err| {
+            let primary_target = self.probe_primary_target_label(role_str);
+            let primary_source = self.probe_primary_config_source(role_str);
+            let family = self.probe_primary_family(role_str);
+            AppError::BackendUnavailable {
+                backend: family,
+                details: format!(
+                    "required target '{}' ({}) unavailable: {} [source: {}]",
+                    role_str, primary_target, err, primary_source
+                ),
+            }
+        })?;
 
         // Resolve config source for the primary target role
         let primary_source = self.probe_primary_config_source(role_str);
+        let primary_target = self.probe_primary_target_label(role_str);
 
         // Check the primary target (planner for panels, role target for singular)
         {
@@ -809,8 +921,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                 return Err(AppError::BackendUnavailable {
                     backend: family.as_str().to_owned(),
                     details: format!(
-                        "required target '{}' (planner/primary) unavailable: {} [source: {}]",
-                        role_str, err, primary_source
+                        "required target '{}' ({}) unavailable: {} [source: {}]",
+                        role_str, primary_target, err, primary_source
                     ),
                 });
             }
@@ -836,8 +948,9 @@ impl<'a> BackendDiagnosticsService<'a> {
             let members_source = Self::panel_members_config_source(&panel.panel_type);
 
             // Check panel members: required unavailable → fail; optional unavailable → omit
+            let member_label_prefix = Self::panel_member_label_prefix(&panel.panel_type);
             let mut available_members = Vec::new();
-            for member in panel.members.drain(..) {
+            for (idx, member) in panel.members.drain(..).enumerate() {
                 let family: BackendFamily = member.backend_family.parse()?;
                 let target = ResolvedBackendTarget::new(family, member.model_id.clone());
                 match adapter.check_availability(&target).await {
@@ -853,8 +966,10 @@ impl<'a> BackendDiagnosticsService<'a> {
                         return Err(AppError::BackendUnavailable {
                             backend: member.backend_family.clone(),
                             details: format!(
-                                "required panel member '{}/{}' unavailable: {} [source: {}]",
-                                member.backend_family, member.model_id, err, members_source
+                                "required '{}[{}]' ({}:{}) unavailable: {} [source: {}]",
+                                member_label_prefix, idx,
+                                member.backend_family, member.model_id,
+                                err, members_source
                             ),
                         });
                     }
@@ -878,6 +993,34 @@ impl<'a> BackendDiagnosticsService<'a> {
         Ok(result)
     }
 
+    /// Return a human-readable label for the primary target of a probe,
+    /// identifying the exact role/member that serves as the primary target.
+    fn probe_primary_target_label<'b>(&self, role_str: &'b str) -> &'b str {
+        match role_str {
+            "completion_panel" => "planner",
+            "final_review_panel" => "planner",
+            "prompt_review_panel" => "refiner",
+            _ => role_str,
+        }
+    }
+
+    /// Return the backend family string for the primary target of a probe,
+    /// used to annotate config-time failures before resolution succeeds.
+    fn probe_primary_family(&self, role_str: &str) -> String {
+        match role_str {
+            "completion_panel" | "final_review_panel" => {
+                self.family_for_role(BackendPolicyRole::Planner)
+            }
+            "prompt_review_panel" => {
+                self.family_for_role(BackendPolicyRole::PromptReviewer)
+            }
+            _ => match role_str.parse::<BackendPolicyRole>() {
+                Ok(role) => self.family_for_role(role),
+                Err(_) => "unknown".to_owned(),
+            },
+        }
+    }
+
     /// Resolve the effective config source field for the primary/planner target
     /// of a probe, based on the role string.
     fn probe_primary_config_source(&self, role_str: &str) -> String {
@@ -895,6 +1038,16 @@ impl<'a> BackendDiagnosticsService<'a> {
                 Ok(role) => self.config_source_for_role(role),
                 Err(_) => "default_backend".to_owned(),
             },
+        }
+    }
+
+    /// Return the qualified member label prefix for probe failure messages.
+    fn panel_member_label_prefix(panel_type: &str) -> &'static str {
+        match panel_type {
+            "completion" => "completion_panel.member",
+            "final_review" => "final_review_panel.reviewer",
+            "prompt_review" => "prompt_review_panel.validator",
+            _ => "panel.member",
         }
     }
 
