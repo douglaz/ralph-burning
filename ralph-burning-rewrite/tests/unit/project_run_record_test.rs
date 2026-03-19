@@ -3048,3 +3048,436 @@ fn add_manual_amendment_returns_corrupt_record_when_file_rollback_fails() {
         ),
     }
 }
+
+// -- AlwaysFailingSnapshotStore: reads succeed, every write fails --
+
+struct AlwaysFailingSnapshotStore {
+    snapshot: RunSnapshot,
+}
+
+impl AlwaysFailingSnapshotStore {
+    fn initial() -> Self {
+        Self {
+            snapshot: RunSnapshot::initial(),
+        }
+    }
+}
+
+impl RunSnapshotPort for AlwaysFailingSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+impl RunSnapshotWritePort for AlwaysFailingSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated snapshot write failure",
+        )))
+    }
+}
+
+// -- FailingWriteAmendmentQueue: remove succeeds, write always fails --
+// Used for remove/clear tests where the file was successfully deleted
+// but cannot be restored.
+
+struct FailingWriteAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FailingWriteAmendmentQueue {
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailingWriteAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated write failure",
+        )))
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+// ── Pre-commit rollback failure tests (Required Change 1) ──
+
+#[test]
+fn add_manual_amendment_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
+    // Snapshot/reopen write fails, and amendment file cleanup also fails.
+    // Must return CorruptRecord with both failures, not just the snapshot error.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let store = AlwaysFailingSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue, &store, &store, &journal, &project_store, &base, &pid,
+        "should fail on snapshot then fail on cleanup",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot/reopen write failed"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file cleanup also failed"),
+                "CorruptRecord should mention cleanup failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
+    // Snapshot/reopen write fails, and file cleanup also fails.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let store = AlwaysFailingSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue, &store, &store, &journal, &project_store, &base, &pid, &amendments,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot/reopen write failed"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file cleanup also failed"),
+                "CorruptRecord should mention cleanup failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}"
+        ),
+    }
+}
+
+// ── Remove/clear restore failure tests (Required Change 2) ──
+
+#[test]
+fn remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail() {
+    // File deletion succeeds, snapshot write fails, file restore also fails.
+    let amendment = QueuedAmendment {
+        amendment_id: "manual-test-123".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "test body".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+    };
+
+    // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
+    let queue = FailingWriteAmendmentQueue::with(vec![amendment.clone()]);
+
+    // Use a shared store seeded with the amendment in run.json, then make
+    // snapshot write always fail by wrapping in AlwaysFailingSnapshotStore.
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(amendment);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::remove_amendment(
+        &queue, &store, &store, &base, &pid, "manual-test-123",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot write failed after amendment file deletion"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when both snapshot and restore fail, got: {other:?}"
+        ),
+    }
+}
+
+#[test]
+fn clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail() {
+    // All file deletions succeed, snapshot write fails, file restores also fail.
+    let amendment = QueuedAmendment {
+        amendment_id: "clear-test-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "test body".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+    };
+
+    // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
+    let queue = FailingWriteAmendmentQueue::with(vec![amendment.clone()]);
+
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(amendment);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(
+        &queue, &store, &store, &base, &pid,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot write failed after clearing amendments"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when both snapshot and restore fail, got: {other:?}"
+        ),
+    }
+}
+
+// -- PartialRemoveFailingWriteQueue: first N removes succeed, rest fail;
+// write always fails. Used for partial-clear + restore-failure tests. --
+
+struct PartialRemoveFailingWriteQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    removes_before_failure: usize,
+    remove_count: RefCell<usize>,
+}
+
+impl PartialRemoveFailingWriteQueue {
+    fn new(amendments: Vec<QueuedAmendment>, removes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+            removes_before_failure,
+            remove_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for PartialRemoveFailingWriteQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated write failure",
+        )))
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut count = self.remove_count.borrow_mut();
+        if *count < self.removes_before_failure {
+            *count += 1;
+            let mut amendments = self.amendments.borrow_mut();
+            amendments.retain(|a| a.amendment_id != amendment_id);
+            Ok(())
+        } else {
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated remove failure",
+            )))
+        }
+    }
+
+    fn drain_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    fn has_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+#[test]
+fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() {
+    // Partial file deletion: first remove succeeds, second fails. Then repair
+    // snapshot write also fails, and restoring the deleted file also fails.
+    let a1 = QueuedAmendment {
+        amendment_id: "clear-p-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "first"),
+    };
+    let a2 = QueuedAmendment {
+        amendment_id: "clear-p-2".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "second".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "second"),
+    };
+
+    // First remove succeeds (a1 deleted), second fails (a2 remains).
+    // Write always fails, so restoring deleted a1 is impossible.
+    let queue = PartialRemoveFailingWriteQueue::new(vec![a1.clone(), a2.clone()], 1);
+
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(a1);
+    snap.amendment_queue.pending.push(a2);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(
+        &queue, &store, &store, &base, &pid,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot repair write failed after partial clear"),
+                "CorruptRecord should mention repair failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when both repair and restore fail, got: {other:?}"
+        ),
+    }
+}
+

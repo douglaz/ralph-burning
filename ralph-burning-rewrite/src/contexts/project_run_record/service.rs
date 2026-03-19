@@ -853,7 +853,19 @@ pub fn add_manual_amendment(
 
     if let Err(snap_err) = snap_result {
         // Roll back the amendment file so canonical state stays consistent.
-        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        // If file cleanup also fails, return a composite error so the caller
+        // knows an amendment file may remain visible on disk.
+        if let Err(cleanup_err) =
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot/reopen write failed: {snap_err}; \
+                     amendment file cleanup also failed: {cleanup_err}"
+                ),
+            });
+        }
         return Err(snap_err);
     }
 
@@ -951,7 +963,19 @@ pub fn remove_amendment(
         .retain(|a| a.amendment_id != amendment_id);
     if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
         // Restore the amendment file so disk and snapshot stay consistent.
-        let _ = amendment_queue.write_amendment(base_dir, project_id, &amendment);
+        // If restore also fails, return a composite error so the caller knows
+        // the amendment file is missing while the snapshot still lists it.
+        if let Err(restore_err) =
+            amendment_queue.write_amendment(base_dir, project_id, &amendment)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot write failed after amendment file deletion: {snap_err}; \
+                     amendment file restore also failed: {restore_err}"
+                ),
+            });
+        }
         return Err(snap_err);
     }
 
@@ -1006,8 +1030,23 @@ pub fn clear_amendments(
         // snapshot.amendment_queue.pending is already empty from std::mem::take.
         if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
             // Restore all amendment files so disk and snapshot stay consistent.
+            // If any restore fails, return a composite error so the caller knows
+            // which files could not be restored.
+            let mut restore_failures: Vec<String> = Vec::new();
             for a in &pending {
-                let _ = amendment_queue.write_amendment(base_dir, project_id, a);
+                if let Err(e) = amendment_queue.write_amendment(base_dir, project_id, a) {
+                    restore_failures.push(format!("{}: {e}", a.amendment_id));
+                }
+            }
+            if !restore_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "snapshot write failed after clearing amendments: {snap_err}; \
+                         amendment file restore also failed: {}",
+                        restore_failures.join("; ")
+                    ),
+                });
             }
             return Err(snap_err);
         }
@@ -1027,11 +1066,25 @@ pub fn clear_amendments(
         if let Err(repair_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
         {
             // Restore deleted amendment files so disk stays consistent with
-            // the unmodified on-disk snapshot.
+            // the unmodified on-disk snapshot. If restore fails, return a
+            // composite error with both the repair and restore failures.
+            let mut restore_failures: Vec<String> = Vec::new();
             for a in &pending {
                 if !remaining_set.contains(a.amendment_id.as_str()) {
-                    let _ = amendment_queue.write_amendment(base_dir, project_id, a);
+                    if let Err(e) = amendment_queue.write_amendment(base_dir, project_id, a) {
+                        restore_failures.push(format!("{}: {e}", a.amendment_id));
+                    }
                 }
+            }
+            if !restore_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "snapshot repair write failed after partial clear: {repair_err}; \
+                         amendment file restore also failed: {}",
+                        restore_failures.join("; ")
+                    ),
+                });
             }
             return Err(repair_err);
         }
@@ -1093,8 +1146,21 @@ pub fn stage_amendment_batch(
         // Write durable amendment file. If this fails mid-batch, roll back
         // all earlier file writes so no pre-commit files leak.
         if let Err(write_err) = amendment_queue.write_amendment(base_dir, project_id, amendment) {
+            let mut cleanup_failures: Vec<String> = Vec::new();
             for id in &staged_ids {
-                let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+                if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                    cleanup_failures.push(format!("{id}: {e}"));
+                }
+            }
+            if !cleanup_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "batch file write failed: {write_err}; \
+                         amendment file cleanup also failed: {}",
+                        cleanup_failures.join("; ")
+                    ),
+                });
             }
             return Err(write_err);
         }
@@ -1125,8 +1191,21 @@ pub fn stage_amendment_batch(
 
     if let Err(snap_err) = snap_result {
         // Roll back all amendment files written in this batch.
+        let mut cleanup_failures: Vec<String> = Vec::new();
         for id in &staged_ids {
-            let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+            if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                cleanup_failures.push(format!("{id}: {e}"));
+            }
+        }
+        if !cleanup_failures.is_empty() {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot/reopen write failed: {snap_err}; \
+                     amendment file cleanup also failed: {}",
+                    cleanup_failures.join("; ")
+                ),
+            });
         }
         return Err(snap_err);
     }
@@ -1150,9 +1229,31 @@ pub fn stage_amendment_batch(
             Ok(line) => journal_lines.push(line),
             Err(ser_err) => {
                 // Serialization failed — roll back all staged files and snapshot.
-                let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+                let snap_result =
+                    run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+                let mut file_failures: Vec<String> = Vec::new();
                 for id in &staged_ids {
-                    let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+                    if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                        file_failures.push(format!("{id}: {e}"));
+                    }
+                }
+                if snap_result.is_err() || !file_failures.is_empty() {
+                    let snap_detail = snap_result
+                        .err()
+                        .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+                    let file_detail = if file_failures.is_empty() {
+                        "ok".to_owned()
+                    } else {
+                        file_failures.join("; ")
+                    };
+                    return Err(AppError::CorruptRecord {
+                        file: format!("projects/{}/run.json", project_id.as_str()),
+                        details: format!(
+                            "journal event serialization failed: {ser_err}; \
+                             rollback also failed — snapshot restore: {snap_detail}, \
+                             file cleanup: {file_detail}"
+                        ),
+                    });
                 }
                 return Err(ser_err);
             }

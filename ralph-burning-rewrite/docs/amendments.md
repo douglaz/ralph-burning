@@ -50,35 +50,42 @@ from `run.json`:
   the event), then writes the amendment file, commits the snapshot, and durably
   appends the journal event. If journal preparation fails, no mutation occurs.
   If the snapshot write fails after file creation, the amendment file is rolled
-  back. If the journal append fails after the snapshot is committed, the
-  snapshot is restored to its pre-mutation state and the amendment file is
+  back; if file cleanup also fails, a `CorruptRecord` error is returned with
+  both failures. If the journal append fails after the snapshot is committed,
+  the snapshot is restored to its pre-mutation state and the amendment file is
   removed. If rollback itself fails (snapshot restore or file cleanup), a
   `CorruptRecord` error is returned that includes both the original journal
   error and the rollback failure details. A successful add always records the
   history event and a failed add never leaves a committed amendment behind.
 - **remove**: deletes the amendment file first, then updates the snapshot. If
   file deletion fails, no mutation is visible. If the snapshot write fails after
-  a successful file deletion, the file is restored.
+  a successful file deletion, the file is restored; if file restore also fails,
+  a `CorruptRecord` error is returned with both the snapshot and restore
+  failures so the caller knows the amendment file is missing while the snapshot
+  still lists it.
 - **clear**: deletes amendment files first, tracking which succeed and which
   fail. Then updates the snapshot to contain only remaining (un-deletable)
   amendments. If all files are deleted but the snapshot write fails, the files
-  are restored. On partial failure, the snapshot repair write must succeed
+  are restored; if any file restore fails, a `CorruptRecord` error is returned
+  with both failures. On partial failure, the snapshot repair write must succeed
   before `AmendmentClearPartial` is returned with exact removed and remaining
   IDs. If the repair write fails, deleted files are restored and the underlying
-  I/O error is returned instead, ensuring `run.json` always reflects the true
-  pending set.
+  I/O error is returned instead; if file restore also fails during this
+  recovery, a `CorruptRecord` error is returned. This ensures `run.json`
+  always reflects the true pending set or an explicit corruption is surfaced.
 - **stage_amendment_batch**: prepares the journal sequence before mutations,
   then writes amendment files. If a file write fails mid-batch, all earlier
-  files in the same batch are rolled back. The snapshot is committed after all
-  files are written; if it fails, all files are rolled back. Journal events are
-  pre-serialized and then durably appended after the snapshot commit. If a
-  journal append fails and earlier appends already succeeded, the journal has
-  orphaned entries that cannot be un-appended; the snapshot and files are rolled
-  back and a `CorruptRecord` error is returned describing the partial-journal
-  state. If the journal append fails on the first event but rollback itself
-  fails, a `CorruptRecord` error is returned with both error details. Only when
-  the first journal append fails and rollback fully succeeds is a plain I/O
-  error returned.
+  files in the same batch are rolled back; if any cleanup fails, a
+  `CorruptRecord` error is returned. The snapshot is committed after all files
+  are written; if it fails, all files are rolled back, and cleanup failures
+  produce a `CorruptRecord`. Journal events are pre-serialized and then durably
+  appended after the snapshot commit. If a journal append fails and earlier
+  appends already succeeded, the journal has orphaned entries that cannot be
+  un-appended; the snapshot and files are rolled back and a `CorruptRecord`
+  error is returned describing the partial-journal state. If the journal append
+  fails on the first event but rollback itself fails, a `CorruptRecord` error
+  is returned with both error details. Only when the first journal append fails
+  and rollback fully succeeds is a plain I/O error returned.
 
 This ensures `run.json` is always the canonical source of truth for pending
 amendments, and that completion gating, resume reconciliation, and snapshot

@@ -272,6 +272,37 @@ and workflow-stage sources:
 4. **Docs updated**: `amendments.md` failure safety section updated to
    describe partial-journal and rollback-failure error reporting.
 
+### Iteration 9
+
+1. **Pre-commit amendment rollback (Required Change 1)**:
+   `add_manual_amendment` and `stage_amendment_batch` no longer swallow
+   cleanup failures before the journal phase. If file cleanup fails after a
+   snapshot/reopen write error or mid-batch write error, a `CorruptRecord`
+   error is returned with both the original error and the cleanup failure
+   details. `stage_amendment_batch` serialization rollback also reports
+   composite errors when snapshot restore or file cleanup fails.
+2. **Remove/clear failure invariants (Required Change 2)**:
+   `remove_amendment` no longer ignores `write_amendment` failure when
+   restoring a deleted file after a snapshot error. `clear_amendments` no
+   longer ignores restore failures after full or partial delete rollback.
+   In all cases, if rollback cannot fully restore pre-command state, a
+   `CorruptRecord` error is returned with both the original failure and
+   the restore failure.
+3. **Failure-injection test coverage (Recommended Improvement)**: Added 3 new
+   test fixtures and 5 new unit tests:
+   - `AlwaysFailingSnapshotStore` — reads succeed, every write fails.
+   - `FailingWriteAmendmentQueue` — remove succeeds, write always fails.
+   - `PartialRemoveFailingWriteQueue` — first N removes succeed, rest fail;
+     write always fails.
+   - `add_manual_amendment_returns_corrupt_when_snapshot_and_cleanup_both_fail`
+   - `stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail`
+   - `remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail`
+   - `clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail`
+   - `clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail`
+4. **Docs updated**: `amendments.md` failure safety section updated to
+   document composite `CorruptRecord` errors for all rollback-failure paths
+   in add, remove, clear, and batch staging.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope
