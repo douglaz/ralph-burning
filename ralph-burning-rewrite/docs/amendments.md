@@ -90,10 +90,11 @@ ensuring consistent behavior for:
 
 ## Lease conflict protection
 
-Manual amendments are rejected with `AmendmentLeaseConflict` if a writer
-lease is held on the project. The CLI acquires an RAII writer lease before
-performing any mutation, preventing races between concurrent CLI invocations
-and in-flight workflow execution.
+All mutating `project amend` commands (`add`, `remove`, `clear`) are rejected
+with `AmendmentLeaseConflict` if a writer lease is held on the project. The CLI
+acquires an RAII writer lease before performing any mutation, preventing races
+between concurrent CLI invocations and in-flight workflow execution. The
+service layer also rejects mutations when `run.json` shows `status = running`.
 
 ## Journal events
 

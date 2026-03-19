@@ -75,6 +75,20 @@ Feature: Manual Amendment Parity
     Then the command fails with a lease-conflict error
     And no amendment is created
 
+  # parity_slice3_lease_conflict_remove
+  Scenario: Removing amendments while a writer lease is held fails cleanly
+    Given a project with a staged manual amendment and an active writer lease
+    When `project amend remove <id>` is attempted
+    Then the command fails with a lease-conflict error
+    And the amendment remains pending
+
+  # parity_slice3_lease_conflict_clear
+  Scenario: Clearing amendments while a writer lease is held fails cleanly
+    Given a project with staged manual amendments and an active writer lease
+    When `project amend clear` is attempted
+    Then the command fails with a lease-conflict error
+    And all amendments remain pending
+
   # parity_slice3_clear_partial_failure
   Scenario: Clear partial failure reports exact removed and remaining IDs
     Given a project with multiple staged manual amendments

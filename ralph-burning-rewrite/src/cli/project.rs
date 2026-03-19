@@ -693,6 +693,26 @@ async fn handle_amend_remove(id: String) -> AppResult<()> {
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
 
+    // Acquire an RAII writer lease to prevent races with daemon/CLI writers.
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    let lock_guard = match CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        &current_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    ) {
+        Ok(guard) => guard,
+        Err(AppError::ProjectWriterLockHeld { .. })
+        | Err(AppError::AcquisitionRollbackFailed { .. }) => {
+            return Err(AppError::AmendmentLeaseConflict {
+                project_id: project_id.to_string(),
+            });
+        }
+        Err(other) => return Err(other),
+    };
+
     let amendment_queue = FsAmendmentQueueStore;
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot_write = FsRunSnapshotWriteStore;
@@ -705,6 +725,8 @@ async fn handle_amend_remove(id: String) -> AppResult<()> {
         &id,
     )?;
 
+    let _ = lock_guard.close();
+
     println!("Removed amendment '{}'", id);
     Ok(())
 }
@@ -714,6 +736,26 @@ async fn handle_amend_clear() -> AppResult<()> {
     let config = workspace_governance::load_workspace_config(&current_dir)?;
     workspace_governance::ensure_supported_workspace_version(&config)?;
     let project_id = workspace_governance::resolve_active_project(&current_dir)?;
+
+    // Acquire an RAII writer lease to prevent races with daemon/CLI writers.
+    let daemon_store: Arc<dyn crate::contexts::automation_runtime::DaemonStorePort + Send + Sync> =
+        Arc::new(FsDaemonStore);
+    let lock_guard = match CliWriterLeaseGuard::acquire(
+        Arc::clone(&daemon_store),
+        &current_dir,
+        project_id.clone(),
+        CLI_LEASE_TTL_SECONDS,
+        CLI_LEASE_HEARTBEAT_CADENCE_SECONDS,
+    ) {
+        Ok(guard) => guard,
+        Err(AppError::ProjectWriterLockHeld { .. })
+        | Err(AppError::AcquisitionRollbackFailed { .. }) => {
+            return Err(AppError::AmendmentLeaseConflict {
+                project_id: project_id.to_string(),
+            });
+        }
+        Err(other) => return Err(other),
+    };
 
     let amendment_queue = FsAmendmentQueueStore;
     let run_snapshot_read = FsRunSnapshotStore;
@@ -725,6 +767,9 @@ async fn handle_amend_clear() -> AppResult<()> {
         &current_dir,
         &project_id,
     );
+
+    // Release the writer lease before printing output.
+    let _ = lock_guard.close();
 
     match result {
         Ok(removed) => {

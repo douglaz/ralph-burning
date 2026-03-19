@@ -5806,3 +5806,93 @@ fn project_amend_add_lease_conflict_rejects() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
 }
+
+#[test]
+fn project_amend_remove_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment first (no lock yet).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment to remove"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "fake-lease-id",
+    ).expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+
+    // Verify the amendment was NOT removed.
+    fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(list_stdout.contains(&amendment_id), "amendment should still be pending: {list_stdout}");
+}
+
+#[test]
+fn project_amend_clear_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment first (no lock yet).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment to clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(
+        leases_dir.join("writer-alpha.lock"),
+        "fake-lease-id",
+    ).expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend clear during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("writer lease") || stderr.contains("lock"), "should mention lease conflict: {stderr}");
+
+    // Verify amendments were NOT cleared.
+    fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(!list_stdout.contains("No pending amendments"), "amendments should still be pending: {list_stdout}");
+}

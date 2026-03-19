@@ -223,6 +223,22 @@ and workflow-stage sources:
    that journal append is now durable (not best-effort) and that append failures
    trigger full rollback.
 
+### Iteration 7
+
+1. **Writer-lease handling for remove/clear (Required Change 1)**:
+   `handle_amend_remove` and `handle_amend_clear` now acquire an RAII writer
+   lease before calling the service layer, matching the existing `add` pattern.
+   The service functions `remove_amendment` and `clear_amendments` also reject
+   mutations when `run.json` shows `status = running`.
+2. **CLI test coverage (Recommended Improvement)**: Added
+   `project_amend_remove_lease_conflict_rejects` and
+   `project_amend_clear_lease_conflict_rejects` CLI tests.
+3. **Conformance coverage**: Added `parity_slice3_lease_conflict_remove` and
+   `parity_slice3_lease_conflict_clear` scenarios exercising writer-lock held
+   rejection for remove and clear commands.
+4. **Docs updated**: `amendments.md` lease conflict section now documents that
+   all mutating commands (not just `add`) honor the writer-lease contract.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

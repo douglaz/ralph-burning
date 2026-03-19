@@ -17716,6 +17716,93 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         Ok(())
     });
 
+    reg!(m, "parity_slice3_lease_conflict_remove", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 lease conflict remove"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add an amendment before the lock is held.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Amendment to remove"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+        let amendment_id = add
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID".to_owned())?
+            .trim()
+            .to_owned();
+
+        // Simulate a writer lock.
+        let project_id = "stub-project";
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let remove = run_cli(
+            &["project", "amend", "remove", &amendment_id],
+            ws.path(),
+        )?;
+        assert_failure(&remove)?;
+        assert_contains(&remove.stderr, "lease", "remove lease conflict stderr")?;
+
+        // Clean up lock and verify the amendment still exists.
+        std::fs::remove_file(&lock_path).ok();
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, &amendment_id, "amendment should still be pending")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_lease_conflict_clear", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 lease conflict clear"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add an amendment before the lock is held.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Amendment to clear"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Simulate a writer lock.
+        let project_id = "stub-project";
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+        assert_failure(&clear)?;
+        assert_contains(&clear.stderr, "lease", "clear lease conflict stderr")?;
+
+        // Clean up lock and verify amendments still exist.
+        std::fs::remove_file(&lock_path).ok();
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert!(
+            !list.stdout.contains("No pending amendments"),
+            "amendments should still be pending"
+        );
+
+        Ok(())
+    });
+
     reg!(m, "parity_slice3_clear_partial_failure", || {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;

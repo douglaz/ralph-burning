@@ -894,8 +894,16 @@ pub fn remove_amendment(
     project_id: &ProjectId,
     amendment_id: &str,
 ) -> AppResult<()> {
-    // Verify the amendment exists in canonical snapshot state.
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
+    // Verify the amendment exists in canonical snapshot state.
     let amendment = snapshot
         .amendment_queue
         .pending
@@ -944,6 +952,14 @@ pub fn clear_amendments(
     project_id: &ProjectId,
 ) -> AppResult<Vec<String>> {
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
     let pending: Vec<QueuedAmendment> =
         std::mem::take(&mut snapshot.amendment_queue.pending);
     if pending.is_empty() {
