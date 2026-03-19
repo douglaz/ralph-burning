@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-19 (updated after review-response iteration 2)
+Recorded: 2026-03-19 (updated after review-response iteration 3)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -73,6 +73,6 @@ All 4 PR-review scenarios: **PASS**
 - [x] `daemon.pr_review.transient_error_preserves_staged` passes
 - [x] All 4 PR-review conformance scenarios pass
 - [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
-- [ ] Backend-specific manual smoke items (Claude, Codex, OpenRouter) are unvalidated -- tested only with stub adapter
+- [ ] Backend-specific manual smoke items (Claude, Codex, OpenRouter) recorded as FAIL — backends are available (`backend check` passes for Claude/Codex, OpenRouter disabled in config) but full standard flows were not exercised end-to-end
 
-**Cutover status: Not Ready** — backend-specific manual smoke items (Claude, Codex, OpenRouter) require live validation with real API keys/binaries before cutover can proceed. All automated checks pass; only live backend smoke evidence is missing.
+**Cutover status: Not Ready** — backend-specific manual smoke items recorded as FAIL: Claude and Codex backends are present and resolve correctly via `backend probe`, but full standard flow runs require manual operator execution with a real project. OpenRouter is disabled in workspace config. All automated checks pass; only live end-to-end backend flow evidence is missing.
