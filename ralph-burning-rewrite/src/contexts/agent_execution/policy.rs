@@ -289,6 +289,12 @@ impl<'a> BackendPolicyService<'a> {
         Ok(ResolvedBackendTarget::new(family, model_id))
     }
 
+    /// Returns `true` if the given role has an explicit backend selection
+    /// configured (as opposed to falling through to base backend resolution).
+    pub fn has_explicit_override(&self, role: BackendPolicyRole) -> bool {
+        self.selection_for_role(role).is_some()
+    }
+
     fn selection_for_role(&self, role: BackendPolicyRole) -> Option<&BackendSelection> {
         match role {
             BackendPolicyRole::Planner => self.config.backend_policy().planner_backend.as_ref(),

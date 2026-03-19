@@ -42,7 +42,7 @@
 
 ## Tests Run
 
-- Unit tests: `backend_diagnostics_test` (36 tests), `backend_policy_test` (3 new tests)
+- Unit tests: `backend_diagnostics_test` (39 tests), `backend_policy_test` (3 new tests)
 - CLI integration tests: 12 new `backend_*` tests
 - Conformance scenarios: `parity_slice5_backend_list`, `parity_slice5_backend_check`,
   `parity_slice5_backend_show_effective`, `parity_slice5_backend_probe_completion_panel`,
@@ -53,3 +53,8 @@
 - `backend probe` does not yet support arbitrary stage-level resolution
   (e.g., `--stage planning`). Role and panel targets cover the primary
   operator use cases. Stage-level probing can be added as a follow-up.
+- `backend check` scoping is now effective-required: it only validates
+  backends that execution would actually use for the active flow,
+  excluding generic stage-derived roles that are covered by dedicated
+  panel checks and skipping `default_backend` when all effectively-required
+  roles have explicit overrides.

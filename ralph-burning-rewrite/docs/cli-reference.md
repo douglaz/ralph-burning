@@ -162,6 +162,13 @@ Evaluates readiness of all effectively required backends and panel members
 for the active workspace/project scope. Aggregates all blocking failures
 in one run and exits non-zero if any required backend cannot be satisfied.
 
+The command only validates backends that are actually used by the active
+flow. When explicit role overrides (e.g., `workflow.planner_backend`) or
+panel configurations (e.g., `final_review.backends`) fully determine
+runtime targets, `default_backend` and generic stage-derived roles are
+not checked. This prevents false failures when the base backend is
+disabled but all effectively-required targets are explicitly configured.
+
 If the backend adapter itself cannot be constructed (e.g., invalid
 `RALPH_BURNING_BACKEND` value), the command reports that as an
 `availability_failure` and exits non-zero instead of silently falling
@@ -250,7 +257,8 @@ cannot be constructed, the command exits non-zero. For panel probes:
 - The planner, arbiter (final-review), and refiner (prompt-review)
   targets are checked for availability and fail the probe if unavailable,
   reporting their config source field (e.g. `[source: workflow.planner_backend]`,
-  `[source: final_review.arbiter_backend]`).
+  `[source: final_review.arbiter_backend]`,
+  `[source: prompt_review.refiner_backend]`).
 - Panel target timeouts match runtime semantics: the planner target uses
   `planner` role timeout, and the refiner target uses `prompt_reviewer`
   role timeout.

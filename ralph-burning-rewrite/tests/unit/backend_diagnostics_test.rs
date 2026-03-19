@@ -1179,6 +1179,151 @@ async fn check_with_availability_reports_all_role_aliases_for_shared_target() {
     );
 }
 
+// ── effective-required scope tests ─────────────────────────────────────────────
+
+#[test]
+fn check_passes_when_all_roles_overridden_and_default_backend_disabled() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable the default backend (openrouter)
+    workspace.settings.default_backend = Some("openrouter".to_owned());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // But explicitly override ALL workflow roles to enabled backends
+    workspace.workflow.planner_backend = Some("claude".to_owned());
+    workspace.workflow.implementer_backend = Some("codex".to_owned());
+    workspace.workflow.reviewer_backend = Some("claude".to_owned());
+    workspace.workflow.qa_backend = Some("codex".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // docs_change flow: DocsPlan→Planner, DocsUpdate→Implementer,
+    // DocsValidation→Qa, Review→Reviewer — all have overrides, so
+    // disabled default_backend should NOT cause failure.
+    let result = service.check_backends(FlowPreset::DocsChange);
+    assert!(
+        result.passed,
+        "docs_change with all roles overridden should pass even with disabled default_backend: {:?}",
+        result.failures
+    );
+}
+
+#[test]
+fn check_does_not_fail_on_final_reviewer_when_explicit_panel_backends() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Explicitly override all stage roles
+    workspace.workflow.planner_backend = Some("claude".to_owned());
+    workspace.workflow.implementer_backend = Some("codex".to_owned());
+    workspace.workflow.reviewer_backend = Some("claude".to_owned());
+    workspace.workflow.qa_backend = Some("codex".to_owned());
+    // Explicitly configure final_review with enabled backends
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::required(BackendFamily::Codex),
+        ]),
+        min_reviewers: Some(2),
+        arbiter_backend: Some("claude".to_owned()),
+        ..Default::default()
+    };
+    // Also override prompt_review refiner — it would otherwise fall through
+    // to the disabled default_backend.
+    workspace.prompt_review.refiner_backend = Some("claude".to_owned());
+    // Disable default_backend — should be unused since everything is explicit
+    workspace.settings.default_backend = Some("openrouter".to_owned());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    // Standard flow includes FinalReview, but with explicit panel backends
+    // and all stage roles overridden, neither default_backend nor
+    // FinalReviewer generic role should cause failure.
+    let result = service.check_backends(FlowPreset::Standard);
+    assert!(
+        result.passed,
+        "standard flow with explicit overrides should pass: {:?}",
+        result.failures
+    );
+}
+
+// ── probe primary config source tests ─────────────────────────────────────────
+
+#[tokio::test]
+async fn probe_prompt_review_panel_failure_reports_refiner_source() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    struct AllUnavailableAdapter;
+    impl AgentExecutionPort for AllUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Err(AppError::BackendUnavailable {
+                backend: backend.backend.family.as_str().to_owned(),
+                details: "binary not found".to_owned(),
+            })
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let workspace = WorkspaceConfig::new(test_timestamp());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = AllUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("prompt_review_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err(), "probe should fail when refiner is unavailable");
+    let err_msg = result.unwrap_err().to_string();
+    // The prompt_review_panel primary target is the refiner, so the source
+    // should be prompt_review.refiner_backend, NOT workflow.planner_backend.
+    assert!(
+        err_msg.contains("[source: prompt_review.refiner_backend]"),
+        "error should include refiner config source field, got: {}",
+        err_msg
+    );
+}
+
 // ── probe timeout fidelity tests ──────────────────────────────────────────────
 
 #[test]

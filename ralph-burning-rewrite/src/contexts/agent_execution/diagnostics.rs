@@ -196,20 +196,28 @@ impl<'a> BackendDiagnosticsService<'a> {
         let mut failures = Vec::new();
         let flow_def = flow_definition(flow);
 
-        // Check base backend
-        let base = &self.config.backend_policy().base_backend;
-        if !self.policy.backend_enabled_public(base.family) {
-            failures.push(BackendCheckFailure {
-                role: "base".to_owned(),
-                backend_family: base.family.as_str().to_owned(),
-                failure_kind: BackendCheckFailureKind::BackendDisabled,
-                details: format!("base backend '{}' is disabled", base.family),
-                config_source: "default_backend".to_owned(),
-            });
+        // Get stage-derived roles, excluding panel-specific ones (Completer,
+        // FinalReviewer) which are validated by the dedicated panel checks below.
+        let flow_roles = effectively_required_stage_roles(flow_def);
+
+        // Only check base backend if at least one effectively-required stage
+        // role would actually fall through to it (no explicit override).
+        let base_backend_needed = flow_roles.iter().any(|role| !self.policy.has_explicit_override(*role));
+        if base_backend_needed {
+            let base = &self.config.backend_policy().base_backend;
+            if !self.policy.backend_enabled_public(base.family) {
+                failures.push(BackendCheckFailure {
+                    role: "base".to_owned(),
+                    backend_family: base.family.as_str().to_owned(),
+                    failure_kind: BackendCheckFailureKind::BackendDisabled,
+                    details: format!("base backend '{}' is disabled", base.family),
+                    config_source: "default_backend".to_owned(),
+                });
+            }
         }
 
-        // Check only roles that are relevant to the given flow's stages
-        let flow_roles = roles_for_flow(flow_def);
+        // Check only effectively-required stage roles (panel-specific roles
+        // are handled below by dedicated panel checks).
         for role in &flow_roles {
             if let Err(error) = self.policy.resolve_role_target(*role, 1) {
                 failures.push(BackendCheckFailure {
@@ -330,7 +338,9 @@ impl<'a> BackendDiagnosticsService<'a> {
         // its own availability check so failures preserve exact identity.
         let mut targets_to_check: Vec<(ResolvedBackendTarget, String, String)> = Vec::new();
         let flow_def = flow_definition(flow);
-        let flow_roles = roles_for_flow(flow_def);
+        // Use the same filtered roles as check_backends — panel-specific roles
+        // (Completer, FinalReviewer) are checked via the panel sections below.
+        let flow_roles = effectively_required_stage_roles(flow_def);
 
         // Stage-role targets
         for role in &flow_roles {
@@ -794,9 +804,13 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// of a probe, based on the role string.
     fn probe_primary_config_source(&self, role_str: &str) -> String {
         match role_str {
-            // Panel probes always resolve the planner as the primary target
-            "completion_panel" | "final_review_panel" | "prompt_review_panel" => {
+            // Completion and final-review panels use the planner as primary target
+            "completion_panel" | "final_review_panel" => {
                 self.config_source_for_role(BackendPolicyRole::Planner)
+            }
+            // Prompt-review panel uses the refiner as primary target
+            "prompt_review_panel" => {
+                self.config_source_for_role(BackendPolicyRole::PromptReviewer)
             }
             // Singular role probe — parse to get the actual role's config source
             _ => match role_str.parse::<BackendPolicyRole>() {
@@ -998,6 +1012,21 @@ fn roles_for_flow(flow_def: &FlowDefinition) -> Vec<BackendPolicyRole> {
         }
     }
     roles
+}
+
+/// Return the stage-derived roles that are effectively required for the
+/// `backend check` command, excluding panel-specific roles (Completer,
+/// FinalReviewer) that have their own dedicated panel checks.
+///
+/// This prevents false failures when explicit panel config (e.g.,
+/// `completion.backends`, `final_review.backends`) fully determines
+/// runtime targets, making the generic stage-derived role resolution
+/// irrelevant.
+fn effectively_required_stage_roles(flow_def: &FlowDefinition) -> Vec<BackendPolicyRole> {
+    roles_for_flow(flow_def)
+        .into_iter()
+        .filter(|role| !matches!(role, BackendPolicyRole::Completer | BackendPolicyRole::FinalReviewer))
+        .collect()
 }
 
 /// Validate that a flow contains a given stage, returning a clear error if not.
