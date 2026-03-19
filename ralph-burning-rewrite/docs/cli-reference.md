@@ -486,3 +486,11 @@ ralph-burning backend show-effective
 A repeatable smoke procedure is available at `scripts/live-backend-smoke.sh`.
 See `docs/signoff/live-backend-smoke.md` for the full runbook including
 isolated config setup, failure-recording rules, and cleanup.
+
+**Single-backend smoke**: The standard flow uses multiple backend families
+(e.g. Claude + Codex).  For isolated single-backend smoke testing, the harness
+overrides all workflow roles, completion/final-review/prompt-review panels to
+use only the backend under test.  This requires workspace config overrides for
+`workflow.*_backend`, `completion.backends`, `final_review.backends`,
+`final_review.arbiter_backend`, `prompt_review.refiner_backend`, and
+`prompt_review.validator_backends`.

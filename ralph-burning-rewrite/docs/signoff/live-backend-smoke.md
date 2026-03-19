@@ -32,6 +32,21 @@ requirements internally, resolves its backend from `default_backend()` in
 `service.rs:23` → `config.rs:376` using the correct backend — not the ambient
 fallback (`DEFAULT_BASE_BACKEND = Claude` at `config.rs:37`).
 
+### Single-Backend Role Overrides
+
+The standard flow normally requires multiple backend families (e.g. Claude for
+planner/reviewer, Codex for implementer/qa/completer).  For smoke testing a
+single backend end-to-end, the scratch `workspace.toml` overrides ALL roles
+and panels to use only the backend under test:
+
+- `workflow.implementer_backend` / `workflow.qa_backend` (or `planner`/`reviewer` for non-Claude)
+- `completion.backends` — set to `["<backend>", "<backend>"]`
+- `final_review.backends` and `final_review.arbiter_backend`
+- `prompt_review.refiner_backend` and `prompt_review.validator_backends`
+
+This prevents `backend check` from failing on unavailable opposite-family
+backends and ensures every invocation in the run exercises the backend under test.
+
 ## Backend Binding
 
 The script explicitly binds the backend under test at every CLI phase:

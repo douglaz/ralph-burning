@@ -7,9 +7,9 @@ Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 | # | Item | Environment | Command | Result | Follow-up Bug |
 |---|------|-------------|---------|--------|---------------|
-| 1 | Standard flow with Claude | Linux, claude CLI present, isolated smoke workspace (`cd /tmp/rb-smoke-$PID`), scratch `workspace.toml` with `settings.default_backend = "claude"` | `./scripts/live-backend-smoke.sh claude` — preflight: `backend check --backend claude` + `backend probe --role planner --flow standard --backend claude` + `backend probe --role implementer --flow standard --backend claude`; bootstrap: `project bootstrap --idea "..." --flow standard` (inside scratch workspace, `default_backend = "claude"`); run: `run start --backend claude` | NOT YET RUN | Awaiting live execution; record project_id, run_id, run_status, smoke_id from evidence file |
-| 2 | Standard flow with Codex | Linux, codex CLI present, isolated smoke workspace (`cd /tmp/rb-smoke-$PID`), scratch `workspace.toml` with `settings.default_backend = "codex"` | `./scripts/live-backend-smoke.sh codex` — preflight: `backend check --backend codex` + `backend probe --role planner --flow standard --backend codex` + `backend probe --role implementer --flow standard --backend codex`; bootstrap: `project bootstrap --idea "..." --flow standard` (inside scratch workspace, `default_backend = "codex"`); run: `run start --backend codex` | NOT YET RUN | Awaiting live execution; record project_id, run_id, run_status, smoke_id from evidence file |
-| 3 | Standard flow with OpenRouter | Linux, OPENROUTER_API_KEY set, `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, and `execution.mode = "direct"` | `OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter` — preflight: validates OPENROUTER_API_KEY + `backend check --backend openrouter` + `backend probe --role planner --flow standard --backend openrouter`; config: isolated workspace.toml sets `default_backend = "openrouter"`, enables openrouter in direct mode, `RALPH_BURNING_BACKEND=openrouter` selects OpenRouter adapter; bootstrap: `project bootstrap --idea "..." --flow standard` (inside scratch workspace, `default_backend = "openrouter"`); run: `run start --backend openrouter` | NOT YET RUN | Awaiting live execution; record project_id, run_id, run_status, smoke_id from evidence file |
+| 1 | Standard flow with Claude | Linux x86_64, claude CLI 2.1.79 at `/root/.npm-global/bin/claude`, isolated smoke workspace (`cd /tmp/rb-smoke-claude-run1`), scratch `workspace.toml` with `settings.default_backend = "claude"`, all roles overridden to claude (`workflow.implementer_backend`, `workflow.qa_backend`, `completion.backends`, `final_review.backends`, `prompt_review.*`) | `SMOKE_DIR=/tmp/rb-smoke-claude-run1 ./scripts/live-backend-smoke.sh claude` | FAIL | smoke_id: `smoke-claude-20260319162548`. Preflight PASS (backend check + probe planner/implementer). Bootstrap FAIL: `requirements:project_seed` contract returned empty `result` field and null `structured_output` — likely session-resumed `--resume` invocation loses `--json-schema` structured output. Error: `invalid Claude result JSON: expected value at line 1 column 1`. No project state created. Requirements run `req-20260319-162549` inspectable in scratch dir. Bug: session-resuming `claude -p --resume <id> --json-schema` produces null `structured_output`. |
+| 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace (`cd /tmp/rb-smoke-codex-run1`), scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex | `SMOKE_DIR=/tmp/rb-smoke-codex-run1 ./scripts/live-backend-smoke.sh codex` | FAIL | smoke_id: `smoke-codex-20260319163306`. Preflight PASS. Bootstrap FAIL at `requirements:requirements_review`: OpenAI strict-mode schema validation rejects `RequirementsReviewPayload` because `follow_ups` is in `properties` but not in `required`. Error: `Invalid schema for response_format ... Missing 'follow_ups'`. Draft succeeded (codex model `gpt-5.4`). No project state created. Requirements run `req-20260319-163306` inspectable. Bug: `RequirementsContract::review()` schema has `follow_ups` in properties but not required; OpenAI strict mode demands all property keys in required. |
+| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run1`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter | `OPENROUTER_API_KEY=sk-or-... SMOKE_DIR=/tmp/rb-smoke-openrouter-run1 ./scripts/live-backend-smoke.sh openrouter` | FAIL | smoke_id: `smoke-openrouter-20260319163144`. Preflight PASS (API key validated, backend check + probe all pass with single-backend overrides). Bootstrap FAIL at `requirements:requirements_review`: `HTTP 502: Provider returned error` from OpenRouter upstream. Draft succeeded (model `openai/gpt-5`). No project state created. Requirements run `req-20260319-163147` inspectable. Bug: transient upstream provider failure; may pass on retry with stable provider. |
 | 4 | quick_dev flow | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_quick_dev_flow_end_to_end` | PASS | None |
 | 5 | docs_change flow with configured docs validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_docs_change_flow_end_to_end` | PASS | None |
 | 6 | ci_improvement flow with configured CI validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_ci_improvement_flow_end_to_end` | PASS | None |
@@ -40,11 +40,29 @@ Update the Result column to `PASS` only when all five fields are recorded and
 
 ## Known Issues
 
-Rows 1-3 require live backend execution against the fixed harness which provides:
-workspace isolation (`cd` into scratch dir), `settings.default_backend` binding
-in the scratch workspace config, explicit `--backend` flags at every CLI phase,
-`RALPH_BURNING_BACKEND` env var for OpenRouter, and structural JSON parsing
-(`jq` with whitespace-tolerant `sed` fallback) for correct evidence extraction
-from the CLI's pretty-printed JSON output (`serde_json::to_string_pretty`).
-Evidence must include `run_id` (from journal `run_started` event) in addition
-to `project_id`, `run_status`, and `smoke_id`.
+Live backend smoke was executed on 2026-03-19 against all three backends. All three
+rows FAIL during `project bootstrap` (quick requirements phase), before any project
+or run state is created. The harness correctly isolates workspace state and records
+evidence. Specific bugs found:
+
+1. **Claude (row 1)**: Session-resumed `claude -p --resume <session_id> --json-schema <schema>`
+   produces null `structured_output` and empty `result` for the `requirements:project_seed`
+   contract. The draft and review contracts succeed on prior invocations. The root cause
+   appears to be that `--resume` does not honor `--json-schema` for structured output on
+   subsequent invocations within the same session. Fix: either disable session reuse for
+   requirements contracts or handle the null `structured_output` fallback.
+
+2. **Codex (row 2)**: OpenAI strict-mode schema validation rejects `RequirementsReviewPayload`
+   because `follow_ups` is listed in `properties` but not in `required`. The
+   `inject_additional_properties_false()` adapter in `process_backend.rs` adds
+   `additionalProperties: false` but does not fix the `required` array to include all
+   property keys. Fix: extend the Codex schema adapter to ensure `required` includes every
+   key in `properties`, matching OpenAI's strict-mode constraint.
+
+3. **OpenRouter (row 3)**: Transient `HTTP 502: Provider returned error` from the upstream
+   model provider during the `requirements:requirements_review` contract. Draft succeeded.
+   This is an upstream availability issue, not a ralph-burning bug. May pass on retry with
+   a more stable provider endpoint or model selection.
+
+The harness now configures single-backend workspaces (all roles overridden to the backend
+under test) to avoid mixed-backend panel failures during smoke.

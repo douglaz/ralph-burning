@@ -106,30 +106,62 @@ evidence ""
 # Write backend-specific workspace config inside the scratch workspace.
 case "$BACKEND" in
     claude)
-        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<TOML
 version = 1
+created_at = "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 [settings]
 default_backend = "claude"
 
 [execution]
 mode = "direct"
+
+[workflow]
+implementer_backend = "claude"
+qa_backend = "claude"
+
+[completion]
+backends = ["claude", "claude"]
+
+[final_review]
+backends = ["claude", "claude"]
+
+[prompt_review]
+refiner_backend = "claude"
+validator_backends = ["claude", "claude"]
 TOML
         ;;
     codex)
-        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<TOML
 version = 1
+created_at = "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 [settings]
 default_backend = "codex"
 
 [execution]
 mode = "direct"
+
+[workflow]
+planner_backend = "codex"
+reviewer_backend = "codex"
+
+[completion]
+backends = ["codex", "codex"]
+
+[final_review]
+backends = ["codex", "codex"]
+arbiter_backend = "codex"
+
+[prompt_review]
+refiner_backend = "codex"
+validator_backends = ["codex", "codex"]
 TOML
         ;;
     openrouter)
-        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<'TOML'
+        cat > "$SMOKE_DIR/.ralph-burning/workspace.toml" <<TOML
 version = 1
+created_at = "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
 [settings]
 default_backend = "openrouter"
@@ -139,6 +171,23 @@ enabled = true
 
 [execution]
 mode = "direct"
+
+[workflow]
+planner_backend = "openrouter"
+implementer_backend = "openrouter"
+reviewer_backend = "openrouter"
+qa_backend = "openrouter"
+
+[completion]
+backends = ["openrouter", "openrouter"]
+
+[final_review]
+backends = ["openrouter", "openrouter"]
+arbiter_backend = "openrouter"
+
+[prompt_review]
+refiner_backend = "openrouter"
+validator_backends = ["openrouter", "openrouter"]
 TOML
         # OpenRouter requires the dedicated adapter, selected via env var.
         export RALPH_BURNING_BACKEND=openrouter
