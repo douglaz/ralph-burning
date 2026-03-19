@@ -787,7 +787,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         let resolution = self.policy.resolve_completion_panel(cycle)
             .map_err(|err| self.identify_failing_panel_member(
                 "completion_panel", "member", "completion.backends",
-                configured_specs, &err,
+                configured_specs, minimum, &err,
             ))?;
 
         let (members, omitted) = self.build_panel_member_views(
@@ -855,7 +855,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         let resolution = self.policy.resolve_final_review_panel(cycle)
             .map_err(|err| self.identify_failing_panel_member(
                 "final_review_panel", "reviewer", "final_review.backends",
-                configured_specs, &err,
+                configured_specs, minimum, &err,
             ))?;
 
         let (members, omitted) = self.build_panel_member_views(
@@ -920,7 +920,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         let resolution = self.policy.resolve_prompt_review_panel(cycle)
             .map_err(|err| self.identify_failing_panel_member(
                 "prompt_review_panel", "validator", "prompt_review.validator_backends",
-                configured_specs, &err,
+                configured_specs, minimum, &err,
             ))?;
 
         let (members, omitted) = self.build_panel_member_views(
@@ -1075,12 +1075,17 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// with exact `panel.member_label[N]` identity and the panel's config
     /// source field. Used when the primary target (planner/refiner/arbiter)
     /// succeeded but `resolve_*_panel()` still failed.
+    ///
+    /// When the failure is caused by optional-member omission dropping the
+    /// panel below its configured minimum, returns `InsufficientPanelMembers`
+    /// instead of a generic `BackendUnavailable` fallback.
     fn identify_failing_panel_member(
         &self,
         panel: &str,
         member_label: &str,
         config_source: &str,
         specs: &[PanelBackendSpec],
+        minimum: usize,
         inner: &AppError,
     ) -> AppError {
         // Scan the specs to find the first required disabled backend — that
@@ -1096,6 +1101,20 @@ impl<'a> BackendDiagnosticsService<'a> {
                     ),
                 };
             }
+        }
+
+        // Check if optional-member omission caused the panel to drop below
+        // its configured minimum. Count how many specs have enabled backends.
+        let enabled_count = specs
+            .iter()
+            .filter(|spec| self.policy.backend_enabled_public(spec.backend()))
+            .count();
+        if enabled_count < minimum {
+            return AppError::InsufficientPanelMembers {
+                panel: panel.to_owned(),
+                resolved: enabled_count,
+                minimum,
+            };
         }
 
         // Fallback: cannot pinpoint the member — wrap with panel-level identity

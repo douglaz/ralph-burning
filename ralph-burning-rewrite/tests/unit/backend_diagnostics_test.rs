@@ -2477,3 +2477,228 @@ fn show_effective_model_source_default_when_no_embedded_model() {
         "model_source should be 'default' when no embedded model and no default_model"
     );
 }
+
+// ── probe minimum-violation from optional omission tests ──────────────────
+
+#[test]
+fn probe_completion_panel_optional_omission_below_minimum_reports_insufficient_members() {
+    use ralph_burning::shared::error::AppError;
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    // Disable openrouter — it's optional but needed for the minimum
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // claude (required) + openrouter (optional, disabled), min_completers = 2
+    // Only 1 member resolves, which is below minimum 2.
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("completion_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    let err = result.unwrap_err();
+    let err_msg = err.to_string();
+
+    // Must be an InsufficientPanelMembers error, not BackendUnavailable with "unknown"
+    assert!(
+        matches!(&err, AppError::InsufficientPanelMembers { panel, resolved, minimum }
+            if panel == "completion_panel" && *resolved == 1 && *minimum == 2),
+        "expected InsufficientPanelMembers {{ panel: completion_panel, resolved: 1, minimum: 2 }}, got: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("backend 'unknown'"),
+        "should not fall back to generic BackendUnavailable with 'unknown': {}",
+        err_msg
+    );
+}
+
+#[test]
+fn probe_final_review_panel_optional_omission_below_minimum_reports_insufficient_members() {
+    use ralph_burning::shared::error::AppError;
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // claude (required) + openrouter (optional, disabled), min_reviewers = 2
+    workspace.final_review = FinalReviewSettings {
+        enabled: Some(true),
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_reviewers: Some(2),
+        ..Default::default()
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("final_review_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    let err = result.unwrap_err();
+    let err_msg = err.to_string();
+
+    assert!(
+        matches!(&err, AppError::InsufficientPanelMembers { panel, resolved, minimum }
+            if panel == "final_review_panel" && *resolved == 1 && *minimum == 2),
+        "expected InsufficientPanelMembers {{ panel: final_review_panel, resolved: 1, minimum: 2 }}, got: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("backend 'unknown'"),
+        "should not fall back to generic BackendUnavailable with 'unknown': {}",
+        err_msg
+    );
+}
+
+#[test]
+fn probe_prompt_review_panel_optional_omission_below_minimum_reports_insufficient_members() {
+    use ralph_burning::shared::error::AppError;
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(false));
+    // claude (required) + openrouter (optional, disabled), min_reviewers = 2
+    workspace.prompt_review = PromptReviewSettings {
+        enabled: Some(true),
+        refiner_backend: None,
+        validator_backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_reviewers: Some(2),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+
+    let result = service.probe("prompt_review_panel", FlowPreset::Standard, 1);
+    assert!(result.is_err(), "should fail when optional omission drops below minimum");
+    let err = result.unwrap_err();
+    let err_msg = err.to_string();
+
+    assert!(
+        matches!(&err, AppError::InsufficientPanelMembers { panel, resolved, minimum }
+            if panel == "prompt_review_panel" && *resolved == 1 && *minimum == 2),
+        "expected InsufficientPanelMembers {{ panel: prompt_review_panel, resolved: 1, minimum: 2 }}, got: {}",
+        err_msg
+    );
+    assert!(
+        !err_msg.contains("backend 'unknown'"),
+        "should not fall back to generic BackendUnavailable with 'unknown': {}",
+        err_msg
+    );
+}
+
+// ── probe_with_availability minimum-violation from optional omission ──────
+
+#[tokio::test]
+async fn probe_with_availability_optional_omission_below_minimum_reports_insufficient_members() {
+    use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
+    use ralph_burning::contexts::agent_execution::model::{
+        InvocationContract, InvocationEnvelope, InvocationRequest,
+    };
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+    use ralph_burning::shared::error::AppError;
+
+    /// Adapter that fails availability for openrouter backends
+    struct OpenRouterUnavailableAdapter;
+    impl AgentExecutionPort for OpenRouterUnavailableAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            Ok(())
+        }
+        async fn check_availability(
+            &self,
+            backend: &ResolvedBackendTarget,
+        ) -> ralph_burning::shared::error::AppResult<()> {
+            if backend.backend.family == BackendFamily::OpenRouter {
+                Err(AppError::BackendUnavailable {
+                    backend: "openrouter".to_owned(),
+                    details: "OPENROUTER_API_KEY not set".to_owned(),
+                })
+            } else {
+                Ok(())
+            }
+        }
+        async fn invoke(
+            &self,
+            _request: InvocationRequest,
+        ) -> ralph_burning::shared::error::AppResult<InvocationEnvelope> {
+            unimplemented!()
+        }
+        async fn cancel(&self, _id: &str) -> ralph_burning::shared::error::AppResult<()> {
+            unimplemented!()
+        }
+    }
+
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace
+        .backends
+        .insert("openrouter".to_owned(), empty_backend_settings(true));
+    // claude (required) + openrouter (optional, enabled but unavailable),
+    // min_completers = 2. OpenRouter passes config-time checks but fails
+    // at availability, leaving only 1 available member below minimum 2.
+    workspace.completion = CompletionSettings {
+        backends: Some(vec![
+            PanelBackendSpec::required(BackendFamily::Claude),
+            PanelBackendSpec::optional(BackendFamily::OpenRouter),
+        ]),
+        min_completers: Some(2),
+        consensus_threshold: Some(0.66),
+        extra: toml::Table::new(),
+    };
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let service = BackendDiagnosticsService::new(&config);
+    let adapter = OpenRouterUnavailableAdapter;
+
+    let result = service
+        .probe_with_availability("completion_panel", FlowPreset::Standard, 1, &adapter)
+        .await;
+
+    assert!(result.is_err(), "should fail when optional unavailable member drops below minimum");
+    let err = result.unwrap_err();
+    let err_msg = err.to_string();
+
+    // Must be an InsufficientPanelMembers error, not BackendUnavailable
+    assert!(
+        matches!(&err, AppError::InsufficientPanelMembers { panel, resolved, minimum }
+            if panel == "completion" && *resolved == 1 && *minimum == 2),
+        "expected InsufficientPanelMembers for availability-time minimum violation, got: {}",
+        err_msg
+    );
+}

@@ -303,7 +303,11 @@ cannot be constructed, the command exits non-zero. For panel probes:
   `planner` role timeout, and the refiner target uses `prompt_reviewer`
   role timeout.
 - If omission of optional members causes the panel minimum to be
-  unsatisfied, the probe fails with a minimum-violation error.
+  unsatisfied, the probe fails with an `InsufficientPanelMembers` error
+  identifying the panel, the resolved count, and the required minimum.
+  This applies to both config-time omission (disabled optional backends)
+  and availability-time omission (enabled but unavailable optional
+  backends).
 
 Required flags:
 - `--role <role>` — the role or panel target to probe
