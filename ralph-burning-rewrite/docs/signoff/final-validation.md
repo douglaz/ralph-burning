@@ -71,7 +71,7 @@ All 4 PR-review scenarios: **PASS**
 - **project_id**: `claude-backend-smoke-test`
 - **run_id**: `run-20260319183619`
 - **run_status**: `completed`
-- **Evidence**: Full end-to-end standard flow completed through 3 rounds. All stages executed: prompt_review, planning, implementation, review, qa, completion_panel, acceptance_qa, final_review. Stale session recovery handled transparently. Claude smoke did not use `--from-seed` (quick-requirements succeeded), so the seed fixture bug did not affect this row.
+- **Evidence**: Full end-to-end standard flow completed through 3 rounds. All stages executed: prompt_review, planning, implementation, review, qa, completion_panel, acceptance_qa, final_review. Stale session recovery handled transparently. *Historical note*: this evidence was captured before `--from-seed` was adopted as the default harness bootstrap path (iteration 8); at that time quick-requirements succeeded natively for Claude, so the `--idea` bootstrap was used. The current harness (`live-backend-smoke.sh`) now always uses `--from-seed` for all backends. A future Claude re-run would use `--from-seed` as well.
 - **Fixes verified**: `enforce_strict_mode_schema()` applied to Claude `--json-schema`, `extract_json_from_text()` fallback decoder, stale session retry in `invoke()`, `looks_like_claude_envelope()` guard on empty-result fallback.
 
 ### Codex (Row 2): PASS
