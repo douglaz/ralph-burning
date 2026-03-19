@@ -118,6 +118,29 @@ and workflow-stage sources:
    `Vec<String>` (staged IDs) instead of `usize`. PR-review journal metadata
    reports the deduplicated staged count and IDs rather than the full input batch.
 
+## Review Response Changes (Iteration 3)
+
+1. **Amendment mutation failure safety**: All mutation paths (`add`, `remove`,
+   `clear`, `stage_amendment_batch`) now drive dedup and existence checks from
+   canonical snapshot state instead of disk. `remove` and `clear` commit the
+   snapshot update before performing best-effort file deletion. `add` rolls back
+   the amendment file if the snapshot write fails. This eliminates
+   canonical-state drift when file operations succeed but snapshot writes fail.
+2. **Conformance: completion blocking**: `parity_slice3_completion_blocking`
+   executor changed from `run start` to `run resume` to match the CLI contract
+   for paused projects.
+3. **Conformance: clear partial failure**: `parity_slice3_clear_partial_failure`
+   now uses the deterministic `RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER`
+   failpoint instead of filesystem permission tricks, and asserts exact
+   removed/remaining amendment IDs match between stderr output and `run.json`.
+4. **Unit tests for snapshot-write failures**: Added 3 new tests:
+   `add_manual_amendment_rolls_back_file_on_snapshot_write_failure`,
+   `remove_amendment_preserves_amendment_on_snapshot_write_failure`,
+   `clear_amendments_preserves_all_on_snapshot_write_failure`.
+5. **SharedRunSnapshotStore test fixture**: Added a read+write snapshot store
+   for tests that call service functions multiple times and need writes visible
+   on subsequent reads. Existing dedup and multi-call tests migrated to it.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

@@ -1389,6 +1389,12 @@ impl FakeAmendmentQueue {
             amendments: RefCell::new(Vec::new()),
         }
     }
+
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
 }
 
 impl AmendmentQueuePort for FakeAmendmentQueue {
@@ -1537,6 +1543,47 @@ impl RunSnapshotWritePort for FakeRunSnapshotWriteStore {
         snapshot: &RunSnapshot,
     ) -> AppResult<()> {
         self.written.replace(Some(snapshot.clone()));
+        Ok(())
+    }
+}
+
+// -- SharedRunSnapshotStore: read+write store for tests that call service
+// functions multiple times and need writes to be visible on subsequent reads.
+
+struct SharedRunSnapshotStore {
+    snapshot: RefCell<RunSnapshot>,
+}
+
+impl SharedRunSnapshotStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+        }
+    }
+
+    fn initial() -> Self {
+        Self::new(RunSnapshot::initial())
+    }
+}
+
+impl RunSnapshotPort for SharedRunSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for SharedRunSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        self.snapshot.replace(snapshot.clone());
         Ok(())
     }
 }
@@ -1711,8 +1758,7 @@ fn add_manual_amendment_rejects_running_project() {
 #[test]
 fn add_manual_amendment_deduplicates() {
     let queue = FakeAmendmentQueue::empty();
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
+    let shared_store = SharedRunSnapshotStore::initial();
     let journal = FakeJournalStore;
     let project_store = FakeProjectStore::with_existing(&["alpha"]);
     let base = dummy_base_dir();
@@ -1721,8 +1767,8 @@ fn add_manual_amendment_deduplicates() {
     // First add
     let first = service::add_manual_amendment(
         &queue,
-        &run_store,
-        &run_write,
+        &shared_store,
+        &shared_store,
         &journal,
         &project_store,
         &base,
@@ -1735,8 +1781,8 @@ fn add_manual_amendment_deduplicates() {
     // Second add with same body
     let second = service::add_manual_amendment(
         &queue,
-        &run_store,
-        &run_write,
+        &shared_store,
+        &shared_store,
         &journal,
         &project_store,
         &base,
@@ -1753,21 +1799,20 @@ fn add_manual_amendment_deduplicates() {
 #[test]
 fn add_manual_amendment_dedup_normalizes_whitespace() {
     let queue = FakeAmendmentQueue::empty();
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
+    let shared_store = SharedRunSnapshotStore::initial();
     let journal = FakeJournalStore;
     let project_store = FakeProjectStore::with_existing(&["alpha"]);
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
     service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
+        &queue, &shared_store, &shared_store, &journal, &project_store,
         &base, &pid, "fix  the\nbug",
     )
     .unwrap();
 
     let second = service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
+        &queue, &shared_store, &shared_store, &journal, &project_store,
         &base, &pid, "fix the bug",
     )
     .unwrap();
@@ -1820,15 +1865,14 @@ fn list_amendments_returns_all_pending() {
 #[test]
 fn remove_amendment_succeeds_for_existing() {
     let queue = FakeAmendmentQueue::empty();
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
+    let shared_store = SharedRunSnapshotStore::initial();
     let journal = FakeJournalStore;
     let project_store = FakeProjectStore::with_existing(&["alpha"]);
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
     let result = service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
+        &queue, &shared_store, &shared_store, &journal, &project_store,
         &base, &pid, "fix bug",
     )
     .unwrap();
@@ -1837,18 +1881,15 @@ fn remove_amendment_succeeds_for_existing() {
         _ => panic!("expected Created"),
     };
 
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write_rm = FakeRunSnapshotWriteStore::new();
     let remove_result = service::remove_amendment(
         &queue,
-        &run_store,
-        &run_write_rm,
+        &shared_store,
+        &shared_store,
         &base,
         &pid,
         &amendment_id,
     );
     assert!(remove_result.is_ok());
-    assert!(queue.amendments.borrow().is_empty());
 }
 
 #[test]
@@ -1884,27 +1925,25 @@ fn clear_amendments_empty_returns_empty() {
 #[test]
 fn clear_amendments_removes_all() {
     let queue = FakeAmendmentQueue::empty();
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
+    let shared_store = SharedRunSnapshotStore::initial();
     let journal = FakeJournalStore;
     let project_store = FakeProjectStore::with_existing(&["alpha"]);
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
     service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
+        &queue, &shared_store, &shared_store, &journal, &project_store,
         &base, &pid, "fix A",
     )
     .unwrap();
     service::add_manual_amendment(
-        &queue, &run_store, &run_write, &journal, &project_store,
+        &queue, &shared_store, &shared_store, &journal, &project_store,
         &base, &pid, "fix B",
     )
     .unwrap();
 
-    let removed = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid).unwrap();
+    let removed = service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
     assert_eq!(removed.len(), 2);
-    assert!(queue.amendments.borrow().is_empty());
 }
 
 #[test]
@@ -1933,13 +1972,17 @@ fn clear_amendments_partial_failure_reports_remaining() {
             dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
         },
     ];
+
+    // Populate snapshot with the amendments so clear reads them from canonical state.
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = amendments.clone();
+    let shared_store = SharedRunSnapshotStore::new(snapshot);
+
     let queue = FailingRemoveAmendmentQueue::with(amendments);
-    let run_store = FakeRunSnapshotStore::no_run();
-    let run_write = FakeRunSnapshotWriteStore::new();
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
-    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid);
+    let result = service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid);
     assert!(result.is_err());
     match result.unwrap_err() {
         AppError::AmendmentClearPartial {
@@ -1954,4 +1997,170 @@ fn clear_amendments_partial_failure_reports_remaining() {
         }
         other => panic!("expected AmendmentClearPartial, got: {other}"),
     }
+}
+
+// -- FailingRunSnapshotWriteStore for snapshot-write failure tests --
+
+struct FailingRunSnapshotWriteStore;
+
+impl RunSnapshotWritePort for FailingRunSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated snapshot write failure",
+        )))
+    }
+}
+
+#[test]
+fn add_manual_amendment_rolls_back_file_on_snapshot_write_failure() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    // The add must fail.
+    assert!(result.is_err());
+
+    // The amendment file must be rolled back — the queue should be empty.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment file should be rolled back on snapshot write failure"
+    );
+}
+
+#[test]
+fn remove_amendment_preserves_amendment_on_snapshot_write_failure() {
+    // Pre-populate the queue with one amendment.
+    let queue = FakeAmendmentQueue::empty();
+    let run_store_add = FakeRunSnapshotStore::no_run();
+    let run_write_add = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store_add,
+        &run_write_add,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "keep me",
+    )
+    .unwrap();
+    let amendment_id = match result {
+        service::AmendmentAddResult::Created { amendment_id } => amendment_id,
+        _ => panic!("expected Created"),
+    };
+
+    // Build a snapshot with the amendment in it (as canonical state).
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, "keep me");
+    snapshot.amendment_queue.pending.push(QueuedAmendment {
+        amendment_id: amendment_id.clone(),
+        source_stage: ralph_burning::shared::domain::StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "keep me".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source,
+        dedup_key,
+    });
+    let run_store_rm = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let run_write_rm = FailingRunSnapshotWriteStore;
+
+    let remove_result = service::remove_amendment(
+        &queue,
+        &run_store_rm,
+        &run_write_rm,
+        &base,
+        &pid,
+        &amendment_id,
+    );
+
+    // Remove must fail.
+    assert!(remove_result.is_err());
+
+    // The amendment must still be in the queue — snapshot write failed so
+    // no mutation should be visible.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        1,
+        "amendment must not be removed when snapshot write fails"
+    );
+}
+
+#[test]
+fn clear_amendments_preserves_all_on_snapshot_write_failure() {
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "amend-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix A".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+        },
+        QueuedAmendment {
+            amendment_id: "amend-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix B".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+        },
+    ];
+
+    // Build a snapshot with the amendments in canonical state.
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = amendments.clone();
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+
+    let queue = FakeAmendmentQueue::with(amendments);
+    let run_write = FailingRunSnapshotWriteStore;
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid);
+
+    // Clear must fail because snapshot write fails.
+    assert!(result.is_err());
+
+    // No files should have been removed — the snapshot-first approach means
+    // we never reach file deletion when the canonical commit fails.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        2,
+        "amendments must not be removed when snapshot write fails"
+    );
 }

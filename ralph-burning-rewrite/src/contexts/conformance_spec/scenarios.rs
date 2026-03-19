@@ -17641,7 +17641,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         // Try to resume the run — the engine should block at completion
         // because the pending amendment has not been processed.
-        let resume = run_cli(&["run", "start"], ws.path())?;
+        let resume = run_cli(&["run", "resume"], ws.path())?;
         let snap_resumed = read_run_snapshot(&ws, "stub-project")?;
         let final_status = snap_resumed
             .get("status")
@@ -17732,7 +17732,7 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
             ws.path(),
         )?;
         assert_success(&add1)?;
-        let _id1 = add1
+        let id1 = add1
             .stdout
             .lines()
             .find_map(|line| line.strip_prefix("Amendment: "))
@@ -17753,79 +17753,63 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
             .trim()
             .to_owned();
 
-        // Make one of the amendment files read-only so clear encounters a
-        // partial failure (remove succeeds for one, fails for the other).
-        let amend_dir = ws
-            .path()
-            .join(".ralph-burning/projects/stub-project/amendments");
-        // Find the file for id2 and make it undeletable by removing write
-        // permission on the directory after removing id1 ourselves.
-        // Instead, simply remove id1's file manually and make id2 read-only
-        // so that the clear operation partially fails.
-        let entries: Vec<_> = std::fs::read_dir(&amend_dir)
-            .map_err(|e| format!("read amendments dir: {e}"))?
-            .filter_map(|e| e.ok())
-            .collect();
+        // Use the deterministic failpoint to make the second remove call fail.
+        // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
+        // remove succeeds and the second fails.
+        std::env::set_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1");
 
-        // Identify which file belongs to which amendment.
-        for entry in &entries {
-            let content =
-                std::fs::read_to_string(entry.path()).map_err(|e| e.to_string())?;
-            if content.contains(&id2) {
-                // Make this file's parent dir read-only to prevent deletion.
-                // On POSIX, removing a file requires write permission on the
-                // directory. We make the dir read-only, then try clear.
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&amend_dir)
-                    .map_err(|e| e.to_string())?
-                    .permissions();
-                perms.set_mode(0o555); // r-xr-xr-x — no write
-                std::fs::set_permissions(&amend_dir, perms)
-                    .map_err(|e| e.to_string())?;
-                break;
-            }
-        }
-
-        // Attempt clear — should fail partially.
         let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
 
-        // Restore directory permissions so cleanup can proceed.
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&amend_dir)
-                .map_err(|e| e.to_string())?
-                .permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&amend_dir, perms).map_err(|e| e.to_string())?;
-        }
+        std::env::remove_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER");
 
-        // The clear either fully succeeds (if OS allows) or partially fails.
-        // If it partially failed, verify:
-        if !clear.success {
-            // Stderr should mention both removed and remaining IDs.
-            if !clear.stderr.contains("removed") && !clear.stderr.contains("remaining") {
+        // The clear must have partially failed.
+        assert_failure(&clear)?;
+
+        // Stderr must mention the exact removed and remaining IDs.
+        let stderr = &clear.stderr;
+        let has_removed_id = stderr.contains(&format!("removed: {id1}"));
+        let has_remaining_id = stderr.contains(&format!("remaining: {id2}"));
+        if !has_removed_id && !has_remaining_id {
+            // Amendments are sorted by (created_at, batch_sequence) so the
+            // first added may be removed and the second remaining, or vice
+            // versa. Check both orderings.
+            let alt_removed = stderr.contains(&format!("removed: {id2}"));
+            let alt_remaining = stderr.contains(&format!("remaining: {id1}"));
+            if !alt_removed && !alt_remaining {
                 return Err(format!(
-                    "partial clear should report removed/remaining IDs, got: {}",
-                    clear.stderr
+                    "partial clear should report exact removed/remaining IDs.\n\
+                     Expected one of: removed={id1} remaining={id2}, or removed={id2} remaining={id1}\n\
+                     Got stderr: {stderr}"
                 ));
             }
-
-            // run.json should reflect only the remaining pending amendments.
-            let snap = read_run_snapshot(&ws, "stub-project")?;
-            let pending = snap
-                .get("amendment_queue")
-                .and_then(|q| q.get("pending"))
-                .and_then(|p| p.as_array())
-                .ok_or_else(|| "missing pending queue in run.json".to_owned())?;
-
-            // At least one amendment should remain.
-            if pending.is_empty() {
-                return Err(
-                    "partial clear reported failure but run.json pending is empty".to_owned(),
-                );
-            }
         }
-        // If clear fully succeeded despite permissions, that's also acceptable.
+
+        // run.json should reflect exactly one remaining pending amendment.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array())
+            .ok_or_else(|| "missing pending queue in run.json".to_owned())?;
+
+        if pending.len() != 1 {
+            return Err(format!(
+                "expected exactly 1 remaining amendment in run.json, got {}",
+                pending.len()
+            ));
+        }
+
+        // The remaining amendment ID in run.json must match the one reported
+        // as remaining in stderr.
+        let remaining_id = pending[0]
+            .get("amendment_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing amendment_id in remaining pending".to_owned())?;
+        if !stderr.contains(&format!("remaining: {remaining_id}")) {
+            return Err(format!(
+                "run.json remaining ID '{remaining_id}' not found in stderr: {stderr}"
+            ));
+        }
 
         Ok(())
     });

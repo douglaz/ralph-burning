@@ -25,8 +25,8 @@ ralph-burning project amend clear
 Each amendment carries a deterministic `dedup_key` computed as
 `SHA-256("{source}:{normalized_body}")` where normalization collapses all
 whitespace to single spaces. When adding a manual amendment, the service checks
-existing pending amendments on disk and returns a `Duplicate` result if a match
-is found. The original amendment is preserved; no new file is written.
+the canonical `run.json` pending queue and returns a `Duplicate` result if a
+match is found. The original amendment is preserved; no new file is written.
 
 ## Completed-project reopen
 
@@ -40,13 +40,24 @@ service automatically:
 
 This ensures the project is picked up on the next resume cycle.
 
-## Canonical state sync
+## Canonical state sync and failure safety
 
-All amendment mutations (add, remove, clear, reopen) update both durable
-amendment files on disk **and** the `amendment_queue.pending` array in
-`run.json`. This ensures `run.json` is always the canonical source of truth
-for pending amendments, and that completion gating, resume reconciliation,
-and snapshot queries all see a consistent view.
+All amendment mutations (add, remove, clear, reopen) are transactional against
+the canonical `run.json` snapshot. Mutations drive existence checks and dedup
+from `run.json`, and commit the snapshot update before performing best-effort
+file cleanup on disk:
+
+- **add**: dedup checks the snapshot pending queue; if the snapshot write fails
+  after file+journal creation, the amendment file is rolled back.
+- **remove**: the snapshot is updated (amendment removed) before the file is
+  deleted. If the snapshot write fails, no mutation is visible.
+- **clear**: the snapshot is optimistically cleared first. Files are then
+  deleted as best-effort; any un-deletable files are re-added to the snapshot.
+
+This ensures `run.json` is always the canonical source of truth for pending
+amendments, and that completion gating, resume reconciliation, and snapshot
+queries all see a consistent view even when filesystem operations partially
+fail.
 
 ## Shared staging service
 

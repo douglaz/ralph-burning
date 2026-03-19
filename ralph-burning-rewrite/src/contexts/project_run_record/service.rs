@@ -774,9 +774,13 @@ pub fn add_manual_amendment(
     let source = AmendmentSource::Manual;
     let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
 
-    // Dedup check against pending amendments on disk.
-    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-    if let Some(existing) = pending.iter().find(|a| a.dedup_key == dedup_key) {
+    // Dedup check against canonical snapshot pending queue.
+    if let Some(existing) = snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .find(|a| a.dedup_key == dedup_key)
+    {
         return Ok(AmendmentAddResult::Duplicate {
             amendment_id: existing.amendment_id.clone(),
         });
@@ -830,17 +834,25 @@ pub fn add_manual_amendment(
 
     // If the project is completed, reopen it with the pending amendment
     // already reflected in the snapshot.
-    if snapshot.status == RunStatus::Completed {
+    let snap_result = if snapshot.status == RunStatus::Completed {
         reopen_completed_project_with_snapshot(
             run_write_port,
             project_store,
             base_dir,
             project_id,
             &mut snapshot,
-        )?;
+        )
     } else {
         // Persist the updated snapshot with the new pending amendment.
-        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+    };
+
+    if let Err(snap_err) = snap_result {
+        // Roll back the amendment file so canonical state stays consistent:
+        // reconciliation skips journaled IDs, so a file+journal entry without
+        // a snapshot entry would be permanently lost.
+        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        return Err(snap_err);
     }
 
     Ok(AmendmentAddResult::Created { amendment_id })
@@ -856,7 +868,11 @@ pub fn list_amendments(
     Ok(snapshot.amendment_queue.pending)
 }
 
-/// Remove a single pending amendment by ID. Updates both disk and run.json.
+/// Remove a single pending amendment by ID. Updates both run.json and disk.
+///
+/// Drives existence checks and mutations from canonical snapshot state so that
+/// a snapshot-write failure leaves no inconsistency: the snapshot is updated
+/// first, then the file is deleted as best-effort cleanup.
 pub fn remove_amendment(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -865,28 +881,38 @@ pub fn remove_amendment(
     project_id: &ProjectId,
     amendment_id: &str,
 ) -> AppResult<()> {
-    // Verify the amendment exists before removing.
-    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-    if !pending.iter().any(|a| a.amendment_id == amendment_id) {
+    // Verify the amendment exists in canonical snapshot state.
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    if !snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .any(|a| a.amendment_id == amendment_id)
+    {
         return Err(AppError::AmendmentNotFound {
             amendment_id: amendment_id.to_owned(),
         });
     }
-    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)?;
 
-    // Sync canonical snapshot: remove from run.json pending queue.
-    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    // Update canonical snapshot first — if this fails, no mutation is visible.
     snapshot
         .amendment_queue
         .pending
         .retain(|a| a.amendment_id != amendment_id);
     run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+
+    // Best-effort file cleanup — canonical state is already updated.
+    let _ = amendment_queue.remove_amendment(base_dir, project_id, amendment_id);
     Ok(())
 }
 
 /// Clear all pending amendments. Returns removed and remaining IDs.
 /// On partial failure, reports exactly which amendments were removed and which remain.
-/// Both disk and run.json are kept in sync.
+///
+/// Drives the pending set from canonical snapshot state. The snapshot is
+/// optimistically cleared first so that a snapshot-write failure leaves no
+/// mutation visible. File deletions happen after the canonical commit; any
+/// un-deletable files are re-added to the snapshot.
 pub fn clear_amendments(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -894,12 +920,19 @@ pub fn clear_amendments(
     base_dir: &Path,
     project_id: &ProjectId,
 ) -> AppResult<Vec<String>> {
-    let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    let pending: Vec<QueuedAmendment> =
+        std::mem::take(&mut snapshot.amendment_queue.pending);
     if pending.is_empty() {
         return Ok(Vec::new());
     }
 
     let total = pending.len();
+
+    // Commit cleared canonical state first — if this fails nothing is mutated.
+    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+
+    // Best-effort file cleanup.
     let mut removed = Vec::new();
     let mut remaining = Vec::new();
 
@@ -910,17 +943,18 @@ pub fn clear_amendments(
         }
     }
 
-    // Sync canonical snapshot: keep only remaining IDs in run.json.
-    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
-    let remaining_set: std::collections::HashSet<&str> =
-        remaining.iter().map(|s| s.as_str()).collect();
-    snapshot
-        .amendment_queue
-        .pending
-        .retain(|a| remaining_set.contains(a.amendment_id.as_str()));
-    run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
-
     if !remaining.is_empty() {
+        // Re-add un-deletable amendments back to canonical state.
+        let remaining_set: std::collections::HashSet<&str> =
+            remaining.iter().map(|s| s.as_str()).collect();
+        let mut updated = run_port.read_run_snapshot(base_dir, project_id)?;
+        for a in &pending {
+            if remaining_set.contains(a.amendment_id.as_str()) {
+                updated.amendment_queue.pending.push(a.clone());
+            }
+        }
+        run_write_port.write_run_snapshot(base_dir, project_id, &updated)?;
+
         return Err(AppError::AmendmentClearPartial {
             removed_count: removed.len(),
             total,
@@ -957,9 +991,13 @@ pub fn stage_amendment_batch(
     let mut staged_ids = Vec::new();
 
     for amendment in amendments {
-        // Dedup check against pending queue (disk).
-        let pending = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-        if pending.iter().any(|a| a.dedup_key == amendment.dedup_key) {
+        // Dedup check against canonical snapshot pending queue.
+        if snapshot
+            .amendment_queue
+            .pending
+            .iter()
+            .any(|a| a.dedup_key == amendment.dedup_key)
+        {
             continue;
         }
 

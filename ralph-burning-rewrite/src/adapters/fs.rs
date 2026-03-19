@@ -41,6 +41,7 @@ const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
 const JOURNAL_APPEND_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER";
 const AMENDMENT_WRITE_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER";
+const AMENDMENT_REMOVE_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER";
 
 /// Required subdirectories inside a project.
 const PROJECT_SUBDIRS: &[&str] = &[
@@ -57,6 +58,8 @@ static JOURNAL_APPEND_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static JOURNAL_APPEND_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static AMENDMENT_WRITE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static AMENDMENT_WRITE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static AMENDMENT_REMOVE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static AMENDMENT_REMOVE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn maybe_inject_project_failpoint(
     env_var: &str,
@@ -1173,6 +1176,13 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         project_id: &ProjectId,
         amendment_id: &str,
     ) -> AppResult<()> {
+        maybe_inject_project_failpoint(
+            AMENDMENT_REMOVE_FAIL_AFTER_ENV,
+            project_id,
+            &AMENDMENT_REMOVE_FAIL_COUNT,
+            &AMENDMENT_REMOVE_FAIL_CONFIG,
+            "injected amendment remove failure for testing",
+        )?;
         let path = FileSystem::project_root(base_dir, project_id)
             .join("amendments")
             .join(format!("{}.json", amendment_id));
