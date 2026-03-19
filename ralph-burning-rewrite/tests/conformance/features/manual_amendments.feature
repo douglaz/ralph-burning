@@ -87,3 +87,11 @@ Feature: Manual Amendment Parity
     Given an initialized workspace with a bootstrapped project
     When a manual amendment is added via `project amend add --text`
     Then run.json shows the amendment in amendment_queue.pending
+
+  # parity_slice3_journal_append_failure_rollback
+  Scenario: Journal append failure rolls back amendment and snapshot
+    Given an initialized workspace with a bootstrapped project
+    When a manual amendment is added with journal append injection failure
+    Then the command fails
+    And no amendment appears in `project amend list`
+    And run.json has no pending amendments

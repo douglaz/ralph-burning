@@ -2612,3 +2612,132 @@ impl AmendmentQueuePort for FailAfterNRemovesAmendmentQueue {
         Ok(!self.amendments.borrow().is_empty())
     }
 }
+
+// -- FailingAppendJournalStore: read_journal succeeds but append_event always fails --
+
+struct FailingAppendJournalStore;
+
+impl JournalStorePort for FailingAppendJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Ok(vec![make_project_created_event()])
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated journal append failure",
+        )))
+    }
+}
+
+#[test]
+fn add_manual_amendment_fails_when_journal_append_fails() {
+    // Journal read/serialize succeeds, but append_event fails. The amendment
+    // must be rolled back so no amendment is visible without its history event.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should not persist",
+    );
+
+    // Must fail because the journal append failed.
+    assert!(result.is_err());
+
+    // No amendment file should remain — rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment file must be rolled back when journal append fails"
+    );
+
+    // Snapshot must be restored to pre-mutation state (no pending amendments).
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored when journal append fails"
+    );
+}
+
+#[test]
+fn stage_amendment_batch_fails_when_journal_append_fails() {
+    // Batch staging where journal append fails after snapshot commit.
+    // All amendments and the snapshot must be rolled back.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the journal append failed.
+    assert!(result.is_err());
+
+    // All amendment files must be rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "all amendment files must be rolled back when journal append fails"
+    );
+
+    // Snapshot must be restored to pre-mutation state.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored when journal append fails during batch staging"
+    );
+}

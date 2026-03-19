@@ -47,12 +47,13 @@ the canonical `run.json` snapshot. Mutations drive existence checks and dedup
 from `run.json`:
 
 - **add**: prepares the journal line first (reading the journal and serializing
-  the event), then writes the amendment file, commits the snapshot, and appends
-  the journal event (best-effort). If journal preparation fails, no mutation
-  occurs. If the snapshot write fails after file creation, the amendment file is
-  rolled back. Because the journal line is prepared before any mutations, a
-  successful add always records the history event and a failed add never leaves
-  a committed amendment behind.
+  the event), then writes the amendment file, commits the snapshot, and durably
+  appends the journal event. If journal preparation fails, no mutation occurs.
+  If the snapshot write fails after file creation, the amendment file is rolled
+  back. If the journal append fails after the snapshot is committed, the
+  snapshot is restored to its pre-mutation state and the amendment file is
+  removed — a successful add always records the history event and a failed add
+  never leaves a committed amendment behind.
 - **remove**: deletes the amendment file first, then updates the snapshot. If
   file deletion fails, no mutation is visible. If the snapshot write fails after
   a successful file deletion, the file is restored.
@@ -67,7 +68,10 @@ from `run.json`:
 - **stage_amendment_batch**: prepares the journal sequence before mutations,
   then writes amendment files. If a file write fails mid-batch, all earlier
   files in the same batch are rolled back. The snapshot is committed after all
-  files are written; if it fails, all files are rolled back.
+  files are written; if it fails, all files are rolled back. Journal events are
+  pre-serialized and then durably appended after the snapshot commit. If any
+  journal append fails, the snapshot is restored and all staged files are
+  removed.
 
 This ensures `run.json` is always the canonical source of truth for pending
 amendments, and that completion gating, resume reconciliation, and snapshot

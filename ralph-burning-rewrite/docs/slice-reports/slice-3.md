@@ -195,6 +195,34 @@ and workflow-stage sources:
    the journal-preparation-first ordering and the repair-write-failure behavior
    for `clear`.
 
+## Review Response Changes (Iteration 6)
+
+1. **Durable amendment history (Required Change 1)**: Journal append is now part
+   of the success path for both `add_manual_amendment` and `stage_amendment_batch`.
+   Previously, journal append was best-effort (`let _ =`), meaning a successful
+   command could leave no `amendment_queued` event in the journal. Now, if the
+   journal append fails after the snapshot is committed, the snapshot is restored
+   to its pre-mutation state and all amendment files are rolled back. The command
+   returns the journal error, ensuring no amendment is visible without its history
+   event.
+2. **Batch staging journal atomicity**: `stage_amendment_batch` now pre-serializes
+   all journal events before appending any. If serialization fails, the snapshot
+   and files are rolled back. If any append fails, all staged files and the
+   snapshot are rolled back.
+3. **Test coverage (Recommended Improvement)**: Added `FailingAppendJournalStore`
+   test fixture and two new unit tests:
+   - `add_manual_amendment_fails_when_journal_append_fails` — verifies amendment
+     file and snapshot are rolled back when journal append fails.
+   - `stage_amendment_batch_fails_when_journal_append_fails` — verifies all staged
+     files and snapshot are rolled back when journal append fails during batch.
+4. **Conformance coverage**: Added `parity_slice3_journal_append_failure_rollback`
+   scenario that uses `RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER=0` to inject
+   journal append failure and verifies no amendment is visible and `run.json` has
+   no pending amendments.
+5. **Docs updated**: `amendments.md` failure safety section updated to document
+   that journal append is now durable (not best-effort) and that append failures
+   trigger full rollback.
+
 ## Remaining Known Gaps
 
 - None within the Slice 3 acceptance scope

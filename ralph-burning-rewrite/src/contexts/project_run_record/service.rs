@@ -828,11 +828,12 @@ pub fn add_manual_amendment(
     // Write durable amendment file.
     amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
 
+    // Save pre-mutation snapshot so we can restore it if a later step fails.
+    let old_snapshot = snapshot.clone();
+
     // Sync canonical snapshot: add the amendment to run.json pending queue.
     // The snapshot is committed BEFORE the journal event so that a snapshot
-    // write failure leaves no orphaned journal entry. The journal is append-only
-    // and written last — if it fails, the amendment is still visible in
-    // canonical state and will be picked up normally.
+    // write failure leaves no orphaned journal entry.
     snapshot.amendment_queue.pending.push(amendment.clone());
 
     // If the project is completed, reopen it with the pending amendment
@@ -856,12 +857,15 @@ pub fn add_manual_amendment(
         return Err(snap_err);
     }
 
-    // Emit journal event AFTER canonical state is committed. Best-effort:
-    // the amendment is already in run.json and will function correctly even
-    // if the append fails. Because the journal line was prepared before any
-    // mutations, this path cannot fail in a way that reports error to the
-    // caller after the amendment is already committed.
-    let _ = journal_port.append_event(base_dir, project_id, &journal_line);
+    // Durably append the journal event. A successful add must record the
+    // amendment_queued event. If the append fails, roll back the snapshot
+    // and amendment file so no amendment is visible without its history.
+    if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
+        // Restore pre-mutation snapshot (best-effort).
+        let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        return Err(journal_err);
+    }
 
     Ok(AmendmentAddResult::Created { amendment_id })
 }
@@ -1033,6 +1037,8 @@ pub fn stage_amendment_batch(
     };
 
     let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    // Save pre-mutation snapshot so we can restore it if journal append fails.
+    let old_snapshot = snapshot.clone();
     let mut staged_ids: Vec<String> = Vec::new();
     let mut staged_amendments: Vec<&QueuedAmendment> = Vec::new();
 
@@ -1088,11 +1094,10 @@ pub fn stage_amendment_batch(
         return Err(snap_err);
     }
 
-    // Emit journal events AFTER canonical state is committed. Best-effort:
-    // the amendments are already in run.json and will function correctly
-    // even if journal writes fail. The base sequence was read before any
-    // mutations so these calls cannot fail in a way that reports error to the
-    // caller after amendments are already committed.
+    // Pre-serialize all journal events so serialization failures are caught
+    // before any appends. This prevents partial journal writes on serialize
+    // errors.
+    let mut journal_lines: Vec<String> = Vec::new();
     let mut seq = base_journal_seq;
     for amendment in &staged_amendments {
         seq += 1;
@@ -1104,8 +1109,29 @@ pub fn stage_amendment_batch(
             amendment.source.as_str(),
             &amendment.dedup_key,
         );
-        if let Ok(line) = journal::serialize_event(&journal_event) {
-            let _ = journal_port.append_event(base_dir, project_id, &line);
+        match journal::serialize_event(&journal_event) {
+            Ok(line) => journal_lines.push(line),
+            Err(ser_err) => {
+                // Serialization failed — roll back all staged files and snapshot.
+                let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+                for id in &staged_ids {
+                    let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+                }
+                return Err(ser_err);
+            }
+        }
+    }
+
+    // Durably append all journal events. A successful staging must record all
+    // amendment_queued events. If any append fails, roll back the snapshot
+    // and amendment files so no amendments are visible without history.
+    for line in &journal_lines {
+        if let Err(journal_err) = journal_port.append_event(base_dir, project_id, line) {
+            let _ = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+            for id in &staged_ids {
+                let _ = amendment_queue.remove_amendment(base_dir, project_id, id);
+            }
+            return Err(journal_err);
         }
     }
 

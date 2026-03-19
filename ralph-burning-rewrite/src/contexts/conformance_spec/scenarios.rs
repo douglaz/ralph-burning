@@ -17848,4 +17848,51 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         Ok(())
     });
+
+    reg!(m, "parity_slice3_journal_append_failure_rollback", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 journal fail"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Inject journal append failure: fail on the very first append after
+        // the bootstrap (RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER=0).
+        let add = run_cli_with_env(
+            &["project", "amend", "add", "--text", "Should not persist"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER", "0")],
+        )?;
+        assert_failure(&add)?;
+
+        // No amendment should be visible via list.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        if list.stdout.contains("Should not persist") {
+            return Err(
+                "amendment should not be visible after journal append failure".to_owned(),
+            );
+        }
+
+        // run.json must have no pending amendments.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {
+                return Err(format!(
+                    "expected empty pending queue in run.json after journal append failure, got {} amendments",
+                    arr.len()
+                ));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    });
 }
