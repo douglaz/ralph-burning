@@ -247,6 +247,11 @@ case "$BACKEND" in
             fail "OpenRouter API key is invalid (HTTP 401)"
             evidence "preflight: FAIL — OpenRouter API key rejected (HTTP 401)"
             exit 2
+        elif [ "$CREDIT_CHECK_HTTP" = "403" ]; then
+            fail "OpenRouter API key limit exceeded (HTTP 403)"
+            evidence "preflight: FAIL — OpenRouter credit check returned HTTP 403 (key limit exceeded)"
+            evidence "preflight: The key's total spending limit has been reached. Top up or raise the limit at https://openrouter.ai/settings/keys and re-run."
+            exit 2
         elif [ "$CREDIT_CHECK_HTTP" -ge 200 ] && [ "$CREDIT_CHECK_HTTP" -lt 300 ] 2>/dev/null; then
             log "Preflight: OpenRouter credit check PASS (HTTP $CREDIT_CHECK_HTTP)"
             evidence "preflight: OpenRouter credit check PASS (HTTP $CREDIT_CHECK_HTTP)"

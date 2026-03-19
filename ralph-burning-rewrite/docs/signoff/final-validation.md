@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-19 (updated iteration 11 — OpenRouter reverted to FAIL per PASS rules, cutover Not Ready)
+Recorded: 2026-03-19 (updated iteration 19 — OpenRouter preflight strengthened to catch HTTP 403; row 3 still FAIL pending credit top-up, cutover Not Ready)
 Branch: ralph/parity-plan
 
 ## Automated Check Results

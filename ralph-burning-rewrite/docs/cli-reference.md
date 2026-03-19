@@ -36,10 +36,12 @@ Optional flags:
 - `--flow <preset>` — override the flow preset (default: from seed or `standard`)
 - `--start` — start a run immediately after project creation
 
-The `--from-seed` path is useful when the quick-requirements pipeline cannot
-complete for a given backend (e.g., model behaviour prevents approval within
-`MAX_QUICK_REVISIONS`). The seed file must be a valid `ProjectSeedPayload` JSON
-with a supported `version` field. See `scripts/smoke-seed.json` for an example.
+The `--from-seed` path is primarily intended for smoke testing and automation
+where the quick-requirements pipeline cannot complete for a given backend (e.g.,
+model behaviour prevents approval within `MAX_QUICK_REVISIONS`). It is not part
+of the standard operator workflow. The seed file must be a valid
+`ProjectSeedPayload` JSON with a supported `version` field. See
+`scripts/smoke-seed.json` for an example.
 
 ## Run Commands
 
@@ -501,6 +503,14 @@ ralph-burning backend show-effective
 `backend check` performs an HTTP probe against the OpenRouter models endpoint
 (`/api/v1/models`) using the configured API key. A 401/403 response maps to
 `BackendUnavailable`; a 429 maps to rate-limit failure.
+
+**Smoke harness credit preflight**: The live smoke script
+(`scripts/live-backend-smoke.sh`) additionally sends a minimal completion request
+during preflight to verify the key has usable credits. HTTP 401 (invalid key),
+HTTP 402 (insufficient credits), and HTTP 403 (key total limit exceeded) all
+cause preflight failure (exit code 2) before any project state is created. This
+catches exhausted keys that would otherwise pass `backend check` (which only
+probes the models endpoint) but fail mid-run.
 
 ### Strict-Mode Schema Compliance
 

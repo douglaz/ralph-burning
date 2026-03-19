@@ -122,8 +122,11 @@ OpenRouter has additional constraints:
 5. **Run**: `run start --backend openrouter`
 
 **Credit preflight**: The harness sends a minimal completion request to OpenRouter
-before the full smoke to verify the API key has usable credits. HTTP 402 is caught
-at preflight (exit code 2) before any project state is created.
+before the full smoke to verify the API key has usable credits. Both HTTP 402
+(insufficient credits) and HTTP 403 (key total limit exceeded) are caught at
+preflight (exit code 2) before any project state is created. This ensures an
+already-exhausted key fails with the exact readiness error before bootstrap,
+leaving no created project directory or active-project mutation.
 
 **Important**: OpenRouter must run in `execution.mode = "direct"`.  The process
 adapter rejects OpenRouter targets (`process_backend.rs:468`).  The

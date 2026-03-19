@@ -1,6 +1,6 @@
 # Manual Smoke Matrix
 
-Recorded: 2026-03-19 (updated iteration 11 — OpenRouter reverted to FAIL per PASS rules: run_status must be completed)
+Recorded: 2026-03-19 (updated iteration 19 — OpenRouter preflight now catches HTTP 403; row 3 still FAIL pending credit top-up)
 Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 ## Smoke Items
@@ -116,3 +116,14 @@ Update the Result column to `PASS` only when all five fields are recorded and
     external credit exhaustion. Row 3 reverted to FAIL in iteration 11 per PASS rules
     (`run_status` must be `completed`). Follow-up: top up credits and rerun for clean
     `run_status = completed` to flip to PASS.
+
+### Resolved (iteration 19)
+
+12. **OpenRouter preflight now catches HTTP 403** (row 3): The credit preflight
+    previously only caught HTTP 402 (insufficient credits) and treated HTTP 403
+    (key limit exceeded) as "inconclusive", proceeding to bootstrap and creating
+    project state before failing mid-run. **Fixed**: `live-backend-smoke.sh` now
+    catches HTTP 403 at preflight (exit code 2) with the exact readiness error,
+    preventing any project directory or active-project mutation when the key's
+    total spending limit is exhausted. This satisfies the spec's "exact
+    prerequisite checks" requirement.
