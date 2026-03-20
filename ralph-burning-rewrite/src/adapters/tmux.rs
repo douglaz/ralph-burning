@@ -283,6 +283,12 @@ impl TmuxAdapter {
             }
 
             if let Some(exit_code) = read_exit_code(&session.exit_status_path)? {
+                // Flush one more time after seeing the exit marker so the
+                // final stdout/stderr chunk is captured before returning.
+                if self.stream_output {
+                    stdout_tail.flush_new_lines(&session.project_root).await?;
+                    stderr_tail.flush_new_lines(&session.project_root).await?;
+                }
                 return Ok(exit_code);
             }
 

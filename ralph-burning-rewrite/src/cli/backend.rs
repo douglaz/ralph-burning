@@ -216,11 +216,11 @@ async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<(
     let service = BackendDiagnosticsService::new(&config);
     let flow = resolve_active_project_flow(&config);
 
-    // Use adapter availability checks when possible. If the adapter cannot be
-    // constructed at all, that is itself a readiness failure — surface it
-    // instead of silently falling back to config-only checks.
+    // Use adapter availability checks when possible. Build a process adapter
+    // directly for diagnostics so RALPH_BURNING_BACKEND env var doesn't
+    // redirect checks to the wrong transport.
     let result =
-        match crate::composition::agent_execution_builder::build_backend_adapter_with_config(Some(
+        match crate::composition::agent_execution_builder::build_process_backend_adapter(Some(
             &config,
         )) {
             Ok(adapter) => {

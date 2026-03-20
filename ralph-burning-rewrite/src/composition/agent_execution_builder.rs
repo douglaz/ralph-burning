@@ -104,6 +104,15 @@ pub fn build_backend_adapter_with_config(
     }
 }
 
+/// Build a process backend adapter directly, ignoring `RALPH_BURNING_BACKEND`.
+/// Used by diagnostics commands (`backend check`/`backend probe`) so that the
+/// env var doesn't redirect availability checks to the wrong transport.
+pub fn build_process_backend_adapter(
+    _effective_config: Option<&EffectiveConfig>,
+) -> AppResult<BackendAdapter> {
+    Ok(BackendAdapter::Process(ProcessBackendAdapter::new()))
+}
+
 /// Build an `AgentExecutionService` backed by the environment-selected adapter.
 pub fn build_agent_execution_service() -> AppResult<ProductionAgentService> {
     let adapter = build_backend_adapter()?;
