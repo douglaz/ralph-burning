@@ -473,31 +473,52 @@ pub fn resolve(
     })?;
 
     // 1. Check project override
+    //    Use try_exists() to distinguish "not present" from "inaccessible"
+    //    (broken symlink, permission denied). Inaccessible overrides are
+    //    hard errors — no silent fallback to lower precedence.
     if let Some(pid) = project_id {
         let path = project_template_path(base_dir, pid, template_id);
-        if path.exists() {
-            let content = read_override_file(&path)?;
-            validate_template(&content, &manifest, &path)?;
-            return Ok(ResolvedTemplate {
-                template_id: template_id.to_owned(),
-                source: TemplateSource::ProjectOverride(path),
-                content,
-                manifest,
-            });
+        match path.try_exists() {
+            Ok(true) => {
+                let content = read_override_file(&path)?;
+                validate_template(&content, &manifest, &path)?;
+                return Ok(ResolvedTemplate {
+                    template_id: template_id.to_owned(),
+                    source: TemplateSource::ProjectOverride(path),
+                    content,
+                    manifest,
+                });
+            }
+            Ok(false) => {} // genuinely absent, fall through
+            Err(e) => {
+                return Err(AppError::MalformedTemplate {
+                    path: path.display().to_string(),
+                    reason: format!("project template override is inaccessible: {e}"),
+                });
+            }
         }
     }
 
     // 2. Check workspace override
     let ws_path = workspace_template_path(base_dir, template_id);
-    if ws_path.exists() {
-        let content = read_override_file(&ws_path)?;
-        validate_template(&content, &manifest, &ws_path)?;
-        return Ok(ResolvedTemplate {
-            template_id: template_id.to_owned(),
-            source: TemplateSource::WorkspaceOverride(ws_path),
-            content,
-            manifest,
-        });
+    match ws_path.try_exists() {
+        Ok(false) => {} // genuinely absent, fall through to built-in
+        Err(e) => {
+            return Err(AppError::MalformedTemplate {
+                path: ws_path.display().to_string(),
+                reason: format!("workspace template override is inaccessible: {e}"),
+            });
+        }
+        Ok(true) => {
+            let content = read_override_file(&ws_path)?;
+            validate_template(&content, &manifest, &ws_path)?;
+            return Ok(ResolvedTemplate {
+                template_id: template_id.to_owned(),
+                source: TemplateSource::WorkspaceOverride(ws_path),
+                content,
+                manifest,
+            });
+        }
     }
 
     // 3. Built-in default

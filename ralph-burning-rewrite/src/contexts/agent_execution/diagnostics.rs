@@ -871,23 +871,24 @@ impl<'a> BackendDiagnosticsService<'a> {
         flow: FlowPreset,
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
-        // Resolve planner separately for exact error identity
-        let planner = self
+        // Resolve a completer for the probe target view (completion panels
+        // invoke completers, not planners).
+        let completer = self
             .policy
-            .resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .resolve_role_target(BackendPolicyRole::Completer, cycle)
             .map_err(|err| {
                 self.make_probe_target_error(
                     "completion_panel",
-                    "planner",
-                    &self.family_for_role(BackendPolicyRole::Planner),
-                    &self.config_source_for_role(BackendPolicyRole::Planner),
+                    "completer",
+                    &self.family_for_role(BackendPolicyRole::Completer),
+                    &self.config_source_for_role(BackendPolicyRole::Completer),
                     &err,
                 )
             })?;
 
         let timeout = self
             .policy
-            .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
+            .timeout_for_role(completer.backend.family, BackendPolicyRole::Completer);
 
         let configured_specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
@@ -927,8 +928,8 @@ impl<'a> BackendDiagnosticsService<'a> {
             flow: flow.as_str().to_owned(),
             cycle,
             target: ProbeTargetView {
-                backend_family: planner.backend.family.as_str().to_owned(),
-                model_id: planner.model.model_id,
+                backend_family: completer.backend.family.as_str().to_owned(),
+                model_id: completer.model.model_id,
                 timeout_seconds: timeout.as_secs(),
             },
             panel: Some(PanelProbeView {
