@@ -875,11 +875,6 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Panel probes use target: None — members are in the panel view.
-        // No single target to resolve.
-
-        let _timeout = self
-            .policy
-            .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
 
         let configured_specs = &self.config.completion_policy().backends;
         let minimum = self.config.completion_policy().min_completers;
@@ -1119,10 +1114,11 @@ impl<'a> BackendDiagnosticsService<'a> {
         let primary_source = self.probe_primary_config_source(role_str);
         let primary_target = self.probe_primary_target_label(role_str);
 
-        // Check the primary target (planner for panels, role target for singular)
-        {
-            let family: BackendFamily = result.target.backend_family.parse()?;
-            let target = ResolvedBackendTarget::new(family, result.target.model_id.clone());
+        // Check the primary target (only for single-role probes; panels
+        // check their members individually below).
+        if let Some(ref target_view) = result.target {
+            let family: BackendFamily = target_view.backend_family.parse()?;
+            let target = ResolvedBackendTarget::new(family, target_view.model_id.clone());
             if let Err(err) = adapter.check_availability(&target).await {
                 return Err(AppError::BackendUnavailable {
                     backend: family.as_str().to_owned(),

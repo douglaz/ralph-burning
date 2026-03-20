@@ -160,9 +160,15 @@ where
         let staged_count = if !amendments.is_empty() {
             let project_id = ProjectId::new(task.project_id.clone())?;
             if task.status == TaskStatus::Active {
-                // Disk-only staging: write amendment files without run.json mutation
+                // Disk-only staging: write amendment files without run.json mutation.
+                // Deduplicate by dedup_key against existing on-disk amendments.
+                let existing = self.amendment_queue
+                    .list_pending_amendments(workspace_dir, &project_id)?;
                 let mut count = 0;
                 for amendment in &amendments {
+                    if existing.iter().any(|a| a.dedup_key == amendment.dedup_key) {
+                        continue;
+                    }
                     self.amendment_queue
                         .write_amendment(workspace_dir, &project_id, amendment)?;
                     count += 1;
