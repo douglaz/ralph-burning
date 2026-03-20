@@ -19162,7 +19162,7 @@ fn tmux_session_name_for_request(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("workspace");
-    crate::adapters::tmux::TmuxAdapter::session_name(project_name, &request.invocation_id)
+    crate::adapters::tmux::TmuxAdapter::session_name(project_name, &request.invocation_id, &request.project_root)
 }
 
 #[derive(Clone, Copy)]
@@ -19294,9 +19294,22 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-TMUX-003", || {
-        let session = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1");
-        if session != "rb-alpha-run-1" {
-            return Err(format!("unexpected session name: {session}"));
+        let root = std::path::Path::new("/tmp/test-workspace");
+        let session = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", root);
+        // Session name should contain the project id and a workspace hash prefix
+        if !session.starts_with("rb-") || !session.contains("alpha") || !session.contains("run-1") {
+            return Err(format!("unexpected session name format: {session}"));
+        }
+        // Same inputs should produce same name (deterministic)
+        let session2 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", root);
+        if session != session2 {
+            return Err(format!("session name not deterministic: {session} vs {session2}"));
+        }
+        // Different root should produce different name
+        let other_root = std::path::Path::new("/tmp/other-workspace");
+        let session3 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", other_root);
+        if session == session3 {
+            return Err("different workspace roots produced same session name".to_owned());
         }
         Ok(())
     });

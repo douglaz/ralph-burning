@@ -57,22 +57,14 @@ impl TmuxAdapter {
         }
     }
 
-    pub fn session_name(project_id: &str, invocation_id: &str) -> String {
-        Self::session_name_with_root(project_id, invocation_id, None)
-    }
-
-    pub fn session_name_with_root(project_id: &str, invocation_id: &str, project_root: Option<&std::path::Path>) -> String {
-        // Include a hash of the project root (or cwd fallback) to namespace
-        // sessions per workspace, preventing collisions in multi-repo daemon.
+    pub fn session_name(project_id: &str, invocation_id: &str, project_root: &std::path::Path) -> String {
+        // Include a hash of the project root to namespace sessions per
+        // workspace, preventing collisions in multi-repo daemon mode.
         let path_hash = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut h = DefaultHasher::new();
-            if let Some(root) = project_root {
-                root.hash(&mut h);
-            } else if let Ok(cwd) = std::env::current_dir() {
-                cwd.hash(&mut h);
-            }
+            project_root.hash(&mut h);
             format!("{:08x}", h.finish() as u32)
         };
         format!(
@@ -424,7 +416,7 @@ impl AgentExecutionPort for TmuxAdapter {
             .file_name()
             .and_then(|value| value.to_str())
             .unwrap_or("workspace");
-        let session_name = Self::session_name(project_name, &request.invocation_id);
+        let session_name = Self::session_name(project_name, &request.invocation_id, &request.project_root);
         let session = Arc::new(ManagedTmuxSession::new(
             &request,
             session_name,
