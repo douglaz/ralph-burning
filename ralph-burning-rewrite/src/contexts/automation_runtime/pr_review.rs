@@ -164,9 +164,13 @@ where
                 // Deduplicate by dedup_key against existing on-disk amendments.
                 let existing = self.amendment_queue
                     .list_pending_amendments(workspace_dir, &project_id)?;
+                let mut seen_keys: std::collections::HashSet<String> = existing
+                    .iter()
+                    .map(|a| a.dedup_key.clone())
+                    .collect();
                 let mut count = 0;
                 for amendment in &amendments {
-                    if existing.iter().any(|a| a.dedup_key == amendment.dedup_key) {
+                    if !seen_keys.insert(amendment.dedup_key.clone()) {
                         continue;
                     }
                     self.amendment_queue

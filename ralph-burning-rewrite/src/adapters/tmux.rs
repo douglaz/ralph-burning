@@ -58,21 +58,26 @@ impl TmuxAdapter {
     }
 
     pub fn session_name(project_id: &str, invocation_id: &str) -> String {
-        // Include a hash of the current working directory to namespace sessions
-        // per workspace, preventing collisions when the same project slug
-        // exists in multiple repos.
-        let cwd_hash = {
+        Self::session_name_with_root(project_id, invocation_id, None)
+    }
+
+    pub fn session_name_with_root(project_id: &str, invocation_id: &str, project_root: Option<&std::path::Path>) -> String {
+        // Include a hash of the project root (or cwd fallback) to namespace
+        // sessions per workspace, preventing collisions in multi-repo daemon.
+        let path_hash = {
             use std::collections::hash_map::DefaultHasher;
             use std::hash::{Hash, Hasher};
             let mut h = DefaultHasher::new();
-            if let Ok(cwd) = std::env::current_dir() {
+            if let Some(root) = project_root {
+                root.hash(&mut h);
+            } else if let Ok(cwd) = std::env::current_dir() {
                 cwd.hash(&mut h);
             }
             format!("{:08x}", h.finish() as u32)
         };
         format!(
             "rb-{}-{}-{}",
-            cwd_hash,
+            path_hash,
             sanitize_session_segment(project_id),
             sanitize_session_segment(invocation_id)
         )
@@ -501,6 +506,20 @@ impl AgentExecutionPort for TmuxAdapter {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+
+            // Retry once without session resume if Claude returned a stale
+            // session error, matching ProcessBackendAdapter::invoke() behavior.
+            if request.resolved_target.backend.family == BackendFamily::Claude
+                && stderr.contains("No conversation found with session ID")
+                && request.prior_session.is_some()
+            {
+                let mut retry_request = request.clone();
+                retry_request.prior_session = None;
+                retry_request.session_policy = SessionPolicy::NewSession;
+                retry_request.attempt_number += 1;
+                return Box::pin(self.invoke(retry_request)).await;
+            }
+
             prepared.cleanup().await;
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
