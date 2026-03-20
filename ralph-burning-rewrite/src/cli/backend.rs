@@ -276,9 +276,9 @@ async fn handle_probe(
     // If the adapter cannot be constructed, surface that as an error instead of
     // silently falling back to config-only resolution.
     let result =
-        match crate::composition::agent_execution_builder::build_backend_adapter_with_config(Some(
+        match crate::composition::agent_execution_builder::build_backend_adapter_for_diagnostics(
             &config,
-        )) {
+        ) {
             Ok(adapter) => {
                 service
                     .probe_with_availability(&role, flow, cycle.unwrap_or(1), &adapter)
