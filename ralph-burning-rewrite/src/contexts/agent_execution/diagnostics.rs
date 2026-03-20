@@ -1131,6 +1131,27 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
 
         if let Some(panel) = &mut result.panel {
+            // For panel probes (target: None), check the panel's primary role
+            // availability (planner for completion/final_review, refiner for prompt_review).
+            let primary_role = match panel.panel_type.as_str() {
+                "completion" | "final_review" => Some(BackendPolicyRole::Planner),
+                "prompt_review" => Some(BackendPolicyRole::PromptReviewer),
+                _ => None,
+            };
+            if let Some(role) = primary_role {
+                if let Ok(primary) = self.policy.resolve_role_target(role, result.cycle) {
+                    if let Err(err) = adapter.check_availability(&primary).await {
+                        return Err(AppError::BackendUnavailable {
+                            backend: primary.backend.family.as_str().to_owned(),
+                            details: format!(
+                                "required primary '{}' for '{}' unavailable: {} [source: {}]",
+                                role.as_str(), role_str, err, primary_source
+                            ),
+                        });
+                    }
+                }
+            }
+
             // Check arbiter availability (required for final_review_panel)
             if let Some(arbiter) = &panel.arbiter {
                 let arbiter_source = self.config_source_for_role(BackendPolicyRole::Arbiter);
