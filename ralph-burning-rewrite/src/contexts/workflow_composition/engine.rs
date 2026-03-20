@@ -6374,12 +6374,10 @@ where
     let arbiter_timeout =
         policy.timeout_for_role(panel.arbiter.backend.family, BackendPolicyRole::Arbiter);
 
-    // Pre-validate panel template overrides BEFORE any durable state writes.
-    // If a panel template override is malformed, we must fail without
-    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    // Pre-validate the reviewer template (always used) BEFORE durable state writes.
+    // Voter and arbiter templates are validated lazily at invocation time since
+    // they may not be needed (no amendments → no voters, no disputes → no arbiter).
     template_catalog::resolve("final_review_reviewer", base_dir, Some(project_id))?;
-    template_catalog::resolve("final_review_voter", base_dir, Some(project_id))?;
-    template_catalog::resolve("final_review_arbiter", base_dir, Some(project_id))?;
 
     *seq += 1;
     let stage_entered = journal::stage_entered_event(

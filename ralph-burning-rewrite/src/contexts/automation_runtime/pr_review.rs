@@ -223,7 +223,7 @@ where
                 json!({
                     "task_id": task.task_id,
                     "count": staged_count,
-                    "amendment_ids": staged_ids,
+                    "amendment_ids": amendments.iter().map(|a| a.amendment_id.as_str()).collect::<Vec<_>>(),
                 }),
             )?;
         }

@@ -911,11 +911,15 @@ pub fn add_manual_amendment(
     // Also check staged amendment files on disk to catch duplicates from
     // a prior failed attempt where the file was preserved but the snapshot
     // update failed (the file survives reopen failures by design).
-    let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-    if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
-        return Ok(AmendmentAddResult::Duplicate {
-            amendment_id: existing.amendment_id.clone(),
-        });
+    // Skip this check for completed projects — the retry needs to proceed
+    // through the reopen path even if the file already exists on disk.
+    if snapshot.status != RunStatus::Completed {
+        let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+        if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
+            return Ok(AmendmentAddResult::Duplicate {
+                amendment_id: existing.amendment_id.clone(),
+            });
+        }
     }
 
     let now = Utc::now();
