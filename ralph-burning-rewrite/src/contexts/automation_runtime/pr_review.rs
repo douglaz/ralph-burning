@@ -152,24 +152,39 @@ where
         let accepted = self.filter_by_whitelist(items, whitelist);
         let amendments = self.convert_to_amendments(workspace_dir, &task, &accepted)?;
 
-        // Route through the shared amendment staging service for consistent
-        // dedup, journal persistence, snapshot sync, and completed-project reopen.
-        let staged_ids = if !amendments.is_empty() {
+        // For active tasks, only write amendment files to disk without touching
+        // canonical run state (run.json/journal). The workflow engine owns
+        // snapshot mutations during execution and will pick up staged files.
+        // For completed/paused tasks, use the full shared staging service which
+        // handles dedup, journal persistence, snapshot sync, and reopen.
+        let staged_count = if !amendments.is_empty() {
             let project_id = ProjectId::new(task.project_id.clone())?;
-            record_service::stage_amendment_batch(
-                self.amendment_queue,
-                self.run_snapshot_read,
-                self.run_snapshot_write,
-                self.journal_store,
-                self.project_store,
-                workspace_dir,
-                &project_id,
-                &amendments,
-            )?
+            if task.status == TaskStatus::Active {
+                // Disk-only staging: write amendment files without run.json mutation
+                let mut count = 0;
+                for amendment in &amendments {
+                    self.amendment_queue
+                        .write_amendment(workspace_dir, &project_id, amendment)?;
+                    count += 1;
+                }
+                count
+            } else {
+                // Full staging with canonical state updates
+                let staged_ids = record_service::stage_amendment_batch(
+                    self.amendment_queue,
+                    self.run_snapshot_read,
+                    self.run_snapshot_write,
+                    self.journal_store,
+                    self.project_store,
+                    workspace_dir,
+                    &project_id,
+                    &amendments,
+                )?;
+                staged_ids.len()
+            }
         } else {
-            Vec::new()
+            0
         };
-        let staged_count = staged_ids.len();
 
         // Check if the project was reopened (task was completed + amendments staged).
         let mut reopened_project = false;

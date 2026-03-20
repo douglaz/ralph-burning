@@ -668,15 +668,36 @@ pub fn render(
         .copied()
         .collect();
 
-    for name in &all_placeholders {
-        let marker = format!("{{{{{name}}}}}");
-        let replacement = values_map.get(name).copied().unwrap_or("");
-        output = output.replace(&marker, replacement);
-        // Also replace whitespace-padded forms like `{{ name }}` since
-        // validate_template() accepts them after trimming.
-        let padded = format!("{{{{ {name} }}}}");
-        output = output.replace(&padded, replacement);
+    // Single-pass scan: find each `{{...}}` marker, look up its trimmed name
+    // in the values map, and replace it. This avoids re-processing content
+    // already inserted by earlier replacements (P2) and handles arbitrary
+    // internal whitespace (P3) since validate_template() trims names.
+    let mut result = String::with_capacity(output.len());
+    let mut remaining = output.as_str();
+    while let Some(start) = remaining.find("{{") {
+        result.push_str(&remaining[..start]);
+        let after_open = &remaining[start + 2..];
+        if let Some(end) = after_open.find("}}") {
+            let raw_name = &after_open[..end];
+            let trimmed = raw_name.trim();
+            if let Some(value) = values_map.get(trimmed) {
+                result.push_str(value);
+            } else {
+                // Not a known placeholder — preserve the original marker
+                result.push_str("{{");
+                result.push_str(raw_name);
+                result.push_str("}}");
+            }
+            remaining = &after_open[end + 2..];
+        } else {
+            // Unclosed `{{` — preserve and stop
+            result.push_str(&remaining[start..]);
+            remaining = "";
+            break;
+        }
     }
+    result.push_str(remaining);
+    output = result;
 
     // Collapse 3+ consecutive newlines to 2
     output = collapse_blank_lines(&output);
