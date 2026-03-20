@@ -465,10 +465,12 @@ fn render_probe_text(result: &BackendProbeResult) {
         result.role, result.flow, result.cycle
     );
     println!("{:-<60}", "");
-    println!(
-        "  Target: {}/{}  timeout={}s",
-        result.target.backend_family, result.target.model_id, result.target.timeout_seconds,
-    );
+    if let Some(target) = &result.target {
+        println!(
+            "  Target: {}/{}  timeout={}s",
+            target.backend_family, target.model_id, target.timeout_seconds,
+        );
+    }
 
     if let Some(panel) = &result.panel {
         println!();

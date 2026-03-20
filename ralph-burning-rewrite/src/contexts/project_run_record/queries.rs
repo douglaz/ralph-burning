@@ -174,6 +174,11 @@ pub fn filter_by_stage(
                 .get("stage_id")
                 .and_then(|value| value.as_str())
                 .is_some_and(|value| value == stage_name)
+                || event
+                    .details
+                    .get("source_stage")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value == stage_name)
         })
         .cloned()
         .collect();

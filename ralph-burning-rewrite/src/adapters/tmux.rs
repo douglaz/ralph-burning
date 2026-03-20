@@ -58,8 +58,21 @@ impl TmuxAdapter {
     }
 
     pub fn session_name(project_id: &str, invocation_id: &str) -> String {
+        // Include a hash of the current working directory to namespace sessions
+        // per workspace, preventing collisions when the same project slug
+        // exists in multiple repos.
+        let cwd_hash = {
+            use std::collections::hash_map::DefaultHasher;
+            use std::hash::{Hash, Hasher};
+            let mut h = DefaultHasher::new();
+            if let Ok(cwd) = std::env::current_dir() {
+                cwd.hash(&mut h);
+            }
+            format!("{:08x}", h.finish() as u32)
+        };
         format!(
-            "rb-{}-{}",
+            "rb-{}-{}-{}",
+            cwd_hash,
             sanitize_session_segment(project_id),
             sanitize_session_segment(invocation_id)
         )

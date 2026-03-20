@@ -114,7 +114,10 @@ pub struct BackendProbeResult {
     pub role: String,
     pub flow: String,
     pub cycle: u32,
-    pub target: ProbeTargetView,
+    /// Primary target for single-role probes (planner, implementer, reviewer, etc.).
+    /// `None` for panel probes — use `panel` instead.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target: Option<ProbeTargetView>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub panel: Option<PanelProbeView>,
 }
@@ -857,11 +860,11 @@ impl<'a> BackendDiagnosticsService<'a> {
             role: role.as_str().to_owned(),
             flow: flow.as_str().to_owned(),
             cycle,
-            target: ProbeTargetView {
+            target: Some(ProbeTargetView {
                 backend_family: target.backend.family.as_str().to_owned(),
                 model_id: target.model.model_id,
                 timeout_seconds: timeout.as_secs(),
-            },
+            }),
             panel: None,
         })
     }
@@ -871,22 +874,10 @@ impl<'a> BackendDiagnosticsService<'a> {
         flow: FlowPreset,
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
-        // Resolve planner as the primary probe target for completion panels
-        // (matches the conformance contract for completion_panel probes).
-        let planner = self
-            .policy
-            .resolve_role_target(BackendPolicyRole::Planner, cycle)
-            .map_err(|err| {
-                self.make_probe_target_error(
-                    "completion_panel",
-                    "planner",
-                    &self.family_for_role(BackendPolicyRole::Planner),
-                    &self.config_source_for_role(BackendPolicyRole::Planner),
-                    &err,
-                )
-            })?;
+        // Panel probes use target: None — members are in the panel view.
+        // No single target to resolve.
 
-        let timeout = self
+        let _timeout = self
             .policy
             .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
 
@@ -927,11 +918,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             role: "completion_panel".to_owned(),
             flow: flow.as_str().to_owned(),
             cycle,
-            target: ProbeTargetView {
-                backend_family: planner.backend.family.as_str().to_owned(),
-                model_id: planner.model.model_id,
-                timeout_seconds: timeout.as_secs(),
-            },
+            target: None,
             panel: Some(PanelProbeView {
                 panel_type: "completion".to_owned(),
                 minimum,
@@ -1026,11 +1013,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             role: "final_review_panel".to_owned(),
             flow: flow.as_str().to_owned(),
             cycle,
-            target: ProbeTargetView {
-                backend_family: planner.backend.family.as_str().to_owned(),
-                model_id: planner.model.model_id,
-                timeout_seconds: timeout.as_secs(),
-            },
+            target: None,
             panel: Some(PanelProbeView {
                 panel_type: "final_review".to_owned(),
                 minimum,
@@ -1104,11 +1087,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             role: "prompt_review_panel".to_owned(),
             flow: flow.as_str().to_owned(),
             cycle,
-            target: ProbeTargetView {
-                backend_family: refiner.backend.family.as_str().to_owned(),
-                model_id: refiner.model.model_id,
-                timeout_seconds: timeout.as_secs(),
-            },
+            target: None,
             panel: Some(PanelProbeView {
                 panel_type: "prompt_review".to_owned(),
                 minimum,
