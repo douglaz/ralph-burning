@@ -216,13 +216,13 @@ async fn handle_check(json: bool, overrides: CliBackendOverrides) -> AppResult<(
     let service = BackendDiagnosticsService::new(&config);
     let flow = resolve_active_project_flow(&config);
 
-    // Use adapter availability checks when possible. Build a process adapter
-    // directly for diagnostics so RALPH_BURNING_BACKEND env var doesn't
-    // redirect checks to the wrong transport.
+    // Use adapter availability checks when possible. Build from config
+    // directly (ignoring RALPH_BURNING_BACKEND env var) so diagnostics
+    // check the actual configured backends, not an env override.
     let result =
-        match crate::composition::agent_execution_builder::build_process_backend_adapter(Some(
+        match crate::composition::agent_execution_builder::build_backend_adapter_for_diagnostics(
             &config,
-        )) {
+        ) {
             Ok(adapter) => {
                 service
                     .check_backends_with_availability(flow, &adapter)

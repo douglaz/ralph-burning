@@ -104,13 +104,32 @@ pub fn build_backend_adapter_with_config(
     }
 }
 
-/// Build a process backend adapter directly, ignoring `RALPH_BURNING_BACKEND`.
-/// Used by diagnostics commands (`backend check`/`backend probe`) so that the
-/// env var doesn't redirect availability checks to the wrong transport.
-pub fn build_process_backend_adapter(
-    _effective_config: Option<&EffectiveConfig>,
+/// Build a backend adapter for diagnostics, ignoring `RALPH_BURNING_BACKEND`
+/// env var. Selects the adapter based on config: if any configured backend
+/// uses OpenRouter, includes the OpenRouter adapter; otherwise uses process.
+pub fn build_backend_adapter_for_diagnostics(
+    effective_config: &EffectiveConfig,
 ) -> AppResult<BackendAdapter> {
-    Ok(BackendAdapter::Process(ProcessBackendAdapter::new()))
+    let tmux_enabled = effective_config.effective_execution_mode() == ExecutionMode::Tmux;
+    // Check if OpenRouter is enabled in config
+    let openrouter_enabled = effective_config
+        .workspace_config()
+        .backends
+        .as_ref()
+        .and_then(|b| b.openrouter.as_ref())
+        .map_or(false, |or| or.enabled.unwrap_or(false));
+
+    if openrouter_enabled {
+        Ok(BackendAdapter::OpenRouter(OpenRouterBackendAdapter::new()))
+    } else if tmux_enabled {
+        let process = ProcessBackendAdapter::new();
+        Ok(BackendAdapter::Tmux(TmuxAdapter::new(
+            process,
+            effective_config.effective_stream_output(),
+        )))
+    } else {
+        Ok(BackendAdapter::Process(ProcessBackendAdapter::new()))
+    }
 }
 
 /// Build an `AgentExecutionService` backed by the environment-selected adapter.

@@ -489,7 +489,16 @@ pub fn resolve(
                     manifest,
                 });
             }
-            Ok(false) => {} // genuinely absent, fall through
+            Ok(false) => {
+                // Also check if a symlink exists but is broken (dangling).
+                // symlink_metadata succeeds for broken symlinks; try_exists returns false.
+                if path.symlink_metadata().is_ok() {
+                    return Err(AppError::MalformedTemplate {
+                        path: path.display().to_string(),
+                        reason: "project template override is a broken symlink".to_owned(),
+                    });
+                }
+            }
             Err(e) => {
                 return Err(AppError::MalformedTemplate {
                     path: path.display().to_string(),
@@ -502,7 +511,14 @@ pub fn resolve(
     // 2. Check workspace override
     let ws_path = workspace_template_path(base_dir, template_id);
     match ws_path.try_exists() {
-        Ok(false) => {} // genuinely absent, fall through to built-in
+        Ok(false) => {
+            if ws_path.symlink_metadata().is_ok() {
+                return Err(AppError::MalformedTemplate {
+                    path: ws_path.display().to_string(),
+                    reason: "workspace template override is a broken symlink".to_owned(),
+                });
+            }
+        }
         Err(e) => {
             return Err(AppError::MalformedTemplate {
                 path: ws_path.display().to_string(),
