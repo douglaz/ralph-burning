@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-20 (OpenRouter row 3 deferred due to external credit exhaustion — no code defect, adapter validated end-to-end, backend disabled in production)
+Recorded: 2026-03-20 (OpenRouter row 3 is DEFERRED under `live-backend-smoke.md#qualifying-deferred-policy`)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -92,7 +92,8 @@ All 4 PR-review scenarios: **PASS**
 - **run_status**: `failed` — deferred due to external credit exhaustion ($40/$40 limit reached)
 - **Evidence**: All 8 standard flow stages completed successfully on the first cycle in `execution.mode = "direct"`: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review (10 successful backend invocations). Final review requested changes; re-implementation failed on HTTP 403 (key total limit exceeded) after 3 retries. No code defect.
 - **Fixes verified**: Corrected seed fixture (iteration 9), `max_tokens = 16384` in `openrouter_backend.rs` (iteration 10), credit preflight check (catches HTTP 402 and 403), smoke script `SCRIPT_DIR` resolution (iteration 10).
-- **Assessment**: The adapter code is fully functional and validated end-to-end. OpenRouter is disabled in production config (`enabled = false` in `ralph.toml`). Deferred pending credit top-up — rerun `./scripts/live-backend-smoke.sh openrouter` after top-up to flip to PASS.
+- **Deferral policy**: Qualifies under [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy) because the adapter was validated end-to-end, the failure is external rather than a code defect, and OpenRouter is disabled in production config (`enabled = false` in `ralph.toml`).
+- **resolution_path**: rerun `./scripts/live-backend-smoke.sh openrouter` after credit top-up to upgrade this row to `PASS`.
 
 ## Cutover Readiness
 
@@ -102,11 +103,11 @@ All 4 PR-review scenarios: **PASS**
 - [x] `daemon.pr_review.transient_error_preserves_staged` passes
 - [x] All 4 PR-review conformance scenarios pass
 - [x] Stub-dependent CLI tests are compile-gated behind `#[cfg(feature = "test-stub")]`
-- [x] Backend-specific manual smoke items — **Claude PASS, Codex PASS, OpenRouter DEFERRED**
+- [x] Backend-specific manual smoke items are either `PASS` or qualifying `DEFERRED` per [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy) — **Claude PASS, Codex PASS, OpenRouter DEFERRED**
   - **Claude**: Full end-to-end standard flow `completed` (`run-20260319183619`) — PASS
   - **Codex**: Full end-to-end standard flow `completed` (`run-20260319203137`) — PASS (2 rounds)
-  - **OpenRouter**: All 8 stages completed in direct mode (`run-20260319203614`) — DEFERRED (adapter validated end-to-end; credit exhaustion on 2nd cycle; backend disabled in production config)
+  - **OpenRouter**: All 8 stages completed in direct mode (`run-20260319203614`) — DEFERRED because the adapter validated end-to-end, the failure was external credit exhaustion, the backend is disabled in production config, and `resolution_path` is documented as rerun after credit top-up
 - [x] All 16 smoke matrix items recorded with environment, exact command, result, and follow-up evidence
-- [x] Rows 1-2 PASS with live evidence; row 3 DEFERRED (external dependency, no code defect, backend disabled in production)
+- [x] Rows 1-2 PASS with live evidence; row 3 DEFERRED with the required `resolution_path`
 
-**Cutover status: Ready (with OpenRouter deferred)** — all automated checks pass (842+ default tests, 791+169 stub tests, 386 conformance scenarios). Claude and Codex live backend smokes PASS with `run_status = completed`. OpenRouter adapter validated end-to-end (10 successful invocations across all 8 stages) but deferred due to external credit exhaustion ($40/$40 limit). OpenRouter is disabled in production config (`enabled = false`). Rerun after credit top-up to upgrade from DEFERRED to PASS.
+**Cutover status: Ready (OpenRouter DEFERRED per policy)** — all automated checks pass (842+ default tests, 791+169 stub tests, 386 conformance scenarios), and every live backend row is either `PASS` or qualifying `DEFERRED` under [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy). Claude and Codex live backend smokes are `PASS` with `run_status = completed`. OpenRouter is non-blocking because the adapter validated end-to-end (10 successful invocations across all 8 stages), the failure was external credit exhaustion ($40/$40 limit), the backend is disabled in production config (`enabled = false`), and the row includes `resolution_path: rerun ./scripts/live-backend-smoke.sh openrouter after credit top-up`.

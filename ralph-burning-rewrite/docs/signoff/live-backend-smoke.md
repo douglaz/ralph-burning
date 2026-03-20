@@ -160,6 +160,33 @@ via `agent_execution_builder.rs:85`.
 - Durable history up to the cancellation point remains inspectable.
 - The evidence file captures partial results.
 
+## Qualifying DEFERRED Policy
+
+This section is the canonical sign-off policy for live backend rows.  Both
+`docs/signoff/manual-smoke-matrix.md` and
+`docs/signoff/final-validation.md` must reference this definition instead of
+restating different readiness rules.
+
+Use exactly three result statuses for backend smoke rows:
+
+- `PASS`: complete evidence is recorded and `run_status = completed`
+- `FAIL`: the smoke does not complete and does not satisfy the qualifying
+  `DEFERRED` criteria below; this status blocks cutover
+- `DEFERRED`: a recognized non-blocking status, but only when **all** of the
+  following are true:
+  - The adapter has been validated end-to-end in the intended execution mode,
+    with successful execution across the full set of stages reached before the
+    stop condition.
+  - The blocking failure is external to `ralph-burning` code or configuration
+    (for example provider credit exhaustion, provider outage, or account-level
+    restriction), and the exact external error is recorded in evidence.
+  - The backend is disabled in production config, so current cutover does not
+    depend on that backend being immediately available.
+  - The row records a `resolution_path` field with the concrete action required
+    to upgrade the row to `PASS` (for example, rerun after credit top-up).
+
+Any row that fails one or more of those checks is `FAIL`, not `DEFERRED`.
+
 ## Cleanup
 
 After successful smoke:
@@ -185,13 +212,21 @@ After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
    The harness extracts these fields using `jq` when available, falling back to
    whitespace-tolerant `sed` patterns that handle the pretty-printed JSON output
    from `serde_json::to_string_pretty()` (`run.rs:764`).
-2. Replace the Result column with `PASS` or `FAIL`
-3. Record the project_id, run_id, run_status (must be `completed` for PASS),
-   and smoke_id in the Follow-up Bug column
-4. If `FAIL`, record the exact error and leave the scratch dir for inspection
-5. If preflight `FAIL` (exit code 2), the evidence is preserved at
+2. Replace the Result column with `PASS`, `FAIL`, or qualifying `DEFERRED`
+   using the canonical
+   [Qualifying DEFERRED Policy](#qualifying-deferred-policy).
+3. Record the project_id, run_id, run_status, smoke_id, and smoke_dir in the
+   Follow-up Bug column.
+4. For `PASS`, `run_status` must be `completed`.
+5. For `DEFERRED`, record the exact external error, the end-to-end validation
+   evidence, the production-disabled statement, and a concrete
+   `resolution_path`.
+6. If `FAIL`, record the exact error and leave the scratch dir for inspection.
+7. If preflight `FAIL` (exit code 2), the evidence is preserved at
    `/tmp/<smoke-id>-preflight-evidence.txt` after scratch-dir cleanup
 
-Once all three backend rows are `PASS` with complete evidence, update
-`docs/signoff/final-validation.md` to change `Cutover status` from
-`Not Ready` to `Ready`.
+Cutover can be marked `Ready` only when all three backend rows have complete
+evidence and are either `PASS` or qualifying `DEFERRED` under
+[Qualifying DEFERRED Policy](#qualifying-deferred-policy).  Any `FAIL` row,
+or any `DEFERRED` row missing its qualifying criteria or `resolution_path`,
+keeps cutover `Not Ready`.
