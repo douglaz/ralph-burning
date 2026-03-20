@@ -974,20 +974,10 @@ pub fn add_manual_amendment(
     };
 
     if let Err(snap_err) = snap_result {
-        // Roll back the amendment file so canonical state stays consistent.
-        // If file cleanup also fails, return a composite error so the caller
-        // knows an amendment file may remain visible on disk.
-        if let Err(cleanup_err) =
-            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
-        {
-            return Err(AppError::CorruptRecord {
-                file: format!("projects/{}/run.json", project_id.as_str()),
-                details: format!(
-                    "snapshot/reopen write failed: {snap_err}; \
-                     amendment file cleanup also failed: {cleanup_err}"
-                ),
-            });
-        }
+        // Preserve the amendment file on disk so the operator's input is not
+        // lost. The amendment is already written and can be picked up on
+        // retry or manual recovery. This matches the batch staging path's
+        // durability invariant (staged amendments survive reopen failures).
         return Err(snap_err);
     }
 

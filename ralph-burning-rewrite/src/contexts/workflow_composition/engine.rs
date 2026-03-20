@@ -3718,8 +3718,19 @@ where
                         last_journaled_amendment_index = Some(index);
                     }
 
-                    // Add amendments to snapshot queue.
-                    snapshot.amendment_queue.pending.extend(amendments);
+                    // Add amendments to snapshot queue, deduplicating by
+                    // amendment_id so retried late-stage approvals don't
+                    // append duplicate entries from a prior failed attempt.
+                    for amendment in amendments {
+                        if !snapshot
+                            .amendment_queue
+                            .pending
+                            .iter()
+                            .any(|existing| existing.amendment_id == amendment.amendment_id)
+                        {
+                            snapshot.amendment_queue.pending.push(amendment);
+                        }
+                    }
 
                     // Advance the snapshot before the journal append so fail_run()
                     // persists the new round if the append itself fails.
