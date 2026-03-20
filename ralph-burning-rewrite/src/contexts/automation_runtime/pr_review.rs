@@ -157,7 +157,7 @@ where
         // snapshot mutations during execution and will pick up staged files.
         // For completed/paused tasks, use the full shared staging service which
         // handles dedup, journal persistence, snapshot sync, and reopen.
-        let staged_count = if !amendments.is_empty() {
+        let staged_ids: Vec<String> = if !amendments.is_empty() {
             let project_id = ProjectId::new(task.project_id.clone())?;
             if task.status == TaskStatus::Active {
                 // Disk-only staging: write amendment files without run.json mutation.
@@ -168,16 +168,16 @@ where
                     .iter()
                     .map(|a| a.dedup_key.clone())
                     .collect();
-                let mut count = 0;
+                let mut ids = Vec::new();
                 for amendment in &amendments {
                     if !seen_keys.insert(amendment.dedup_key.clone()) {
                         continue;
                     }
                     self.amendment_queue
                         .write_amendment(workspace_dir, &project_id, amendment)?;
-                    count += 1;
+                    ids.push(amendment.amendment_id.clone());
                 }
-                count
+                ids
             } else {
                 // Full staging with canonical state updates
                 let staged_ids = record_service::stage_amendment_batch(
@@ -190,11 +190,12 @@ where
                     &project_id,
                     &amendments,
                 )?;
-                staged_ids.len()
+                staged_ids
             }
         } else {
-            0
+            Vec::new()
         };
+        let staged_count = staged_ids.len();
 
         // Check if the project was reopened (task was completed + amendments staged).
         let mut reopened_project = false;
@@ -233,7 +234,7 @@ where
                 json!({
                     "task_id": task.task_id,
                     "count": staged_count,
-                    "amendment_ids": amendments.iter().map(|a| a.amendment_id.as_str()).collect::<Vec<_>>(),
+                    "amendment_ids": &staged_ids,
                 }),
             )?;
         }

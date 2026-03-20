@@ -285,7 +285,7 @@ fn session_name_for_request(request: &InvocationRequest) -> String {
         .file_name()
         .and_then(|value| value.to_str())
         .expect("project dir name");
-    TmuxAdapter::session_name(project_name, &request.invocation_id)
+    TmuxAdapter::session_name(project_name, &request.invocation_id, &request.project_root)
 }
 
 fn read_active_session(
@@ -296,10 +296,16 @@ fn read_active_session(
 
 #[test]
 fn tmux_session_name_is_deterministic() {
-    assert_eq!(
-        "rb-alpha-run-1-planning-c1-a1-cr1",
-        TmuxAdapter::session_name("alpha", "run-1-planning-c1-a1-cr1")
-    );
+    let root = std::path::Path::new("/tmp/test-workspace");
+    let name1 = TmuxAdapter::session_name("alpha", "run-1-planning-c1-a1-cr1", root);
+    let name2 = TmuxAdapter::session_name("alpha", "run-1-planning-c1-a1-cr1", root);
+    assert_eq!(name1, name2, "session name must be deterministic");
+    assert!(name1.starts_with("rb-"), "must start with rb- prefix");
+    assert!(name1.contains("alpha"), "must contain project id");
+    // Different root produces different name
+    let other = std::path::Path::new("/tmp/other-workspace");
+    let name3 = TmuxAdapter::session_name("alpha", "run-1-planning-c1-a1-cr1", other);
+    assert_ne!(name1, name3, "different roots must produce different names");
 }
 
 #[tokio::test(flavor = "current_thread")]
