@@ -172,7 +172,10 @@ Use exactly three result statuses for backend smoke rows:
 - `PASS`: complete evidence is recorded and `run_status = completed`
 - `FAIL`: the smoke does not complete and does not satisfy the qualifying
   `DEFERRED` criteria below; this status blocks cutover
-- `DEFERRED`: a recognized non-blocking status, but only when **all** of the
+- `DEFERRED`: a repo-local evidence status for documenting a qualifying
+  external blocker, but it is **not** equivalent to `PASS` for the parity-plan
+  exit criterion `manual smoke matrix is green`; only `PASS` satisfies that
+  exit criterion. `DEFERRED` may be recorded only when **all** of the
   following are true:
   - The adapter has been validated end-to-end in the intended execution mode,
     with successful execution across the full set of stages reached before the
@@ -180,8 +183,10 @@ Use exactly three result statuses for backend smoke rows:
   - The blocking failure is external to `ralph-burning` code or configuration
     (for example provider credit exhaustion, provider outage, or account-level
     restriction), and the exact external error is recorded in evidence.
-  - The backend is disabled in production config, so current cutover does not
-    depend on that backend being immediately available.
+  - The backend is disabled in the checked-in production workspace config at
+    [`../../.ralph-burning/workspace.toml`](../../.ralph-burning/workspace.toml)
+    (repo path `ralph-burning-rewrite/.ralph-burning/workspace.toml`), with
+    `[backends.openrouter] enabled = false`.
   - The row records a `resolution_path` field with the concrete action required
     to upgrade the row to `PASS` (for example, rerun after credit top-up).
 
@@ -219,14 +224,15 @@ After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
    Follow-up Bug column.
 4. For `PASS`, `run_status` must be `completed`.
 5. For `DEFERRED`, record the exact external error, the end-to-end validation
-   evidence, the production-disabled statement, and a concrete
-   `resolution_path`.
+   evidence, the production-disabled statement citing
+   `ralph-burning-rewrite/.ralph-burning/workspace.toml` and
+   `[backends.openrouter] enabled = false`, and a concrete `resolution_path`.
 6. If `FAIL`, record the exact error and leave the scratch dir for inspection.
 7. If preflight `FAIL` (exit code 2), the evidence is preserved at
    `/tmp/<smoke-id>-preflight-evidence.txt` after scratch-dir cleanup
 
-Cutover can be marked `Ready` only when all three backend rows have complete
-evidence and are either `PASS` or qualifying `DEFERRED` under
-[Qualifying DEFERRED Policy](#qualifying-deferred-policy).  Any `FAIL` row,
-or any `DEFERRED` row missing its qualifying criteria or `resolution_path`,
-keeps cutover `Not Ready`.
+`DEFERRED` is useful for documenting a qualifying external blocker, but it does
+not make the manual smoke matrix "green" for parity-plan sign-off. Cutover can
+be marked `Ready` only when all three backend rows have complete evidence and
+are `PASS`. Any `FAIL` row, or any `DEFERRED` row that has not yet been rerun
+to `PASS`, keeps cutover `Not Ready`.

@@ -1,6 +1,6 @@
 # Manual Smoke Matrix
 
-Recorded: 2026-03-20 (updated loop 13 — OpenRouter row 3 is DEFERRED per `live-backend-smoke.md#qualifying-deferred-policy`; rerun pending credit top-up)
+Recorded: 2026-03-20 (updated loop 15 — OpenRouter rerun still fails at preflight with HTTP 403; row 3 remains `DEFERRED` for evidence only and the matrix is not yet green)
 Environment: Linux x86_64, Rust 1.83+, ralph-burning v0.1.0
 
 ## Status Vocabulary
@@ -11,10 +11,12 @@ Use the canonical live backend sign-off policy defined in
 - `PASS`: complete evidence is recorded and `run_status = completed`
 - `FAIL`: blocking status for any smoke row that does not complete and does not
   qualify for `DEFERRED`
-- `DEFERRED`: recognized non-blocking status for live backend rows only when the
+- `DEFERRED`: repo-local evidence status for live backend rows only when the
   adapter is validated end-to-end, the failure is external rather than a code
-  defect, the backend is disabled in production config, and the row documents a
-  concrete `resolution_path` to upgrade the result to `PASS`
+  defect, the checked-in production workspace config disables that backend, and
+  the row documents a concrete `resolution_path` to upgrade the result to
+  `PASS`; `DEFERRED` does not count as green for the parity-plan exit criterion
+  `manual smoke matrix is green`
 
 ## Smoke Items
 
@@ -22,7 +24,7 @@ Use the canonical live backend sign-off policy defined in
 |---|------|-------------|---------|--------|---------------|
 | 1 | Standard flow with Claude | Linux x86_64, claude CLI at `/root/.npm-global/bin/claude`, isolated smoke workspace (`cd /tmp/rb-smoke-claude-run3`), scratch `workspace.toml` with `settings.default_backend = "claude"`, all roles overridden to claude | `RALPH_BURNING=./target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-claude-run3 ./scripts/live-backend-smoke.sh claude` | PASS | smoke_id: `smoke-claude-20260319183419`. project_id: `claude-backend-smoke-test`. run_id: `run-20260319183619`. run_status: `completed`. smoke_dir: `/tmp/rb-smoke-claude-run3`. Preflight PASS (backend check + probe planner/implementer). Bootstrap PASS. Run completed end-to-end through 3 rounds (final review requested changes twice before approving). All stages executed: prompt_review, planning, implementation, review, qa, completion_panel, acceptance_qa, final_review. Stale session recovery triggered and handled transparently during review stage. Evidence file: `/tmp/rb-smoke-claude-run3/smoke-claude-20260319183419-evidence.txt`. |
 | 2 | Standard flow with Codex | Linux x86_64, codex CLI 0.114.0 at `/root/.npm-global/bin/codex`, isolated smoke workspace (`cd /tmp/rb-smoke-codex-run8`), scratch `workspace.toml` with `settings.default_backend = "codex"`, all roles overridden to codex, `--from-seed` bootstrap (bypasses quick-requirements) | `RALPH_BURNING=/root/new-ralph-burning/ralph-burning-rewrite/target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-codex-run8 ./scripts/live-backend-smoke.sh codex` | PASS | smoke_id: `smoke-codex-20260319203137`. project_id: `smoke-codex-test`. run_id: `run-20260319203137`. run_status: `completed`. smoke_dir: `/tmp/rb-smoke-codex-run8`. Preflight PASS (backend check + probe planner/implementer). Bootstrap PASS (`--from-seed` with corrected `smoke-seed.json`). Run completed end-to-end through 2 rounds (final review requested changes in cycle 1, approved in cycle 2). All stages executed: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review. Evidence file: `/tmp/rb-smoke-codex-run8/smoke-codex-20260319203137-evidence.txt`. |
-| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run9`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter, `--from-seed` bootstrap, credit preflight check, `max_tokens = 16384` | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=/root/new-ralph-burning/ralph-burning-rewrite/target/release/ralph-burning SMOKE_DIR=/tmp/rb-smoke-openrouter-run9 ./scripts/live-backend-smoke.sh openrouter` | DEFERRED | smoke_id: `smoke-openrouter-20260319203608`. project_id: `smoke-openrouter-test`. run_id: `run-20260319203614`. run_status: `failed`. smoke_dir: `/tmp/rb-smoke-openrouter-run9`. Qualifies for `DEFERRED` under [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy): adapter validated end-to-end in direct mode (10 successful invocations across all 8 standard flow stages in cycle 1); failure is external HTTP 403 credit exhaustion ($40/$40 limit reached), not a code defect; OpenRouter is disabled in production config (`enabled = false` in `ralph.toml`). Preflight PASS. Bootstrap PASS. All stages executed. resolution_path: rerun after credit top-up to upgrade this row to `PASS`. Evidence file: `/tmp/rb-smoke-openrouter-run9/smoke-openrouter-20260319203608-evidence.txt`. |
+| 3 | Standard flow with OpenRouter | Linux x86_64, `OPENROUTER_API_KEY` set (73 chars), `RALPH_BURNING_BACKEND=openrouter`, isolated smoke workspace (`cd /tmp/rb-smoke-openrouter-run9` / latest rerun `cd /tmp/rb-smoke-3811423`), scratch `workspace.toml` with `settings.default_backend = "openrouter"`, `[backends.openrouter] enabled = true`, `execution.mode = "direct"`, all roles overridden to openrouter, `--from-seed` bootstrap, credit preflight check, `max_tokens = 16384` | `OPENROUTER_API_KEY=sk-or-... RALPH_BURNING=/root/new-ralph-burning/ralph-burning-rewrite/target/release/ralph-burning ./scripts/live-backend-smoke.sh openrouter` | DEFERRED | End-to-end validation evidence: smoke_id `smoke-openrouter-20260319203608`. project_id: `smoke-openrouter-test`. run_id: `run-20260319203614`. run_status: `failed`. smoke_dir: `/tmp/rb-smoke-openrouter-run9`. Qualifies for `DEFERRED` under [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy): adapter validated end-to-end in direct mode (10 successful invocations across all 8 standard flow stages in cycle 1); failure is external HTTP 403 credit exhaustion ($40/$40 limit reached), not a code defect; OpenRouter is disabled in the checked-in workspace config `ralph-burning-rewrite/.ralph-burning/workspace.toml` (`[backends.openrouter] enabled = false`). Latest rerun attempt: smoke_id `smoke-openrouter-20260320042526` exited at preflight with HTTP 403 and preserved evidence at `/tmp/smoke-openrouter-20260320042526-preflight-evidence.txt`; no new project state was created. resolution_path: top up or raise the key limit at `https://openrouter.ai/settings/keys`, then rerun `./scripts/live-backend-smoke.sh openrouter` until `run_status = completed` and this row can be upgraded to `PASS`. Original evidence file: `/tmp/rb-smoke-openrouter-run9/smoke-openrouter-20260319203608-evidence.txt`. |
 | 4 | quick_dev flow | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_quick_dev_flow_end_to_end` | PASS | None |
 | 5 | docs_change flow with configured docs validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_docs_change_flow_end_to_end` | PASS | None |
 | 6 | ci_improvement flow with configured CI validation | Linux, test-stub | `cargo test --features test-stub -- run_start_completes_ci_improvement_flow_end_to_end` | PASS | None |
@@ -136,7 +138,9 @@ Apply the status vocabulary from
     external credit exhaustion. Under the canonical policy in
     [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy),
     row 3 is now recorded as `DEFERRED` rather than `FAIL` because OpenRouter is
-    disabled in production config and the row includes
+    disabled in the checked-in workspace config
+    `ralph-burning-rewrite/.ralph-burning/workspace.toml`
+    (`[backends.openrouter] enabled = false`) and the row includes
     `resolution_path: rerun after credit top-up`.
 
 ### Resolved (iteration 19)
