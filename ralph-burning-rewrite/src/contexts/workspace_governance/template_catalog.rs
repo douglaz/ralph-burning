@@ -651,6 +651,10 @@ pub fn render(
         let marker = format!("{{{{{name}}}}}");
         let replacement = values_map.get(name).copied().unwrap_or("");
         output = output.replace(&marker, replacement);
+        // Also replace whitespace-padded forms like `{{ name }}` since
+        // validate_template() accepts them after trimming.
+        let padded = format!("{{{{ {name} }}}}");
+        output = output.replace(&padded, replacement);
     }
 
     // Collapse 3+ consecutive newlines to 2

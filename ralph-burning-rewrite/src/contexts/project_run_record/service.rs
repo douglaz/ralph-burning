@@ -908,6 +908,16 @@ pub fn add_manual_amendment(
         });
     }
 
+    // Also check staged amendment files on disk to catch duplicates from
+    // a prior failed attempt where the file was preserved but the snapshot
+    // update failed (the file survives reopen failures by design).
+    let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+    if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
+        return Ok(AmendmentAddResult::Duplicate {
+            amendment_id: existing.amendment_id.clone(),
+        });
+    }
+
     let now = Utc::now();
     let amendment_id = format!("manual-{}", uuid::Uuid::new_v4());
 

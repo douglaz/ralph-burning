@@ -92,10 +92,10 @@ impl TmuxAdapter {
 
     pub fn session_exists(session_name: &str) -> AppResult<bool> {
         if let Err(error) = Self::check_tmux_available() {
-            return match error {
-                AppError::BackendUnavailable { .. } => Ok(false),
-                other => Err(other),
-            };
+            // Propagate the error instead of returning false so that callers
+            // (like `run attach`) don't clear the persisted session handle
+            // when tmux is merely unavailable in the current environment.
+            return Err(error);
         }
 
         let status = StdCommand::new("tmux")
