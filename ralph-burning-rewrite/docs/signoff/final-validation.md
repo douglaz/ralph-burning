@@ -1,6 +1,6 @@
 # Final Validation Report
 
-Recorded: 2026-03-20 (OpenRouter row 3 remains `DEFERRED`; latest rerun failed at preflight with HTTP 403, so the manual smoke matrix is not yet green)
+Recorded: 2026-03-20 (updated loop 16 — OpenRouter row 3 remains `DEFERRED`; rerun attempts in loops 15 and 16 both failed at preflight with HTTP 403, so the manual smoke matrix is not yet green)
 Branch: ralph/parity-plan
 
 ## Automated Check Results
@@ -91,7 +91,7 @@ All 4 PR-review scenarios: **PASS**
 - **run_id**: `run-20260319203614`
 - **run_status**: `failed` — deferred due to external credit exhaustion ($40/$40 limit reached)
 - **Evidence**: All 8 standard flow stages completed successfully on the first cycle in `execution.mode = "direct"`: prompt_review, planning, implementation, qa, review, completion_panel, acceptance_qa, final_review (10 successful backend invocations). Final review requested changes; re-implementation failed on HTTP 403 (key total limit exceeded) after 3 retries. No code defect.
-- **Latest rerun attempt (2026-03-20)**: `./scripts/live-backend-smoke.sh openrouter` exited at preflight with `smoke-openrouter-20260320042526`; preserved evidence: `/tmp/smoke-openrouter-20260320042526-preflight-evidence.txt`. Exact blocker: HTTP 403 `key limit exceeded`. No project or active-workspace state was created by this rerun.
+- **Rerun attempts (2026-03-20)**: Loop 15 (`smoke-openrouter-20260320042526`) and loop 16 (`smoke-openrouter-20260320043644`) both exited at preflight with HTTP 403 `key limit exceeded` ($40/$40 total spending limit). Preserved evidence: `/tmp/smoke-openrouter-20260320043644-preflight-evidence.txt`. No project or active-workspace state was created by either rerun.
 - **Fixes verified**: Corrected seed fixture (iteration 9), `max_tokens = 16384` in `openrouter_backend.rs` (iteration 10), credit preflight check (catches HTTP 402 and 403), smoke script `SCRIPT_DIR` resolution (iteration 10).
 - **Deferral policy**: Qualifies under [`live-backend-smoke.md#qualifying-deferred-policy`](live-backend-smoke.md#qualifying-deferred-policy) because the adapter was validated end-to-end, the failure is external rather than a code defect, and OpenRouter is disabled in the checked-in workspace config `ralph-burning-rewrite/.ralph-burning/workspace.toml` (`[backends.openrouter] enabled = false`).
 - **resolution_path**: rerun `./scripts/live-backend-smoke.sh openrouter` after credit top-up to upgrade this row to `PASS`.
@@ -107,6 +107,6 @@ All 4 PR-review scenarios: **PASS**
 - [x] All 16 smoke matrix items recorded with environment, exact command, result, and follow-up evidence
 - [x] Rows 1-2 PASS with live evidence
 - [x] Row 3's `DEFERRED` evidence cites the checked-in production workspace config `ralph-burning-rewrite/.ralph-burning/workspace.toml` (`[backends.openrouter] enabled = false`) and records the required `resolution_path`
-- [ ] Manual smoke matrix is green per `parity-plan.md` exit criteria (row 3 is still `DEFERRED`, not `PASS`; latest rerun `smoke-openrouter-20260320042526` failed at preflight with HTTP 403)
+- [ ] Manual smoke matrix is green per `parity-plan.md` exit criteria (row 3 is still `DEFERRED`, not `PASS`; loop 15 rerun `smoke-openrouter-20260320042526` and loop 16 rerun `smoke-openrouter-20260320043644` both failed at preflight with HTTP 403)
 
-**Cutover status: Not Ready** — all automated checks still pass, and row 3's `DEFERRED` evidence is now grounded in the checked-in production workspace config (`ralph-burning-rewrite/.ralph-burning/workspace.toml`, `[backends.openrouter] enabled = false`). But the parity-plan exit criterion is explicit: the manual smoke matrix must be green. That criterion is not yet met because OpenRouter row 3 has not been rerun to `PASS`; the latest rerun attempt (`smoke-openrouter-20260320042526`) failed at preflight with external HTTP 403 credit exhaustion.
+**Cutover status: Not Ready** — all automated checks still pass, and row 3's `DEFERRED` evidence is now grounded in the checked-in production workspace config (`ralph-burning-rewrite/.ralph-burning/workspace.toml`, `[backends.openrouter] enabled = false`). But the parity-plan exit criterion is explicit: the manual smoke matrix must be green. That criterion is not yet met because OpenRouter row 3 has not been rerun to `PASS`; rerun attempts in loops 15 (`smoke-openrouter-20260320042526`) and 16 (`smoke-openrouter-20260320043644`) both failed at preflight with external HTTP 403 credit exhaustion ($40/$40 key limit). The only remaining action is topping up or raising the OpenRouter API key spending limit and rerunning `./scripts/live-backend-smoke.sh openrouter`.
