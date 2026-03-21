@@ -41,6 +41,7 @@ const SESSIONS_FILE: &str = "sessions.json";
 const PROMPT_FILE: &str = "prompt.md";
 const JOURNAL_APPEND_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER";
 const AMENDMENT_WRITE_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_AMENDMENT_WRITE_FAIL_AFTER";
+const AMENDMENT_REMOVE_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER";
 
 /// Required subdirectories inside a project.
 const PROJECT_SUBDIRS: &[&str] = &[
@@ -57,6 +58,8 @@ static JOURNAL_APPEND_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static JOURNAL_APPEND_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 static AMENDMENT_WRITE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
 static AMENDMENT_WRITE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
+static AMENDMENT_REMOVE_FAIL_COUNT: AtomicU32 = AtomicU32::new(0);
+static AMENDMENT_REMOVE_FAIL_CONFIG: OnceLock<Mutex<Option<String>>> = OnceLock::new();
 
 fn maybe_inject_project_failpoint(
     env_var: &str,
@@ -361,7 +364,7 @@ impl FileSystem {
         Self::workspace_root_path(base_dir).join("daemon")
     }
 
-    fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
+    pub(crate) fn project_root(base_dir: &Path, project_id: &ProjectId) -> PathBuf {
         Self::workspace_root_path(base_dir)
             .join(PROJECTS_DIR)
             .join(project_id.as_str())
@@ -713,6 +716,56 @@ impl JournalStorePort for FsJournalStore {
 /// Filesystem-backed implementation of `ArtifactStorePort`.
 pub struct FsArtifactStore;
 
+impl FsArtifactStore {
+    pub fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("history/payloads")
+            .join(format!("{payload_id}.json"));
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::PayloadNotFound {
+                    payload_id: payload_id.to_owned(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("history/payloads/{payload_id}.json"),
+            details: error.to_string(),
+        })
+    }
+
+    pub fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        let path = FileSystem::project_root(base_dir, project_id)
+            .join("history/artifacts")
+            .join(format!("{artifact_id}.json"));
+        let raw = match fs::read_to_string(&path) {
+            Ok(raw) => raw,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::ArtifactNotFound {
+                    artifact_id: artifact_id.to_owned(),
+                });
+            }
+            Err(error) => return Err(error.into()),
+        };
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("history/artifacts/{artifact_id}.json"),
+            details: error.to_string(),
+        })
+    }
+}
+
 impl ArtifactStorePort for FsArtifactStore {
     fn list_payloads(
         &self,
@@ -776,6 +829,24 @@ impl ArtifactStorePort for FsArtifactStore {
 
         records.sort_by_key(|r| r.created_at);
         Ok(records)
+    }
+
+    fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        FsArtifactStore::read_payload_by_id(self, base_dir, project_id, payload_id)
+    }
+
+    fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        FsArtifactStore::read_artifact_by_id(self, base_dir, project_id, artifact_id)
     }
 }
 
@@ -1173,6 +1244,13 @@ impl crate::contexts::project_run_record::service::AmendmentQueuePort for FsAmen
         project_id: &ProjectId,
         amendment_id: &str,
     ) -> AppResult<()> {
+        maybe_inject_project_failpoint(
+            AMENDMENT_REMOVE_FAIL_AFTER_ENV,
+            project_id,
+            &AMENDMENT_REMOVE_FAIL_COUNT,
+            &AMENDMENT_REMOVE_FAIL_CONFIG,
+            "injected amendment remove failure for testing",
+        )?;
         let path = FileSystem::project_root(base_dir, project_id)
             .join("amendments")
             .join(format!("{}.json", amendment_id));
@@ -2139,6 +2217,31 @@ impl RequirementsStorePort for FsRequirementsStore {
         }
     }
 
+    fn list_requirements_run_ids(&self, base_dir: &Path) -> AppResult<Vec<String>> {
+        let requirements_dir = requirements_root(base_dir);
+        if !requirements_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+
+        let mut run_ids = Vec::new();
+        for entry in fs::read_dir(&requirements_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let run_id = name.to_string_lossy();
+            if run_id.starts_with('.') || !entry.path().join("run.json").is_file() {
+                continue;
+            }
+            run_ids.push(run_id.to_string());
+        }
+
+        run_ids.sort();
+        Ok(run_ids)
+    }
+
     fn append_journal_event(
         &self,
         base_dir: &Path,
@@ -2382,9 +2485,11 @@ impl RequirementsStorePort for FsRequirementsStore {
 }
 
 fn requirements_run_root(base_dir: &Path, run_id: &str) -> PathBuf {
-    FileSystem::workspace_root_path(base_dir)
-        .join(REQUIREMENTS_DIR)
-        .join(run_id)
+    requirements_root(base_dir).join(run_id)
+}
+
+fn requirements_root(base_dir: &Path) -> PathBuf {
+    FileSystem::workspace_root_path(base_dir).join(REQUIREMENTS_DIR)
 }
 
 #[cfg(test)]

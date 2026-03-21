@@ -37,6 +37,7 @@ use crate::shared::domain::{
     BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
     StageCursor, StageId,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 /// Result of a completion panel execution.
@@ -127,6 +128,7 @@ where
             i,
             completer_timeout,
             cancellation_token.clone(),
+            Some(project_id),
         )
         .await?;
 
@@ -215,7 +217,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn invoke_completer<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
-    _base_dir: &Path,
+    base_dir: &Path,
     project_root: &Path,
     run_id: &RunId,
     stage_id: StageId,
@@ -225,6 +227,7 @@ async fn invoke_completer<A, R, S>(
     index: usize,
     timeout: Duration,
     cancellation_token: CancellationToken,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<Value>
 where
     A: AgentExecutionPort,
@@ -241,11 +244,14 @@ where
     );
 
     let schema = super::panel_contracts::panel_json_schema(stage_id, "completer");
+    let schema_str = serde_json::to_string_pretty(&schema)?;
 
-    let prompt = format!(
-        "# Completion Vote\n\n## Project Prompt\n\n{prompt_text}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    );
+    let prompt = template_catalog::resolve_and_render(
+        "completion_panel_completer",
+        base_dir,
+        project_id,
+        &[("prompt_text", prompt_text), ("json_schema", &schema_str)],
+    )?;
 
     let request = InvocationRequest {
         invocation_id,

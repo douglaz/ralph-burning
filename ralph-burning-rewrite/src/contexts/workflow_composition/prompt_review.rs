@@ -37,6 +37,7 @@ use crate::shared::domain::{
     BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
     StageCursor, StageId,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 /// Result of a successful prompt review execution.
@@ -100,6 +101,7 @@ where
         "refiner",
         refiner_timeout,
         cancellation_token.clone(),
+        Some(project_id),
     )
     .await?;
 
@@ -155,6 +157,7 @@ where
             "validator",
             validator_timeout,
             cancellation_token.clone(),
+            Some(project_id),
         )
         .await?;
 
@@ -248,7 +251,7 @@ where
 #[allow(clippy::too_many_arguments)]
 async fn invoke_panel_member<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
-    _base_dir: &Path,
+    base_dir: &Path,
     project_root: &Path,
     run_id: &RunId,
     stage_id: StageId,
@@ -258,6 +261,7 @@ async fn invoke_panel_member<A, R, S>(
     role_label: &str,
     timeout: Duration,
     cancellation_token: CancellationToken,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<Value>
 where
     A: AgentExecutionPort,
@@ -274,11 +278,24 @@ where
     );
 
     let schema = super::panel_contracts::panel_json_schema(stage_id, role_label);
+    let schema_str = serde_json::to_string_pretty(&schema)?;
 
-    let prompt = format!(
-        "# Prompt Review: {role_label}\n\n## Prompt to Review\n\n{prompt_text}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    );
+    let template_id = if role_label == "refiner" {
+        "prompt_review_refiner"
+    } else {
+        "prompt_review_validator"
+    };
+
+    let prompt = template_catalog::resolve_and_render(
+        template_id,
+        base_dir,
+        project_id,
+        &[
+            ("role_label", role_label),
+            ("prompt_text", prompt_text),
+            ("json_schema", &schema_str),
+        ],
+    )?;
 
     let request = InvocationRequest {
         invocation_id,

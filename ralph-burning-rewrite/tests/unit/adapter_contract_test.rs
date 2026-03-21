@@ -1047,14 +1047,19 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
 use ralph_burning::contexts::project_run_record::service::AmendmentQueuePort;
 
 fn make_amendment(id: &str, stage: ralph_burning::shared::domain::StageId) -> QueuedAmendment {
+    let body = format!("Fix issue from {id}");
+    let source = ralph_burning::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, &body);
     QueuedAmendment {
         amendment_id: id.to_owned(),
         source_stage: stage,
         source_cycle: 1,
         source_completion_round: 1,
-        body: format!("Fix issue from {id}"),
+        body,
         created_at: test_timestamp(),
         batch_sequence: 1,
+        source,
+        dedup_key,
     }
 }
 
@@ -1063,14 +1068,19 @@ fn make_amendment_with_seq(
     stage: ralph_burning::shared::domain::StageId,
     seq: u32,
 ) -> QueuedAmendment {
+    let body = format!("Fix issue from {id}");
+    let source = ralph_burning::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, &body);
     QueuedAmendment {
         amendment_id: id.to_owned(),
         source_stage: stage,
         source_cycle: 1,
         source_completion_round: 1,
-        body: format!("Fix issue from {id}"),
+        body,
         created_at: test_timestamp(),
         batch_sequence: seq,
+        source,
+        dedup_key,
     }
 }
 

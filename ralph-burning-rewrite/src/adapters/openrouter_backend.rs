@@ -128,6 +128,12 @@ impl OpenRouterBackendAdapter {
     }
 
     fn request_body(request: &InvocationRequest) -> Value {
+        let mut schema = request.contract.json_schema_value();
+        // OpenRouter uses strict: true, which requires the same schema
+        // constraints as OpenAI strict mode: additionalProperties: false on
+        // every object and all property keys present in the required array.
+        super::process_backend::enforce_strict_mode_schema(&mut schema);
+
         json!({
             "model": request.resolved_target.model.model_id,
             "messages": [
@@ -140,12 +146,17 @@ impl OpenRouterBackendAdapter {
                     "content": Self::user_message(request),
                 }
             ],
+            // Cap max_tokens so that credit-limited keys are not rejected
+            // by OpenRouter's per-request affordability check.  16384 is
+            // more than sufficient for any structured-JSON stage output in
+            // the workflow; without this, OpenRouter defaults to 65536.
+            "max_tokens": 16384,
             "response_format": {
                 "type": "json_schema",
                 "json_schema": {
                     "name": "stage_output",
                     "strict": true,
-                    "schema": request.contract.json_schema_value(),
+                    "schema": schema,
                 }
             }
         })
@@ -706,11 +717,23 @@ mod tests {
         assert_eq!(body["model"], json!("anthropic/claude-3.5-sonnet"));
         assert_eq!(body["messages"].as_array().expect("messages").len(), 2);
         assert_eq!(body["response_format"]["type"], json!("json_schema"));
-        assert_eq!(body["response_format"]["json_schema"]["name"], json!("stage_output"));
-        assert_eq!(body["response_format"]["json_schema"]["strict"], json!(true));
+        assert_eq!(
+            body["response_format"]["json_schema"]["name"],
+            json!("stage_output")
+        );
+        assert_eq!(
+            body["response_format"]["json_schema"]["strict"],
+            json!(true)
+        );
+        // max_tokens must be capped to avoid credit-limited key rejection.
+        assert_eq!(body["max_tokens"], json!(16384));
+        // The schema sent to OpenRouter has strict-mode enforcement applied
+        // (additionalProperties: false + all properties in required).
+        let mut expected_schema = request.contract.json_schema_value();
+        crate::adapters::process_backend::enforce_strict_mode_schema(&mut expected_schema);
         assert_eq!(
             body["response_format"]["json_schema"]["schema"],
-            request.contract.json_schema_value()
+            expected_schema
         );
         clear_openrouter_env();
     }

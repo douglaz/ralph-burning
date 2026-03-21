@@ -1,4 +1,5 @@
 pub mod config;
+pub mod template_catalog;
 
 use std::path::{Path, PathBuf};
 

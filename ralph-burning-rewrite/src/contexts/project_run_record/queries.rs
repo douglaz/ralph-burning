@@ -1,12 +1,16 @@
 use std::collections::HashSet;
 
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
 use crate::contexts::workflow_composition::panel_contracts::RecordKind;
+use crate::shared::domain::StageId;
 use crate::shared::error::AppResult;
 
 use super::model::{ArtifactRecord, JournalEvent, PayloadRecord, RunSnapshot, RuntimeLogEntry};
 
 /// Read model for `run status`: canonical state only, no inference from artifacts.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunStatusView {
     pub project_id: String,
     pub status: String,
@@ -39,9 +43,51 @@ impl RunStatusView {
     }
 }
 
+/// Stable JSON read model for `run status --json`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunStatusJsonView {
+    pub project_id: String,
+    pub status: String,
+    pub stage: Option<String>,
+    pub cycle: Option<u32>,
+    pub completion_round: Option<u32>,
+    pub summary: String,
+    pub amendment_queue_depth: usize,
+}
+
+impl RunStatusJsonView {
+    pub fn from_snapshot(project_id: &str, snapshot: &RunSnapshot) -> Self {
+        let (stage, cycle, completion_round) = match &snapshot.active_run {
+            Some(active) => (
+                Some(active.stage_cursor.stage.as_str().to_owned()),
+                Some(active.stage_cursor.cycle),
+                Some(active.stage_cursor.completion_round),
+            ),
+            None => (None, None, None),
+        };
+
+        Self {
+            project_id: project_id.to_owned(),
+            status: match snapshot.status {
+                super::model::RunStatus::NotStarted => "not_started",
+                super::model::RunStatus::Running => "running",
+                super::model::RunStatus::Paused => "paused",
+                super::model::RunStatus::Completed => "completed",
+                super::model::RunStatus::Failed => "failed",
+            }
+            .to_owned(),
+            stage,
+            cycle,
+            completion_round,
+            summary: snapshot.status_summary.clone(),
+            amendment_queue_depth: snapshot.amendment_queue.pending.len(),
+        }
+    }
+}
+
 /// Read model for `run history`: durable history only (journal + payloads + artifacts).
 /// Runtime logs never appear here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunHistoryView {
     pub project_id: String,
     pub events: Vec<JournalEvent>,
@@ -50,13 +96,23 @@ pub struct RunHistoryView {
 }
 
 /// Read model for `run tail`: durable history by default, with optional runtime logs.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RunTailView {
     pub project_id: String,
     pub events: Vec<JournalEvent>,
     pub payloads: Vec<PayloadRecord>,
     pub artifacts: Vec<ArtifactRecord>,
     pub runtime_logs: Option<Vec<RuntimeLogEntry>>,
+}
+
+/// Read model for rollback target listings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RunRollbackTargetView {
+    pub rollback_id: String,
+    pub stage_id: String,
+    pub cycle: u32,
+    pub created_at: DateTime<Utc>,
+    pub git_sha: Option<String>,
 }
 
 /// Build a status view from canonical run state.
@@ -99,6 +155,96 @@ pub fn build_tail_view(
             None
         },
     }
+}
+
+/// Filter durable history records to a single stage.
+pub fn filter_by_stage(
+    events: &[JournalEvent],
+    payloads: &[PayloadRecord],
+    artifacts: &[ArtifactRecord],
+    stage_id: StageId,
+) -> (Vec<JournalEvent>, Vec<PayloadRecord>, Vec<ArtifactRecord>) {
+    let stage_name = stage_id.as_str();
+
+    let filtered_events = events
+        .iter()
+        .filter(|event| {
+            event
+                .details
+                .get("stage_id")
+                .and_then(|value| value.as_str())
+                .is_some_and(|value| value == stage_name)
+                || event
+                    .details
+                    .get("source_stage")
+                    .and_then(|value| value.as_str())
+                    .is_some_and(|value| value == stage_name)
+        })
+        .cloned()
+        .collect();
+    let filtered_payloads = payloads
+        .iter()
+        .filter(|payload| payload.stage_id == stage_id)
+        .cloned()
+        .collect();
+    let filtered_artifacts = artifacts
+        .iter()
+        .filter(|artifact| artifact.stage_id == stage_id)
+        .cloned()
+        .collect();
+
+    (filtered_events, filtered_payloads, filtered_artifacts)
+}
+
+/// Return the most recent `n` visible journal events and their associated
+/// payload/artifact records.
+pub fn tail_last_n(
+    events: &[JournalEvent],
+    payloads: &[PayloadRecord],
+    artifacts: &[ArtifactRecord],
+    n: usize,
+) -> (Vec<JournalEvent>, Vec<PayloadRecord>, Vec<ArtifactRecord>) {
+    if n == 0 {
+        return (Vec::new(), Vec::new(), Vec::new());
+    }
+
+    let event_start = events.len().saturating_sub(n);
+    let selected_events = events[event_start..].to_vec();
+    let mut payload_ids = HashSet::new();
+    let mut artifact_ids = HashSet::new();
+
+    for event in &selected_events {
+        if let Some(payload_id) = event
+            .details
+            .get("payload_id")
+            .and_then(|value| value.as_str())
+        {
+            payload_ids.insert(payload_id.to_owned());
+        }
+        if let Some(artifact_id) = event
+            .details
+            .get("artifact_id")
+            .and_then(|value| value.as_str())
+        {
+            artifact_ids.insert(artifact_id.to_owned());
+        }
+    }
+
+    let selected_payloads = payloads
+        .iter()
+        .filter(|payload| payload_ids.contains(payload.payload_id.as_str()))
+        .cloned()
+        .collect();
+    let selected_artifacts = artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact_ids.contains(artifact.artifact_id.as_str())
+                || payload_ids.contains(artifact.payload_id.as_str())
+        })
+        .cloned()
+        .collect();
+
+    (selected_events, selected_payloads, selected_artifacts)
 }
 
 /// Validate that durable history records are consistent:

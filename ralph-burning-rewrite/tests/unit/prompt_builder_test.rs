@@ -81,6 +81,8 @@ fn project_created_event(project_id: &ProjectId) -> JournalEvent {
 }
 
 fn amendment(body: &str) -> QueuedAmendment {
+    let source = ralph_burning::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
     QueuedAmendment {
         amendment_id: format!("amd-{}", body.replace(' ', "-")),
         source_stage: StageId::Review,
@@ -89,6 +91,8 @@ fn amendment(body: &str) -> QueuedAmendment {
         body: body.to_owned(),
         created_at: Utc::now(),
         batch_sequence: 1,
+        source,
+        dedup_key,
     }
 }
 
@@ -532,4 +536,115 @@ fn build_stage_prompt_returns_diagnostic_error_when_journal_references_missing_p
         }
         other => panic!("expected CorruptRecord, got {other:?}"),
     }
+}
+
+// ── Template override regression tests ──────────────────────────────────
+
+#[test]
+fn build_stage_prompt_with_workspace_template_override() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-override").unwrap();
+    let run_id = RunId::new("run-20260319120000").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Planning, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Planning);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        "Build a calculator.",
+        &events,
+    );
+
+    // Install a workspace template override for "planning"
+    let ws_templates = base_dir.join(".ralph-burning").join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "CUSTOM PLANNING\n\nRole: {{role_instruction}}\nPrompt: {{project_prompt}}\nSchema: {{json_schema}}",
+    )
+    .expect("write override");
+
+    let artifact_store = InMemoryArtifactStore {
+        payloads: vec![],
+    };
+
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt with override");
+
+    assert!(prompt.starts_with("CUSTOM PLANNING"), "override should be used");
+    assert!(prompt.contains("Build a calculator."));
+    assert!(prompt.contains("You are the Planner."));
+}
+
+#[test]
+fn build_stage_prompt_fails_on_malformed_workspace_override() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-malformed").unwrap();
+    let run_id = RunId::new("run-20260319120001").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::Planning, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::Planning);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        "Build something.",
+        &events,
+    );
+
+    // Install a malformed override (missing required placeholders)
+    let ws_templates = base_dir.join(".ralph-burning").join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "This template has no placeholders.",
+    )
+    .expect("write malformed override");
+
+    let artifact_store = InMemoryArtifactStore {
+        payloads: vec![],
+    };
+
+    let result = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendRole::Planner,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    );
+
+    assert!(result.is_err(), "malformed override should cause failure");
+    let err = result.unwrap_err().to_string();
+    assert!(err.contains("malformed template override"));
 }

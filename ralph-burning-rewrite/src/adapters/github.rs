@@ -371,10 +371,12 @@ impl GithubClient {
             }
 
             let comments: Vec<GithubComment> =
-                resp.json().await.map_err(|e| AppError::BackendUnavailable {
-                    backend: "github".to_owned(),
-                    details: format!("failed to parse comments: {e}"),
-                })?;
+                resp.json()
+                    .await
+                    .map_err(|e| AppError::BackendUnavailable {
+                        backend: "github".to_owned(),
+                        details: format!("failed to parse comments: {e}"),
+                    })?;
             let is_last_page = comments.len() < 100;
             all_comments.extend(comments);
             if is_last_page {
@@ -472,10 +474,12 @@ impl GithubClient {
             }
 
             let comments: Vec<GithubComment> =
-                resp.json().await.map_err(|e| AppError::BackendUnavailable {
-                    backend: "github".to_owned(),
-                    details: format!("failed to parse PR review comments: {e}"),
-                })?;
+                resp.json()
+                    .await
+                    .map_err(|e| AppError::BackendUnavailable {
+                        backend: "github".to_owned(),
+                        details: format!("failed to parse PR review comments: {e}"),
+                    })?;
             let is_last_page = comments.len() < 100;
             all.extend(comments);
             if is_last_page {
@@ -521,10 +525,12 @@ impl GithubClient {
             }
 
             let reviews: Vec<GithubReview> =
-                resp.json().await.map_err(|e| AppError::BackendUnavailable {
-                    backend: "github".to_owned(),
-                    details: format!("failed to parse PR reviews: {e}"),
-                })?;
+                resp.json()
+                    .await
+                    .map_err(|e| AppError::BackendUnavailable {
+                        backend: "github".to_owned(),
+                        details: format!("failed to parse PR reviews: {e}"),
+                    })?;
             let is_last_page = reviews.len() < 100;
             all.extend(reviews);
             if is_last_page {

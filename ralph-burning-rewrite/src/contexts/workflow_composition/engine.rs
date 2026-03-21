@@ -12,7 +12,10 @@ use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
 };
-use crate::contexts::agent_execution::policy::BackendPolicyService;
+use crate::contexts::agent_execution::policy::{
+    BackendPolicyService, FinalReviewPanelResolution, PromptReviewPanelResolution,
+    ResolvedPanelMember,
+};
 use crate::contexts::agent_execution::service::{
     AgentExecutionPort, BackendSelectionConfig, RawOutputPort,
 };
@@ -36,6 +39,7 @@ use crate::contexts::workflow_composition::payloads::{
 use crate::contexts::workspace_governance::config::{
     EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRole, FailureClass, FlowPreset, ProjectId,
     ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
@@ -98,20 +102,10 @@ pub fn build_stage_prompt(
     let schema =
         serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
 
-    let mut sections = vec![
-        format!(
-            "# Stage Execution Prompt\n\n{}",
-            stage_role_instruction(role, contract.stage_id)
-        ),
-        format!(
-            "## Original Project Prompt\n\n{}",
-            project_prompt.trim_end()
-        ),
-    ];
-
-    if !prior_outputs.is_empty() {
+    // Pre-render optional sections
+    let prior_outputs_block = if !prior_outputs.is_empty() {
         let mut section = String::from("## Prior Stage Outputs This Cycle");
-        for record in prior_outputs {
+        for record in &prior_outputs {
             let payload = serde_json::to_string_pretty(&record.payload)?;
             section.push_str(&format!(
                 "\n\n### {} (`{}`)\n- Payload ID: `{}`\n- Attempt: `{}`\n\n```json\n{}\n```",
@@ -122,10 +116,12 @@ pub fn build_stage_prompt(
                 payload
             ));
         }
-        sections.push(section);
-    }
+        section
+    } else {
+        String::new()
+    };
 
-    if execution_context.is_some()
+    let remediation_block = if execution_context.is_some()
         || pending_amendments.is_some_and(|amendments| !amendments.is_empty())
     {
         let mut section = String::from("## Remediation / Pending Amendments");
@@ -145,15 +141,26 @@ pub fn build_stage_prompt(
                 serde_json::to_string_pretty(&amendment_bodies)?
             ));
         }
-        sections.push(section);
-    }
+        section
+    } else {
+        String::new()
+    };
 
-    sections.push(format!(
-        "## Authoritative JSON Schema\n\nThe JSON schema below is authoritative. Return only JSON that conforms exactly to it.\n\n```json\n{}\n```",
-        schema
-    ));
+    let template_id = template_catalog::stage_template_id(contract.stage_id);
+    let role_instruction = stage_role_instruction(role, contract.stage_id);
 
-    Ok(sections.join("\n\n"))
+    template_catalog::resolve_and_render(
+        template_id,
+        base_dir,
+        Some(project_id),
+        &[
+            ("role_instruction", &role_instruction),
+            ("project_prompt", project_prompt.trim_end()),
+            ("json_schema", &schema),
+            ("prior_outputs", &prior_outputs_block),
+            ("remediation", &remediation_block),
+        ],
+    )
 }
 
 /// Resolved target per stage for preflight.
@@ -217,30 +224,255 @@ fn resolve_stage_plan_for_cycle(
 /// Local-validation stages are skipped since they run commands locally.
 pub async fn preflight_check<A: AgentExecutionPort>(
     adapter: &A,
+    effective_config: &EffectiveConfig,
+    cycle: u32,
     plan: &[StagePlan],
 ) -> AppResult<()> {
     for entry in plan {
         if entry.stage_id.is_local_validation() {
             continue;
         }
-        adapter
-            .check_capability(
-                &entry.target,
-                &InvocationContract::Stage(entry.contract.clone()),
-            )
-            .await
-            .map_err(|e| AppError::PreflightFailed {
-                stage_id: entry.stage_id,
-                details: e.to_string(),
-            })?;
-        adapter
-            .check_availability(&entry.target)
-            .await
-            .map_err(|e| AppError::PreflightFailed {
-                stage_id: entry.stage_id,
-                details: e.to_string(),
-            })?;
+        match entry.stage_id {
+            StageId::PromptReview => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = resolve_prompt_review_panel_for_preflight(&policy, cycle)?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "refiner",
+                    &panel.refiner,
+                    "prompt-review refiner",
+                )
+                .await?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "validator",
+                    "prompt_review",
+                    "prompt-review validator",
+                    &panel.validators,
+                    effective_config.prompt_review_policy().min_reviewers,
+                )
+                .await?;
+            }
+            StageId::CompletionPanel => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = policy.resolve_completion_panel(cycle).map_err(|error| {
+                    AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: format!("completion panel resolution failed: {error}"),
+                    }
+                })?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "completer",
+                    "completion",
+                    "completion completer",
+                    &panel.completers,
+                    effective_config.completion_policy().min_completers,
+                )
+                .await?;
+            }
+            StageId::FinalReview => {
+                let policy = BackendPolicyService::new(effective_config);
+                let panel = resolve_final_review_panel_for_preflight(&policy, cycle)?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "planner",
+                    &panel.planner,
+                    "final-review planner",
+                )
+                .await?;
+                preflight_required_panel_target(
+                    adapter,
+                    entry.stage_id,
+                    "arbiter",
+                    &panel.arbiter,
+                    "final-review arbiter",
+                )
+                .await?;
+                preflight_panel_members(
+                    adapter,
+                    entry.stage_id,
+                    "reviewer",
+                    "final_review",
+                    "final-review reviewer",
+                    &panel.reviewers,
+                    effective_config.final_review_policy().min_reviewers,
+                )
+                .await?;
+            }
+            _ => {
+                adapter
+                    .check_capability(
+                        &entry.target,
+                        &InvocationContract::Stage(entry.contract.clone()),
+                    )
+                    .await
+                    .map_err(|e| AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: e.to_string(),
+                    })?;
+                adapter
+                    .check_availability(&entry.target)
+                    .await
+                    .map_err(|e| AppError::PreflightFailed {
+                        stage_id: entry.stage_id,
+                        details: e.to_string(),
+                    })?;
+            }
+        }
     }
+    Ok(())
+}
+
+fn resolve_prompt_review_panel_for_preflight(
+    policy: &BackendPolicyService<'_>,
+    cycle: u32,
+) -> AppResult<PromptReviewPanelResolution> {
+    let refiner = policy
+        .resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::PromptReview,
+            details: format!("required prompt-review refiner resolution failed: {error}"),
+        })?;
+    let mut panel =
+        policy
+            .resolve_prompt_review_panel(cycle)
+            .map_err(|error| AppError::PreflightFailed {
+                stage_id: StageId::PromptReview,
+                details: format!("prompt-review validator resolution failed: {error}"),
+            })?;
+    panel.refiner = refiner;
+    Ok(panel)
+}
+
+fn resolve_final_review_panel_for_preflight(
+    policy: &BackendPolicyService<'_>,
+    cycle: u32,
+) -> AppResult<FinalReviewPanelResolution> {
+    let planner = policy
+        .resolve_role_target(BackendPolicyRole::Planner, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::FinalReview,
+            details: format!("required final-review planner resolution failed: {error}"),
+        })?;
+    let arbiter = policy
+        .resolve_role_target(BackendPolicyRole::Arbiter, cycle)
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id: StageId::FinalReview,
+            details: format!("required final-review arbiter resolution failed: {error}"),
+        })?;
+    let mut panel =
+        policy
+            .resolve_final_review_panel(cycle)
+            .map_err(|error| AppError::PreflightFailed {
+                stage_id: StageId::FinalReview,
+                details: format!("final-review reviewer resolution failed: {error}"),
+            })?;
+    panel.planner = planner;
+    panel.arbiter = arbiter;
+    Ok(panel)
+}
+
+async fn preflight_required_panel_target<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    target: &ResolvedBackendTarget,
+    member_name: &str,
+) -> AppResult<()> {
+    let contract = InvocationContract::Panel {
+        stage_id,
+        role: role.to_owned(),
+    };
+    adapter
+        .check_capability(target, &contract)
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!(
+                "required {member_name} failed capability preflight for '{}': {error}",
+                contract.label()
+            ),
+        })?;
+    adapter
+        .check_availability(target)
+        .await
+        .map_err(|error| AppError::PreflightFailed {
+            stage_id,
+            details: format!("required {member_name} failed availability preflight: {error}"),
+        })?;
+    Ok(())
+}
+
+async fn preflight_panel_members<A: AgentExecutionPort>(
+    adapter: &A,
+    stage_id: StageId,
+    role: &'static str,
+    panel_name: &'static str,
+    member_name: &str,
+    members: &[ResolvedPanelMember],
+    minimum: usize,
+) -> AppResult<()> {
+    let mut available_members = 0usize;
+
+    for member in members {
+        let contract = InvocationContract::Panel {
+            stage_id,
+            role: role.to_owned(),
+        };
+        let required_prefix = if member.required {
+            "required"
+        } else {
+            "optional"
+        };
+
+        match adapter.check_capability(&member.target, &contract).await {
+            Ok(()) => {}
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed capability preflight for '{}': {error}",
+                            contract.label()
+                        ),
+                    });
+                }
+                continue;
+            }
+        }
+
+        match adapter.check_availability(&member.target).await {
+            Ok(()) => available_members += 1,
+            Err(error) => {
+                if member.required {
+                    return Err(AppError::PreflightFailed {
+                        stage_id,
+                        details: format!(
+                            "{required_prefix} {member_name} failed availability preflight: {error}",
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    if available_members < minimum {
+        return Err(AppError::PreflightFailed {
+            stage_id,
+            details: AppError::InsufficientPanelMembers {
+                panel: panel_name.to_owned(),
+                resolved: available_members,
+                minimum,
+            }
+            .to_string(),
+        });
+    }
+
     Ok(())
 }
 
@@ -610,7 +842,7 @@ where
     let semantics = flow_semantics(preset);
     let _workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
     let stage_plan = resolve_stage_plan_for_cycle(stage_ids.as_slice(), effective_config, 1)?;
-    preflight_check(agent_service.adapter(), &stage_plan).await?;
+    preflight_check(agent_service.adapter(), effective_config, 1, &stage_plan).await?;
 
     let run_id = generate_run_id()?;
     let now = Utc::now();
@@ -1091,6 +1323,17 @@ where
                 let min_reviewers = effective_config.final_review_policy().min_reviewers;
                 agent_service
                     .adapter()
+                    .check_availability(&panel.planner)
+                    .await
+                    .map_err(|_| AppError::ResumeDriftFailure {
+                        stage_id: current_stage,
+                        details: format!(
+                            "required final-review planner ({}) unavailable on resume",
+                            panel.planner.backend.family,
+                        ),
+                    })?;
+                agent_service
+                    .adapter()
                     .check_availability(&panel.arbiter)
                     .await
                     .map_err(|_| AppError::ResumeDriftFailure {
@@ -1131,7 +1374,12 @@ where
                     });
                 }
                 panel.reviewers = available;
-                build_final_review_snapshot(current_stage, &panel.reviewers, &panel.arbiter)
+                build_final_review_snapshot(
+                    current_stage,
+                    &panel.reviewers,
+                    &panel.planner,
+                    &panel.arbiter,
+                )
             }
             _ => {
                 let target =
@@ -1162,6 +1410,8 @@ where
 
     preflight_check(
         agent_service.adapter(),
+        effective_config,
+        resume_state.cursor.cycle,
         &stage_plan[resume_state.stage_index..],
     )
     .await
@@ -2270,6 +2520,8 @@ where
                             &amendment.amendment_id,
                             amendment.source_stage,
                             &amendment.body,
+                            amendment.source.as_str(),
+                            &amendment.dedup_key,
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -3399,6 +3651,8 @@ where
                             &amendment.amendment_id,
                             amendment.source_stage,
                             &amendment.body,
+                            amendment.source.as_str(),
+                            &amendment.dedup_key,
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -3464,8 +3718,19 @@ where
                         last_journaled_amendment_index = Some(index);
                     }
 
-                    // Add amendments to snapshot queue.
-                    snapshot.amendment_queue.pending.extend(amendments);
+                    // Add amendments to snapshot queue, deduplicating by
+                    // amendment_id so retried late-stage approvals don't
+                    // append duplicate entries from a prior failed attempt.
+                    for amendment in amendments {
+                        if !snapshot
+                            .amendment_queue
+                            .pending
+                            .iter()
+                            .any(|existing| existing.amendment_id == amendment.amendment_id)
+                        {
+                            snapshot.amendment_queue.pending.push(amendment);
+                        }
+                    }
 
                     // Advance the snapshot before the journal append so fail_run()
                     // persists the new round if the append itself fails.
@@ -4076,6 +4341,41 @@ where
             .await;
         }
 
+        // Resolve and render the template BEFORE any durable state writes.
+        // If the selected override is malformed, we must fail without
+        // appending journal entries or updating snapshots (Slice 7 failure
+        // invariant).
+        let prompt = match build_stage_prompt(
+            artifact_store,
+            base_dir,
+            project_id,
+            project_root,
+            prompt_reference,
+            stage_entry.role,
+            &stage_entry.contract,
+            run_id,
+            &cursor,
+            execution_context,
+            pending_amendments,
+        ) {
+            Ok(prompt) => prompt,
+            Err(error) => {
+                return fail_run_result(
+                    &error,
+                    stage_id,
+                    run_id,
+                    seq,
+                    snapshot,
+                    journal_store,
+                    run_snapshot_write,
+                    base_dir,
+                    project_id,
+                    origin,
+                )
+                .await;
+            }
+        };
+
         *seq += 1;
         let stage_entered = journal::stage_entered_event(
             *seq,
@@ -4160,37 +4460,6 @@ where
                 ),
             },
         );
-
-        let prompt = match build_stage_prompt(
-            artifact_store,
-            base_dir,
-            project_id,
-            project_root,
-            prompt_reference,
-            stage_entry.role,
-            &stage_entry.contract,
-            run_id,
-            &cursor,
-            execution_context,
-            pending_amendments,
-        ) {
-            Ok(prompt) => prompt,
-            Err(error) => {
-                return fail_run_result(
-                    &error,
-                    stage_id,
-                    run_id,
-                    seq,
-                    snapshot,
-                    journal_store,
-                    run_snapshot_write,
-                    base_dir,
-                    project_id,
-                    origin,
-                )
-                .await;
-            }
-        };
 
         let result = invoke_stage_on_backend(
             agent_service,
@@ -4813,20 +5082,26 @@ fn build_queued_amendments(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| QueuedAmendment {
-            amendment_id: format!(
-                "{}-{}-cr{}-amd{}",
-                run_id.as_str(),
-                source_stage.as_str(),
+        .map(|(idx, body)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            QueuedAmendment {
+                amendment_id: format!(
+                    "{}-{}-cr{}-amd{}",
+                    run_id.as_str(),
+                    source_stage.as_str(),
+                    source_completion_round,
+                    idx + 1
+                ),
+                source_stage,
+                source_cycle,
                 source_completion_round,
-                idx + 1
-            ),
-            source_stage,
-            source_cycle,
-            source_completion_round,
-            body: body.clone(),
-            created_at: now,
-            batch_sequence: (idx + 1) as u32,
+                body: body.clone(),
+                created_at: now,
+                batch_sequence: (idx + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect()
 }
@@ -4842,21 +5117,27 @@ fn build_recorded_follow_ups(
     follow_ups
         .iter()
         .enumerate()
-        .map(|(idx, body)| QueuedAmendment {
-            amendment_id: format!(
-                "{}-{}-c{}-cr{}-follow-up{}",
-                run_id.as_str(),
-                source_stage.as_str(),
+        .map(|(idx, body)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+            QueuedAmendment {
+                amendment_id: format!(
+                    "{}-{}-c{}-cr{}-follow-up{}",
+                    run_id.as_str(),
+                    source_stage.as_str(),
+                    source_cycle,
+                    source_completion_round,
+                    idx + 1
+                ),
+                source_stage,
                 source_cycle,
                 source_completion_round,
-                idx + 1
-            ),
-            source_stage,
-            source_cycle,
-            source_completion_round,
-            body: body.clone(),
-            created_at: now,
-            batch_sequence: (idx + 1) as u32,
+                body: body.clone(),
+                created_at: now,
+                batch_sequence: (idx + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect()
 }
@@ -5621,6 +5902,12 @@ where
         policy.timeout_for_role(family, BackendPolicyRole::PromptValidator)
     };
 
+    // Pre-validate panel template overrides BEFORE any durable state writes.
+    // If a panel template override is malformed, we must fail without
+    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    template_catalog::resolve("prompt_review_refiner", base_dir, Some(project_id))?;
+    template_catalog::resolve("prompt_review_validator", base_dir, Some(project_id))?;
+
     // Emit stage_entered journal event.
     *seq += 1;
     let stage_entered = journal::stage_entered_event(
@@ -5877,6 +6164,11 @@ where
     let timeout_for_backend =
         |family: BackendFamily| -> Duration { policy.timeout_for_role(family, policy_role) };
 
+    // Pre-validate panel template overrides BEFORE any durable state writes.
+    // If a panel template override is malformed, we must fail without
+    // appending journal entries or updating snapshots (Slice 7 failure invariant).
+    template_catalog::resolve("completion_panel_completer", base_dir, Some(project_id))?;
+
     // Emit stage_entered journal event.
     *seq += 1;
     let stage_entered = journal::stage_entered_event(
@@ -6031,13 +6323,12 @@ where
     let consensus_threshold = effective_config.final_review_policy().consensus_threshold;
     let max_restarts = effective_config.final_review_policy().max_restarts;
 
-    let planner_target = policy.resolve_role_target(BackendPolicyRole::Planner, cursor.cycle)?;
     agent_service
         .adapter()
-        .check_availability(&planner_target)
+        .check_availability(&panel.planner)
         .await
         .map_err(|error| AppError::BackendUnavailable {
-            backend: planner_target.backend.family.to_string(),
+            backend: panel.planner.backend.family.to_string(),
             details: format!("required final-review planner unavailable: {error}"),
         })?;
     agent_service
@@ -6073,14 +6364,20 @@ where
     }
     panel.reviewers = available_reviewers;
 
-    let resolution = build_final_review_snapshot(stage_id, &panel.reviewers, &panel.arbiter);
+    let resolution =
+        build_final_review_snapshot(stage_id, &panel.reviewers, &panel.planner, &panel.arbiter);
     let planner_timeout =
-        policy.timeout_for_role(planner_target.backend.family, BackendPolicyRole::Planner);
+        policy.timeout_for_role(panel.planner.backend.family, BackendPolicyRole::Planner);
     let reviewer_timeout_for_backend = |family: BackendFamily| -> Duration {
         policy.timeout_for_role(family, BackendPolicyRole::FinalReviewer)
     };
     let arbiter_timeout =
         policy.timeout_for_role(panel.arbiter.backend.family, BackendPolicyRole::Arbiter);
+
+    // Pre-validate the reviewer template (always used) BEFORE durable state writes.
+    // Voter and arbiter templates are validated lazily at invocation time since
+    // they may not be needed (no amendments → no voters, no disputes → no arbiter).
+    template_catalog::resolve("final_review_reviewer", base_dir, Some(project_id))?;
 
     *seq += 1;
     let stage_entered = journal::stage_entered_event(
@@ -6134,7 +6431,6 @@ where
         run_id,
         cursor,
         &panel,
-        &planner_target,
         min_reviewers,
         consensus_threshold,
         max_restarts,
@@ -6172,14 +6468,20 @@ where
         .final_accepted_amendments
         .iter()
         .enumerate()
-        .map(|(index, amendment)| QueuedAmendment {
-            amendment_id: amendment.amendment_id.clone(),
-            source_stage: stage_id,
-            source_cycle: cursor.cycle,
-            source_completion_round: cursor.completion_round,
-            body: amendment.normalized_body.clone(),
-            created_at: Utc::now(),
-            batch_sequence: (index + 1) as u32,
+        .map(|(index, amendment)| {
+            let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
+            let dedup_key = QueuedAmendment::compute_dedup_key(&source, &amendment.normalized_body);
+            QueuedAmendment {
+                amendment_id: amendment.amendment_id.clone(),
+                source_stage: stage_id,
+                source_cycle: cursor.cycle,
+                source_completion_round: cursor.completion_round,
+                body: amendment.normalized_body.clone(),
+                created_at: Utc::now(),
+                batch_sequence: (index + 1) as u32,
+                source,
+                dedup_key,
+            }
         })
         .collect::<Vec<_>>();
 
@@ -6354,6 +6656,7 @@ pub fn build_single_target_snapshot(
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6375,6 +6678,7 @@ pub fn build_prompt_review_snapshot(
         prompt_review_refiner: Some(resolved_target_to_record(&panel.refiner)),
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6395,6 +6699,7 @@ pub fn build_completion_snapshot(
             .map(|m| resolved_target_to_record(&m.target))
             .collect(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     }
 }
@@ -6403,6 +6708,7 @@ pub fn build_completion_snapshot(
 pub fn build_final_review_snapshot(
     stage_id: StageId,
     reviewers: &[crate::contexts::agent_execution::policy::ResolvedPanelMember],
+    planner: &ResolvedBackendTarget,
     arbiter: &ResolvedBackendTarget,
 ) -> StageResolutionSnapshot {
     StageResolutionSnapshot {
@@ -6416,6 +6722,7 @@ pub fn build_final_review_snapshot(
             .iter()
             .map(|member| resolved_target_to_record(&member.target))
             .collect(),
+        final_review_planner: Some(resolved_target_to_record(planner)),
         final_review_arbiter: Some(resolved_target_to_record(arbiter)),
     }
 }
@@ -6453,6 +6760,11 @@ pub fn resolution_has_drifted(
         || old.prompt_review_refiner != new.prompt_review_refiner
         || old.completion_completers != new.completion_completers
         || old.final_review_reviewers != new.final_review_reviewers
+        || match (&old.final_review_planner, &new.final_review_planner) {
+            (Some(old_planner), Some(new_planner)) => old_planner != new_planner,
+            (Some(_), None) => true,
+            (None, _) => false,
+        }
         || old.final_review_arbiter != new.final_review_arbiter
 }
 
@@ -6506,6 +6818,12 @@ pub fn drift_still_satisfies_requirements(
                 return Err(AppError::ResumeDriftFailure {
                     stage_id,
                     details: "re-resolved final-review panel has no arbiter".to_owned(),
+                });
+            }
+            if new_snapshot.final_review_planner.is_none() {
+                return Err(AppError::ResumeDriftFailure {
+                    stage_id,
+                    details: "re-resolved final-review panel has no planner".to_owned(),
                 });
             }
         }

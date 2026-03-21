@@ -19,11 +19,7 @@ use ralph_burning::shared::domain::{
 };
 use ralph_burning::shared::error::AppError;
 
-static PATH_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-fn lock_path_mutex() -> std::sync::MutexGuard<'static, ()> {
-    PATH_MUTEX.lock().unwrap_or_else(|e| e.into_inner())
-}
+use super::env_test_support::{lock_path_mutex, PathGuard};
 
 fn request_fixture(backend_family: BackendFamily) -> (tempfile::TempDir, InvocationRequest) {
     let temp_dir = tempdir().expect("create temp dir");
@@ -88,41 +84,6 @@ fn process_is_running(pid: u32) -> bool {
     };
 
     !rest.starts_with('Z')
-}
-
-struct PathGuard {
-    original: Option<std::ffi::OsString>,
-}
-
-impl PathGuard {
-    fn prepend(dir: &std::path::Path) -> Self {
-        let original = std::env::var_os("PATH");
-        let new_path = match &original {
-            Some(existing) => {
-                let mut paths = std::env::split_paths(existing).collect::<Vec<_>>();
-                paths.insert(0, dir.to_path_buf());
-                std::env::join_paths(paths).expect("join paths")
-            }
-            None => dir.as_os_str().to_owned(),
-        };
-        std::env::set_var("PATH", &new_path);
-        Self { original }
-    }
-
-    fn replace(dir: &std::path::Path) -> Self {
-        let original = std::env::var_os("PATH");
-        std::env::set_var("PATH", dir);
-        Self { original }
-    }
-}
-
-impl Drop for PathGuard {
-    fn drop(&mut self) {
-        match &self.original {
-            Some(value) => std::env::set_var("PATH", value),
-            None => std::env::remove_var("PATH"),
-        }
-    }
 }
 
 /// Write a fake claude script that outputs an envelope file and logs args/stdin.
@@ -338,6 +299,43 @@ async fn process_backend_reports_missing_binary_as_backend_unavailable() {
         .expect_err("missing binary should fail");
 
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn process_backend_reports_non_executable_binary_as_backend_unavailable() {
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+    let bin_dir = tempdir().expect("create temp dir");
+    let binary_path = bin_dir.path().join("claude");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::replace(bin_dir.path());
+
+    fs::write(&binary_path, "#!/bin/sh\nexit 0\n").expect("write non-executable binary");
+    let mut permissions = fs::metadata(&binary_path)
+        .expect("stat non-executable binary")
+        .permissions();
+    permissions.set_mode(0o644);
+    fs::set_permissions(&binary_path, permissions).expect("chmod non-executable binary");
+
+    let error = adapter
+        .check_availability(&request.resolved_target)
+        .await
+        .expect_err("non-executable binary should fail");
+
+    match error {
+        AppError::BackendUnavailable { details, .. } => {
+            assert!(
+                details.contains(&binary_path.display().to_string()),
+                "error should include the candidate path: {details}"
+            );
+            assert!(
+                details.contains("not executable"),
+                "error should explain the permission problem: {details}"
+            );
+        }
+        other => panic!("expected BackendUnavailable, got: {other:?}"),
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

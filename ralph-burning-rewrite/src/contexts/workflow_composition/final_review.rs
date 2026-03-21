@@ -38,6 +38,7 @@ use crate::contexts::workflow_composition::renderers;
 use crate::shared::domain::{
     BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
 };
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,7 +176,6 @@ pub async fn execute_final_review_panel<A, R, S>(
     run_id: &RunId,
     cursor: &StageCursor,
     panel: &FinalReviewPanelResolution,
-    planner_target: &ResolvedBackendTarget,
     min_reviewers: usize,
     consensus_threshold: f64,
     max_restarts: u32,
@@ -213,7 +213,7 @@ where
             BackendRole::Reviewer,
             &reviewer_id,
             "reviewer",
-            build_reviewer_prompt(&project_prompt)?,
+            build_reviewer_prompt(&project_prompt, base_dir, Some(project_id))?,
             Value::Null,
             reviewer_timeout_for_backend(member.target.backend.family),
             cancellation_token.clone(),
@@ -316,11 +316,11 @@ where
         run_id,
         stage_id,
         cursor,
-        planner_target,
+        &panel.planner,
         BackendRole::Planner,
         "planner",
         "voter",
-        build_voter_prompt("Planner Positions", &amendments, None)?,
+        build_voter_prompt("Planner Positions", &amendments, None, base_dir, Some(project_id))?,
         json!({
             "amendments": amendments
                 .iter()
@@ -339,16 +339,16 @@ where
     let planner_votes: FinalReviewVotePayload =
         serde_json::from_value(planner_vote_payload.clone()).map_err(|e| {
             AppError::InvocationFailed {
-                backend: planner_target.backend.family.to_string(),
+                backend: panel.planner.backend.family.to_string(),
                 contract_id: "final_review:voter".to_owned(),
                 failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
                 details: format!("planner positions schema validation failed: {e}"),
             }
         })?;
-    validate_vote_payload(&planner_votes, &amendments, planner_target)?;
+    validate_vote_payload(&planner_votes, &amendments, &panel.planner)?;
     let planner_producer = RecordProducer::Agent {
-        backend_family: planner_target.backend.family.to_string(),
-        model_id: planner_target.model.model_id.clone(),
+        backend_family: panel.planner.backend.family.to_string(),
+        model_id: panel.planner.model.model_id.clone(),
     };
     let planner_artifact = renderers::render_final_review_vote(
         "Final Review Planner Positions",
@@ -387,7 +387,7 @@ where
             BackendRole::Reviewer,
             &reviewer.reviewer_id,
             "voter",
-            build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes))?,
+            build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes), base_dir, Some(project_id))?,
             json!({
                 "amendments": amendments
                     .iter()
@@ -511,7 +511,7 @@ where
             BackendRole::Reviewer,
             "arbiter",
             "arbiter",
-            build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes)?,
+            build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes, base_dir, Some(project_id))?,
             json!({
                 "disputed_amendments": disputed_set
                     .values()
@@ -660,20 +660,33 @@ fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalA
     }
 }
 
-fn build_reviewer_prompt(project_prompt: &str) -> AppResult<String> {
+fn build_reviewer_prompt(
+    project_prompt: &str,
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "reviewer");
-    Ok(format!(
-        "# Final Review Proposals\n\n## Project Prompt\n\n{project_prompt}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    ))
+    let schema_str = serde_json::to_string_pretty(&schema)?;
+    template_catalog::resolve_and_render(
+        "final_review_reviewer",
+        base_dir,
+        project_id,
+        &[
+            ("project_prompt", project_prompt),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn build_voter_prompt(
     title: &str,
     amendments: &[CanonicalAmendment],
     planner_votes: Option<&FinalReviewVotePayload>,
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "voter");
+    let schema_str = serde_json::to_string_pretty(&schema)?;
     let amendment_text = amendments
         .iter()
         .map(|amendment| {
@@ -692,18 +705,28 @@ fn build_voter_prompt(
             )
         })
         .unwrap_or_default();
-    Ok(format!(
-        "# {title}\n\n{amendment_text}{planner_section}\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(&schema)?
-    ))
+    template_catalog::resolve_and_render(
+        "final_review_voter",
+        base_dir,
+        project_id,
+        &[
+            ("title", title),
+            ("amendments", &amendment_text),
+            ("planner_positions", &planner_section),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn build_arbiter_prompt(
     disputed_amendments: &HashMap<String, &CanonicalAmendment>,
     planner_votes: &FinalReviewVotePayload,
     reviewer_votes: &[FinalReviewVotePayload],
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
 ) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "arbiter");
+    let schema_str = serde_json::to_string_pretty(&schema)?;
     let amendment_text = disputed_amendments
         .values()
         .map(|amendment| {
@@ -714,12 +737,19 @@ fn build_arbiter_prompt(
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    Ok(format!(
-        "# Final Review Arbiter\n\n{amendment_text}\n\n## Planner Positions\n\n```json\n{}\n```\n\n## Reviewer Votes\n\n```json\n{}\n```\n\n## JSON Schema\n\n```json\n{}\n```",
-        serde_json::to_string_pretty(planner_votes)?,
-        serde_json::to_string_pretty(reviewer_votes)?,
-        serde_json::to_string_pretty(&schema)?
-    ))
+    let planner_str = serde_json::to_string_pretty(planner_votes)?;
+    let reviewer_str = serde_json::to_string_pretty(reviewer_votes)?;
+    template_catalog::resolve_and_render(
+        "final_review_arbiter",
+        base_dir,
+        project_id,
+        &[
+            ("amendments", &amendment_text),
+            ("planner_positions", &planner_str),
+            ("reviewer_votes", &reviewer_str),
+            ("json_schema", &schema_str),
+        ],
+    )
 }
 
 fn validate_vote_payload(
@@ -1237,16 +1267,18 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
-        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
         let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                     required: true,
+                    configured_index: 0,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
                     required: true,
+                    configured_index: 1,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(
@@ -1254,6 +1286,7 @@ mod tests {
                         "reviewer-3-model",
                     ),
                     required: false,
+                    configured_index: 2,
                 },
             ],
             arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
@@ -1269,7 +1302,6 @@ mod tests {
             &run_id,
             &cursor,
             &panel,
-            &planner_target,
             2,
             0.66,
             2,
@@ -1315,16 +1347,18 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review-vote-failure").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
-        let planner_target = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model");
         let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
                     required: true,
+                    configured_index: 0,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
                     required: true,
+                    configured_index: 1,
                 },
                 ResolvedPanelMember {
                     target: ResolvedBackendTarget::new(
@@ -1332,6 +1366,7 @@ mod tests {
                         "reviewer-3-model",
                     ),
                     required: false,
+                    configured_index: 2,
                 },
             ],
             arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
@@ -1347,7 +1382,6 @@ mod tests {
             &run_id,
             &cursor,
             &panel,
-            &planner_target,
             2,
             0.66,
             2,

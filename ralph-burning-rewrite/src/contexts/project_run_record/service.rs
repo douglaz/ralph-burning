@@ -2,17 +2,21 @@ use std::path::Path;
 
 use chrono::{DateTime, Utc};
 
+use crate::adapters::fs::FileSystem;
+use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
-use crate::shared::domain::{FlowPreset, ProjectId, StageId};
+use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 use super::journal;
 use super::model::{
-    ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, ProjectDetail, ProjectListEntry,
-    ProjectRecord, ProjectStatusSummary, RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry,
-    SessionStore,
+    ActiveRun, AmendmentSource, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
+    ProjectDetail, ProjectListEntry, ProjectRecord, ProjectStatusSummary, QueuedAmendment,
+    RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry, SessionStore,
 };
-use super::queries::{self, RunHistoryView, RunStatusView, RunTailView};
+use super::queries::{
+    self, RunHistoryView, RunRollbackTargetView, RunStatusJsonView, RunStatusView, RunTailView,
+};
 
 /// Port for reading and writing project records.
 pub trait ProjectStorePort {
@@ -66,6 +70,34 @@ pub trait ArtifactStorePort {
         base_dir: &Path,
         project_id: &ProjectId,
     ) -> AppResult<Vec<ArtifactRecord>>;
+
+    fn read_payload_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        payload_id: &str,
+    ) -> AppResult<PayloadRecord> {
+        self.list_payloads(base_dir, project_id)?
+            .into_iter()
+            .find(|payload| payload.payload_id == payload_id)
+            .ok_or_else(|| AppError::PayloadNotFound {
+                payload_id: payload_id.to_owned(),
+            })
+    }
+
+    fn read_artifact_by_id(
+        &self,
+        base_dir: &Path,
+        project_id: &ProjectId,
+        artifact_id: &str,
+    ) -> AppResult<ArtifactRecord> {
+        self.list_artifacts(base_dir, project_id)?
+            .into_iter()
+            .find(|artifact| artifact.artifact_id == artifact_id)
+            .ok_or_else(|| AppError::ArtifactNotFound {
+                artifact_id: artifact_id.to_owned(),
+            })
+    }
 }
 
 /// Port for reading runtime logs (separate from durable history).
@@ -209,6 +241,90 @@ pub fn create_project(
     base_dir: &Path,
     input: CreateProjectInput,
 ) -> AppResult<ProjectRecord> {
+    let initial_details = serde_json::json!({
+        "project_id": input.id.as_str(),
+        "flow": input.flow.as_str(),
+    });
+    create_project_with_initial_details(store, journal_store, base_dir, input, initial_details)
+}
+
+pub fn create_project_from_seed(
+    store: &dyn ProjectStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    handoff: SeedHandoff,
+    flow_override: Option<FlowPreset>,
+    created_at: DateTime<Utc>,
+) -> AppResult<ProjectRecord> {
+    let SeedHandoff {
+        requirements_run_id,
+        project_id,
+        project_name,
+        flow: seed_flow,
+        prompt_body,
+        prompt_path: _,
+        recommended_flow,
+    } = handoff;
+
+    let selected_flow = flow_override.unwrap_or(seed_flow);
+    let prompt_hash = FileSystem::prompt_hash(&prompt_body);
+    let project_id = ProjectId::new(project_id)?;
+
+    let mut initial_details = serde_json::Map::from_iter([
+        (
+            "project_id".to_owned(),
+            serde_json::Value::String(project_id.to_string()),
+        ),
+        (
+            "flow".to_owned(),
+            serde_json::Value::String(selected_flow.as_str().to_owned()),
+        ),
+        (
+            "source".to_owned(),
+            serde_json::Value::String("requirements".to_owned()),
+        ),
+        (
+            "requirements_run_id".to_owned(),
+            serde_json::Value::String(requirements_run_id),
+        ),
+        (
+            "seed_flow".to_owned(),
+            serde_json::Value::String(seed_flow.as_str().to_owned()),
+        ),
+    ]);
+    if let Some(flow) = recommended_flow {
+        initial_details.insert(
+            "recommended_flow".to_owned(),
+            serde_json::Value::String(flow.as_str().to_owned()),
+        );
+    }
+
+    let input = CreateProjectInput {
+        id: project_id,
+        name: project_name,
+        flow: selected_flow,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents: prompt_body,
+        prompt_hash,
+        created_at,
+    };
+
+    create_project_with_initial_details(
+        store,
+        journal_store,
+        base_dir,
+        input,
+        serde_json::Value::Object(initial_details),
+    )
+}
+
+fn create_project_with_initial_details(
+    store: &dyn ProjectStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    input: CreateProjectInput,
+    initial_details: serde_json::Value,
+) -> AppResult<ProjectRecord> {
     // Check for duplicate project ID
     if store.project_exists(base_dir, &input.id)? {
         return Err(AppError::DuplicateProject {
@@ -234,10 +350,7 @@ pub fn create_project(
         sequence: 1,
         timestamp: input.created_at,
         event_type: JournalEventType::ProjectCreated,
-        details: serde_json::json!({
-            "project_id": record.id.as_str(),
-            "flow": record.flow.as_str(),
-        }),
+        details: initial_details,
     };
     let journal_line = journal::serialize_event(&initial_event)?;
 
@@ -394,6 +507,19 @@ pub fn run_status(
     Ok(queries::build_status_view(project_id.as_str(), &snapshot))
 }
 
+/// Get stable JSON run status for the active project.
+pub fn run_status_json(
+    run_port: &dyn RunSnapshotPort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<RunStatusJsonView> {
+    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(RunStatusJsonView::from_snapshot(
+        project_id.as_str(),
+        &snapshot,
+    ))
+}
+
 /// Get run history (durable only, no runtime logs).
 pub fn run_history(
     journal_port: &dyn JournalStorePort,
@@ -473,6 +599,27 @@ pub fn list_rollback_points(
     Ok(points)
 }
 
+/// List visible rollback targets in a CLI-ready view format.
+pub fn list_rollback_targets(
+    rollback_store: &dyn RollbackPointStorePort,
+    journal_port: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<RunRollbackTargetView>> {
+    Ok(
+        list_rollback_points(rollback_store, journal_port, base_dir, project_id)?
+            .into_iter()
+            .map(|point| RunRollbackTargetView {
+                rollback_id: point.rollback_id,
+                stage_id: point.stage_id.as_str().to_owned(),
+                cycle: point.cycle,
+                created_at: point.created_at,
+                git_sha: point.git_sha,
+            })
+            .collect(),
+    )
+}
+
 /// Look up the latest visible rollback point for a stage.
 pub fn get_rollback_point_for_stage(
     rollback_store: &dyn RollbackPointStorePort,
@@ -491,6 +638,64 @@ pub fn get_rollback_point_for_stage(
         .filter(|point| point.stage_id == stage_id)
         .filter(|point| visible_ids.contains(point.rollback_id.as_str()))
         .max_by_key(|point| point.created_at))
+}
+
+/// Resolve a visible payload record by ID.
+pub fn get_payload_by_id(
+    journal_port: &dyn JournalStorePort,
+    artifact_port: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    payload_id: &str,
+) -> AppResult<PayloadRecord> {
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
+    queries::validate_history_consistency(&payloads, &artifacts)?;
+
+    if !payloads
+        .iter()
+        .any(|payload| payload.payload_id == payload_id)
+    {
+        return Err(AppError::PayloadNotFound {
+            payload_id: payload_id.to_owned(),
+        });
+    }
+
+    artifact_port.read_payload_by_id(base_dir, project_id, payload_id)
+}
+
+/// Resolve a visible artifact record by ID.
+pub fn get_artifact_by_id(
+    journal_port: &dyn JournalStorePort,
+    artifact_port: &dyn ArtifactStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    artifact_id: &str,
+) -> AppResult<ArtifactRecord> {
+    let events =
+        queries::visible_journal_events(&journal_port.read_journal(base_dir, project_id)?)?;
+    let (payloads, artifacts) = queries::filter_history_records(
+        &events,
+        artifact_port.list_payloads(base_dir, project_id)?,
+        artifact_port.list_artifacts(base_dir, project_id)?,
+    )?;
+    queries::validate_history_consistency(&payloads, &artifacts)?;
+
+    if !artifacts
+        .iter()
+        .any(|artifact| artifact.artifact_id == artifact_id)
+    {
+        return Err(AppError::ArtifactNotFound {
+            artifact_id: artifact_id.to_owned(),
+        });
+    }
+
+    artifact_port.read_artifact_by_id(base_dir, project_id, artifact_id)
 }
 
 /// Perform a logical or hard rollback to a visible checkpoint.
@@ -654,4 +859,698 @@ fn rollback_created_sequence_for(events: &[JournalEvent], rollback_id: &str) -> 
                 rollback_id
             ),
         })
+}
+
+// ── Shared Amendment Service ──────────────────────────────────────────────
+
+/// Result of staging a manual amendment.
+#[derive(Debug)]
+pub enum AmendmentAddResult {
+    /// A new amendment was created.
+    Created { amendment_id: String },
+    /// An existing amendment with the same dedup key was found.
+    Duplicate { amendment_id: String },
+}
+
+/// Add a manual amendment. Performs dedup check, writes durably, emits a journal
+/// event, syncs the canonical snapshot, and reopens completed projects.
+pub fn add_manual_amendment(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    journal_port: &dyn JournalStorePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    body: &str,
+) -> AppResult<AmendmentAddResult> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
+    let source = AmendmentSource::Manual;
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+
+    // Dedup check against canonical snapshot pending queue.
+    if let Some(existing) = snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .find(|a| a.dedup_key == dedup_key)
+    {
+        return Ok(AmendmentAddResult::Duplicate {
+            amendment_id: existing.amendment_id.clone(),
+        });
+    }
+
+    // Also check staged amendment files on disk to catch duplicates from
+    // a prior failed attempt where the file was preserved but the snapshot
+    // update failed (the file survives reopen failures by design).
+    // Skip this check for completed projects — the retry needs to proceed
+    // through the reopen path even if the file already exists on disk.
+    if snapshot.status != RunStatus::Completed {
+        let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
+        if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
+            return Ok(AmendmentAddResult::Duplicate {
+                amendment_id: existing.amendment_id.clone(),
+            });
+        }
+    }
+
+    let now = Utc::now();
+    let amendment_id = format!("manual-{}", uuid::Uuid::new_v4());
+
+    let current_cycle = snapshot
+        .cycle_history
+        .last()
+        .map(|entry| entry.cycle)
+        .unwrap_or(1);
+    let completion_round = snapshot.completion_rounds.max(1);
+
+    let amendment = QueuedAmendment {
+        amendment_id: amendment_id.clone(),
+        source_stage: StageId::Planning,
+        source_cycle: current_cycle,
+        source_completion_round: completion_round,
+        body: body.to_owned(),
+        created_at: now,
+        batch_sequence: 0,
+        source,
+        dedup_key: dedup_key.clone(),
+    };
+
+    // Prepare the journal line BEFORE any mutations so that fallible
+    // read_journal / serialize_event calls cannot fail after canonical state
+    // is already committed.
+    let journal_line = {
+        let events = journal_port.read_journal(base_dir, project_id)?;
+        let seq = journal::last_sequence(&events) + 1;
+        let journal_event = journal::amendment_queued_manual_event(
+            seq,
+            now,
+            &amendment_id,
+            body,
+            "manual",
+            "planning",
+            &dedup_key,
+        );
+        journal::serialize_event(&journal_event)?
+    };
+
+    // Write durable amendment file.
+    amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
+
+    // Save pre-mutation snapshot so we can restore it if a later step fails.
+    let old_snapshot = snapshot.clone();
+
+    // Sync canonical snapshot: add the amendment to run.json pending queue.
+    // The snapshot is committed BEFORE the journal event so that a snapshot
+    // write failure leaves no orphaned journal entry.
+    snapshot.amendment_queue.pending.push(amendment.clone());
+
+    // If the project is completed, reopen it with the pending amendment
+    // already reflected in the snapshot.
+    let snap_result = if snapshot.status == RunStatus::Completed {
+        reopen_completed_project_with_snapshot(
+            run_write_port,
+            project_store,
+            base_dir,
+            project_id,
+            &mut snapshot,
+        )
+    } else {
+        // Persist the updated snapshot with the new pending amendment.
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+    };
+
+    if let Err(snap_err) = snap_result {
+        if old_snapshot.status == RunStatus::Completed {
+            // Preserve the amendment file for completed-project reopen failures
+            // so the operator's input is not lost on retry.
+            return Err(snap_err);
+        }
+        // For non-completed projects, roll back the amendment file so it
+        // doesn't become an orphan that blocks completion_guard.
+        if let Err(cleanup_err) =
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot/reopen write failed: {snap_err}; \
+                     amendment file cleanup also failed: {cleanup_err}"
+                ),
+            });
+        }
+        return Err(snap_err);
+    }
+
+    // Durably append the journal event. A successful add must record the
+    // amendment_queued event. If the append fails, roll back the snapshot
+    // and amendment file so no amendment is visible without its history.
+    if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
+        // Attempt to restore pre-mutation state.
+        let snap_result = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+        let file_result = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+
+        // If rollback itself failed, return a composite error so the caller
+        // knows canonical state may be inconsistent, matching the pattern
+        // used in execute_rollback.
+        if snap_result.is_err() || file_result.is_err() {
+            let snap_detail = snap_result
+                .err()
+                .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            let file_detail = file_result
+                .err()
+                .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "amendment journal append failed: {journal_err}; \
+                     rollback also failed — snapshot restore: {snap_detail}, \
+                     file cleanup: {file_detail}"
+                ),
+            });
+        }
+
+        return Err(journal_err);
+    }
+
+    Ok(AmendmentAddResult::Created { amendment_id })
+}
+
+/// List pending amendments for a project from the canonical run.json snapshot.
+pub fn list_amendments(
+    run_port: &dyn RunSnapshotPort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<QueuedAmendment>> {
+    let snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    Ok(snapshot.amendment_queue.pending)
+}
+
+/// Remove a single pending amendment by ID. Updates both run.json and disk.
+///
+/// Deletes the durable file first, then updates the canonical snapshot. If the
+/// file deletion fails, the amendment remains pending everywhere and the command
+/// fails cleanly. If the snapshot write fails after a successful file deletion,
+/// the amendment file is restored and the command fails.
+pub fn remove_amendment(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendment_id: &str,
+) -> AppResult<()> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
+    // Verify the amendment exists in canonical snapshot state.
+    let amendment = snapshot
+        .amendment_queue
+        .pending
+        .iter()
+        .find(|a| a.amendment_id == amendment_id)
+        .cloned();
+    let amendment = match amendment {
+        Some(a) => a,
+        None => {
+            return Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            });
+        }
+    };
+
+    // Delete the durable file first. If this fails, the amendment stays pending
+    // everywhere and completion will correctly block on it.
+    amendment_queue.remove_amendment(base_dir, project_id, amendment_id)?;
+
+    // Update canonical snapshot to reflect the removal.
+    snapshot
+        .amendment_queue
+        .pending
+        .retain(|a| a.amendment_id != amendment_id);
+    if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
+        // Restore the amendment file so disk and snapshot stay consistent.
+        // If restore also fails, return a composite error so the caller knows
+        // the amendment file is missing while the snapshot still lists it.
+        if let Err(restore_err) = amendment_queue.write_amendment(base_dir, project_id, &amendment)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot write failed after amendment file deletion: {snap_err}; \
+                     amendment file restore also failed: {restore_err}"
+                ),
+            });
+        }
+        return Err(snap_err);
+    }
+
+    Ok(())
+}
+
+/// Clear all pending amendments. Returns removed and remaining IDs.
+/// On partial failure, reports exactly which amendments were removed and which remain.
+///
+/// Drives the pending set from canonical snapshot state. Files are deleted
+/// first, then the snapshot is updated to reflect only the remaining amendments.
+/// If the snapshot write fails after partial deletion, `AmendmentClearPartial`
+/// is still returned so the caller always gets the exact removed/remaining IDs.
+pub fn clear_amendments(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<Vec<String>> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+
+    // Reject while a run is actively writing.
+    if snapshot.status == RunStatus::Running {
+        return Err(AppError::AmendmentLeaseConflict {
+            project_id: project_id.to_string(),
+        });
+    }
+
+    let pending: Vec<QueuedAmendment> = std::mem::take(&mut snapshot.amendment_queue.pending);
+    if pending.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let total = pending.len();
+
+    // Delete files first, track removed/remaining.
+    let mut removed = Vec::new();
+    let mut remaining = Vec::new();
+
+    for amendment in &pending {
+        match amendment_queue.remove_amendment(base_dir, project_id, &amendment.amendment_id) {
+            Ok(()) => removed.push(amendment.amendment_id.clone()),
+            Err(_) => remaining.push(amendment.amendment_id.clone()),
+        }
+    }
+
+    // Update canonical snapshot to reflect only the remaining amendments.
+    if remaining.is_empty() {
+        // All files deleted — clear the snapshot pending queue.
+        // snapshot.amendment_queue.pending is already empty from std::mem::take.
+        if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
+            // Restore all amendment files so disk and snapshot stay consistent.
+            // If any restore fails, return a composite error so the caller knows
+            // which files could not be restored.
+            let mut restore_failures: Vec<String> = Vec::new();
+            for a in &pending {
+                if let Err(e) = amendment_queue.write_amendment(base_dir, project_id, a) {
+                    restore_failures.push(format!("{}: {e}", a.amendment_id));
+                }
+            }
+            if !restore_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "snapshot write failed after clearing amendments: {snap_err}; \
+                         amendment file restore also failed: {}",
+                        restore_failures.join("; ")
+                    ),
+                });
+            }
+            return Err(snap_err);
+        }
+    } else {
+        // Partial failure — put remaining amendments back into canonical state.
+        let remaining_set: std::collections::HashSet<&str> =
+            remaining.iter().map(|s| s.as_str()).collect();
+        for a in &pending {
+            if remaining_set.contains(a.amendment_id.as_str()) {
+                snapshot.amendment_queue.pending.push(a.clone());
+            }
+        }
+        // The snapshot MUST reflect only the remaining amendments before we
+        // report partial success. If this repair write fails, restore the
+        // deleted files so disk matches the unmodified snapshot and return the
+        // underlying I/O error instead of AmendmentClearPartial.
+        if let Err(repair_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+        {
+            // Restore deleted amendment files so disk stays consistent with
+            // the unmodified on-disk snapshot. If restore fails, return a
+            // composite error with both the repair and restore failures.
+            let mut restore_failures: Vec<String> = Vec::new();
+            for a in &pending {
+                if !remaining_set.contains(a.amendment_id.as_str()) {
+                    if let Err(e) = amendment_queue.write_amendment(base_dir, project_id, a) {
+                        restore_failures.push(format!("{}: {e}", a.amendment_id));
+                    }
+                }
+            }
+            if !restore_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "snapshot repair write failed after partial clear: {repair_err}; \
+                         amendment file restore also failed: {}",
+                        restore_failures.join("; ")
+                    ),
+                });
+            }
+            return Err(repair_err);
+        }
+
+        return Err(AppError::AmendmentClearPartial {
+            removed_count: removed.len(),
+            total,
+            removed,
+            remaining,
+        });
+    }
+
+    Ok(removed)
+}
+
+/// Stage a batch of amendments from an automated source (e.g. PR-review).
+/// Writes each amendment durably, emits journal events, syncs the canonical
+/// snapshot, and reopens the project if it is completed. This is the shared
+/// path that both manual and automated amendment intake converge on.
+/// Returns the IDs of amendments that were actually staged (after dedup).
+pub fn stage_amendment_batch(
+    amendment_queue: &dyn AmendmentQueuePort,
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    journal_port: &dyn JournalStorePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    amendments: &[QueuedAmendment],
+) -> AppResult<Vec<String>> {
+    if amendments.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Prepare the journal sequence number BEFORE any mutations so that the
+    // fallible read_journal call cannot fail after canonical state is committed.
+    let base_journal_seq = {
+        let events = journal_port.read_journal(base_dir, project_id)?;
+        journal::last_sequence(&events)
+    };
+
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    // Save pre-mutation snapshot so we can restore it if journal append fails.
+    let old_snapshot = snapshot.clone();
+    let mut staged_ids: Vec<String> = Vec::new();
+    let mut staged_amendments: Vec<&QueuedAmendment> = Vec::new();
+
+    for amendment in amendments {
+        // Dedup check against canonical snapshot pending queue.
+        if snapshot
+            .amendment_queue
+            .pending
+            .iter()
+            .any(|a| a.dedup_key == amendment.dedup_key)
+        {
+            continue;
+        }
+
+        // Write durable amendment file. If this fails mid-batch, roll back
+        // all earlier file writes so no pre-commit files leak.
+        if let Err(write_err) = amendment_queue.write_amendment(base_dir, project_id, amendment) {
+            let mut cleanup_failures: Vec<String> = Vec::new();
+            for id in &staged_ids {
+                if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                    cleanup_failures.push(format!("{id}: {e}"));
+                }
+            }
+            if !cleanup_failures.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "batch file write failed: {write_err}; \
+                         amendment file cleanup also failed: {}",
+                        cleanup_failures.join("; ")
+                    ),
+                });
+            }
+            return Err(write_err);
+        }
+
+        // Sync canonical snapshot (in memory — committed below).
+        snapshot.amendment_queue.pending.push(amendment.clone());
+        staged_ids.push(amendment.amendment_id.clone());
+        staged_amendments.push(amendment);
+    }
+
+    if staged_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Commit canonical snapshot BEFORE journal events so that a snapshot
+    // write failure leaves no orphaned journal entries.
+    let was_completed = snapshot.status == RunStatus::Completed;
+    let snap_result = if was_completed {
+        reopen_completed_project_with_snapshot(
+            run_write_port,
+            project_store,
+            base_dir,
+            project_id,
+            &mut snapshot,
+        )
+    } else {
+        run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)
+    };
+
+    if let Err(snap_err) = snap_result {
+        if was_completed {
+            // When the project was completed and the reopen/snapshot write
+            // fails, amendment files that have already been written to disk
+            // must remain. The project snapshot stays at its last committed
+            // completed state and the caller must not advance cursors or
+            // journal events. On the next poll cycle the daemon will re-
+            // fetch, re-deduplicate (files overwrite safely), and retry the
+            // reopen.
+            return Err(snap_err);
+        }
+        // For non-completed projects, roll back all amendment files written
+        // in this batch so no pre-commit files leak.
+        let mut cleanup_failures: Vec<String> = Vec::new();
+        for id in &staged_ids {
+            if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                cleanup_failures.push(format!("{id}: {e}"));
+            }
+        }
+        if !cleanup_failures.is_empty() {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot/reopen write failed: {snap_err}; \
+                     amendment file cleanup also failed: {}",
+                    cleanup_failures.join("; ")
+                ),
+            });
+        }
+        return Err(snap_err);
+    }
+
+    // Pre-serialize all journal events so serialization failures are caught
+    // before any appends. This prevents partial journal writes on serialize
+    // errors.
+    let mut journal_lines: Vec<String> = Vec::new();
+    let mut seq = base_journal_seq;
+    for amendment in &staged_amendments {
+        seq += 1;
+        let journal_event = journal::amendment_queued_manual_event(
+            seq,
+            amendment.created_at,
+            &amendment.amendment_id,
+            &amendment.body,
+            amendment.source.as_str(),
+            amendment.source_stage.as_str(),
+            &amendment.dedup_key,
+        );
+        match journal::serialize_event(&journal_event) {
+            Ok(line) => journal_lines.push(line),
+            Err(ser_err) => {
+                // Serialization failed — roll back all staged files and snapshot.
+                let snap_result =
+                    run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+                let mut file_failures: Vec<String> = Vec::new();
+                for id in &staged_ids {
+                    if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                        file_failures.push(format!("{id}: {e}"));
+                    }
+                }
+                if snap_result.is_err() || !file_failures.is_empty() {
+                    let snap_detail = snap_result
+                        .err()
+                        .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+                    let file_detail = if file_failures.is_empty() {
+                        "ok".to_owned()
+                    } else {
+                        file_failures.join("; ")
+                    };
+                    return Err(AppError::CorruptRecord {
+                        file: format!("projects/{}/run.json", project_id.as_str()),
+                        details: format!(
+                            "journal event serialization failed: {ser_err}; \
+                             rollback also failed — snapshot restore: {snap_detail}, \
+                             file cleanup: {file_detail}"
+                        ),
+                    });
+                }
+                return Err(ser_err);
+            }
+        }
+    }
+
+    // Durably append all journal events. A successful staging must record all
+    // amendment_queued events. If any append fails, roll back the snapshot
+    // and amendment files so no amendments are visible without history.
+    //
+    // Track successful appends so we can detect partial-journal state: if
+    // earlier lines are already on disk when a later append fails, the
+    // journal has orphaned entries that cannot be un-appended.
+    let mut appended_count: usize = 0;
+    for line in &journal_lines {
+        if let Err(journal_err) = journal_port.append_event(base_dir, project_id, line) {
+            // Attempt rollback: restore snapshot and remove amendment files.
+            let snap_result =
+                run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
+            let mut file_failures: Vec<String> = Vec::new();
+            for id in &staged_ids {
+                if let Err(e) = amendment_queue.remove_amendment(base_dir, project_id, id) {
+                    file_failures.push(format!("{id}: {e}"));
+                }
+            }
+
+            let rollback_failed = snap_result.is_err() || !file_failures.is_empty();
+
+            // If earlier journal lines were already appended, canonical state
+            // (snapshot + files) was rolled back but the journal still contains
+            // orphaned amendment_queued entries. Surface this as an unrecovered
+            // consistency failure rather than implying a clean rollback.
+            // Similarly, if rollback itself failed, the caller needs to know
+            // that canonical state may be inconsistent.
+            if appended_count > 0 || rollback_failed {
+                let snap_detail = snap_result
+                    .err()
+                    .map_or_else(|| "ok".to_owned(), |e| e.to_string());
+                let file_detail = if file_failures.is_empty() {
+                    "ok".to_owned()
+                } else {
+                    file_failures.join("; ")
+                };
+                return Err(AppError::CorruptRecord {
+                    file: format!("projects/{}/run.json", project_id.as_str()),
+                    details: format!(
+                        "batch journal append failed after {appended_count} of {} events: \
+                         {journal_err}; snapshot restore: {snap_detail}, file cleanup: {file_detail}",
+                        journal_lines.len()
+                    ),
+                });
+            }
+
+            return Err(journal_err);
+        }
+        appended_count += 1;
+    }
+
+    Ok(staged_ids)
+}
+
+/// Reopen a completed project to paused state with an interrupted run pointing
+/// at the flow planning stage. Shared between manual and PR-review amendment paths.
+///
+/// Reads the current snapshot from disk. If the caller already holds a modified
+/// snapshot (e.g. with a pending amendment already added), use
+/// `reopen_completed_project_with_snapshot` instead.
+pub fn reopen_completed_project(
+    run_port: &dyn RunSnapshotPort,
+    run_write_port: &dyn RunSnapshotWritePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+) -> AppResult<()> {
+    let mut snapshot = run_port.read_run_snapshot(base_dir, project_id)?;
+    reopen_completed_project_with_snapshot(
+        run_write_port,
+        project_store,
+        base_dir,
+        project_id,
+        &mut snapshot,
+    )
+}
+
+/// Reopen a completed project using an already-loaded (possibly modified) snapshot.
+/// The snapshot is mutated in place and persisted atomically.
+pub fn reopen_completed_project_with_snapshot(
+    run_write_port: &dyn RunSnapshotWritePort,
+    project_store: &dyn ProjectStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    snapshot: &mut RunSnapshot,
+) -> AppResult<()> {
+    let record = project_store.read_project_record(base_dir, project_id)?;
+
+    if snapshot.status != RunStatus::Completed {
+        return Ok(());
+    }
+
+    let planning_stage = planning_stage_for_flow(record.flow);
+    let current_cycle = snapshot
+        .cycle_history
+        .last()
+        .map(|entry| entry.cycle)
+        .unwrap_or(1);
+    let completion_round = snapshot.completion_rounds.max(1);
+
+    let project_root = FileSystem::project_root(base_dir, project_id);
+    let prompt_path = project_root.join(&record.prompt_reference);
+    let prompt_contents =
+        std::fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
+            file: prompt_path.display().to_string(),
+            details: format!("failed to read prompt for project reopen: {error}"),
+        })?;
+    let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
+
+    // Advance the completion round so the resumed run creates new
+    // payload/artifact IDs instead of overwriting the original history.
+    let next_completion_round = completion_round + 1;
+    snapshot.completion_rounds = next_completion_round;
+
+    snapshot.interrupted_run = Some(ActiveRun {
+        run_id: format!("reopen-{}", project_id.as_str()),
+        stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, next_completion_round)?,
+        started_at: Utc::now(),
+        prompt_hash_at_cycle_start: prompt_hash.clone(),
+        prompt_hash_at_stage_start: prompt_hash,
+        qa_iterations_current_cycle: 0,
+        review_iterations_current_cycle: 0,
+        final_review_restart_count: 0,
+        stage_resolution_snapshot: snapshot.last_stage_resolution_snapshot.clone(),
+    });
+    snapshot.active_run = None;
+    snapshot.status = RunStatus::Paused;
+    snapshot.status_summary = "paused: amendments staged".to_owned();
+
+    run_write_port.write_run_snapshot(base_dir, project_id, snapshot)?;
+    Ok(())
+}
+
+fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
+    match flow {
+        FlowPreset::Standard => StageId::Planning,
+        FlowPreset::QuickDev => StageId::PlanAndImplement,
+        FlowPreset::DocsChange => StageId::DocsPlan,
+        FlowPreset::CiImprovement => StageId::CiPlan,
+    }
 }

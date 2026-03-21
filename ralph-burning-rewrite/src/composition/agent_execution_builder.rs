@@ -2,10 +2,13 @@
 //!
 //! Centralises runtime adapter selection so that CLI `run`, CLI `requirements`,
 //! and daemon requirements dispatch all resolve the same backend family/model
-//! defaults from `EffectiveConfig`.  The `process` adapter is the production
-//! default and dispatches OpenRouter-resolved requests to the HTTP adapter. The
-//! `stub` branch remains a test seam and is compiled only with the
-//! `test-stub` Cargo feature.
+//! defaults from `EffectiveConfig`. The `process` adapter is the production
+//! default and dispatches OpenRouter-resolved requests to the HTTP adapter in
+//! direct mode. When `execution.mode = "tmux"` is active, adapter selection
+//! stays on the tmux/process stack so OpenRouter targets fail through the same
+//! explicit tmux-mode rejection path instead of silently downgrading to direct
+//! execution. The `stub` branch remains a test seam and is compiled only with
+//! the `test-stub` Cargo feature.
 
 #[cfg(feature = "test-stub")]
 use std::collections::HashMap;
@@ -15,10 +18,12 @@ use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
 use crate::adapters::process_backend::ProcessBackendAdapter;
 #[cfg(feature = "test-stub")]
 use crate::adapters::stub_backend::StubBackendAdapter;
+use crate::adapters::tmux::TmuxAdapter;
 use crate::adapters::BackendAdapter;
 use crate::contexts::agent_execution::service::{AgentExecutionService, BackendSelectionConfig};
 use crate::contexts::requirements_drafting::service::RequirementsService;
 use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::shared::domain::ExecutionMode;
 #[cfg(feature = "test-stub")]
 use crate::shared::domain::StageId;
 use crate::shared::error::{AppError, AppResult};
@@ -48,6 +53,14 @@ fn backend_selector_reason() -> &'static str {
 /// Build a `BackendAdapter` from the `RALPH_BURNING_BACKEND` environment variable.
 /// Defaults to `process` when the variable is unset.
 pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
+    build_backend_adapter_with_config(None)
+}
+
+pub fn build_backend_adapter_with_config(
+    effective_config: Option<&EffectiveConfig>,
+) -> AppResult<BackendAdapter> {
+    let tmux_enabled = effective_config
+        .is_some_and(|config| config.effective_execution_mode() == ExecutionMode::Tmux);
     let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
         Ok(value) => value,
         Err(std::env::VarError::NotPresent) => "process".to_owned(),
@@ -69,7 +82,19 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
             value: "stub".to_owned(),
             reason: "stub backend requires the test-stub cargo feature".to_owned(),
         }),
-        "process" => Ok(BackendAdapter::Process(ProcessBackendAdapter::new())),
+        "process" | "openrouter" if tmux_enabled => {
+            let process = ProcessBackendAdapter::new();
+            Ok(BackendAdapter::Tmux(TmuxAdapter::new(
+                process,
+                effective_config
+                    .map(|config| config.effective_stream_output())
+                    .unwrap_or(false),
+            )))
+        }
+        "process" => {
+            let process = ProcessBackendAdapter::new();
+            Ok(BackendAdapter::Process(process))
+        }
         "openrouter" => Ok(BackendAdapter::OpenRouter(OpenRouterBackendAdapter::new())),
         other => Err(AppError::InvalidConfigValue {
             key: "RALPH_BURNING_BACKEND".to_owned(),
@@ -79,9 +104,54 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
     }
 }
 
+/// Build a backend adapter for diagnostics, using the same routing as normal
+/// execution but ignoring `RALPH_BURNING_BACKEND` env var. This ensures
+/// diagnostics check the actual configured backends with correct per-target
+/// dispatch (Process for Claude/Codex, OpenRouter for OpenRouter targets).
+pub fn build_backend_adapter_for_diagnostics(
+    effective_config: &EffectiveConfig,
+) -> AppResult<BackendAdapter> {
+    // In test-stub mode, always use the stub adapter for diagnostics.
+    // In production, use the normal config-driven builder but override
+    // any env var to "process" so RALPH_BURNING_BACKEND=openrouter
+    // doesn't redirect checks to the wrong transport.
+    #[cfg(feature = "test-stub")]
+    {
+        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
+        std::env::set_var("RALPH_BURNING_BACKEND", "stub");
+        let result = build_backend_adapter_with_config(Some(effective_config));
+        match saved {
+            Some(val) => std::env::set_var("RALPH_BURNING_BACKEND", val),
+            None => std::env::remove_var("RALPH_BURNING_BACKEND"),
+        }
+        return result;
+    }
+    #[cfg(not(feature = "test-stub"))]
+    {
+        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+        let result = build_backend_adapter_with_config(Some(effective_config));
+        if let Some(val) = saved {
+            std::env::set_var("RALPH_BURNING_BACKEND", val);
+        }
+        result
+    }
+}
+
 /// Build an `AgentExecutionService` backed by the environment-selected adapter.
 pub fn build_agent_execution_service() -> AppResult<ProductionAgentService> {
     let adapter = build_backend_adapter()?;
+    Ok(AgentExecutionService::new(
+        adapter,
+        FsRawOutputStore,
+        FsSessionStore,
+    ))
+}
+
+pub fn build_agent_execution_service_for_config(
+    effective_config: &EffectiveConfig,
+) -> AppResult<ProductionAgentService> {
+    let adapter = build_backend_adapter_with_config(Some(effective_config))?;
     Ok(AgentExecutionService::new(
         adapter,
         FsRawOutputStore,
@@ -97,7 +167,7 @@ pub fn build_agent_execution_service() -> AppResult<ProductionAgentService> {
 pub fn build_requirements_service(
     effective_config: &EffectiveConfig,
 ) -> AppResult<ProductionRequirementsService> {
-    let adapter = build_backend_adapter()?;
+    let adapter = build_backend_adapter_with_config(Some(effective_config))?;
 
     #[cfg(feature = "test-stub")]
     // When using the stub adapter, apply test-only label overrides.
@@ -141,7 +211,15 @@ pub fn apply_test_label_overrides(mut adapter: StubBackendAdapter) -> StubBacken
                 } else {
                     format!("requirements:{label}")
                 };
-                adapter = adapter.with_label_payload(full_label, payload);
+                // If the payload is an array, treat it as a sequence so the stub
+                // returns different responses on successive invocations with the
+                // same label (e.g. validation → needs_questions, then pass).
+                if let Some(arr) = payload.as_array() {
+                    adapter =
+                        adapter.with_label_payload_sequence(full_label, arr.clone());
+                } else {
+                    adapter = adapter.with_label_payload(full_label, payload);
+                }
             }
         }
     }
@@ -195,10 +273,33 @@ fn build_stub_backend_adapter() -> StubBackendAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use std::sync::Mutex;
+    use tempfile::tempdir;
+
+    use crate::contexts::workspace_governance::{initialize_workspace, CliBackendOverrides};
 
     /// Serialize tests that mutate `RALPH_BURNING_BACKEND` to avoid races.
     static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn tmux_effective_config() -> EffectiveConfig {
+        let temp_dir = tempdir().expect("create temp dir");
+        let created_at = chrono::Utc
+            .with_ymd_and_hms(2026, 3, 19, 8, 30, 28)
+            .single()
+            .expect("valid timestamp");
+        initialize_workspace(temp_dir.path(), created_at).expect("initialize workspace");
+
+        EffectiveConfig::load_for_project(
+            temp_dir.path(),
+            None,
+            CliBackendOverrides {
+                execution_mode: Some(ExecutionMode::Tmux),
+                ..Default::default()
+            },
+        )
+        .expect("load tmux effective config")
+    }
 
     #[test]
     #[cfg(feature = "test-stub")]
@@ -263,6 +364,21 @@ mod tests {
         std::env::set_var("RALPH_BURNING_BACKEND", "openrouter");
         let adapter = build_backend_adapter().expect("explicit openrouter should succeed");
         assert!(matches!(adapter, BackendAdapter::OpenRouter(_)));
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+    }
+
+    #[test]
+    fn build_backend_adapter_with_config_selects_tmux_for_openrouter_when_tmux_mode_enabled() {
+        let _guard = ENV_LOCK.lock().unwrap();
+        let effective = tmux_effective_config();
+
+        std::env::set_var("RALPH_BURNING_BACKEND", "openrouter");
+        let adapter = build_backend_adapter_with_config(Some(&effective))
+            .expect("tmux mode should stay on the tmux adapter stack");
+        assert!(
+            matches!(adapter, BackendAdapter::Tmux(_)),
+            "tmux execution mode must not return the direct OpenRouter adapter"
+        );
         std::env::remove_var("RALPH_BURNING_BACKEND");
     }
 

@@ -277,7 +277,7 @@ pub fn completion_round_advanced_event(
     }
 }
 
-/// Build an `amendment_queued` journal event.
+/// Build an `amendment_queued` journal event with source metadata.
 pub fn amendment_queued_event(
     sequence: u64,
     timestamp: DateTime<Utc>,
@@ -285,6 +285,8 @@ pub fn amendment_queued_event(
     amendment_id: &str,
     source_stage: StageId,
     body: &str,
+    source: &str,
+    dedup_key: &str,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -294,6 +296,32 @@ pub fn amendment_queued_event(
             "run_id": run_id.as_str(),
             "amendment_id": amendment_id,
             "source_stage": source_stage.as_str(),
+            "body": body,
+            "source": source,
+            "dedup_key": dedup_key,
+        }),
+    }
+}
+
+/// Build an `amendment_queued` journal event for manual/batch amendments (no run_id).
+pub fn amendment_queued_manual_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    amendment_id: &str,
+    body: &str,
+    source: &str,
+    source_stage: &str,
+    dedup_key: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::AmendmentQueued,
+        details: serde_json::json!({
+            "amendment_id": amendment_id,
+            "source": source,
+            "source_stage": source_stage,
+            "dedup_key": dedup_key,
             "body": body,
         }),
     }

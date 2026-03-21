@@ -560,12 +560,14 @@ fn render_project_seed_produces_markdown_with_project_details_and_suggested_comm
     use ralph_burning::shared::domain::FlowPreset;
 
     let payload = ProjectSeedPayload {
+        version: 2,
         project_id: "cache-layer".to_owned(),
         project_name: "Cache Layer".to_owned(),
         flow: FlowPreset::Standard,
         prompt_body: "Implement the caching layer.".to_owned(),
         handoff_summary: "Ready for implementation.".to_owned(),
         follow_ups: vec![],
+        source: None,
     };
 
     let md = renderers::render_project_seed(&payload);
@@ -583,6 +585,7 @@ fn render_project_seed_produces_markdown_with_project_details_and_suggested_comm
 
 // ── Service integration tests ───────────────────────────────────────────────
 
+#[cfg(feature = "test-stub")]
 mod service_integration {
     use chrono::{TimeZone, Utc};
     use serde_json::json;
@@ -613,7 +616,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -634,7 +637,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -663,7 +666,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Refactor the auth module", now)
+            .draft(temp_dir.path(),"Refactor the auth module", now, None)
             .await
             .expect("draft should succeed");
 
@@ -679,30 +682,52 @@ mod service_integration {
         assert!(result.seed_prompt_path.is_some());
     }
 
+    /// Helper: build a stub adapter that triggers a question round via
+    /// validation returning `needs_questions` on the first call, then `pass`
+    /// on subsequent calls. Returns the given questions from question_set.
+    fn stub_with_validation_questions(questions: serde_json::Value) -> StubBackendAdapter {
+        StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Stub validation needs more info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Additional context required"]
+                    }),
+                    json!({
+                        "outcome": "pass",
+                        "evidence": ["Stub validation passes after answers"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                ],
+            )
+            .with_label_payload("requirements:question_set", questions)
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn draft_with_questions_transitions_to_awaiting_answers() {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "Test question?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Test question?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Add a new API endpoint", now)
+            .draft(temp_dir.path(),"Add a new API endpoint", now, None)
             .await
             .expect("draft should succeed");
 
@@ -737,7 +762,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a caching layer", now)
+            .quick(temp_dir.path(), "Build a caching layer", now, None)
             .await
             .expect("quick should succeed");
 
@@ -762,26 +787,23 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Set up a draft run with one question
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        // Set up a draft run with one question via validation needs_questions
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test idea", now)
+            .draft(temp_dir.path(),"Test idea", now, None)
             .await
             .expect("draft should succeed");
 
@@ -816,25 +838,22 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "Required question?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "Required question?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test idea", now)
+            .draft(temp_dir.path(),"Test idea", now, None)
             .await
             .expect("draft should succeed");
 
@@ -871,7 +890,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Build a REST API", now)
+            .quick(temp_dir.path(), "Build a REST API", now, None)
             .await
             .expect("quick should succeed with conditional approval");
 
@@ -924,7 +943,7 @@ mod service_integration {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service.quick(temp_dir.path(), "Build something", now).await;
+        let result = service.quick(temp_dir.path(), "Build something", now, None).await;
 
         assert!(result.is_err(), "quick should fail on request_changes");
 
@@ -961,26 +980,23 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Create a draft run that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        // Create a draft run that transitions to awaiting_answers via validation
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test durable boundary", now)
+            .draft(temp_dir.path(),"Test durable boundary", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1024,7 +1040,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected for run with answers already submitted"
@@ -1049,25 +1065,22 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test defense in depth", now)
+            .draft(temp_dir.path(),"Test defense in depth", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1097,7 +1110,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected for AwaitingAnswers run with AnswersSubmitted in journal"
@@ -1129,7 +1142,7 @@ mod service_integration {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
-        let result = service.quick(temp_dir.path(), "Build a widget", now).await;
+        let result = service.quick(temp_dir.path(), "Build a widget", now, None).await;
 
         assert!(
             result.is_err(),
@@ -1150,7 +1163,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Quick file layout test", now)
+            .quick(temp_dir.path(), "Quick file layout test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1182,7 +1195,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Empty questions file layout test", now)
+            .draft(temp_dir.path(),"Empty questions file layout test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1214,31 +1227,28 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    },
-                    {
-                        "id": "q2",
-                        "prompt": "What language?",
-                        "rationale": "Testing",
-                        "required": false
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                },
+                {
+                    "id": "q2",
+                    "prompt": "What language?",
+                    "rationale": "Testing",
+                    "required": false
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Question boundary failure test", now)
+            .draft(temp_dir.path(),"Question boundary failure test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1304,25 +1314,22 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test answers.json boundary", now)
+            .draft(temp_dir.path(),"Test answers.json boundary", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1350,7 +1357,7 @@ mod service_integration {
         let agent_service2 = AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
         let service2 = RequirementsService::new(agent_service2, FsRequirementsStore);
 
-        let result = service2.answer(temp_dir.path(), &run_id).await;
+        let result = service2.answer(temp_dir.path(), &run_id, None).await;
         assert!(
             result.is_err(),
             "answer should be rejected when answers.json already has content"
@@ -1380,7 +1387,7 @@ mod service_integration {
         // First, run a successful quick-mode run to get a baseline
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed history rollback test", now)
+            .quick(temp_dir.path(), "Seed history rollback test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1417,54 +1424,68 @@ mod service_integration {
         );
     }
 
-    /// Regression: draft-mode runs with empty questions must still persist
-    /// `latest_question_set_id` and a QuestionsGenerated journal entry.
+    /// Full-mode draft pipeline completes all seven stages when validation
+    /// passes, recording stage completion in committed_stages and journal.
     #[tokio::test(flavor = "multi_thread")]
-    async fn draft_with_empty_questions_persists_question_set_id_and_journal_event() {
+    async fn draft_full_mode_records_committed_stages_and_journal_events() {
         use ralph_burning::contexts::requirements_drafting::model::RequirementsJournalEventType;
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        // Default stub returns empty questions for question_set
+        // Default stub returns pass for validation — no question round
         let adapter = StubBackendAdapter::default();
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Empty questions regression test", now)
+            .draft(temp_dir.path(),"Full mode stages test", now, None)
             .await
             .expect("draft should succeed");
 
-        // Check run.json has latest_question_set_id set
         let store = FsRequirementsStore;
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
 
         assert_eq!(run.status, RequirementsStatus::Completed);
-        assert!(
-            run.latest_question_set_id.is_some(),
-            "empty-question run must still persist latest_question_set_id in run.json"
-        );
 
-        // Check journal has QuestionsGenerated event
+        // Verify all seven full-mode stages are committed
+        let expected_stages = [
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
+        ];
+        for stage in &expected_stages {
+            assert!(
+                run.committed_stages.contains_key(*stage),
+                "committed_stages should contain '{stage}'"
+            );
+        }
+
+        // Check journal has StageCompleted events
         let journal = store
             .read_journal(temp_dir.path(), &run_id)
             .expect("read journal");
-        let has_qs_event = journal
+        let stage_completed_count = journal
             .iter()
-            .any(|e| e.event_type == RequirementsJournalEventType::QuestionsGenerated);
+            .filter(|e| e.event_type == RequirementsJournalEventType::StageCompleted)
+            .count();
         assert!(
-            has_qs_event,
-            "empty-question run must have QuestionsGenerated event in journal"
+            stage_completed_count >= 6,
+            "journal should have StageCompleted events for ideation through validation, got {stage_completed_count}"
         );
     }
 
-    /// Regression: when answers advance the run to question round 2, draft and
-    /// review history IDs must use the incremented round instead of `-1`.
+    /// Full-mode answer re-runs the pipeline from synthesis when the question
+    /// round advances. Ideation and research are reused from cache; synthesis
+    /// and downstream produce new stage payloads at the incremented round.
     #[tokio::test(flavor = "multi_thread")]
-    async fn answer_uses_round_two_ids_for_draft_and_review_history() {
+    async fn answer_reruns_full_mode_pipeline_with_cache_reuse() {
         use ralph_burning::contexts::requirements_drafting::service::RequirementsStorePort;
 
         std::env::set_var("EDITOR", "true");
@@ -1472,27 +1493,33 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Round-aware history IDs", now)
+            .draft(temp_dir.path(),"Round-aware full-mode answer", now, None)
             .await
             .expect("draft should succeed");
+
+        // Verify awaiting answers state — ideation and research committed,
+        // synthesis and downstream cleared by question round.
+        let store = FsRequirementsStore;
+        let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+        assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+        assert!(run.committed_stages.contains_key("ideation"));
+        assert!(run.committed_stages.contains_key("research"));
+        assert!(!run.committed_stages.contains_key("synthesis"));
 
         let answers_path = temp_dir
             .path()
@@ -1502,57 +1529,46 @@ mod service_integration {
         std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
 
         service
-            .answer(temp_dir.path(), &run_id)
+            .answer(temp_dir.path(), &run_id, None)
             .await
             .expect("answer should succeed");
 
-        let store = FsRequirementsStore;
         let run = store.read_run(temp_dir.path(), &run_id).expect("read run");
+
+        assert_eq!(run.status, RequirementsStatus::Completed);
+        // question_round tracks completed rounds: 1 round opened + answered = 1
+        assert_eq!(run.question_round, 1);
+        assert_eq!(run.latest_question_set_id, Some(format!("{run_id}-qs-1")));
+
+        // All seven stages should be committed after answer completes
+        let expected_stages = [
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
+        ];
+        for stage in &expected_stages {
+            assert!(
+                run.committed_stages.contains_key(*stage),
+                "committed_stages should contain '{stage}' after answer"
+            );
+        }
+
+        // Seed files should exist
         let run_dir = temp_dir
             .path()
             .join(".ralph-burning/requirements")
             .join(&run_id);
-
-        assert_eq!(run.status, RequirementsStatus::Completed);
-        assert_eq!(run.question_round, 2);
-        assert_eq!(run.latest_question_set_id, Some(format!("{run_id}-qs-1")));
-        assert_eq!(run.latest_draft_id, Some(format!("{run_id}-draft-2")));
-        assert_eq!(run.latest_review_id, Some(format!("{run_id}-review-2")));
         assert!(
-            run_dir
-                .join(format!("history/payloads/{run_id}-draft-2.json"))
-                .exists(),
-            "round-2 draft payload should exist"
+            run_dir.join("seed/project.json").exists(),
+            "seed/project.json should exist after answer completes"
         );
         assert!(
-            run_dir
-                .join(format!("history/artifacts/{run_id}-draft-art-2.md"))
-                .exists(),
-            "round-2 draft artifact should exist"
-        );
-        assert!(
-            run_dir
-                .join(format!("history/payloads/{run_id}-review-2.json"))
-                .exists(),
-            "round-2 review payload should exist"
-        );
-        assert!(
-            run_dir
-                .join(format!("history/artifacts/{run_id}-review-art-2.md"))
-                .exists(),
-            "round-2 review artifact should exist"
-        );
-        assert!(
-            !run_dir
-                .join(format!("history/payloads/{run_id}-draft-1.json"))
-                .exists(),
-            "round-2 answer path should not reuse round-1 draft payload IDs"
-        );
-        assert!(
-            !run_dir
-                .join(format!("history/payloads/{run_id}-review-1.json"))
-                .exists(),
-            "round-2 answer path should not reuse round-1 review payload IDs"
+            run_dir.join("seed/prompt.md").exists(),
+            "seed/prompt.md should exist after answer completes"
         );
     }
 
@@ -1570,25 +1586,22 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions that transitions to awaiting_answers
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What framework?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What framework?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Stale pending questions test", now)
+            .draft(temp_dir.path(),"Stale pending questions test", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1616,7 +1629,7 @@ mod service_integration {
 
         // Transition to failed state (simulating draft generation failure)
         run.status = RequirementsStatus::Failed;
-        run.question_round = 2;
+        run.question_round = 1;
         run.status_summary = "failed: draft generation error after answers".to_owned();
         run.updated_at = chrono::Utc::now();
         store
@@ -1670,19 +1683,16 @@ mod service_integration {
         initialize_workspace_fixture(temp_dir.path());
 
         // Create a draft run with questions
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "q1",
-                        "prompt": "What language?",
-                        "rationale": "Testing",
-                        "required": true
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "q1",
+                    "prompt": "What language?",
+                    "rationale": "Testing",
+                    "required": true
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
@@ -1692,6 +1702,7 @@ mod service_integration {
                 temp_dir.path(),
                 "Draft-committed pending questions test",
                 now,
+                None,
             )
             .await
             .expect("draft should succeed");
@@ -1702,8 +1713,8 @@ mod service_integration {
         // Simulate: run progressed past answers, draft was committed, then
         // the run failed during review.
         run.status = RequirementsStatus::Failed;
-        run.latest_draft_id = Some(format!("{run_id}-draft-2"));
-        run.question_round = 2;
+        run.latest_draft_id = Some(format!("{run_id}-draft-1"));
+        run.question_round = 1;
         run.status_summary = "failed: review error after draft".to_owned();
         run.updated_at = chrono::Utc::now();
         store
@@ -1757,7 +1768,7 @@ mod service_integration {
 
         let now = deterministic_now();
         let run_id = service
-            .quick(temp_dir.path(), "Seed rollback ordering test", now)
+            .quick(temp_dir.path(), "Seed rollback ordering test", now, None)
             .await
             .expect("quick should succeed");
 
@@ -1802,33 +1813,30 @@ mod service_integration {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace_fixture(temp_dir.path());
 
-        let adapter = StubBackendAdapter::default().with_label_payload(
-            "requirements:question_set",
-            json!({
-                "questions": [
-                    {
-                        "id": "team-name",
-                        "prompt": "What is the team's \"official\" name?\nInclude the division.",
-                        "rationale": "Needed for project naming.\nSee policy doc\\appendix.",
-                        "required": true,
-                        "suggested_default": "Engineering \"Platform\"\nTeam"
-                    },
-                    {
-                        "id": "api_version",
-                        "prompt": "Which API version? (e.g. v2\\v3)",
-                        "rationale": "Determines compat",
-                        "required": false,
-                        "suggested_default": "v2"
-                    }
-                ]
-            }),
-        );
+        let adapter = stub_with_validation_questions(json!({
+            "questions": [
+                {
+                    "id": "team-name",
+                    "prompt": "What is the team's \"official\" name?\nInclude the division.",
+                    "rationale": "Needed for project naming.\nSee policy doc\\appendix.",
+                    "required": true,
+                    "suggested_default": "Engineering \"Platform\"\nTeam"
+                },
+                {
+                    "id": "api_version",
+                    "prompt": "Which API version? (e.g. v2\\v3)",
+                    "rationale": "Determines compat",
+                    "required": false,
+                    "suggested_default": "v2"
+                }
+            ]
+        }));
         let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = deterministic_now();
         let run_id = service
-            .draft(temp_dir.path(), "Test special chars", now)
+            .draft(temp_dir.path(),"Test special chars", now, None)
             .await
             .expect("draft should succeed");
 
@@ -1875,15 +1883,15 @@ mod service_integration {
         use std::sync::atomic::{AtomicU32, Ordering};
 
         use chrono::{TimeZone, Utc};
-        use serde_json::Value;
+        use serde_json::{json, Value};
         use tempfile::tempdir;
 
         use ralph_burning::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
         use ralph_burning::adapters::stub_backend::StubBackendAdapter;
         use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
         use ralph_burning::contexts::requirements_drafting::model::{
-            PersistedAnswers, RequirementsJournalEvent, RequirementsJournalEventType,
-            RequirementsRun, RequirementsStatus,
+            FullModeStage, PersistedAnswers, RequirementsJournalEvent,
+            RequirementsJournalEventType, RequirementsRun, RequirementsStatus,
         };
         use ralph_burning::contexts::requirements_drafting::service::{
             RequirementsService, RequirementsStorePort,
@@ -2082,7 +2090,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test run_created failure", now)
+                .draft(temp_dir.path(),"Test run_created failure", now, None)
                 .await;
 
             assert!(
@@ -2116,7 +2124,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test run_created failure in quick", now)
+                .quick(temp_dir.path(), "Test run_created failure in quick", now, None)
                 .await;
 
             assert!(
@@ -2148,7 +2156,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .draft(temp_dir.path(), "Test questions_generated failure", now)
+                .draft(temp_dir.path(),"Test questions_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2210,7 +2218,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test draft_generated failure", now)
+                .quick(temp_dir.path(), "Test draft_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2266,7 +2274,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test review_completed failure", now)
+                .quick(temp_dir.path(), "Test review_completed failure", now, None)
                 .await;
 
             assert!(
@@ -2309,7 +2317,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test seed_generated failure", now)
+                .quick(temp_dir.path(), "Test seed_generated failure", now, None)
                 .await;
 
             assert!(
@@ -2374,7 +2382,7 @@ mod service_integration {
 
             let now = deterministic_now();
             let result = service
-                .quick(temp_dir.path(), "Test run_completed failure", now)
+                .quick(temp_dir.path(), "Test run_completed failure", now, None)
                 .await;
 
             // The run should succeed despite RunCompleted journal failure
@@ -2417,6 +2425,478 @@ mod service_integration {
                 !has_completed,
                 "RunCompleted event should NOT exist (best-effort failure)"
             );
+        }
+
+        /// Journal append failure at review_completed on a LATER revision loop
+        /// (2nd review after a successful revision cycle) must restore the prior
+        /// committed review ID, not clear it to None.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (1st review, request_changes), call 4 = RevisionRequested,
+        /// call 5 = RevisionCompleted, call 6 = ReviewCompleted (2nd review, FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn later_loop_review_journal_failure_restores_prior_review_id() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to always return request_changes so the revision loop runs
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 6th journal call = 2nd ReviewCompleted
+            let store = FailingJournalRequirementsStore::new(6);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test later review_completed failure", now, None)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on 2nd review_completed journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // The prior review (from the 1st loop iteration) was successfully committed,
+            // so latest_review_id should be restored to that ID, not cleared to None.
+            assert!(
+                run.latest_review_id.is_some(),
+                "prior committed review ID should be restored on later-loop review journal failure"
+            );
+            // The revised draft (from the 1st revision) was also committed successfully.
+            assert!(
+                run.latest_draft_id.is_some(),
+                "revised draft boundary should survive later-loop review journal failure"
+            );
+        }
+
+        /// Journal append failure for AnswersSubmitted must restore the pre-answer
+        /// question boundary (question_round, status) and clear answers.json so the
+        /// run remains resumable via `requirements answer`.
+        /// Full-mode with question round: draft() produces 8 journal events
+        /// (RunCreated + 6 StageCompleted + QuestionRoundOpened), then answer()
+        /// produces AnswersSubmitted as its 1st journal call = global call 9.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn answers_submitted_journal_failure_restores_question_boundary() {
+            std::env::set_var("EDITOR", "true");
+
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Use a real store for draft(), then a failing store for answer().
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let now = deterministic_now();
+            let run_id = service
+                .draft(temp_dir.path(),"Test answers_submitted failure", now, None)
+                .await
+                .expect("draft should succeed (to reach awaiting_answers)");
+
+            // Verify we are in awaiting_answers
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run");
+            assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+            let pre_question_round = run.question_round;
+
+            // Write answers file
+            let answers_path = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id)
+                .join("answers.toml");
+            std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+            // Now call answer() with a failing store. The FailingJournalRequirementsStore
+            // has its own counter starting at 0, so AnswersSubmitted is call 1.
+            let adapter2 = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service2 =
+                AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+            let store2 = FailingJournalRequirementsStore::new(1);
+            let service2 = RequirementsService::new(agent_service2, store2);
+
+            let result = service2.answer(temp_dir.path(), &run_id, None).await;
+            assert!(
+                result.is_err(),
+                "answer should fail on AnswersSubmitted journal failure"
+            );
+
+            // Verify the run was failed but the question boundary was restored
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run after failure");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            assert_eq!(
+                run.question_round, pre_question_round,
+                "question_round should be restored to pre-answer value"
+            );
+            // answers.json should be cleared so answers_already_durably_stored returns false
+            let answers_json = FsRequirementsStore.read_answers_json(temp_dir.path(), &run_id);
+            match answers_json {
+                Ok(persisted) => assert!(
+                    persisted.answers.is_empty(),
+                    "answers.json should be empty after rollback"
+                ),
+                Err(_) => {} // File doesn't exist is also acceptable
+            }
+        }
+
+        /// Journal append failure for QuestionRoundOpened must restore
+        /// committed_stages and latest_question_set_id, and remove the
+        /// question-set payload/artifact pair.
+        /// Full-mode: call 1 = RunCreated, calls 2–7 = 6 StageCompleted,
+        /// call 8 = QuestionRoundOpened (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn question_round_opened_journal_failure_restores_pre_question_state() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Stub that triggers needs_questions on validation
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 8th journal call = QuestionRoundOpened
+            let store = FailingJournalRequirementsStore::new(8);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(),"Test question_round_opened failure", now, None)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "draft should fail on QuestionRoundOpened journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+
+            // committed_stages should be restored: synthesis and downstream should
+            // still be present because the rollback restores the pre-question snapshot.
+            assert!(
+                run.committed_stages.contains_key("validation"),
+                "validation should still be in committed_stages after QuestionRoundOpened rollback"
+            );
+            assert!(
+                run.committed_stages.contains_key("synthesis"),
+                "synthesis should still be in committed_stages after QuestionRoundOpened rollback"
+            );
+            // latest_question_set_id should be restored to pre-question value (None)
+            assert!(
+                run.latest_question_set_id.is_none(),
+                "latest_question_set_id should be restored to None after rollback"
+            );
+        }
+
+        /// Journal append failure for StageCompleted must restore current_stage
+        /// and recommended_flow to the prior stage values.
+        /// Full-mode: call 1 = RunCreated, call 2 = StageCompleted(ideation),
+        /// call 3 = StageCompleted(research), call 4 = StageCompleted(synthesis) (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn stage_completed_journal_failure_restores_current_stage_and_recommended_flow() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            let adapter = StubBackendAdapter::default();
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 4th journal call = StageCompleted(synthesis)
+            let store = FailingJournalRequirementsStore::new(4);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .draft(temp_dir.path(),"Test stage_completed failure", now, None)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "draft should fail on StageCompleted(synthesis) journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+
+            // current_stage should be restored to the prior stage (Research),
+            // not left as Synthesis.
+            assert_ne!(
+                run.current_stage,
+                Some(FullModeStage::Synthesis),
+                "current_stage should not be Synthesis after rollback"
+            );
+            // synthesis should NOT be in committed_stages
+            assert!(
+                !run.committed_stages.contains_key("synthesis"),
+                "synthesis should not be in committed_stages after rollback"
+            );
+            // ideation and research should still be committed (they succeeded)
+            assert!(
+                run.committed_stages.contains_key("ideation"),
+                "ideation should survive synthesis rollback"
+            );
+            assert!(
+                run.committed_stages.contains_key("research"),
+                "research should survive synthesis rollback"
+            );
+            // last_transition_cached should be restored to the value it had
+            // before the synthesis StageCompleted attempt (false, since
+            // research was a fresh execution that set it to false).
+            assert!(
+                !run.last_transition_cached,
+                "last_transition_cached should be restored to prior value after StageCompleted rollback"
+            );
+        }
+
+        /// Journal append failure at revision_completed on the 1st revision must
+        /// restore the prior committed draft ID (the initial draft), not clear it.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (request_changes), call 4 = RevisionRequested,
+        /// call 5 = RevisionCompleted (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn revision_completed_journal_failure_restores_prior_draft_id() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to always return request_changes
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 5th journal call = RevisionCompleted
+            let store = FailingJournalRequirementsStore::new(5);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test revision_completed failure", now, None)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on revision_completed journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // The initial draft was committed before the revision attempt,
+            // so latest_draft_id should be restored to the initial draft's ID.
+            assert!(
+                run.latest_draft_id.is_some(),
+                "prior committed draft ID should be restored on revision journal failure"
+            );
+            assert!(
+                run.recommended_flow.is_some(),
+                "prior recommended_flow should be restored on revision journal failure"
+            );
+        }
+
+        /// Journal append failure at revision_requested must restore
+        /// quick_revision_count to the prior committed review boundary value.
+        /// Quick mode with request_changes: call 1 = RunCreated, call 2 = DraftGenerated,
+        /// call 3 = ReviewCompleted (request_changes), call 4 = RevisionRequested (FAIL here).
+        #[tokio::test(flavor = "multi_thread")]
+        async fn revision_requested_journal_failure_restores_quick_revision_count() {
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Configure stub to return request_changes so the revision loop triggers
+            let adapter = StubBackendAdapter::default().with_label_payload(
+                "requirements:requirements_review",
+                json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Needs work"],
+                    "findings": ["Missing details"],
+                    "follow_ups": []
+                }),
+            );
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            // Fail on 4th journal call = RevisionRequested
+            let store = FailingJournalRequirementsStore::new(4);
+            let service = RequirementsService::new(agent_service, store);
+
+            let now = deterministic_now();
+            let result = service
+                .quick(temp_dir.path(), "Test revision_requested failure", now, None)
+                .await;
+
+            assert!(
+                result.is_err(),
+                "quick should fail on revision_requested journal failure"
+            );
+
+            let run_id = find_single_run_id(temp_dir.path());
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("run.json should exist");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // quick_revision_count should be restored to 0 (pre-revision value),
+            // not left at 1 from the failed revision attempt.
+            assert_eq!(
+                run.quick_revision_count, 0,
+                "quick_revision_count should be restored to pre-revision value on RevisionRequested journal failure"
+            );
+        }
+
+        /// After answering questions, the post-answer invalidation must recompute
+        /// current_stage from the surviving committed stages. If current_stage
+        /// was pointing at a stage that got invalidated (e.g. validation),
+        /// it must be updated to the latest surviving stage (e.g. research).
+        /// This verifies the fix for Required Change 2a from review iteration 5.
+        #[tokio::test(flavor = "multi_thread")]
+        async fn answer_boundary_recomputes_current_stage_after_invalidation() {
+            std::env::set_var("EDITOR", "true");
+
+            let temp_dir = tempdir().expect("create temp dir");
+            initialize_workspace_fixture(temp_dir.path());
+
+            // Phase 1: run draft() to reach awaiting_answers
+            let adapter = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let now = deterministic_now();
+            let run_id = service
+                .draft(temp_dir.path(),"Test current_stage recomputation", now, None)
+                .await
+                .expect("draft should succeed (to reach awaiting_answers)");
+
+            // Verify we reached awaiting_answers with all stages committed
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run");
+            assert_eq!(run.status, RequirementsStatus::AwaitingAnswers);
+            // Before answering, ideation and research should be committed
+            assert!(
+                run.committed_stages.contains_key("ideation"),
+                "ideation should be committed before answer"
+            );
+            assert!(
+                run.committed_stages.contains_key("research"),
+                "research should be committed before answer"
+            );
+
+            // Write answers file
+            let answers_path = temp_dir
+                .path()
+                .join(".ralph-burning/requirements")
+                .join(&run_id)
+                .join("answers.toml");
+            std::fs::write(&answers_path, "q1 = \"Use Axum\"\n").expect("write answers");
+
+            // Phase 2: call answer(). After AnswersSubmitted, synthesis+downstream
+            // are invalidated. The pipeline reruns all stages (since answers change
+            // the base context, cache keys don't match). We let the run fail on
+            // 2nd journal call (1st StageCompleted after AnswersSubmitted) to
+            // verify that current_stage was properly recomputed post-invalidation.
+            let adapter2 = super::stub_with_validation_questions(json!({
+                "questions": [
+                    {
+                        "id": "q1",
+                        "prompt": "What framework?",
+                        "rationale": "Testing",
+                        "required": true
+                    }
+                ]
+            }));
+            let agent_service2 =
+                AgentExecutionService::new(adapter2, FsRawOutputStore, FsSessionStore);
+            // Fail on 2nd call = StageCompleted(ideation) after AnswersSubmitted
+            let store2 = FailingJournalRequirementsStore::new(2);
+            let service2 = RequirementsService::new(agent_service2, store2);
+
+            let result = service2.answer(temp_dir.path(), &run_id, None).await;
+            assert!(
+                result.is_err(),
+                "answer should fail on StageCompleted journal failure"
+            );
+
+            // Verify current_stage was recomputed after invalidation: it should
+            // NOT reference a stage that was invalidated (synthesis or later).
+            let run = FsRequirementsStore
+                .read_run(temp_dir.path(), &run_id)
+                .expect("read run after failure");
+            assert_eq!(run.status, RequirementsStatus::Failed);
+            // current_stage should not be a downstream-invalidated stage
+            if let Some(stage) = run.current_stage {
+                assert!(
+                    stage != FullModeStage::Synthesis
+                        && stage != FullModeStage::ImplementationSpec
+                        && stage != FullModeStage::GapAnalysis
+                        && stage != FullModeStage::Validation,
+                    "current_stage should not reference an invalidated stage after answer-boundary recomputation, got {:?}",
+                    stage
+                );
+            }
         }
     }
 }
@@ -2489,5 +2969,473 @@ mod daemon_handoff {
             read_requirements_run_status(&store, temp.path(), run_id).expect("read run status");
         assert_eq!(RequirementsStatus::Drafting, loaded.status);
         assert_eq!("test idea", loaded.idea);
+    }
+}
+
+// ── Slice 1: Full-mode stage contract tests ─────────────────────────────────
+
+#[test]
+fn parity_slice1_ideation_contract_validates_and_renders() {
+    let raw = json!({
+        "themes": ["API design", "Performance"],
+        "key_concepts": ["REST", "GraphQL"],
+        "initial_scope": "Build a REST API with caching layer.",
+        "open_questions": ["Which caching strategy?"]
+    });
+
+    let contract = RequirementsContract::ideation();
+    let bundle = contract.evaluate(&raw).expect("ideation should validate");
+    assert!(bundle.artifact.contains("# Ideation"));
+    assert!(bundle.artifact.contains("API design"));
+    assert!(bundle.artifact.contains("Build a REST API"));
+}
+
+#[test]
+fn parity_slice1_ideation_rejects_empty_themes() {
+    let raw = json!({
+        "themes": [],
+        "key_concepts": [],
+        "initial_scope": "Some scope",
+        "open_questions": []
+    });
+
+    let contract = RequirementsContract::ideation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("themes"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_research_contract_validates_and_renders() {
+    let raw = json!({
+        "findings": [{
+            "area": "Security",
+            "summary": "OAuth2 is recommended",
+            "relevance": "Directly relevant"
+        }],
+        "constraints_discovered": ["Must use TLS"],
+        "prior_art": ["Project Alpha"],
+        "technical_context": "Node.js with Express backend."
+    });
+
+    let contract = RequirementsContract::research();
+    let bundle = contract.evaluate(&raw).expect("research should validate");
+    assert!(bundle.artifact.contains("# Research"));
+    assert!(bundle.artifact.contains("Security"));
+    assert!(bundle.artifact.contains("Node.js with Express"));
+}
+
+#[test]
+fn parity_slice1_research_rejects_empty_technical_context() {
+    let raw = json!({
+        "findings": [],
+        "constraints_discovered": [],
+        "prior_art": [],
+        "technical_context": "   "
+    });
+
+    let contract = RequirementsContract::research();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_synthesis_contract_validates_and_renders() {
+    let raw = json!({
+        "problem_summary": "Build a REST API",
+        "goals": ["Fast responses"],
+        "non_goals": [],
+        "constraints": [],
+        "acceptance_criteria": ["200ms p99 latency"],
+        "risks_or_open_questions": [],
+        "recommended_flow": "standard"
+    });
+
+    let contract = RequirementsContract::synthesis();
+    let bundle = contract.evaluate(&raw).expect("synthesis should validate");
+    assert!(bundle.artifact.contains("# Synthesis"));
+    assert!(bundle.artifact.contains("Build a REST API"));
+}
+
+#[test]
+fn parity_slice1_implementation_spec_contract_validates_and_renders() {
+    let raw = json!({
+        "architecture_overview": "Microservice architecture with API gateway.",
+        "components": [{
+            "name": "API Gateway",
+            "responsibility": "Route requests",
+            "interfaces": ["HTTP /api/v1"]
+        }],
+        "integration_points": ["Database"],
+        "migration_notes": []
+    });
+
+    let contract = RequirementsContract::implementation_spec();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("implementation_spec should validate");
+    assert!(bundle.artifact.contains("# Implementation Spec"));
+    assert!(bundle.artifact.contains("API Gateway"));
+}
+
+#[test]
+fn parity_slice1_implementation_spec_rejects_empty_components() {
+    let raw = json!({
+        "architecture_overview": "Some architecture",
+        "components": [],
+        "integration_points": [],
+        "migration_notes": []
+    });
+
+    let contract = RequirementsContract::implementation_spec();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_gap_analysis_contract_validates_and_renders() {
+    let raw = json!({
+        "gaps": [{
+            "area": "Authentication",
+            "description": "No auth specified",
+            "severity": "high",
+            "suggested_resolution": "Add OAuth2"
+        }],
+        "coverage_assessment": "Most areas covered except auth.",
+        "blocking_gaps": ["Authentication"]
+    });
+
+    let contract = RequirementsContract::gap_analysis();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("gap_analysis should validate");
+    assert!(bundle.artifact.contains("# Gap Analysis"));
+    assert!(bundle.artifact.contains("Authentication"));
+}
+
+#[test]
+fn parity_slice1_validation_pass_contract_validates() {
+    let raw = json!({
+        "outcome": "pass",
+        "evidence": ["All requirements covered"],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let bundle = contract
+        .evaluate(&raw)
+        .expect("validation pass should validate");
+    assert!(bundle.artifact.contains("# Validation"));
+    assert!(bundle.artifact.contains("**pass**"));
+}
+
+#[test]
+fn parity_slice1_validation_needs_questions_requires_missing_info() {
+    let raw = json!({
+        "outcome": "needs_questions",
+        "evidence": [],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("missing_information"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_validation_fail_requires_blocking_issues() {
+    let raw = json!({
+        "outcome": "fail",
+        "evidence": [],
+        "blocking_issues": [],
+        "missing_information": []
+    });
+
+    let contract = RequirementsContract::validation();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+}
+
+#[test]
+fn parity_slice1_versioned_seed_includes_version_and_source() {
+    use ralph_burning::contexts::requirements_drafting::model::{
+        ProjectSeedPayload, SeedSourceMetadata, PROJECT_SEED_VERSION,
+    };
+    use ralph_burning::shared::domain::FlowPreset;
+
+    let payload = ProjectSeedPayload {
+        version: PROJECT_SEED_VERSION,
+        project_id: "test-proj".to_owned(),
+        project_name: "Test Project".to_owned(),
+        flow: FlowPreset::Standard,
+        prompt_body: "Build the thing.".to_owned(),
+        handoff_summary: "Ready.".to_owned(),
+        follow_ups: vec![],
+        source: Some(SeedSourceMetadata {
+            mode: RequirementsMode::Draft,
+            run_id: "req-20260318-120000".to_owned(),
+            question_rounds: 1,
+            quick_revisions: None,
+        }),
+    };
+
+    let md = renderers::render_project_seed(&payload);
+    assert!(md.contains(&format!("- **Version:** {PROJECT_SEED_VERSION}")));
+    assert!(md.contains("- **Mode:** draft"));
+    assert!(md.contains("- **Run ID:** req-20260318-120000"));
+}
+
+#[test]
+fn parity_slice1_seed_version_1_accepted_by_contract() {
+    let raw = json!({
+        "version": 1,
+        "project_id": "legacy-proj",
+        "project_name": "Legacy Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let contract = RequirementsContract::seed();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_ok(), "version 1 seed should be accepted");
+}
+
+#[test]
+fn parity_slice1_unsupported_seed_version_rejected() {
+    let raw = json!({
+        "version": 99,
+        "project_id": "bad-proj",
+        "project_name": "Bad Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let contract = RequirementsContract::seed();
+    let result = contract.evaluate(&raw);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ContractError::DomainValidation { details, .. } => {
+            assert!(details.contains("unsupported seed version"));
+        }
+        other => panic!("expected DomainValidation, got: {other:?}"),
+    }
+}
+
+#[test]
+fn parity_slice1_cache_key_deterministic() {
+    use ralph_burning::contexts::requirements_drafting::model::{
+        compute_stage_cache_key, FullModeStage,
+    };
+
+    let key1 = compute_stage_cache_key(FullModeStage::Ideation, &["idea text"]);
+    let key2 = compute_stage_cache_key(FullModeStage::Ideation, &["idea text"]);
+    assert_eq!(key1, key2, "same inputs should produce same cache key");
+
+    let key3 = compute_stage_cache_key(FullModeStage::Ideation, &["different text"]);
+    assert_ne!(key1, key3, "different inputs should produce different keys");
+
+    let key4 = compute_stage_cache_key(FullModeStage::Research, &["idea text"]);
+    assert_ne!(key1, key4, "different stages should produce different keys");
+}
+
+#[test]
+fn parity_slice1_full_mode_stage_pipeline_order() {
+    use ralph_burning::contexts::requirements_drafting::model::FullModeStage;
+
+    let order = FullModeStage::pipeline_order();
+    assert_eq!(order.len(), 7);
+    assert_eq!(order[0], FullModeStage::Ideation);
+    assert_eq!(order[1], FullModeStage::Research);
+    assert_eq!(order[2], FullModeStage::Synthesis);
+    assert_eq!(order[3], FullModeStage::ImplementationSpec);
+    assert_eq!(order[4], FullModeStage::GapAnalysis);
+    assert_eq!(order[5], FullModeStage::Validation);
+    assert_eq!(order[6], FullModeStage::ProjectSeed);
+}
+
+#[test]
+fn parity_slice1_question_round_invalidation_preserves_ideation_and_research() {
+    use ralph_burning::contexts::requirements_drafting::model::FullModeStage;
+
+    let invalidated = FullModeStage::question_round_invalidated();
+    // Should NOT include ideation or research
+    assert!(!invalidated.contains(&FullModeStage::Ideation));
+    assert!(!invalidated.contains(&FullModeStage::Research));
+    // Should include synthesis and everything downstream
+    assert!(invalidated.contains(&FullModeStage::Synthesis));
+    assert!(invalidated.contains(&FullModeStage::ImplementationSpec));
+    assert!(invalidated.contains(&FullModeStage::GapAnalysis));
+    assert!(invalidated.contains(&FullModeStage::Validation));
+    assert!(invalidated.contains(&FullModeStage::ProjectSeed));
+}
+
+#[test]
+fn parity_slice1_committed_stage_entry_serialization() {
+    use ralph_burning::contexts::requirements_drafting::model::CommittedStageEntry;
+
+    let entry = CommittedStageEntry {
+        payload_id: "req-001-ideation-1".to_owned(),
+        artifact_id: "req-001-ideation-art-1".to_owned(),
+        cache_key: Some("abc123".to_owned()),
+    };
+
+    let json = serde_json::to_value(&entry).expect("serialize");
+    let roundtripped: CommittedStageEntry = serde_json::from_value(json).expect("deserialize");
+    assert_eq!(entry, roundtripped);
+}
+
+#[test]
+fn parity_slice1_run_state_new_fields_default_correctly() {
+    let now = Utc::now();
+    let run = RequirementsRun::new_draft("req-test".to_owned(), "idea".to_owned(), now);
+    assert!(run.current_stage.is_none());
+    assert!(run.committed_stages.is_empty());
+    assert_eq!(run.quick_revision_count, 0);
+    assert!(!run.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_run_state_new_fields_serialize_with_defaults() {
+    let now = Utc::now();
+    let run = RequirementsRun::new_draft("req-test".to_owned(), "idea".to_owned(), now);
+
+    // Serialize and deserialize - new fields with defaults should round-trip
+    let json = serde_json::to_string(&run).expect("serialize");
+    let parsed: RequirementsRun = serde_json::from_str(&json).expect("deserialize");
+    assert!(parsed.current_stage.is_none());
+    assert!(parsed.committed_stages.is_empty());
+    assert_eq!(parsed.quick_revision_count, 0);
+    assert!(!parsed.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_backward_compat_run_json_without_new_fields() {
+    // Simulate a run.json from before Slice 1 (no new fields)
+    let old_json = json!({
+        "run_id": "req-old",
+        "idea": "old idea",
+        "mode": "draft",
+        "status": "completed",
+        "question_round": 1,
+        "latest_question_set_id": null,
+        "latest_draft_id": "req-old-draft-1",
+        "latest_review_id": "req-old-review-1",
+        "latest_seed_id": "req-old-seed-1",
+        "recommended_flow": "standard",
+        "created_at": "2026-03-18T10:00:00Z",
+        "updated_at": "2026-03-18T10:05:00Z",
+        "status_summary": "completed"
+    });
+
+    let run: RequirementsRun = serde_json::from_value(old_json).expect("deserialize old format");
+    assert!(run.current_stage.is_none());
+    assert!(run.committed_stages.is_empty());
+    assert_eq!(run.quick_revision_count, 0);
+    assert!(!run.last_transition_cached);
+}
+
+#[test]
+fn parity_slice1_seed_without_version_defaults_to_1() {
+    use ralph_burning::contexts::requirements_drafting::model::ProjectSeedPayload;
+
+    let old_seed_json = json!({
+        "project_id": "old-proj",
+        "project_name": "Old Project",
+        "flow": "standard",
+        "prompt_body": "Build it.",
+        "handoff_summary": "Ready.",
+        "follow_ups": []
+    });
+
+    let seed: ProjectSeedPayload =
+        serde_json::from_value(old_seed_json).expect("deserialize old seed");
+    assert_eq!(seed.version, 1, "missing version should default to 1");
+    assert!(seed.source.is_none());
+}
+
+// ── Template override parity (Slice 7) ──────────────────────────────────────
+
+mod template_override_parity {
+    use ralph_burning::contexts::workspace_governance::template_catalog;
+    use tempfile::tempdir;
+
+    #[test]
+    fn requirements_draft_built_in_contains_idea_placeholder() {
+        let tmp = tempdir().unwrap();
+        let resolved = template_catalog::resolve("requirements_draft", tmp.path(), None).unwrap();
+        assert_eq!(resolved.source, template_catalog::TemplateSource::BuiltIn);
+        assert!(resolved.content.contains("{{idea}}"));
+    }
+
+    #[test]
+    fn requirements_ideation_built_in_contains_base_context() {
+        let tmp = tempdir().unwrap();
+        let resolved =
+            template_catalog::resolve("requirements_ideation", tmp.path(), None).unwrap();
+        assert!(resolved.content.contains("{{base_context}}"));
+    }
+
+    #[test]
+    fn requirements_workspace_override_used() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("requirements_draft.md"), "CUSTOM: {{idea}}").unwrap();
+        let resolved = template_catalog::resolve("requirements_draft", tmp.path(), None).unwrap();
+        assert!(matches!(
+            resolved.source,
+            template_catalog::TemplateSource::WorkspaceOverride(_)
+        ));
+        assert!(resolved.content.starts_with("CUSTOM:"));
+    }
+
+    #[test]
+    fn requirements_malformed_override_rejected() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(ws.join("requirements_draft.md"), "No idea placeholder.").unwrap();
+        let result = template_catalog::resolve("requirements_draft", tmp.path(), None);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("malformed template override"));
+    }
+
+    #[test]
+    fn requirements_override_render_produces_custom_output() {
+        let tmp = tempdir().unwrap();
+        let ws = tmp.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws).unwrap();
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "MY IDEATION\n\n{{base_context}}\n\nDone.",
+        )
+        .unwrap();
+        let rendered = template_catalog::resolve_and_render(
+            "requirements_ideation",
+            tmp.path(),
+            None,
+            &[("base_context", "test context")],
+        )
+        .unwrap();
+        assert!(rendered.starts_with("MY IDEATION"));
+        assert!(rendered.contains("test context"));
     }
 }

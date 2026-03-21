@@ -253,6 +253,8 @@ fn amendment_queued_event_builder_serializes_amendment_metadata() {
         "amend-001",
         StageId::AcceptanceQa,
         "fix the widget alignment",
+        "workflow_stage",
+        "test-dedup-key",
     );
 
     assert_eq!(event.event_type, JournalEventType::AmendmentQueued);

@@ -1,0 +1,238 @@
+# Live Backend Smoke Runbook
+
+This runbook describes how to validate the three live backend smoke items
+(Claude, Codex, OpenRouter) required by the manual smoke matrix.
+
+## Prerequisites
+
+| Requirement | Check | Notes |
+|-------------|-------|-------|
+| `ralph-burning` binary | `cargo build` or `nix build` | Must be current branch build |
+| Claude CLI | `command -v claude` | Required for Claude smoke |
+| Codex CLI | `command -v codex` | Required for Codex smoke |
+| `OPENROUTER_API_KEY` | `test -n "$OPENROUTER_API_KEY"` | Required for OpenRouter smoke |
+| Network access | curl to backend endpoints | Backends need outbound HTTPS |
+
+## Workspace Isolation
+
+Each smoke run creates a scratch directory (`/tmp/rb-smoke-$PID`) and **`cd`s
+into it** before executing any CLI commands.  The CLI resolves workspace root
+from `current_dir()` (`src/cli/project.rs:217`, `src/cli/run.rs:130`,
+`src/cli/backend.rs:310`), so running inside the scratch directory guarantees:
+
+- A fresh `.ralph-burning/workspace.toml` is written inside the scratch dir
+- `project bootstrap` persists the active project inside `$SMOKE_DIR/.ralph-burning/`
+- No existing workspace config, active-project selection, or checked-in state
+  in the real repo is read or mutated
+
+The script initialises the scratch workspace with a `workspace.toml` that sets
+`settings.default_backend` to the backend under test (e.g. `"claude"`, `"codex"`,
+or `"openrouter"`).
+
+### Seed-Based Bootstrap (iteration 8)
+
+The smoke harness uses `project bootstrap --from-seed` with a pre-built seed
+fixture (`scripts/smoke-seed.json`) instead of `--idea`. This bypasses the
+quick-requirements pipeline, which avoids model-behaviour blockers where some
+backends cannot approve requirements within `MAX_QUICK_REVISIONS=5` cycles.
+
+The seed fixture is copied into the scratch workspace and the `project_id` is
+overridden to include the backend name (e.g. `smoke-codex-test`) so each
+backend creates a distinct project. The `--from-seed` path loads the
+`ProjectSeedPayload` JSON directly, validates the seed version, and creates
+the project without invoking the requirements service.
+
+### Single-Backend Role Overrides
+
+The standard flow normally requires multiple backend families (e.g. Claude for
+planner/reviewer, Codex for implementer/qa/completer).  For smoke testing a
+single backend end-to-end, the scratch `workspace.toml` overrides ALL roles
+and panels to use only the backend under test:
+
+- `workflow.implementer_backend` / `workflow.qa_backend` (or `planner`/`reviewer` for non-Claude)
+- `completion.backends` — set to `["<backend>", "<backend>"]`
+- `final_review.backends` and `final_review.arbiter_backend`
+- `prompt_review.refiner_backend` and `prompt_review.validator_backends`
+
+This prevents `backend check` from failing on unavailable opposite-family
+backends and ensures every invocation in the run exercises the backend under test.
+
+## Backend Binding
+
+The script explicitly binds the backend under test at every CLI phase:
+
+- **`backend check --backend <name>`** — validates the specific backend
+- **`backend probe --backend <name>`** — resolves against the specific backend
+- **`run start --backend <name>`** — executes using the specific backend
+
+For **OpenRouter**, the script additionally:
+- Writes `[backends.openrouter] enabled = true` in the scratch workspace config
+- Sets `execution.mode = "direct"` (OpenRouter does not support tmux transport)
+- Exports `RALPH_BURNING_BACKEND=openrouter` so that `agent_execution_builder`
+  selects the `OpenRouterBackendAdapter` instead of the default `ProcessBackendAdapter`
+  (which rejects OpenRouter targets at `process_backend.rs:468`)
+
+## Running the Smoke Script
+
+```bash
+# Claude backend
+./scripts/live-backend-smoke.sh claude
+
+# Codex backend
+./scripts/live-backend-smoke.sh codex
+
+# OpenRouter backend (requires OPENROUTER_API_KEY)
+OPENROUTER_API_KEY=sk-or-... ./scripts/live-backend-smoke.sh openrouter
+```
+
+### Environment Overrides
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `RALPH_BURNING` | `cargo run --manifest-path .../Cargo.toml --` | Path/command for ralph-burning binary |
+| `SMOKE_DIR` | `/tmp/rb-smoke-$$` | Scratch directory (becomes CWD for CLI) |
+| `OPENROUTER_API_KEY` | (none) | API key for OpenRouter smoke |
+
+## Backend-Specific Commands
+
+### Claude
+
+1. **Preflight**: `command -v claude` + `backend check --backend claude`
+2. **Probe**: `backend probe --role planner --flow standard --backend claude`
+3. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
+4. **Run**: `run start --backend claude`
+
+### Codex
+
+1. **Preflight**: `command -v codex` + `backend check --backend codex`
+2. **Probe**: `backend probe --role planner --flow standard --backend codex`
+3. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
+4. **Run**: `run start --backend codex`
+
+### OpenRouter
+
+OpenRouter has additional constraints:
+
+1. **Preflight**: `test -n "$OPENROUTER_API_KEY"` + credit preflight (minimal completion request) + `backend check --backend openrouter`
+2. **Config**: Scratch `workspace.toml` with `settings.default_backend = "openrouter"`,
+   `[backends.openrouter] enabled = true`, and `[execution] mode = "direct"`;
+   `RALPH_BURNING_BACKEND=openrouter` exported
+3. **Probe**: `backend probe --role planner --flow standard --backend openrouter`
+4. **Bootstrap**: `project bootstrap --from-seed smoke-seed.json --flow standard` (from scratch CWD; seed copied from `scripts/smoke-seed.json`)
+5. **Run**: `run start --backend openrouter`
+
+**Credit preflight**: The harness sends a minimal completion request to OpenRouter
+before the full smoke to verify the API key has usable credits. Both HTTP 402
+(insufficient credits) and HTTP 403 (key total limit exceeded) are caught at
+preflight (exit code 2) before any project state is created. This ensures an
+already-exhausted key fails with the exact readiness error before bootstrap,
+leaving no created project directory or active-project mutation.
+
+**Important**: OpenRouter must run in `execution.mode = "direct"`.  The process
+adapter rejects OpenRouter targets (`process_backend.rs:468`).  The
+`RALPH_BURNING_BACKEND=openrouter` env var selects the direct OpenRouter adapter
+via `agent_execution_builder.rs:85`.
+
+## Failure Recording Rules
+
+### Preflight Failure (exit code 2)
+
+- No project directory, active-project selection, or workspace config is mutated
+- The scratch directory is removed on preflight failure, but the evidence file
+  is first copied to the parent directory (e.g. `/tmp/<smoke-id>-preflight-evidence.txt`)
+  so the operator can inspect the exact readiness error
+- The smoke matrix row records `FAIL` with the exact preflight error from the
+  preserved evidence file
+
+### Run Failure (exit code 1)
+
+- The created project remains valid and inspectable inside the scratch workspace
+- Run state shows `failed` or `not_started` (never half-written)
+- No backend override or active project selection is left in the real repo
+- Durable run history remains canonical via `run history --json`
+- Runtime logs are attached to that specific run only
+- The smoke matrix records the exact failure, not a generic "not exercised"
+
+### Cancellation
+
+- If a smoke run is cancelled (Ctrl-C / SIGINT), the script propagates the
+  signal.  The ralph-burning process handles cleanup (no orphan processes).
+- Durable history up to the cancellation point remains inspectable.
+- The evidence file captures partial results.
+
+## Qualifying DEFERRED Policy
+
+This section is the canonical sign-off policy for live backend rows.  Both
+`docs/signoff/manual-smoke-matrix.md` and
+`docs/signoff/final-validation.md` must reference this definition instead of
+restating different readiness rules.
+
+Use exactly three result statuses for backend smoke rows:
+
+- `PASS`: complete evidence is recorded and `run_status = completed`
+- `FAIL`: the smoke does not complete and does not satisfy the qualifying
+  `DEFERRED` criteria below; this status blocks cutover
+- `DEFERRED`: a repo-local evidence status for documenting a qualifying
+  external blocker, but it is **not** equivalent to `PASS` for the parity-plan
+  exit criterion `manual smoke matrix is green`; only `PASS` satisfies that
+  exit criterion. `DEFERRED` may be recorded only when **all** of the
+  following are true:
+  - The adapter has been validated end-to-end in the intended execution mode,
+    with successful execution across the full set of stages reached before the
+    stop condition.
+  - The blocking failure is external to `ralph-burning` code or configuration
+    (for example provider credit exhaustion, provider outage, or account-level
+    restriction), and the exact external error is recorded in evidence.
+  - The backend is disabled in the checked-in production workspace config at
+    [`../../.ralph-burning/workspace.toml`](../../.ralph-burning/workspace.toml)
+    (repo path `ralph-burning-rewrite/.ralph-burning/workspace.toml`), with
+    `[backends.openrouter] enabled = false`.
+  - The row records a `resolution_path` field with the concrete action required
+    to upgrade the row to `PASS` (for example, rerun after credit top-up).
+
+Any row that fails one or more of those checks is `FAIL`, not `DEFERRED`.
+
+## Cleanup
+
+After successful smoke:
+```bash
+# Evidence files are in the smoke directory
+ls /tmp/rb-smoke-*/
+
+# Remove after recording evidence in manual-smoke-matrix.md
+rm -rf /tmp/rb-smoke-*
+```
+
+After failed smoke: leave the smoke directory for inspection.  The created
+project (if any) is inside the scratch directory and does not affect the
+real workspace.
+
+## Recording Evidence in Sign-off Docs
+
+After each smoke run, update `docs/signoff/manual-smoke-matrix.md`:
+
+1. From the evidence file, extract: **project_id**, **run_id** (from the
+   `run_started` journal event in `run history --json`, see `journal.rs:107`),
+   **run_status** (from `run status --json`), **smoke_id**, and **smoke_dir**.
+   The harness extracts these fields using `jq` when available, falling back to
+   whitespace-tolerant `sed` patterns that handle the pretty-printed JSON output
+   from `serde_json::to_string_pretty()` (`run.rs:764`).
+2. Replace the Result column with `PASS`, `FAIL`, or qualifying `DEFERRED`
+   using the canonical
+   [Qualifying DEFERRED Policy](#qualifying-deferred-policy).
+3. Record the project_id, run_id, run_status, smoke_id, and smoke_dir in the
+   Follow-up Bug column.
+4. For `PASS`, `run_status` must be `completed`.
+5. For `DEFERRED`, record the exact external error, the end-to-end validation
+   evidence, the production-disabled statement citing
+   `ralph-burning-rewrite/.ralph-burning/workspace.toml` and
+   `[backends.openrouter] enabled = false`, and a concrete `resolution_path`.
+6. If `FAIL`, record the exact error and leave the scratch dir for inspection.
+7. If preflight `FAIL` (exit code 2), the evidence is preserved at
+   `/tmp/<smoke-id>-preflight-evidence.txt` after scratch-dir cleanup
+
+`DEFERRED` is useful for documenting a qualifying external blocker, but it does
+not make the manual smoke matrix "green" for parity-plan sign-off. Cutover can
+be marked `Ready` only when all three backend rows have complete evidence and
+are `PASS`. Any `FAIL` row, or any `DEFERRED` row that has not yet been rerun
+to `PASS`, keeps cutover `Not Ready`.

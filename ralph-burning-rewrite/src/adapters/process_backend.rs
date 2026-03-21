@@ -21,6 +21,189 @@ use crate::shared::error::{AppError, AppResult};
 const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 
+pub(crate) struct PreparedCommand {
+    binary: String,
+    args: Vec<String>,
+    stdin_payload: String,
+    response_decoder: ResponseDecoder,
+}
+
+impl PreparedCommand {
+    pub(crate) fn binary(&self) -> &str {
+        &self.binary
+    }
+
+    pub(crate) fn args(&self) -> &[String] {
+        &self.args
+    }
+
+    pub(crate) fn stdin_payload(&self) -> &str {
+        &self.stdin_payload
+    }
+
+    pub(crate) async fn cleanup(&self) {
+        match &self.response_decoder {
+            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => best_effort_cleanup(Some(schema_path), message_path).await,
+        }
+    }
+
+    pub(crate) async fn finish(
+        self,
+        request: &InvocationRequest,
+        output: ChildOutput,
+    ) -> AppResult<InvocationEnvelope> {
+        match self.response_decoder {
+            ResponseDecoder::Claude { session_resuming } => {
+                let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
+
+                let envelope: ClaudeEnvelope =
+                    serde_json::from_str(&stdout_text).map_err(|error| {
+                        ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!("invalid Claude envelope JSON: {error}"),
+                        )
+                    })?;
+
+                let parsed_payload = if let Some(structured) = envelope.structured_output {
+                    structured
+                } else if !envelope.result.trim().is_empty() {
+                    // result is non-empty: try direct parse, then extract embedded JSON
+                    serde_json::from_str(&envelope.result).or_else(|_| {
+                        extract_json_from_text(&envelope.result)
+                    }).map_err(|error| {
+                        ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!(
+                                "invalid Claude result JSON: {error} \
+                                 (contract: {}, result_len: {})",
+                                request.contract.label(),
+                                envelope.result.len(),
+                            ),
+                        )
+                    })?
+                } else {
+                    // Both structured_output and result are empty.
+                    // Last resort: try to find JSON in the raw stdout beyond the envelope.
+                    // Guard: reject if the extracted object is just the Claude envelope
+                    // itself (has `result` + `session_id` keys), which would happen when
+                    // stdout contains only the envelope and no separate payload.
+                    extract_json_from_text(&stdout_text)
+                        .ok()
+                        .filter(|val| !looks_like_claude_envelope(val))
+                        .ok_or_else(|| {
+                            ProcessBackendAdapter::invocation_failed(
+                                request,
+                                FailureClass::SchemaValidationFailure,
+                                format!(
+                                    "Claude returned empty result with no structured_output \
+                                     (contract: {}, stdout_len: {}, session_policy: {:?})",
+                                    request.contract.label(),
+                                    output.stdout.len(),
+                                    request.session_policy,
+                                ),
+                            )
+                        })?
+                };
+
+                let session_id = envelope.session_id.or_else(|| {
+                    if session_resuming {
+                        request.prior_session.as_ref().map(|s| s.session_id.clone())
+                    } else {
+                        None
+                    }
+                });
+
+                Ok(InvocationEnvelope {
+                    raw_output_reference: RawOutputReference::Inline(stdout_text),
+                    parsed_payload,
+                    metadata: InvocationMetadata {
+                        invocation_id: request.invocation_id.clone(),
+                        duration: Duration::from_millis(0),
+                        token_counts: TokenCounts::default(),
+                        backend_used: request.resolved_target.backend.clone(),
+                        model_used: request.resolved_target.model.clone(),
+                        attempt_number: request.attempt_number,
+                        session_id,
+                        session_reused: session_resuming,
+                    },
+                    timestamp: Utc::now(),
+                })
+            }
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                session_resuming,
+            } => {
+                let last_message_text = match tokio::fs::read_to_string(&message_path).await {
+                    Ok(text) => text,
+                    Err(error) => {
+                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::TransportFailure,
+                            format!("failed to read codex last-message file: {error}"),
+                        ));
+                    }
+                };
+
+                let parsed_payload = match serde_json::from_str(&last_message_text) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
+                            request,
+                            FailureClass::SchemaValidationFailure,
+                            format!("invalid Codex last-message JSON: {error}"),
+                        ));
+                    }
+                };
+
+                best_effort_cleanup(Some(&schema_path), &message_path).await;
+
+                let session_id = if session_resuming {
+                    request.prior_session.as_ref().map(|s| s.session_id.clone())
+                } else {
+                    None
+                };
+
+                Ok(InvocationEnvelope {
+                    raw_output_reference: RawOutputReference::Inline(last_message_text),
+                    parsed_payload,
+                    metadata: InvocationMetadata {
+                        invocation_id: request.invocation_id.clone(),
+                        duration: Duration::from_millis(0),
+                        token_counts: TokenCounts::default(),
+                        backend_used: request.resolved_target.backend.clone(),
+                        model_used: request.resolved_target.model.clone(),
+                        attempt_number: request.attempt_number,
+                        session_id,
+                        session_reused: session_resuming,
+                    },
+                    timestamp: Utc::now(),
+                })
+            }
+        }
+    }
+}
+
+enum ResponseDecoder {
+    Claude {
+        session_resuming: bool,
+    },
+    Codex {
+        schema_path: std::path::PathBuf,
+        message_path: std::path::PathBuf,
+        session_resuming: bool,
+    },
+}
+
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
     pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
@@ -55,7 +238,31 @@ impl ManagedChild {
             return Ok(());
         };
 
-        send_signal(pid, "-TERM")
+        #[cfg(unix)]
+        {
+            let pid = i32::try_from(pid).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("process id {pid} exceeds libc::pid_t range"),
+                )
+            })?;
+            return match nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGTERM,
+            ) {
+                Ok(()) => Ok(()),
+                Err(nix::errno::Errno::ESRCH) => Ok(()),
+                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+            };
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "SIGTERM delivery requires unix",
+            ))
+        }
     }
 
     async fn send_sigkill(&self) -> std::io::Result<()> {
@@ -63,7 +270,31 @@ impl ManagedChild {
             return Ok(());
         };
 
-        send_signal(pid, "-KILL")
+        #[cfg(unix)]
+        {
+            let pid = i32::try_from(pid).map_err(|_| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("process id {pid} exceeds libc::pid_t range"),
+                )
+            })?;
+            return match nix::sys::signal::kill(
+                nix::unistd::Pid::from_raw(pid),
+                nix::sys::signal::Signal::SIGKILL,
+            ) {
+                Ok(()) => Ok(()),
+                Err(nix::errno::Errno::ESRCH) => Ok(()),
+                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+            };
+        }
+
+        #[cfg(not(unix))]
+        {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "SIGKILL delivery requires unix",
+            ))
+        }
     }
 
     async fn wait(&self) -> std::io::Result<ExitStatus> {
@@ -172,6 +403,108 @@ impl ProcessBackendAdapter {
         input
     }
 
+    pub(crate) async fn build_command(
+        &self,
+        request: &InvocationRequest,
+    ) -> AppResult<PreparedCommand> {
+        match request.resolved_target.backend.family {
+            BackendFamily::Claude => {
+                let model_id = &request.resolved_target.model.model_id;
+                let mut schema_value = request.contract.json_schema_value();
+                enforce_strict_mode_schema(&mut schema_value);
+                let schema_json = serde_json::to_string(&schema_value)
+                    .unwrap_or_else(|_| "{}".to_owned());
+                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                    && request.prior_session.is_some();
+
+                let mut args = vec![
+                    "-p".to_owned(),
+                    "--output-format".to_owned(),
+                    "json".to_owned(),
+                    "--model".to_owned(),
+                    model_id.clone(),
+                    "--permission-mode".to_owned(),
+                    "acceptEdits".to_owned(),
+                    "--allowedTools".to_owned(),
+                    "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
+                    "--json-schema".to_owned(),
+                    schema_json,
+                ];
+
+                if session_resuming {
+                    if let Some(ref session) = request.prior_session {
+                        args.push("--resume".to_owned());
+                        args.push(session.session_id.clone());
+                    }
+                }
+
+                Ok(PreparedCommand {
+                    binary: "claude".to_owned(),
+                    args,
+                    stdin_payload: Self::assemble_stdin(request),
+                    response_decoder: ResponseDecoder::Claude { session_resuming },
+                })
+            }
+            BackendFamily::Codex => {
+                let model_id = &request.resolved_target.model.model_id;
+                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                    && request.prior_session.is_some();
+
+                let temp_dir = request.project_root.join("runtime/temp");
+                let _ = tokio::fs::create_dir_all(&temp_dir).await;
+
+                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let message_path =
+                    temp_dir.join(format!("{}.last-message.json", request.invocation_id));
+
+                let mut schema_value = request.contract.json_schema_value();
+                enforce_strict_mode_schema(&mut schema_value);
+                let schema_json = serde_json::to_string_pretty(&schema_value)
+                    .unwrap_or_else(|_| "{}".to_owned());
+
+                if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+                    best_effort_cleanup(Some(&schema_path), &message_path).await;
+                    return Err(Self::invocation_failed(
+                        request,
+                        FailureClass::TransportFailure,
+                        format!("failed to write schema file: {error}"),
+                    ));
+                }
+
+                let args = if session_resuming {
+                    let session = request
+                        .prior_session
+                        .as_ref()
+                        .expect("session_resuming requires a prior session");
+                    Self::codex_resume_args(
+                        model_id,
+                        &schema_path,
+                        &message_path,
+                        &session.session_id,
+                    )
+                } else {
+                    Self::codex_new_session_args(model_id, &schema_path, &message_path)
+                };
+
+                Ok(PreparedCommand {
+                    binary: "codex".to_owned(),
+                    args,
+                    stdin_payload: Self::assemble_stdin(request),
+                    response_decoder: ResponseDecoder::Codex {
+                        schema_path,
+                        message_path,
+                        session_resuming,
+                    },
+                })
+            }
+            _ => Err(Self::capability_mismatch(
+                &request.resolved_target,
+                &request.contract,
+                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
+            )),
+        }
+    }
+
     fn invocation_failed(
         request: &InvocationRequest,
         failure_class: FailureClass,
@@ -183,6 +516,62 @@ impl ProcessBackendAdapter {
             failure_class,
             details,
         }
+    }
+
+    pub(crate) fn ensure_binary_available(binary_name: &str, backend: &str) -> AppResult<()> {
+        let path_entries = std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+            .unwrap_or_default();
+
+        #[cfg(unix)]
+        let mut non_executable_candidate = None;
+
+        for candidate in path_entries
+            .into_iter()
+            .map(|entry| entry.join(binary_name))
+        {
+            let Ok(metadata) = std::fs::metadata(&candidate) else {
+                continue;
+            };
+            if !metadata.is_file() {
+                continue;
+            }
+
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+
+                if metadata.permissions().mode() & 0o111 != 0 {
+                    return Ok(());
+                }
+
+                if non_executable_candidate.is_none() {
+                    non_executable_candidate = Some(candidate);
+                }
+                continue;
+            }
+
+            #[cfg(not(unix))]
+            {
+                return Ok(());
+            }
+        }
+
+        #[cfg(unix)]
+        if let Some(candidate) = non_executable_candidate {
+            return Err(AppError::BackendUnavailable {
+                backend: backend.to_owned(),
+                details: format!(
+                    "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
+                    candidate.display()
+                ),
+            });
+        }
+
+        Err(AppError::BackendUnavailable {
+            backend: backend.to_owned(),
+            details: format!("required binary '{binary_name}' was not found on PATH"),
+        })
     }
 
     /// Spawn a command, write stdin, register the child handle before I/O,
@@ -297,108 +686,6 @@ impl ProcessBackendAdapter {
         }
     }
 
-    async fn invoke_claude(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        let model_id = &request.resolved_target.model.model_id;
-        let schema_json = serde_json::to_string(&request.contract.json_schema_value())
-            .unwrap_or_else(|_| "{}".to_owned());
-
-        let mut args = vec![
-            "-p".to_owned(),
-            "--output-format".to_owned(),
-            "json".to_owned(),
-            "--model".to_owned(),
-            model_id.clone(),
-            "--permission-mode".to_owned(),
-            "acceptEdits".to_owned(),
-            "--allowedTools".to_owned(),
-            "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
-            "--json-schema".to_owned(),
-            schema_json,
-        ];
-
-        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-            && request.prior_session.is_some();
-
-        if session_resuming {
-            if let Some(ref session) = request.prior_session {
-                args.push("--resume".to_owned());
-                args.push(session.session_id.clone());
-            }
-        }
-
-        let stdin_payload = Self::assemble_stdin(&request);
-        let output = self
-            .spawn_and_wait(&request, "claude", &args, &stdin_payload)
-            .await?;
-
-        match output.status {
-            s if !s.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!(
-                        "claude exited with code {code}{}",
-                        if stderr.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {stderr}")
-                        }
-                    ),
-                ));
-            }
-            _ => {}
-        }
-
-        let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
-
-        let envelope: ClaudeEnvelope = serde_json::from_str(&stdout_text).map_err(|error| {
-            Self::invocation_failed(
-                &request,
-                FailureClass::SchemaValidationFailure,
-                format!("invalid Claude envelope JSON: {error}"),
-            )
-        })?;
-
-        let parsed_payload: serde_json::Value = if let Some(structured) = envelope.structured_output
-        {
-            structured
-        } else {
-            serde_json::from_str(&envelope.result).map_err(|error| {
-                Self::invocation_failed(
-                    &request,
-                    FailureClass::SchemaValidationFailure,
-                    format!("invalid Claude result JSON: {error}"),
-                )
-            })?
-        };
-
-        let session_id = envelope.session_id.or_else(|| {
-            if session_resuming {
-                request.prior_session.as_ref().map(|s| s.session_id.clone())
-            } else {
-                None
-            }
-        });
-
-        Ok(InvocationEnvelope {
-            raw_output_reference: RawOutputReference::Inline(stdout_text),
-            parsed_payload,
-            metadata: InvocationMetadata {
-                invocation_id: request.invocation_id.clone(),
-                duration: Duration::from_millis(0),
-                token_counts: TokenCounts::default(),
-                backend_used: request.resolved_target.backend.clone(),
-                model_used: request.resolved_target.model.clone(),
-                attempt_number: request.attempt_number,
-                session_id,
-                session_reused: session_resuming,
-            },
-            timestamp: Utc::now(),
-        })
-    }
-
     fn codex_new_session_args(
         model_id: &str,
         schema_path: &Path,
@@ -439,123 +726,6 @@ impl ProcessBackendAdapter {
             "-".to_owned(),
         ]
     }
-
-    async fn invoke_codex(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
-        let model_id = &request.resolved_target.model.model_id;
-        let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-            && request.prior_session.is_some();
-
-        let temp_dir = request.project_root.join("runtime/temp");
-        let _ = tokio::fs::create_dir_all(&temp_dir).await;
-
-        let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
-        let message_path = temp_dir.join(format!("{}.last-message.json", request.invocation_id));
-
-        let mut schema_value = request.contract.json_schema_value();
-        inject_additional_properties_false(&mut schema_value);
-        let schema_json =
-            serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
-
-        if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
-            best_effort_cleanup(Some(&schema_path), &message_path).await;
-            return Err(Self::invocation_failed(
-                &request,
-                FailureClass::TransportFailure,
-                format!("failed to write schema file: {error}"),
-            ));
-        }
-
-        let args = if session_resuming {
-            let session = request
-                .prior_session
-                .as_ref()
-                .expect("session_resuming requires a prior session");
-            Self::codex_resume_args(model_id, &schema_path, &message_path, &session.session_id)
-        } else {
-            Self::codex_new_session_args(model_id, &schema_path, &message_path)
-        };
-
-        let stdin_payload = Self::assemble_stdin(&request);
-        let output = match self
-            .spawn_and_wait(&request, "codex", &args, &stdin_payload)
-            .await
-        {
-            Ok(o) => o,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(error);
-            }
-        };
-
-        match output.status {
-            s if !s.success() => {
-                let stderr = String::from_utf8_lossy(&output.stderr);
-                let code = s.code().map_or("signal".to_owned(), |c| c.to_string());
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!(
-                        "codex exited with code {code}{}",
-                        if stderr.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {stderr}")
-                        }
-                    ),
-                ));
-            }
-            _ => {}
-        }
-
-        let last_message_text = match tokio::fs::read_to_string(&message_path).await {
-            Ok(text) => text,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::TransportFailure,
-                    format!("failed to read codex last-message file: {error}"),
-                ));
-            }
-        };
-
-        let parsed_payload: serde_json::Value = match serde_json::from_str(&last_message_text) {
-            Ok(v) => v,
-            Err(error) => {
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
-                return Err(Self::invocation_failed(
-                    &request,
-                    FailureClass::SchemaValidationFailure,
-                    format!("invalid Codex last-message JSON: {error}"),
-                ));
-            }
-        };
-
-        best_effort_cleanup(Some(&schema_path), &message_path).await;
-
-        let session_id = if session_resuming {
-            request.prior_session.as_ref().map(|s| s.session_id.clone())
-        } else {
-            None
-        };
-
-        Ok(InvocationEnvelope {
-            raw_output_reference: RawOutputReference::Inline(last_message_text),
-            parsed_payload,
-            metadata: InvocationMetadata {
-                invocation_id: request.invocation_id.clone(),
-                duration: Duration::from_millis(0),
-                token_counts: TokenCounts::default(),
-                backend_used: request.resolved_target.backend.clone(),
-                model_used: request.resolved_target.model.clone(),
-                attempt_number: request.attempt_number,
-                session_id,
-                session_reused: session_resuming,
-            },
-            timestamp: Utc::now(),
-        })
-    }
 }
 
 impl AgentExecutionPort for ProcessBackendAdapter {
@@ -586,41 +756,95 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 details: "ProcessBackendAdapter availability checks are only supported for claude and codex".to_owned(),
             });
         };
-
-        let path_entries = std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-            .unwrap_or_default();
-        let binary_on_path = path_entries
-            .into_iter()
-            .map(|entry| entry.join(binary_name))
-            .any(|candidate| {
-                std::fs::metadata(candidate)
-                    .map(|metadata| metadata.is_file())
-                    .unwrap_or(false)
-            });
-
-        if binary_on_path {
-            Ok(())
-        } else {
-            Err(AppError::BackendUnavailable {
-                backend: backend.backend.family.to_string(),
-                details: format!("required binary '{binary_name}' was not found on PATH"),
-            })
-        }
+        Self::ensure_binary_available(binary_name, backend.backend.family.as_str())
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
+        let prepared = self.build_command(&request).await?;
+        let output = match self
+            .spawn_and_wait(
+                &request,
+                prepared.binary(),
+                prepared.args(),
+                prepared.stdin_payload(),
+            )
+            .await
+        {
+            Ok(output) => output,
+            Err(error) => {
+                prepared.cleanup().await;
+                return Err(error);
+            }
+        };
 
-        match request.resolved_target.backend.family {
-            BackendFamily::Claude => self.invoke_claude(request).await,
-            BackendFamily::Codex => self.invoke_codex(request).await,
-            _ => Err(Self::capability_mismatch(
-                &request.resolved_target,
-                &request.contract,
-                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
-            )),
+        match output.status {
+            status if !status.success() => {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+
+                // Stale session recovery: if Claude fails with "No conversation
+                // found" while resuming a session, retry once without --resume.
+                if request.prior_session.is_some()
+                    && stderr.contains("No conversation found with session ID")
+                {
+                    prepared.cleanup().await;
+                    let mut fresh_request = request.clone();
+                    fresh_request.prior_session = None;
+                    let fresh_prepared = self.build_command(&fresh_request).await?;
+                    let fresh_output = match self
+                        .spawn_and_wait(
+                            &fresh_request,
+                            fresh_prepared.binary(),
+                            fresh_prepared.args(),
+                            fresh_prepared.stdin_payload(),
+                        )
+                        .await
+                    {
+                        Ok(output) => output,
+                        Err(error) => {
+                            fresh_prepared.cleanup().await;
+                            return Err(error);
+                        }
+                    };
+                    if !fresh_output.status.success() {
+                        let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
+                        let code = fresh_output.status.code().map_or("signal".to_owned(), |c| c.to_string());
+                        fresh_prepared.cleanup().await;
+                        return Err(Self::invocation_failed(
+                            &fresh_request,
+                            FailureClass::TransportFailure,
+                            format!(
+                                "{} exited with code {code}{}",
+                                fresh_prepared.binary(),
+                                if fresh_stderr.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(": {fresh_stderr}")
+                                }
+                            ),
+                        ));
+                    }
+                    return fresh_prepared.finish(&fresh_request, fresh_output).await;
+                }
+
+                let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                prepared.cleanup().await;
+                Err(Self::invocation_failed(
+                    &request,
+                    FailureClass::TransportFailure,
+                    format!(
+                        "{} exited with code {code}{}",
+                        prepared.binary(),
+                        if stderr.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {stderr}")
+                        }
+                    ),
+                ))
+            }
+            _ => prepared.finish(&request, output).await,
         }
     }
 
@@ -665,35 +889,10 @@ struct ClaudeEnvelope {
     structured_output: Option<serde_json::Value>,
 }
 
-struct ChildOutput {
-    status: ExitStatus,
-    stdout: Vec<u8>,
-    stderr: Vec<u8>,
-}
-
-fn send_signal(pid: u32, signal: &str) -> std::io::Result<()> {
-    let output = std::process::Command::new("kill")
-        .arg(signal)
-        .arg(pid.to_string())
-        .output()?;
-
-    if output.status.success() {
-        return Ok(());
-    }
-
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    if stderr.contains("No such process") {
-        Ok(())
-    } else {
-        Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            if stderr.trim().is_empty() {
-                format!("kill {signal} {pid} exited with status {}", output.status)
-            } else {
-                stderr.trim().to_owned()
-            },
-        ))
-    }
+pub(crate) struct ChildOutput {
+    pub(crate) status: ExitStatus,
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
@@ -711,25 +910,57 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
     let _ = tokio::fs::remove_file(message_path).await;
 }
 
-/// Recursively inject `"additionalProperties": false` into all object-type
-/// schemas. OpenAI's structured output API requires this on every object.
-fn inject_additional_properties_false(value: &mut serde_json::Value) {
+/// Recursively enforce OpenAI strict-mode schema requirements:
+/// 1. Inject `"additionalProperties": false` on every object schema.
+/// 2. Ensure `"required"` includes every key from `"properties"` — strict mode
+///    rejects schemas where a property key is missing from the required array.
+///
+/// This is needed because `schemars` honours `#[serde(default)]` by omitting
+/// the field from `required`, which is correct for general JSON Schema but
+/// violates OpenAI's strict-mode contract.
+pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
         let is_object = map
             .get("type")
             .and_then(|t| t.as_str())
             .map_or(false, |t| t == "object");
-        if is_object && !map.contains_key("additionalProperties") {
-            map.insert(
-                "additionalProperties".to_owned(),
-                serde_json::Value::Bool(false),
-            );
+        if is_object {
+            // 1. additionalProperties: false
+            if !map.contains_key("additionalProperties") {
+                map.insert(
+                    "additionalProperties".to_owned(),
+                    serde_json::Value::Bool(false),
+                );
+            }
+
+            // 2. Ensure required contains every property key
+            if let Some(serde_json::Value::Object(props_map)) = map.get("properties") {
+                let all_keys: Vec<serde_json::Value> = props_map
+                    .keys()
+                    .map(|k| serde_json::Value::String(k.clone()))
+                    .collect();
+                match map.get_mut("required") {
+                    Some(serde_json::Value::Array(required)) => {
+                        for key in &all_keys {
+                            if !required.contains(key) {
+                                required.push(key.clone());
+                            }
+                        }
+                    }
+                    _ => {
+                        map.insert(
+                            "required".to_owned(),
+                            serde_json::Value::Array(all_keys),
+                        );
+                    }
+                }
+            }
         }
         // Recurse into properties
         if let Some(props) = map.get_mut("properties") {
             if let serde_json::Value::Object(props_map) = props {
                 for prop_value in props_map.values_mut() {
-                    inject_additional_properties_false(prop_value);
+                    enforce_strict_mode_schema(prop_value);
                 }
             }
         }
@@ -737,13 +968,387 @@ fn inject_additional_properties_false(value: &mut serde_json::Value) {
         if let Some(defs) = map.get_mut("definitions") {
             if let serde_json::Value::Object(defs_map) = defs {
                 for def_value in defs_map.values_mut() {
-                    inject_additional_properties_false(def_value);
+                    enforce_strict_mode_schema(def_value);
                 }
             }
         }
         // Recurse into items (for array types)
         if let Some(items) = map.get_mut("items") {
-            inject_additional_properties_false(items);
+            enforce_strict_mode_schema(items);
         }
+    }
+}
+
+/// Returns `true` if the given JSON value looks like a Claude CLI envelope
+/// (contains `result` and/or `session_id` top-level keys) rather than a
+/// contract payload. Used to guard the empty-result fallback from accidentally
+/// recovering the envelope itself as the payload.
+fn looks_like_claude_envelope(val: &serde_json::Value) -> bool {
+    let Some(obj) = val.as_object() else {
+        return false;
+    };
+    // The Claude envelope has `result`, `session_id`, and optionally
+    // `structured_output`. If we see at least two of these three keys,
+    // this is almost certainly the envelope, not a contract payload.
+    let envelope_keys = ["result", "session_id", "structured_output"];
+    let matches = envelope_keys.iter().filter(|k| obj.contains_key(**k)).count();
+    matches >= 2
+}
+
+/// Try to extract a JSON object from text that may contain surrounding prose or
+/// markdown fencing. This handles cases where the Claude CLI returns the payload
+/// inside `result` wrapped in markdown code blocks or conversational text.
+fn extract_json_from_text(text: &str) -> Result<serde_json::Value, serde_json::Error> {
+    // 1. Try direct parse first (already attempted by caller, but cheap).
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(text) {
+        if val.is_object() {
+            return Ok(val);
+        }
+    }
+
+    // 2. Try extracting from ```json ... ``` fenced blocks.
+    if let Some(start) = text.find("```json") {
+        let after_fence = &text[start + 7..];
+        if let Some(end) = after_fence.find("```") {
+            let candidate = after_fence[..end].trim();
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                if val.is_object() {
+                    return Ok(val);
+                }
+            }
+        }
+    }
+
+    // 3. Find the first balanced `{...}` substring.
+    if let Some(obj_start) = text.find('{') {
+        let mut depth = 0i32;
+        let mut in_string = false;
+        let mut escape_next = false;
+        for (i, ch) in text[obj_start..].char_indices() {
+            if escape_next {
+                escape_next = false;
+                continue;
+            }
+            match ch {
+                '\\' if in_string => escape_next = true,
+                '"' => in_string = !in_string,
+                '{' if !in_string => depth += 1,
+                '}' if !in_string => {
+                    depth -= 1;
+                    if depth == 0 {
+                        let candidate = &text[obj_start..obj_start + i + 1];
+                        if let Ok(val) = serde_json::from_str::<serde_json::Value>(candidate) {
+                            if val.is_object() {
+                                return Ok(val);
+                            }
+                        }
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Nothing found — return an error via a failed parse of the original text.
+    serde_json::from_str::<serde_json::Value>(text)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn enforce_strict_mode_adds_missing_required_fields() {
+        // Simulates a schema generated by schemars for a struct with
+        // #[serde(default)] fields — `follow_ups` is in properties but
+        // NOT in the required array.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outcome": { "type": "string" },
+                "evidence": { "type": "array", "items": { "type": "string" } },
+                "findings": { "type": "array", "items": { "type": "string" } },
+                "follow_ups": { "type": "array", "items": { "type": "string" } }
+            },
+            "required": ["outcome", "evidence", "findings"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"follow_ups"),
+            "follow_ups should be added to required; got: {required_strings:?}");
+        assert!(required_strings.contains(&"outcome"));
+        assert!(required_strings.contains(&"evidence"));
+        assert!(required_strings.contains(&"findings"));
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_creates_required_when_absent() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "value": { "type": "integer" }
+            }
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        assert_eq!(required.len(), 2);
+        assert_eq!(schema["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_recurses_into_nested_objects() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "object",
+                    "properties": {
+                        "mode": { "type": "string" },
+                        "run_id": { "type": "string" },
+                        "quick_revisions": { "type": "integer" }
+                    },
+                    "required": ["mode", "run_id"]
+                }
+            },
+            "required": ["source"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let nested = &schema["properties"]["source"];
+        let nested_required = nested["required"].as_array().unwrap();
+        let nested_strings: Vec<&str> = nested_required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(nested_strings.contains(&"quick_revisions"),
+            "quick_revisions should be added to nested required; got: {nested_strings:?}");
+        assert_eq!(nested["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn extract_json_from_text_direct_parse() {
+        let text = r#"{"project_id": "test-123", "flow": "standard"}"#;
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["project_id"], "test-123");
+    }
+
+    #[test]
+    fn extract_json_from_text_markdown_fenced() {
+        let text = "Here is the output:\n```json\n{\"project_id\": \"test-456\"}\n```\nDone.";
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["project_id"], "test-456");
+    }
+
+    #[test]
+    fn extract_json_from_text_embedded_object() {
+        let text = "The result is: {\"outcome\": \"approved\", \"evidence\": [\"ok\"]} and that's it.";
+        let val = extract_json_from_text(text).unwrap();
+        assert_eq!(val["outcome"], "approved");
+    }
+
+    #[test]
+    fn extract_json_from_text_no_json_returns_error() {
+        let text = "No JSON here at all.";
+        assert!(extract_json_from_text(text).is_err());
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_detects_envelope() {
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-abc123",
+            "structured_output": null
+        });
+        assert!(looks_like_claude_envelope(&envelope));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_detects_partial_envelope() {
+        // Two of three envelope keys → still detected
+        let partial = json!({
+            "result": "some text",
+            "session_id": "sess-xyz"
+        });
+        assert!(looks_like_claude_envelope(&partial));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_rejects_contract_payload() {
+        let payload = json!({
+            "outcome": "approved",
+            "evidence": ["test passed"],
+            "findings": []
+        });
+        assert!(!looks_like_claude_envelope(&payload));
+    }
+
+    #[test]
+    fn looks_like_claude_envelope_rejects_single_key_overlap() {
+        // A payload that happens to have a "result" key but nothing else
+        // from the envelope signature should NOT be rejected.
+        let payload = json!({
+            "result": "approved",
+            "score": 95
+        });
+        assert!(!looks_like_claude_envelope(&payload));
+    }
+
+    // ── Integration-style tests for the full Claude finish() fallback ────
+
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy};
+
+    fn make_test_request() -> InvocationRequest {
+        InvocationRequest {
+            invocation_id: "test-inv-001".to_owned(),
+            project_root: PathBuf::from("/tmp/test"),
+            working_dir: PathBuf::from("/tmp/test"),
+            contract: InvocationContract::Requirements {
+                label: "requirements:project_seed".to_owned(),
+            },
+            role: BackendRole::Planner,
+            resolved_target: ResolvedBackendTarget::new(BackendFamily::Claude, "claude-test"),
+            payload: InvocationPayload {
+                prompt: "test".to_owned(),
+                context: json!({}),
+            },
+            timeout: Duration::from_secs(60),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        }
+    }
+
+    fn make_child_output(stdout: &str) -> ChildOutput {
+        ChildOutput {
+            status: ExitStatus::from_raw(0),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn finish_claude_result_raw_json_extraction() {
+        // When structured_output is null and result contains raw JSON (no
+        // markdown fencing), the fallback should parse it directly.
+        let envelope = json!({
+            "result": "{\"outcome\": \"approved\", \"evidence\": [\"test passed\"]}",
+            "session_id": "sess-test-001",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_empty_result_rejects_envelope_only() {
+        // When stdout contains ONLY the envelope (no separate payload),
+        // the fallback should fail rather than returning the envelope.
+        let envelope = json!({
+            "result": "",
+            "session_id": "sess-test-002",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await;
+
+        assert!(result.is_err(), "should fail when only envelope is in stdout");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("empty result"),
+            "error should mention empty result: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_claude_structured_output_preferred() {
+        // When structured_output is present, it should be used directly
+        // regardless of result content.
+        let envelope = json!({
+            "result": "some conversational text",
+            "session_id": "sess-test-003",
+            "structured_output": {
+                "outcome": "approved",
+                "evidence": ["test passed"]
+            }
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_result_json_extraction() {
+        // When structured_output is null but result contains JSON embedded in
+        // markdown fencing, the fallback should extract it.
+        let envelope = json!({
+            "result": "Here is the output:\n```json\n{\"outcome\": \"approved\", \"evidence\": [\"ok\"]}\n```\nDone.",
+            "session_id": "sess-test-004",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+            },
+        };
+
+        let request = make_test_request();
+        let result = prepared.finish(&request, output).await.unwrap();
+        assert_eq!(result.parsed_payload["outcome"], "approved");
     }
 }

@@ -127,6 +127,25 @@ pub enum AppError {
     RemediationExhausted { cycle: u32, max: u32 },
     #[error("amendment queue error: {details}")]
     AmendmentQueueError { details: String },
+    #[error("duplicate amendment: existing amendment '{amendment_id}' has the same content")]
+    DuplicateAmendment { amendment_id: String },
+    #[error("amendment not found: '{amendment_id}'")]
+    AmendmentNotFound { amendment_id: String },
+    #[error("payload not found: '{payload_id}'")]
+    PayloadNotFound { payload_id: String },
+    #[error("artifact not found: '{artifact_id}'")]
+    ArtifactNotFound { artifact_id: String },
+    #[error(
+        "cannot modify amendments for project '{project_id}': a writer lease is currently held"
+    )]
+    AmendmentLeaseConflict { project_id: String },
+    #[error("amendment clear partially failed: removed {removed_count} of {total} amendments")]
+    AmendmentClearPartial {
+        removed: Vec<String>,
+        remaining: Vec<String>,
+        removed_count: usize,
+        total: usize,
+    },
     #[error("completion blocked: {details}")]
     CompletionBlocked { details: String },
     #[error("completion guard snapshot commit failed: {details}")]
@@ -217,6 +236,10 @@ pub enum AppError {
         scenario_id: String,
         details: String,
     },
+    #[error("backend diagnostics check failed: {failure_count} failure(s)")]
+    BackendCheckFailed { failure_count: usize },
+    #[error("malformed template override at '{path}': {reason}")]
+    MalformedTemplate { path: String, reason: String },
     #[error("conformance run failed (see above for details)")]
     ConformanceRunFailed,
     #[error(transparent)]

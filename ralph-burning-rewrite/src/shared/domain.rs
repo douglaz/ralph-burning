@@ -929,12 +929,52 @@ impl FromStr for PrPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Direct,
+    Tmux,
+}
+
+impl ExecutionMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Direct => "direct",
+            Self::Tmux => "tmux",
+        }
+    }
+}
+
+impl fmt::Display for ExecutionMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl FromStr for ExecutionMode {
+    type Err = AppError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "direct" => Ok(Self::Direct),
+            "tmux" => Ok(Self::Tmux),
+            _ => Err(AppError::InvalidConfigValue {
+                key: "execution.mode".to_owned(),
+                value: value.to_owned(),
+                reason: "expected one of direct, tmux".to_owned(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkspaceConfig {
     pub version: u32,
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "WorkspaceSettings::is_empty")]
     pub settings: WorkspaceSettings,
+    #[serde(default, skip_serializing_if = "ExecutionSettings::is_empty")]
+    pub execution: ExecutionSettings,
     #[serde(default, skip_serializing_if = "PromptReviewSettings::is_empty")]
     pub prompt_review: PromptReviewSettings,
     #[serde(default, skip_serializing_if = "WorkflowSettings::is_empty")]
@@ -959,6 +999,7 @@ impl WorkspaceConfig {
             version: CURRENT_WORKSPACE_VERSION,
             created_at,
             settings: WorkspaceSettings::default(),
+            execution: ExecutionSettings::default(),
             prompt_review: PromptReviewSettings::default(),
             workflow: WorkflowSettings::default(),
             completion: CompletionSettings::default(),
@@ -975,6 +1016,8 @@ impl WorkspaceConfig {
 pub struct ProjectConfig {
     #[serde(default, skip_serializing_if = "WorkspaceSettings::is_empty")]
     pub settings: WorkspaceSettings,
+    #[serde(default, skip_serializing_if = "ExecutionSettings::is_empty")]
+    pub execution: ExecutionSettings,
     #[serde(default, skip_serializing_if = "PromptReviewSettings::is_empty")]
     pub prompt_review: PromptReviewSettings,
     #[serde(default, skip_serializing_if = "WorkflowSettings::is_empty")]
@@ -996,6 +1039,7 @@ pub struct ProjectConfig {
 impl ProjectConfig {
     pub fn is_empty(&self) -> bool {
         self.settings.is_empty()
+            && self.execution.is_empty()
             && self.prompt_review.is_empty()
             && self.workflow.is_empty()
             && self.completion.is_empty()
@@ -1025,6 +1069,22 @@ impl WorkspaceSettings {
             && self.default_backend.is_none()
             && self.default_model.is_none()
             && self.extra.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct ExecutionSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<ExecutionMode>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_output: Option<bool>,
+    #[serde(flatten)]
+    pub extra: Table,
+}
+
+impl ExecutionSettings {
+    pub fn is_empty(&self) -> bool {
+        self.mode.is_none() && self.stream_output.is_none() && self.extra.is_empty()
     }
 }
 

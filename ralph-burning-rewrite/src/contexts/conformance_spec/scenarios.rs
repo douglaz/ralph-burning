@@ -1,7 +1,10 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 
 use super::runner::ScenarioExecutor;
 
@@ -96,6 +99,21 @@ where
             .build()
             .map_err(|e| format!("build tokio runtime: {e}"))?;
         runtime.block_on(future).map_err(|error| error.to_string())
+    }
+}
+
+fn block_on_result<F, T>(future: F) -> Result<T, String>
+where
+    F: Future<Output = Result<T, String>>,
+{
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        tokio::task::block_in_place(|| handle.block_on(future))
+    } else {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| format!("build tokio runtime: {e}"))?;
+        runtime.block_on(future)
     }
 }
 
@@ -258,6 +276,50 @@ fn read_run_snapshot(ws: &TempWorkspace, project_id: &str) -> Result<serde_json:
         .join(format!(".ralph-burning/projects/{project_id}/run.json"));
     let content = std::fs::read_to_string(&path).map_err(|e| format!("read run.json: {e}"))?;
     serde_json::from_str(&content).map_err(|e| format!("parse run.json: {e}"))
+}
+
+fn requirements_run_ids(ws: &TempWorkspace) -> Result<Vec<String>, String> {
+    let dir = ws.path().join(".ralph-burning/requirements");
+    if !dir.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut run_ids = Vec::new();
+    for entry in std::fs::read_dir(&dir).map_err(|e| format!("read requirements dir: {e}"))? {
+        let entry = entry.map_err(|e| format!("read requirements dir entry: {e}"))?;
+        if entry
+            .file_type()
+            .map_err(|e| format!("read requirements dir type: {e}"))?
+            .is_dir()
+        {
+            run_ids.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
+    run_ids.sort();
+    Ok(run_ids)
+}
+
+fn only_requirements_run_id(ws: &TempWorkspace) -> Result<String, String> {
+    let run_ids = requirements_run_ids(ws)?;
+    if run_ids.len() != 1 {
+        return Err(format!(
+            "expected exactly one requirements run, found {}",
+            run_ids.len()
+        ));
+    }
+    Ok(run_ids[0].clone())
+}
+
+fn read_requirements_run_json(
+    ws: &TempWorkspace,
+    run_id: &str,
+) -> Result<serde_json::Value, String> {
+    let path = ws
+        .path()
+        .join(format!(".ralph-burning/requirements/{run_id}/run.json"));
+    let content =
+        std::fs::read_to_string(&path).map_err(|e| format!("read requirements run.json: {e}"))?;
+    serde_json::from_str(&content).map_err(|e| format!("parse requirements run.json: {e}"))
 }
 
 fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, String> {
@@ -427,6 +489,191 @@ fn setup_workspace_with_project(
     Ok(())
 }
 
+fn conformance_project_root(ws: &TempWorkspace, project_id: &str) -> PathBuf {
+    ws.path()
+        .join(format!(".ralph-burning/projects/{project_id}"))
+}
+
+fn write_run_query_history_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"stage_entered","details":{{"stage_id":"planning","run_id":"run-1"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"stage_completed","details":{{"stage_id":"planning","cycle":1,"attempt":1,"payload_id":"p1","artifact_id":"a1"}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"stage_entered","details":{{"stage_id":"implementation","run_id":"run-1"}}}}
+{{"sequence":5,"timestamp":"2026-03-19T03:04:00Z","event_type":"stage_completed","details":{{"stage_id":"implementation","cycle":1,"attempt":1,"payload_id":"p2","artifact_id":"a2"}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write run query journal: {e}"))?;
+    std::fs::write(
+        project_root.join("history/payloads/p1.json"),
+        r#"{
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:02:00Z",
+  "payload": { "summary": "planning payload", "steps": ["one", "two"] },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .map_err(|e| format!("write payload p1: {e}"))?;
+    std::fs::write(
+        project_root.join("history/payloads/p2.json"),
+        r#"{
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:04:00Z",
+  "payload": { "summary": "implementation payload", "diff": "full" },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .map_err(|e| format!("write payload p2: {e}"))?;
+    std::fs::write(
+        project_root.join("history/artifacts/a1.json"),
+        format!(
+            r#"{{
+  "artifact_id": "a1",
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "created_at": "2026-03-19T03:02:00Z",
+  "content": {},
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}}"#,
+            serde_json::to_string(&long_artifact).map_err(|e| e.to_string())?
+        ),
+    )
+    .map_err(|e| format!("write artifact a1: {e}"))?;
+    std::fs::write(
+        project_root.join("history/artifacts/a2.json"),
+        r##"{
+  "artifact_id": "a2",
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "created_at": "2026-03-19T03:04:00Z",
+  "content": "# Implementation\nvisible artifact\n",
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"##,
+    )
+    .map_err(|e| format!("write artifact a2: {e}"))?;
+    Ok(())
+}
+
+fn write_rollback_targets_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-planning","stage_id":"planning","cycle":1,"git_sha":"abc123"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write rollback journal: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-planning.json"),
+        r#"{
+  "rollback_id": "rb-planning",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "git_sha": "abc123",
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write rollback point planning: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        r#"{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write rollback point implementation: {e}"))?;
+    Ok(())
+}
+
+fn write_rollback_visibility_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
+    let project_root = conformance_project_root(ws, project_id);
+    std::fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-visible","stage_id":"planning","cycle":1}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-hidden","stage_id":"implementation","cycle":1}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"rollback_performed","details":{{"rollback_id":"rb-visible","stage_id":"planning","cycle":1,"visible_through_sequence":2,"hard":false,"rollback_count":1}}}}"#,
+        ),
+    )
+    .map_err(|e| format!("write rollback visibility journal: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-visible.json"),
+        r#"{
+  "rollback_id": "rb-visible",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write visible rollback point: {e}"))?;
+    std::fs::write(
+        project_root.join("rollback/rb-hidden.json"),
+        r#"{
+  "rollback_id": "rb-hidden",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .map_err(|e| format!("write hidden rollback point: {e}"))?;
+    Ok(())
+}
+
 fn run_git_in(dir: &Path, args: &[&str]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
@@ -530,15 +777,21 @@ pub fn build_registry() -> HashMap<String, ScenarioExecutor> {
     register_run_rollback(&mut m);
     register_workflow_checkpoint(&mut m);
     register_requirements_drafting(&mut m);
+    register_bootstrap_slice2(&mut m);
     register_backend_requirements(&mut m);
     register_backend_openrouter(&mut m);
     register_daemon_lifecycle(&mut m);
     register_daemon_routing(&mut m);
     register_daemon_issue_intake(&mut m);
     register_workflow_panels(&mut m);
+    register_p0_hardening(&mut m);
     register_workflow_slice5(&mut m);
     register_validation_slice6(&mut m);
     register_daemon_github(&mut m);
+    register_manual_amendments_slice3(&mut m);
+    register_backend_operations_slice5(&mut m);
+    register_tmux_streaming_slice6(&mut m);
+    register_template_overrides_slice7(&mut m);
 
     m
 }
@@ -2121,7 +2374,7 @@ fn register_run_start_ci_improvement(m: &mut HashMap<String, ScenarioExecutor>) 
 }
 
 // ===========================================================================
-// Run Queries (28 scenarios)
+// Run Queries (46 scenarios)
 // ===========================================================================
 
 fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -2470,6 +2723,309 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::write(log_dir.join("newest.log"), "newest log\n").map_err(|e| e.to_string())?;
         let out = run_cli(&["run", "tail", "--logs"], ws.path())?;
         assert_success(&out)?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-029", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-status-json", "standard")?;
+        std::fs::write(
+            conformance_project_root(&ws, "rq-status-json").join("run.json"),
+            r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 0,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "am-1",
+        "source_stage": "planning",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Fix it",
+        "created_at": "2026-03-19T03:00:00Z",
+        "batch_sequence": 0,
+        "source": "manual",
+        "dedup_key": "dedup-1"
+      }
+    ],
+    "processed_count": 0
+  },
+  "status_summary": "paused for review"
+}"#,
+        )
+        .map_err(|e| format!("write run.json: {e}"))?;
+        let out = run_cli(&["run", "status", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse status json: {e}"))?;
+        for key in [
+            "project_id",
+            "status",
+            "stage",
+            "cycle",
+            "completion_round",
+            "summary",
+            "amendment_queue_depth",
+        ] {
+            if json.get(key).is_none() {
+                return Err(format!("status json missing key '{key}'"));
+            }
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-030", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-verbose", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-verbose")?;
+        let out = run_cli(&["run", "history", "--verbose"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "details:", "stdout")?;
+        assert_contains(&out.stdout, "metadata:", "stdout")?;
+        assert_contains(&out.stdout, "preview:", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-031", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-json", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-json")?;
+        let out = run_cli(&["run", "history", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse history json: {e}"))?;
+        if !json.get("events").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain an events array".into());
+        }
+        if !json.get("payloads").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain a payloads array".into());
+        }
+        if !json.get("artifacts").is_some_and(|value| value.is_array()) {
+            return Err("history json should contain an artifacts array".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-032", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-hist-json-verbose", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-hist-json-verbose")?;
+        let out = run_cli(&["run", "history", "--json", "--verbose"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("parse verbose history json: {e}"))?;
+        if json["payloads"][0].get("payload").is_none() {
+            return Err("verbose history json should include payload".into());
+        }
+        if json["artifacts"][0].get("content").is_none() {
+            return Err("verbose history json should include content".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-033", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-stage-filter", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-stage-filter")?;
+        let out = run_cli(&["run", "history", "--stage", "planning"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "p1", "stdout")?;
+        if out.stdout.contains("p2") {
+            return Err("stage-filtered history should exclude implementation payloads".into());
+        }
+        if out.stdout.contains("ProjectCreated") {
+            return Err("stage-filtered history should exclude non-stage events".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-034", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-tail-last", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-tail-last")?;
+        let out = run_cli(&["run", "tail", "--last", "2"], ws.path())?;
+        assert_success(&out)?;
+        if out.stdout.contains("ProjectCreated") {
+            return Err("tail --last 2 should exclude older project_created event".into());
+        }
+        assert_contains(&out.stdout, "p2", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-035", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow", "standard")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(750));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow command should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("Following project 'rq-follow'") {
+            return Err("follow output should include startup text".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-036", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-payload", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-show-payload")?;
+        let out = run_cli(&["run", "show-payload", "p1"], ws.path())?;
+        assert_success(&out)?;
+        let json: serde_json::Value =
+            serde_json::from_str(&out.stdout).map_err(|e| format!("parse payload json: {e}"))?;
+        if json.get("summary").and_then(|value| value.as_str()) != Some("planning payload") {
+            return Err("show-payload should print the payload body".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-037", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-payload-missing", "standard")?;
+        let out = run_cli(&["run", "show-payload", "missing"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "payload not found", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-038", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-artifact", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-show-artifact")?;
+        let out = run_cli(&["run", "show-artifact", "a2"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "# Implementation", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-039", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-show-artifact-missing", "standard")?;
+        let out = run_cli(&["run", "show-artifact", "missing"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "artifact not found", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-040", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-list", "standard")?;
+        write_rollback_targets_fixture(&ws, "rq-rollback-list")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "rb-planning", "stdout")?;
+        assert_contains(&out.stdout, "rb-implementation", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-041", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-empty", "standard")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "No rollback targets available.", "stdout")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-042", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-rollback-visible", "standard")?;
+        write_rollback_visibility_fixture(&ws, "rq-rollback-visible")?;
+        let out = run_cli(&["run", "rollback", "--list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "rb-visible", "stdout")?;
+        if out.stdout.contains("rb-hidden") {
+            return Err(
+                "rollback --list should hide rollback points from abandoned branches".into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-043", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-stage-bad", "standard")?;
+        let out = run_cli(&["run", "history", "--stage", "unknown_stage"], ws.path())?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "unknown stage identifier", "stderr")?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-044", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-parse-history", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-parse-history")?;
+        let out = run_cli(&["run", "history", "--json"], ws.path())?;
+        assert_success(&out)?;
+        serde_json::from_str::<serde_json::Value>(&out.stdout)
+            .map_err(|e| format!("history --json should parse cleanly: {e}"))?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-045", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-parse-status", "standard")?;
+        let out = run_cli(&["run", "status", "--json"], ws.path())?;
+        assert_success(&out)?;
+        serde_json::from_str::<serde_json::Value>(&out.stdout)
+            .map_err(|e| format!("status --json should parse cleanly: {e}"))?;
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-046", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-logs", "standard")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let log_dir = conformance_project_root(&ws, "rq-follow-logs").join("runtime/logs");
+        std::fs::write(
+            log_dir.join("002.ndjson"),
+            r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"new follow log"}"#.to_owned() + "\n",
+        )
+        .map_err(|e| format!("write runtime log: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("new follow log") {
+            return Err(
+                "follow --logs output should include the appended runtime log entry".into(),
+            );
+        }
         Ok(())
     });
 }
@@ -5348,7 +5904,7 @@ fn register_workflow_checkpoint(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
-// Requirements Drafting (33 scenarios)
+// Requirements Drafting (41 scenarios)
 // ===========================================================================
 
 fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
@@ -5357,8 +5913,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        // Override question_set to return non-empty questions
+        // Override validation to trigger question round, and question_set to
+        // return non-empty questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Authentication method", "Database choice"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What authentication method?", "rationale": "Auth design", "required": true},
@@ -5475,7 +6038,14 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
 
-        let label_overrides = serde_json::json!({
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Which framework?", "rationale": "Framework choice", "required": true}
@@ -5487,7 +6057,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -5520,6 +6090,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write answers.toml: {e}"))?;
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Invoke requirements answer with EDITOR=true (no-op editor, answers already written)
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -5527,7 +6107,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -5729,7 +6309,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // resumes from the answer boundary through to completion.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Which approach?", "rationale": "Design", "required": true}
@@ -5741,7 +6329,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -5782,6 +6370,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write answers.toml: {e}"))?;
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Invoke requirements answer — this should resume from the answer boundary
         let answer_out = run_cli_with_env(
             &["requirements", "answer", &run_id],
@@ -5789,7 +6387,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -5821,6 +6419,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Editor test?", "rationale": "Test", "required": true}
@@ -5903,6 +6507,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Valid question?", "rationale": "R", "required": true}
@@ -5978,6 +6588,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Required question?", "rationale": "R", "required": true}
@@ -6087,7 +6703,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // Then try to answer again → should be rejected.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Test?", "rationale": "R", "required": true}
@@ -6099,7 +6723,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6111,7 +6735,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let run_dir = entries[0].path();
         let run_id = entries[0].file_name().to_string_lossy().to_string();
 
-        // Verify awaiting_answers state and question_round tracking
+        // Verify awaiting_answers state and question set tracking
         let run_content = std::fs::read_to_string(run_dir.join("run.json"))
             .map_err(|e| format!("read run.json: {e}"))?;
         let run: serde_json::Value =
@@ -6120,13 +6744,21 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "awaiting_answers" {
             return Err(format!("expected awaiting_answers, got '{status}'"));
         }
-        let question_round = run
-            .get("question_round")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0);
-        if question_round == 0 {
-            return Err("expected non-zero question_round after question generation".into());
+        // question_round tracks completed rounds (incremented by answer());
+        // at awaiting_answers, verify latest_question_set_id is set instead.
+        if run.get("latest_question_set_id").and_then(|v| v.as_str()).is_none() {
+            return Err("expected latest_question_set_id to be set after question generation".into());
         }
+
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
 
         // Submit valid answers
         std::fs::write(run_dir.join("answers.toml"), "q1 = \"My answer\"\n")
@@ -6137,7 +6769,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6152,7 +6784,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6221,7 +6853,15 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         // error and the run state remains unchanged.
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
-        let label_overrides = serde_json::json!({
+
+        // Draft overrides: validation triggers question round.
+        let draft_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Boundary?", "rationale": "R", "required": true}
@@ -6233,7 +6873,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             ws.path(),
             &[(
                 "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                &label_overrides.to_string(),
+                &draft_overrides.to_string(),
             )],
         )?;
         assert_success(&out)?;
@@ -6255,6 +6895,16 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err("expected awaiting_answers before answer submission".into());
         }
 
+        // Answer overrides: validation passes so the pipeline completes.
+        let answer_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "pass",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": []
+            }
+        });
+
         // Submit valid answers — first submission should succeed
         std::fs::write(run_dir.join("answers.toml"), "q1 = \"First answer\"\n")
             .map_err(|e| format!("write answers.toml: {e}"))?;
@@ -6264,7 +6914,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             &[
                 (
                     "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-                    &label_overrides.to_string(),
+                    &answer_overrides.to_string(),
                 ),
                 ("EDITOR", "true"),
             ],
@@ -6373,6 +7023,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Show test?", "rationale": "R", "required": true},
@@ -6439,6 +7095,12 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let ws = TempWorkspace::new()?;
         init_workspace(&ws)?;
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["stub validation evidence"],
+                "blocking_issues": [],
+                "missing_information": ["Missing info for question round"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "Populated?", "rationale": "R", "required": true}
@@ -6680,6 +7342,949 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         if status != "completed" {
             return Err(format!("expected 'completed', got '{status}'"));
         }
+        Ok(())
+    });
+
+    // ── Parity Slice 1 scenarios ──────────────────────────────────────────
+
+    reg!(m, "parity_slice1_full_mode_staged_happy_path", || {
+        // Full-mode draft runs all seven stages to completion
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &["requirements", "draft", "--idea", "Full pipeline test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+
+        let status = run.get("status").and_then(|v| v.as_str()).unwrap_or("");
+        if status != "completed" {
+            return Err(format!("expected 'completed', got '{status}'"));
+        }
+
+        // Verify committed_stages contains all 7 full-mode stages
+        let committed = run.get("committed_stages").and_then(|v| v.as_object());
+        let committed = committed.ok_or("missing committed_stages in run.json")?;
+        let expected_stages = [
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+            "project_seed",
+        ];
+        for stage in &expected_stages {
+            if !committed.contains_key(*stage) {
+                return Err(format!("committed_stages missing '{stage}'"));
+            }
+        }
+
+        // Verify seed version is 2
+        let seed_path = run_dir.join("seed/project.json");
+        if seed_path.is_file() {
+            let seed_content =
+                std::fs::read_to_string(&seed_path).map_err(|e| format!("read seed: {e}"))?;
+            let seed: serde_json::Value =
+                serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
+            let version = seed.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+            if version != 2 {
+                return Err(format!("expected seed version 2, got {version}"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_quick_mode_revision_loop", || {
+        // Quick mode: reviewer returns request_changes once, then approved.
+        // Verifies the revision loop actually exercises a request-changes cycle.
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Reviewer returns request_changes first, then approved
+        let adapter = StubBackendAdapter::default().with_label_payload_sequence(
+            "requirements:requirements_review",
+            vec![
+                serde_json::json!({
+                    "outcome": "request_changes",
+                    "evidence": ["Draft needs more detail"],
+                    "findings": ["Acceptance criteria too vague"],
+                    "follow_ups": []
+                }),
+                serde_json::json!({
+                    "outcome": "approved",
+                    "evidence": ["Revised draft looks good"],
+                    "findings": [],
+                    "follow_ups": []
+                }),
+            ],
+        );
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = chrono::Utc::now();
+        let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None))?;
+
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed
+        {
+            return Err(format!("expected completed, got {}", run.status));
+        }
+        if run.quick_revision_count != 1 {
+            return Err(format!(
+                "expected quick_revision_count 1, got {}",
+                run.quick_revision_count
+            ));
+        }
+
+        // Verify seed files exist
+        let run_dir = ws.path().join(".ralph-burning/requirements").join(&run_id);
+        if !run_dir.join("seed/project.json").is_file() {
+            return Err("seed/project.json not written".into());
+        }
+        if !run_dir.join("seed/prompt.md").is_file() {
+            return Err("seed/prompt.md not written".into());
+        }
+
+        // Verify journal contains revision events
+        let journal = store
+            .read_journal(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        let has_revision_requested = journal.iter().any(|e| {
+            e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::RevisionRequested
+        });
+        if !has_revision_requested {
+            return Err("journal should contain RevisionRequested event".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_versioned_seed_output", || {
+        // Verify seed carries version 2 and source metadata
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &["requirements", "draft", "--idea", "Versioned seed test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir = entries[0].path();
+        let seed_path = run_dir.join("seed/project.json");
+        if !seed_path.is_file() {
+            return Err("seed/project.json not written".into());
+        }
+        let seed_content =
+            std::fs::read_to_string(&seed_path).map_err(|e| format!("read seed: {e}"))?;
+        let seed: serde_json::Value =
+            serde_json::from_str(&seed_content).map_err(|e| format!("parse seed: {e}"))?;
+
+        let version = seed.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+        if version != 2 {
+            return Err(format!("expected seed version 2, got {version}"));
+        }
+
+        // Verify source metadata
+        let source = seed.get("source").ok_or("seed missing source metadata")?;
+        let mode = source.get("mode").and_then(|v| v.as_str()).unwrap_or("");
+        if mode != "draft" && mode != "quick" {
+            return Err(format!(
+                "expected source.mode 'draft' or 'quick', got '{mode}'"
+            ));
+        }
+        // Verify run_id is present
+        let run_id_in_source = source.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+        if run_id_in_source.is_empty() {
+            return Err("source.run_id is empty in seed".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_show_stage_progress", || {
+        // Show displays stage-aware progress for full-mode run
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Create a full-mode run first
+        let draft_out = run_cli(
+            &["requirements", "draft", "--idea", "Show progress test"],
+            ws.path(),
+        )?;
+        assert_success(&draft_out)?;
+
+        // Find the run ID from the output
+        let run_id = draft_out
+            .stdout
+            .lines()
+            .find(|l| l.contains("Requirements run"))
+            .and_then(|l| l.split_whitespace().last())
+            .ok_or("could not extract run ID from draft output")?
+            .to_string();
+
+        let show_out = run_cli(&["requirements", "show", &run_id], ws.path())?;
+        assert_success(&show_out)?;
+
+        // Should show completed stages
+        if !show_out.stdout.contains("Completed Stages:") {
+            return Err("show output missing 'Completed Stages:'".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_backward_compat_run_json", || {
+        // Pre-Slice-1 run.json without new fields deserializes correctly
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Run a quick-mode pipeline to get a run directory
+        let out = run_cli(
+            &["requirements", "quick", "--idea", "Backward compat test"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        let run_dir = entries[0].path();
+        let run_content = std::fs::read_to_string(run_dir.join("run.json"))
+            .map_err(|e| format!("read run.json: {e}"))?;
+        let mut run: serde_json::Value =
+            serde_json::from_str(&run_content).map_err(|e| format!("parse: {e}"))?;
+
+        // Strip the new Slice 1 fields to simulate a pre-Slice-1 run.json
+        if let Some(obj) = run.as_object_mut() {
+            obj.remove("committed_stages");
+            obj.remove("current_stage");
+            obj.remove("quick_revision_count");
+            obj.remove("last_transition_cached");
+        }
+
+        // Write it back and verify show still works
+        let stripped = serde_json::to_string_pretty(&run).map_err(|e| format!("serialize: {e}"))?;
+        std::fs::write(run_dir.join("run.json"), &stripped)
+            .map_err(|e| format!("write run.json: {e}"))?;
+
+        let run_id = run.get("run_id").and_then(|v| v.as_str()).unwrap_or("");
+        let show_out = run_cli(&["requirements", "show", run_id], ws.path())?;
+        assert_success(&show_out)?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice1_cache_reuse_on_resume", || {
+        // Run a full-mode draft with validation returning needs_questions,
+        // then answer and verify that ideation/research are reused via cache
+        // on the post-answer pipeline rerun (last_transition_cached in journal).
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Validation returns needs_questions first, then pass on resume
+        let adapter = StubBackendAdapter::default()
+            .with_label_payload_sequence(
+                "requirements:validation",
+                vec![
+                    serde_json::json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Need more info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Deployment target"]
+                    }),
+                    serde_json::json!({
+                        "outcome": "pass",
+                        "evidence": ["All clear after answers"],
+                        "blocking_issues": [],
+                        "missing_information": []
+                    }),
+                ],
+            )
+            .with_label_payload(
+                "requirements:question_set",
+                serde_json::json!({
+                    "questions": [{
+                        "id": "q1",
+                        "prompt": "What is the deployment target?",
+                        "rationale": "Needed for infra decisions",
+                        "required": true
+                    }]
+                }),
+            );
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = chrono::Utc::now();
+        let run_id = block_on_app_result(service.draft(ws.path(), "Cache reuse test", now, None))?;
+
+        // Run should be awaiting answers
+        let store = FsRequirementsStore;
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers
+        {
+            return Err(format!("expected awaiting_answers, got {}", run.status));
+        }
+
+        // Ideation and research should be committed (will be reused)
+        if !run.committed_stages.contains_key("ideation")
+            || !run.committed_stages.contains_key("research")
+        {
+            return Err("ideation/research should be committed before question round".into());
+        }
+
+        // Write answers and resume
+        let answers_path = ws
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(&run_id)
+            .join("answers.toml");
+        std::env::set_var("EDITOR", "true");
+        std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
+            .map_err(|e| format!("write answers: {e}"))?;
+
+        block_on_app_result(service.answer(ws.path(), &run_id, None))?;
+
+        let run = store
+            .read_run(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        if run.status
+            != crate::contexts::requirements_drafting::model::RequirementsStatus::Completed
+        {
+            return Err(format!(
+                "expected completed after answer, got {}",
+                run.status
+            ));
+        }
+
+        // Verify cache keys present on all cacheable stages
+        for stage in &[
+            "ideation",
+            "research",
+            "synthesis",
+            "implementation_spec",
+            "gap_analysis",
+            "validation",
+        ] {
+            let entry = run
+                .committed_stages
+                .get(*stage)
+                .ok_or(format!("committed_stages missing '{stage}'"))?;
+            if entry.cache_key.is_none() || entry.cache_key.as_deref() == Some("") {
+                return Err(format!("stage '{stage}' missing cache_key for reuse"));
+            }
+        }
+
+        // Verify journal contains StageReused events (ideation/research reused on resume)
+        let journal = store
+            .read_journal(ws.path(), &run_id)
+            .map_err(|e| e.to_string())?;
+        let reused_count = journal.iter().filter(|e| {
+            e.event_type == crate::contexts::requirements_drafting::model::RequirementsJournalEventType::StageReused
+        }).count();
+        if reused_count == 0 {
+            return Err("expected at least one StageReused event for cached resume".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "parity_slice1_question_round_invalidates_downstream",
+        || {
+            // Actually trigger a question round and verify that synthesis and
+            // downstream committed_stages are cleared while ideation/research
+            // are preserved in the awaiting_answers state.
+            use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+            use crate::adapters::stub_backend::StubBackendAdapter;
+            use crate::contexts::requirements_drafting::service::{
+                RequirementsService, RequirementsStorePort,
+            };
+
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+
+            let adapter = StubBackendAdapter::default()
+                .with_label_payload_sequence(
+                    "requirements:validation",
+                    vec![serde_json::json!({
+                        "outcome": "needs_questions",
+                        "evidence": ["Missing deployment info"],
+                        "blocking_issues": [],
+                        "missing_information": ["Target environment details"]
+                    })],
+                )
+                .with_label_payload(
+                    "requirements:question_set",
+                    serde_json::json!({
+                        "questions": [{
+                            "id": "q1",
+                            "prompt": "What is the target environment?",
+                            "rationale": "Needed for architecture decisions",
+                            "required": true
+                        }]
+                    }),
+                );
+            let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+                adapter,
+                FsRawOutputStore,
+                FsSessionStore,
+            );
+            let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+            let now = chrono::Utc::now();
+            let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now, None))?;
+
+            let store = FsRequirementsStore;
+            let run = store
+                .read_run(ws.path(), &run_id)
+                .map_err(|e| e.to_string())?;
+
+            // Must be awaiting answers
+            if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::AwaitingAnswers {
+            return Err(format!("expected awaiting_answers, got {}", run.status));
+        }
+
+            // Ideation and research must be preserved
+            if !run.committed_stages.contains_key("ideation") {
+                return Err("ideation should be preserved after question round".into());
+            }
+            if !run.committed_stages.contains_key("research") {
+                return Err("research should be preserved after question round".into());
+            }
+
+            // Synthesis and downstream must be cleared
+            for stage in &[
+                "synthesis",
+                "implementation_spec",
+                "gap_analysis",
+                "validation",
+                "project_seed",
+            ] {
+                if run.committed_stages.contains_key(*stage) {
+                    return Err(format!(
+                        "stage '{stage}' should be invalidated after question round"
+                    ));
+                }
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "parity_slice1_quick_mode_max_revisions", || {
+        // Reviewer always returns request_changes — run should fail at
+        // MAX_QUICK_REVISIONS (5) with quick_revision_count = 5.
+        use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+        use crate::adapters::stub_backend::StubBackendAdapter;
+        use crate::contexts::requirements_drafting::service::{
+            RequirementsService, RequirementsStorePort,
+        };
+
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        // Reviewer always returns request_changes — will hit the 5-revision limit
+        let adapter = StubBackendAdapter::default().with_label_payload(
+            "requirements:requirements_review",
+            serde_json::json!({
+                "outcome": "request_changes",
+                "evidence": ["Still needs work"],
+                "findings": ["Incomplete requirements"],
+                "follow_ups": []
+            }),
+        );
+        let agent_service = crate::contexts::agent_execution::AgentExecutionService::new(
+            adapter,
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let service = RequirementsService::new(agent_service, FsRequirementsStore);
+
+        let now = chrono::Utc::now();
+        let result = block_on_app_result(service.quick(ws.path(), "Max revisions test", now, None));
+
+        // Should fail due to revision limit
+        if result.is_ok() {
+            return Err("expected quick mode to fail at max revisions, but it succeeded".into());
+        }
+
+        // Read the run state to verify failure details
+        let store = FsRequirementsStore;
+        let req_dir = ws.path().join(".ralph-burning/requirements");
+        let entries: Vec<_> = std::fs::read_dir(&req_dir)
+            .map_err(|e| format!("read requirements dir: {e}"))?
+            .filter_map(|e| e.ok())
+            .collect();
+        if entries.is_empty() {
+            return Err("no requirements run created".into());
+        }
+        let run_dir_name = entries[0].file_name().to_string_lossy().to_string();
+        let run = store
+            .read_run(ws.path(), &run_dir_name)
+            .map_err(|e| e.to_string())?;
+
+        if run.status != crate::contexts::requirements_drafting::model::RequirementsStatus::Failed {
+            return Err(format!("expected failed status, got {}", run.status));
+        }
+        // MAX_QUICK_REVISIONS is 5; revision increments before the check,
+        // so quick_revision_count should be exactly 6 when the limit is exceeded
+        // (revision += 1 to 6, then 6 > 5 triggers failure).
+        // Actually: revision starts at 0, each request_changes does revision += 1
+        // then checks if revision > MAX_QUICK_REVISIONS (5). So after 5 request_changes
+        // cycles: revision goes 1, 2, 3, 4, 5 (each time check passes), then on the
+        // 6th cycle revision = 6 > 5 fails. But wait — revision starts at 0 after
+        // the initial draft, then on first request_changes: revision = 1, check 1 > 5? no.
+        // ... On 5th request_changes: revision = 5, check 5 > 5? no.
+        // On 6th request_changes: revision = 6, check 6 > 5? yes, fail.
+        // So quick_revision_count = 6. But actually the loop is:
+        // - Initial draft, review → request_changes → revision=1, revise, review →
+        //   request_changes → revision=2, ... So each loop iteration does one review
+        //   then one revision. After 5 successful revisions (revision=5), the 6th
+        //   request_changes sets revision=6 which exceeds the limit.
+        //
+        // The run.quick_revision_count is set to `revision` which is 6.
+        if run.quick_revision_count < 5 {
+            return Err(format!(
+                "expected quick_revision_count >= 5, got {}",
+                run.quick_revision_count
+            ));
+        }
+        if !run.status_summary.contains("revision limit") {
+            return Err(format!(
+                "expected failure summary to mention revision limit, got: {}",
+                run.status_summary
+            ));
+        }
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Slice 2 – Bootstrap and Auto Parity (8 scenarios)
+// ===========================================================================
+
+fn register_bootstrap_slice2(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice2_create_from_requirements", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let quick = run_cli(
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Slice 2 create from requirements",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&quick)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let out = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
+
+        let project_toml = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/project.toml"),
+        )
+        .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "id = \"stub-project\"", "project.toml")?;
+        assert_contains(&project_toml, "name = \"Stub Project\"", "project.toml")?;
+        assert_contains(&project_toml, "flow = \"standard\"", "project.toml")?;
+        assert_contains(
+            &project_toml,
+            "prompt_reference = \"prompt.md\"",
+            "project.toml",
+        )?;
+
+        let prompt = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/prompt.md"),
+        )
+        .map_err(|e| format!("read prompt.md: {e}"))?;
+        if prompt != "Stub prompt body for the project." {
+            return Err(format!("unexpected prompt.md contents: {prompt}"));
+        }
+
+        let journal = read_journal(&ws, "stub-project")?;
+        let created = journal
+            .first()
+            .ok_or_else(|| "missing project_created event".to_owned())?;
+        if created
+            .get("details")
+            .and_then(|value| value.get("source"))
+            .and_then(|value| value.as_str())
+            != Some("requirements")
+        {
+            return Err("project_created event missing requirements source metadata".into());
+        }
+        if created
+            .get("details")
+            .and_then(|value| value.get("requirements_run_id"))
+            .and_then(|value| value.as_str())
+            != Some(run_id.as_str())
+        {
+            return Err("project_created event missing requirements_run_id".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_standard", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap standard project",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Project: stub-project (active)", "stdout")?;
+
+        let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+            .map_err(|e| format!("read active-project: {e}"))?;
+        if active.trim() != "stub-project" {
+            return Err(format!(
+                "expected active project stub-project, got {}",
+                active.trim()
+            ));
+        }
+
+        let run_ids = requirements_run_ids(&ws)?;
+        if run_ids.len() != 1 {
+            return Err(format!(
+                "expected 1 requirements run, got {}",
+                run_ids.len()
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_quick_dev", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap quick dev project",
+                "--flow",
+                "quick_dev",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let project_root = ws.path().join(".ralph-burning/projects/stub-project");
+        let project_toml = std::fs::read_to_string(project_root.join("project.toml"))
+            .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
+        for subdir in &[
+            "history/payloads",
+            "history/artifacts",
+            "runtime/logs",
+            "runtime/backend",
+            "runtime/temp",
+            "amendments",
+            "rollback",
+        ] {
+            if !project_root.join(subdir).is_dir() {
+                return Err(format!("missing project subdir {subdir}"));
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_with_start", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Bootstrap and immediately start",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "stub-project")?;
+        if snapshot.get("status").and_then(|value| value.as_str()) == Some("not_started") {
+            return Err("bootstrap --start left run status at not_started".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_bootstrap_from_file", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let idea_path = ws.path().join("requirements-idea.md");
+        std::fs::write(&idea_path, "Bootstrap from file input")
+            .map_err(|e| format!("write idea file: {e}"))?;
+
+        let out = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--from-file",
+                idea_path
+                    .to_str()
+                    .ok_or_else(|| "non-utf8 idea path".to_owned())?,
+                "--flow",
+                "quick_dev",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let run_json = read_requirements_run_json(&ws, &run_id)?;
+        if run_json.get("idea").and_then(|value| value.as_str())
+            != Some("Bootstrap from file input")
+        {
+            return Err("requirements quick did not use file contents as idea input".into());
+        }
+
+        let project_toml = std::fs::read_to_string(
+            ws.path()
+                .join(".ralph-burning/projects/stub-project/project.toml"),
+        )
+        .map_err(|e| format!("read project.toml: {e}"))?;
+        assert_contains(&project_toml, "flow = \"quick_dev\"", "project.toml")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice2_failure_before_creation", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "keep-active", "standard");
+        std::fs::write(
+            ws.path().join(".ralph-burning/active-project"),
+            "keep-active\n",
+        )
+        .map_err(|e| format!("write active-project: {e}"))?;
+
+        let run_id = "req-awaiting";
+        let run_root = ws.path().join(".ralph-burning/requirements").join(run_id);
+        std::fs::create_dir_all(&run_root).map_err(|e| format!("create req dir: {e}"))?;
+        std::fs::write(
+            run_root.join("run.json"),
+            serde_json::json!({
+                "run_id": run_id,
+                "idea": "Incomplete requirements run",
+                "mode": "draft",
+                "status": "awaiting_answers",
+                "question_round": 0,
+                "latest_question_set_id": null,
+                "latest_draft_id": null,
+                "latest_review_id": null,
+                "latest_seed_id": null,
+                "pending_question_count": 1,
+                "recommended_flow": null,
+                "created_at": "2026-03-18T22:00:00Z",
+                "updated_at": "2026-03-18T22:00:00Z",
+                "status_summary": "awaiting answers",
+                "current_stage": null,
+                "committed_stages": {},
+                "quick_revision_count": 0,
+                "last_transition_cached": false
+            })
+            .to_string(),
+        )
+        .map_err(|e| format!("write incomplete run.json: {e}"))?;
+
+        let out = run_cli(
+            &["project", "create", "--from-requirements", run_id],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "expected 'completed'", "stderr")?;
+
+        let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+            .map_err(|e| format!("read active-project: {e}"))?;
+        if active.trim() != "keep-active" {
+            return Err(format!(
+                "active project changed unexpectedly to {}",
+                active.trim()
+            ));
+        }
+        if ws
+            .path()
+            .join(".ralph-burning/projects/stub-project")
+            .exists()
+        {
+            return Err("project directory should not exist after pre-creation failure".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "parity_slice2_failure_after_creation_before_start",
+        || {
+            let ws = TempWorkspace::new()?;
+            init_workspace(&ws)?;
+
+            let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+            let original = std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?;
+            let mutated = format!(
+            "{original}\n[prompt_review]\nenabled = true\nmin_reviewers = 3\nvalidator_backends = [\"claude\", \"codex\"]\n"
+        );
+            std::fs::write(&workspace_toml, mutated)
+                .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+            let out = run_cli(
+                &[
+                    "project",
+                    "bootstrap",
+                    "--idea",
+                    "Bootstrap should fail at run start",
+                    "--start",
+                ],
+                ws.path(),
+            )?;
+            assert_failure(&out)?;
+            assert_contains(
+                &out.stderr,
+                "created successfully but run failed to start",
+                "stderr",
+            )?;
+
+            let active = std::fs::read_to_string(ws.path().join(".ralph-burning/active-project"))
+                .map_err(|e| format!("read active-project: {e}"))?;
+            if active.trim() != "stub-project" {
+                return Err(format!(
+                    "expected stub-project active, got {}",
+                    active.trim()
+                ));
+            }
+            if !ws
+                .path()
+                .join(".ralph-burning/projects/stub-project/project.toml")
+                .is_file()
+            {
+                return Err("project should still exist after start failure".into());
+            }
+            let snapshot = read_run_snapshot(&ws, "stub-project")?;
+            if snapshot.get("status").and_then(|value| value.as_str()) != Some("not_started") {
+                return Err(format!(
+                    "expected not_started after preflight failure, got {:?}",
+                    snapshot.get("status")
+                ));
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "parity_slice2_duplicate_seed_project_id", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let quick = run_cli(
+            &[
+                "requirements",
+                "quick",
+                "--idea",
+                "Duplicate seed project test",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&quick)?;
+
+        let run_id = only_requirements_run_id(&ws)?;
+        let first = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_success(&first)?;
+
+        let second = run_cli(
+            &["project", "create", "--from-requirements", &run_id],
+            ws.path(),
+        )?;
+        assert_failure(&second)?;
+        assert_contains(&second.stderr, "already exists", "stderr")?;
+
         Ok(())
     });
 }
@@ -7397,6 +9002,72 @@ fn prepare_scenario_project_root(workspace_root: &Path) -> Result<PathBuf, Strin
     std::fs::write(project_root.join("sessions.json"), r#"{"sessions":[]}"#)
         .map_err(|e| format!("write scenario sessions.json: {e}"))?;
     Ok(project_root)
+}
+
+#[cfg(unix)]
+fn write_script_with_mode(path: &Path, contents: &str, mode: u32) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, contents).map_err(|e| format!("write script {}: {e}", path.display()))?;
+    let mut permissions = std::fs::metadata(path)
+        .map_err(|e| format!("stat script {}: {e}", path.display()))?
+        .permissions();
+    permissions.set_mode(mode);
+    std::fs::set_permissions(path, permissions)
+        .map_err(|e| format!("chmod script {}: {e}", path.display()))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn write_script_with_mode(path: &Path, contents: &str, _mode: u32) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| format!("write script {}: {e}", path.display()))
+}
+
+fn process_is_running(pid: u32) -> bool {
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return false;
+    };
+
+    let Some((_, rest)) = stat.rsplit_once(") ") else {
+        return false;
+    };
+
+    !rest.starts_with('Z')
+}
+
+fn build_process_backend_request(
+    project_root: &Path,
+    invocation_id: &str,
+    timeout: std::time::Duration,
+) -> crate::contexts::agent_execution::model::InvocationRequest {
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::contexts::workflow_composition::contracts::contract_for_stage;
+    use crate::shared::domain::{
+        BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+    };
+
+    InvocationRequest {
+        invocation_id: invocation_id.to_owned(),
+        project_root: project_root.to_path_buf(),
+        working_dir: project_root.to_path_buf(),
+        contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+        role: BackendRole::Planner,
+        resolved_target: ResolvedBackendTarget::new(
+            BackendFamily::Claude,
+            BackendFamily::Claude.default_model_id(),
+        ),
+        payload: InvocationPayload {
+            prompt: "Conformance process-backend prompt".to_owned(),
+            context: serde_json::json!({"scenario": invocation_id}),
+        },
+        timeout,
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    }
 }
 
 fn read_scenario_http_request(
@@ -8227,9 +9898,16 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write watched issue: {e}"))?;
 
-        // Override question_set to return non-empty questions so the draft
-        // path reaches awaiting_answers instead of completing directly.
+        // Override validation to return NeedsQuestions so the full-mode
+        // pipeline pauses and generates questions, then override question_set
+        // to return the actual questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["incomplete auth requirements"],
+                "blocking_issues": [],
+                "missing_information": ["authentication strategy", "database choice"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What authentication?", "rationale": "Auth", "required": true},
@@ -8601,9 +10279,16 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         )
         .map_err(|e| format!("write watched issue: {e}"))?;
 
-        // Override question_set to return non-empty questions so the draft
-        // path reaches awaiting_answers instead of completing directly.
+        // Override validation to return NeedsQuestions so the full-mode
+        // pipeline pauses and generates questions, then override question_set
+        // to return the actual questions.
         let label_overrides = serde_json::json!({
+            "validation": {
+                "outcome": "needs_questions",
+                "evidence": ["incomplete scope"],
+                "blocking_issues": [],
+                "missing_information": ["feature scope"]
+            },
             "question_set": {
                 "questions": [
                     {"id": "q1", "prompt": "What scope?", "rationale": "Scope", "required": true}
@@ -9049,10 +10734,12 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         let out = run_cli(&["run", "start"], ws.path())?;
         assert_failure(&out)?;
 
-        // Verify the run failed.
+        // Verify preflight rejected the run before execution started.
         let snapshot = read_run_snapshot(&ws, "pr-min-rev")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
-            return Err("expected failed status for min_reviewers enforcement".to_owned());
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
+            return Err(
+                "expected not_started status for min_reviewers preflight enforcement".to_owned(),
+            );
         }
         // stderr should reference insufficient panel members.
         if !out.stderr.contains("insufficient") && !out.stderr.contains("min_reviewers") {
@@ -9590,9 +11277,9 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cp-req-fail")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
             return Err(
-                "expected failed status when required completion backend is unavailable".to_owned(),
+                "expected not_started status when completion preflight rejects an unavailable required backend".to_owned(),
             );
         }
 
@@ -9724,8 +11411,11 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         assert_failure(&out)?;
 
         let snapshot = read_run_snapshot(&ws, "cp-min-comp")?;
-        if snapshot.get("status").and_then(|v| v.as_str()) != Some("failed") {
-            return Err("expected failed status for insufficient min_completers".to_owned());
+        if snapshot.get("status").and_then(|v| v.as_str()) != Some("not_started") {
+            return Err(
+                "expected not_started status for insufficient min_completers preflight rejection"
+                    .to_owned(),
+            );
         }
         Ok(())
     });
@@ -9997,10 +11687,16 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
                 crate::shared::domain::BackendFamily::Codex,
                 "codex-1".to_owned(),
             );
-            let to_member = |t: ResolvedBackendTarget| -> crate::contexts::agent_execution::policy::ResolvedPanelMember {
-                crate::contexts::agent_execution::policy::ResolvedPanelMember {
-                    target: t,
-                    required: true,
+            let mut to_member = {
+                let mut idx = 0usize;
+                move |t: ResolvedBackendTarget| -> crate::contexts::agent_execution::policy::ResolvedPanelMember {
+                    let m = crate::contexts::agent_execution::policy::ResolvedPanelMember {
+                        target: t,
+                        required: true,
+                        configured_index: idx,
+                    };
+                    idx += 1;
+                    m
                 }
             };
 
@@ -10121,6 +11817,499 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 }
 
 // ===========================================================================
+// Slice 0 Hardening (8 scenarios)
+// ===========================================================================
+
+fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
+    use crate::adapters::fs::{FsRawOutputStore, FsSessionStore};
+    use crate::adapters::github::{GithubClient, GithubClientConfig};
+    use crate::adapters::process_backend::ProcessBackendAdapter;
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::agent_execution::service::{AgentExecutionPort, AgentExecutionService};
+    use crate::contexts::workflow_composition::engine::{
+        build_final_review_snapshot, resolution_has_drifted,
+    };
+    use crate::shared::domain::{BackendFamily, ResolvedBackendTarget, StageId};
+    use crate::shared::error::AppError;
+
+    reg!(m, "parity_slice0_executable_permission_required", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let binary_path = bin_dir.join("claude");
+        write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o644)?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let adapter = ProcessBackendAdapter::new();
+            let target = ResolvedBackendTarget::new(
+                BackendFamily::Claude,
+                BackendFamily::Claude.default_model_id(),
+            );
+            match adapter.check_availability(&target).await {
+                Err(AppError::BackendUnavailable { details, .. }) => {
+                    if !details.contains(&binary_path.display().to_string()) {
+                        return Err(format!(
+                            "expected permission error to mention {}, got: {details}",
+                            binary_path.display()
+                        ));
+                    }
+                    if !details.contains("not executable") {
+                        return Err(format!(
+                            "expected permission error to explain executability, got: {details}"
+                        ));
+                    }
+                    Ok(())
+                }
+                Err(other) => Err(format!(
+                    "expected BackendUnavailable for non-executable binary, got: {other}"
+                )),
+                Ok(()) => Err("non-executable binary should not pass availability".to_owned()),
+            }
+        })
+    });
+
+    reg!(m, "parity_slice0_permission_check_success", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let binary_path = bin_dir.join("claude");
+        write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o755)?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let adapter = ProcessBackendAdapter::new();
+            let target = ResolvedBackendTarget::new(
+                BackendFamily::Claude,
+                BackendFamily::Claude.default_model_id(),
+            );
+            adapter
+                .check_availability(&target)
+                .await
+                .map_err(|e| format!("expected executable binary to pass availability: {e}"))
+        })
+    });
+
+    reg!(m, "parity_slice0_cancel_no_orphans", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let pid_file = ws.path().join("cancel-child.pid");
+        let term_file = ws.path().join("cancel-child.term");
+        write_script_with_mode(
+            &bin_dir.join("claude"),
+            &format!(
+                "#!/bin/sh\ntrap 'echo term > \"{}\"; exit 0' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                term_file.display(),
+                pid_file.display()
+            ),
+            0o755,
+        )?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            std::fs::create_dir_all(project_root.join("runtime/temp"))
+                .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::new();
+            let request = build_process_backend_request(
+                &project_root,
+                "slice0-cancel-no-orphans",
+                std::time::Duration::from_secs(5),
+            );
+            let invocation_id = request.invocation_id.clone();
+            let adapter_clone = adapter.clone();
+            let handle = tokio::spawn(async move { adapter_clone.invoke(request).await });
+
+            for _ in 0..40 {
+                if pid_file.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !pid_file.exists() {
+                return Err("child pid file was not written before cancel".to_owned());
+            }
+
+            let pid: u32 = std::fs::read_to_string(&pid_file)
+                .map_err(|e| format!("read child pid: {e}"))?
+                .trim()
+                .parse()
+                .map_err(|e| format!("parse child pid: {e}"))?;
+            if !process_is_running(pid) {
+                return Err("child should be running before cancel".to_owned());
+            }
+
+            adapter
+                .cancel(&invocation_id)
+                .await
+                .map_err(|e| format!("cancel long-running child: {e}"))?;
+
+            for _ in 0..40 {
+                if !process_is_running(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if process_is_running(pid) {
+                return Err("child process remained running after cancel".to_owned());
+            }
+            if !term_file.is_file() {
+                return Err("expected SIGTERM marker file after cancel".to_owned());
+            }
+
+            let children = adapter.active_children.lock().await;
+            if children.contains_key(&invocation_id) {
+                return Err("active_children should be empty after cancel".to_owned());
+            }
+            drop(children);
+
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), handle)
+                .await
+                .map_err(|_| "invoke task did not finish after cancel".to_owned())?;
+
+            Ok(())
+        })
+    });
+
+    reg!(m, "parity_slice0_timeout_cleanup", || {
+        let ws = TempWorkspace::new()?;
+        let bin_dir = ws.path().join("bin");
+        std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
+        let pid_file = ws.path().join("timeout-child.pid");
+        write_script_with_mode(
+            &bin_dir.join("claude"),
+            &format!(
+                "#!/bin/sh\ntrap '' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                pid_file.display()
+            ),
+            0o755,
+        )?;
+        let path_value = bin_dir.to_string_lossy().into_owned();
+        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            std::fs::create_dir_all(project_root.join("runtime/temp"))
+                .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::new();
+            let service =
+                AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+            let request = build_process_backend_request(
+                &project_root,
+                "slice0-timeout-cleanup",
+                std::time::Duration::from_millis(100),
+            );
+            let invocation_id = request.invocation_id.clone();
+
+            match service.invoke(request).await {
+                Err(AppError::InvocationTimeout { .. }) => {}
+                Err(other) => return Err(format!("expected InvocationTimeout, got: {other}")),
+                Ok(_) => return Err("timeout scenario should not succeed".to_owned()),
+            }
+
+            for _ in 0..20 {
+                if pid_file.exists() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if !pid_file.exists() {
+                return Err("timed-out child did not record a pid".to_owned());
+            }
+
+            let pid: u32 = std::fs::read_to_string(&pid_file)
+                .map_err(|e| format!("read timed-out child pid: {e}"))?
+                .trim()
+                .parse()
+                .map_err(|e| format!("parse timed-out child pid: {e}"))?;
+
+            for _ in 0..40 {
+                if !process_is_running(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+            if process_is_running(pid) {
+                return Err("timed-out child process remained running after cleanup".to_owned());
+            }
+
+            let children = adapter.active_children.lock().await;
+            if children.contains_key(&invocation_id) {
+                return Err("active_children should be empty after timeout cleanup".to_owned());
+            }
+
+            Ok(())
+        })
+    });
+
+    reg!(m, "parity_slice0_panel_preflight_required_member", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "slice0-panel-preflight", "standard")?;
+
+        let arbiter_out = run_cli(
+            &[
+                "config",
+                "set",
+                "final_review.arbiter_backend",
+                "openrouter",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&arbiter_out)?;
+
+        let start_out = run_cli(&["run", "start"], ws.path())?;
+        assert_failure(&start_out)?;
+        if !start_out.stderr.contains("preflight") {
+            return Err(format!(
+                "expected start failure to come from preflight, got: {}",
+                start_out.stderr
+            ));
+        }
+        if !start_out.stderr.contains("final_review") || !start_out.stderr.contains("arbiter") {
+            return Err(format!(
+                "expected final-review arbiter preflight error, got: {}",
+                start_out.stderr
+            ));
+        }
+
+        let snapshot = read_run_snapshot(&ws, "slice0-panel-preflight")?;
+        if snapshot.get("status").and_then(|value| value.as_str()) != Some("not_started") {
+            return Err(format!(
+                "preflight failure must leave snapshot at not_started, got {:?}",
+                snapshot.get("status")
+            ));
+        }
+        if snapshot
+            .get("active_run")
+            .is_some_and(|value| !value.is_null())
+        {
+            return Err("preflight failure must not create an active_run".to_owned());
+        }
+
+        let events = read_journal(&ws, "slice0-panel-preflight")?;
+        let appended_run_events = events.iter().filter(|event| {
+            matches!(
+                event.get("event_type").and_then(|value| value.as_str()),
+                Some("run_started" | "stage_entered" | "stage_completed" | "run_failed")
+            )
+        });
+        if appended_run_events.count() != 0 {
+            return Err(format!(
+                "preflight failure must not append run events, got {:?}",
+                events
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice0_final_review_planner_in_snapshot", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "slice0-final-review-snapshot", "standard")?;
+
+        let out = run_cli_with_env(
+            &["run", "start"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
+        )?;
+        assert_failure(&out)?;
+
+        let snapshot = read_run_snapshot(&ws, "slice0-final-review-snapshot")?;
+        let resolution = snapshot
+            .get("last_stage_resolution_snapshot")
+            .ok_or_else(|| {
+                "missing last_stage_resolution_snapshot after final-review failure".to_owned()
+            })?;
+        if resolution.get("stage_id").and_then(|v| v.as_str()) != Some("final_review") {
+            return Err(format!(
+                "expected final_review snapshot, got {:?}",
+                resolution.get("stage_id")
+            ));
+        }
+
+        let planner = resolution
+            .get("final_review_planner")
+            .ok_or_else(|| "final_review_planner missing from saved snapshot".to_owned())?;
+        if planner
+            .get("backend_family")
+            .and_then(|v| v.as_str())
+            .is_none()
+            || planner.get("model_id").and_then(|v| v.as_str()).is_none()
+        {
+            return Err(format!(
+                "final_review_planner must include backend_family and model_id, got {planner}"
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(
+        m,
+        "parity_slice0_final_review_planner_drift_detected",
+        || {
+            let reviewers = vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ];
+            let arbiter = ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter");
+            let old_snapshot = build_final_review_snapshot(
+                StageId::FinalReview,
+                &reviewers,
+                &ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a"),
+                &arbiter,
+            );
+            let new_snapshot = build_final_review_snapshot(
+                StageId::FinalReview,
+                &reviewers,
+                &ResolvedBackendTarget::new(BackendFamily::Codex, "planner-b"),
+                &arbiter,
+            );
+            if !resolution_has_drifted(&old_snapshot, &new_snapshot) {
+                return Err("planner-only final-review drift should be detected".to_owned());
+            }
+
+            let ws = TempWorkspace::new()?;
+            setup_workspace_with_project(&ws, "slice0-final-review-drift", "standard")?;
+
+            let arbiter_out = run_cli(
+                &["config", "set", "final_review.arbiter_backend", "claude"],
+                ws.path(),
+            )?;
+            assert_success(&arbiter_out)?;
+
+            let start_out = run_cli_with_env(
+                &["run", "start"],
+                ws.path(),
+                &[("RALPH_BURNING_TEST_FAIL_INVOKE_STAGE", "final_review")],
+            )?;
+            assert_failure(&start_out)?;
+
+            let planner_out = run_cli(
+                &["config", "set", "workflow.planner_backend", "codex"],
+                ws.path(),
+            )?;
+            assert_success(&planner_out)?;
+
+            let resume_out = run_cli(&["run", "resume"], ws.path())?;
+            assert_success(&resume_out)?;
+
+            let events = read_journal(&ws, "slice0-final-review-drift")?;
+            let warning_event = events
+                .iter()
+                .find(|event| {
+                    event.get("event_type").and_then(|value| value.as_str())
+                        == Some("durable_warning")
+                        && event
+                            .get("details")
+                            .and_then(|details| details.get("stage_id"))
+                            .and_then(|value| value.as_str())
+                            == Some("final_review")
+                })
+                .ok_or_else(|| {
+                    "expected durable_warning event for final-review planner drift".to_owned()
+                })?;
+
+            let warning_details = warning_event
+                .get("details")
+                .and_then(|details| details.get("details"))
+                .ok_or_else(|| "durable_warning missing nested resolution details".to_owned())?;
+            let old_resolution = warning_details
+                .get("old_resolution")
+                .ok_or_else(|| "durable_warning missing old_resolution".to_owned())?;
+            let new_resolution = warning_details
+                .get("new_resolution")
+                .ok_or_else(|| "durable_warning missing new_resolution".to_owned())?;
+
+            let old_planner = old_resolution
+                .get("final_review_planner")
+                .ok_or_else(|| "old_resolution missing final_review_planner".to_owned())?;
+            let new_planner = new_resolution
+                .get("final_review_planner")
+                .ok_or_else(|| "new_resolution missing final_review_planner".to_owned())?;
+            if old_planner == new_planner {
+                return Err(
+                    "expected planner drift warning to show changed planner resolution".to_owned(),
+                );
+            }
+            if old_resolution.get("final_review_arbiter")
+                != new_resolution.get("final_review_arbiter")
+            {
+                return Err(
+                    "arbiter should remain stable in planner-only drift scenario".to_owned(),
+                );
+            }
+            if old_resolution.get("final_review_reviewers")
+                != new_resolution.get("final_review_reviewers")
+            {
+                return Err(
+                    "reviewers should remain stable in planner-only drift scenario".to_owned(),
+                );
+            }
+
+            Ok(())
+        }
+    );
+
+    reg!(m, "parity_slice0_ref_encoding_reserved_chars", || {
+        let base_ref = "release/%base";
+        let head_ref = "feature/%head/with/slash";
+        let expected_path =
+            "/repos/acme/widgets/compare/release%2F%25base...feature%2F%25head%2Fwith%2Fslash";
+
+        block_on_result(async {
+            let server = ScenarioHttpServer::start(vec![ScenarioHttpResponse::json(
+                200,
+                serde_json::json!({
+                    "ahead_by": 1,
+                    "behind_by": 0,
+                    "status": "ahead"
+                }),
+            )])?;
+            let client = GithubClient::new(GithubClientConfig {
+                token: "test-token".to_owned(),
+                api_base_url: server.base_url.clone(),
+            });
+
+            let ahead = client
+                .is_branch_ahead("acme", "widgets", base_ref, head_ref)
+                .await
+                .map_err(|e| format!("compare refs: {e}"))?;
+            if !ahead {
+                return Err("expected compare response to report branch ahead".to_owned());
+            }
+
+            let requests = server.requests()?;
+            let request = requests
+                .first()
+                .ok_or_else(|| "expected recorded compare request".to_owned())?;
+            if request.path != expected_path {
+                return Err(format!(
+                    "expected compare request path {expected_path}, got {}",
+                    request.path
+                ));
+            }
+
+            Ok(())
+        })
+    });
+}
+
+// ===========================================================================
 // Backend Stub Gating (1 scenario)
 // ===========================================================================
 
@@ -10147,7 +12336,8 @@ fn register_backend_stub(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         if !stdout.contains("running 1 test")
-            || !stdout.contains("build_backend_adapter_rejects_stub_when_test_stub_feature_disabled")
+            || !stdout
+                .contains("build_backend_adapter_rejects_stub_when_test_stub_feature_disabled")
         {
             return Err(format!(
                 "expected targeted no-feature test to execute exactly once\nstdout:\n{}\nstderr:\n{}",
@@ -10325,6 +12515,12 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 body: "Implement the final amendment.".to_owned(),
                 created_at: chrono::Utc::now(),
                 batch_sequence: 1,
+                source: crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                dedup_key:
+                    crate::contexts::project_run_record::model::QueuedAmendment::compute_dedup_key(
+                        &crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage,
+                        "Implement the final amendment.",
+                    ),
             };
             crate::adapters::fs::FsAmendmentQueueStore
                 .write_amendment(ws.path(), &pid, &amendment)
@@ -15076,12 +17272,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_task(ws.path(), &task)
             .map_err(|e| e.to_string())?;
 
+        let journal_store_pr = crate::adapters::fs::FsJournalStore;
         let service = PrReviewIngestionService::new(
             &store,
             &project_store,
             &run_snapshot_read,
             &run_snapshot_write,
             &amendment_queue,
+            &journal_store_pr,
             &github,
         );
         let whitelist = ReviewWhitelist {
@@ -15187,12 +17385,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             .create_task(ws.path(), &task)
             .map_err(|e| e.to_string())?;
 
+        let journal_store_pr2 = crate::adapters::fs::FsJournalStore;
         let service = PrReviewIngestionService::new(
             &store,
             &project_store,
             &run_snapshot_read,
             &run_snapshot_write,
             &amendment_queue,
+            &journal_store_pr2,
             &github,
         );
         let whitelist = ReviewWhitelist::default();
@@ -15334,12 +17534,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 .create_task(ws.path(), &task)
                 .map_err(|e| e.to_string())?;
 
+            let journal_store_pr3 = crate::adapters::fs::FsJournalStore;
             let service = PrReviewIngestionService::new(
                 &store,
                 &project_store,
                 &run_snapshot_read,
                 &FailingSnapshotWrite,
                 &amendment_queue,
+                &journal_store_pr3,
                 &github,
             );
             let err = block_on_app_result(service.ingest_reviews(
@@ -15444,12 +17646,14 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 .create_task(ws.path(), &task)
                 .map_err(|e| e.to_string())?;
 
+            let journal_store_pr4 = crate::adapters::fs::FsJournalStore;
             let service = PrReviewIngestionService::new(
                 &store,
                 &project_store,
                 &run_snapshot_read,
                 &run_snapshot_write,
                 &amendment_queue,
+                &journal_store_pr4,
                 &github,
             );
             let batch = block_on_app_result(service.ingest_reviews(
@@ -15699,6 +17903,2026 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(format!("expected timeout classification, got {outcome:?}"));
         }
 
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Slice 3 – Manual Amendment Parity (8 scenarios)
+// ===========================================================================
+
+fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice3_manual_add", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 manual add"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(
+            &["project", "amend", "add", "--text", "Fix the login bug"],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "Amendment:", "stdout")?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "Fix the login bug", "amend list")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_list_empty", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 list empty"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&out)?;
+        assert_contains(&out.stdout, "No pending amendments", "amend list empty")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_remove", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 remove"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add_out = run_cli(
+            &["project", "amend", "add", "--text", "Fix remove target"],
+            ws.path(),
+        )?;
+        assert_success(&add_out)?;
+
+        // Extract amendment ID from output.
+        let id = add_out
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from add output".to_owned())?
+            .trim()
+            .to_owned();
+
+        let rm = run_cli(&["project", "amend", "remove", &id], ws.path())?;
+        assert_success(&rm)?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "amend list after remove",
+        )?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_manual_clear", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 clear"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        run_cli(&["project", "amend", "add", "--text", "Fix A"], ws.path())?;
+        run_cli(&["project", "amend", "add", "--text", "Fix B"], ws.path())?;
+
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+        assert_success(&clear)?;
+
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "amend list after clear",
+        )?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_duplicate_manual_add", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 duplicate"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let first = run_cli(
+            &["project", "amend", "add", "--text", "duplicate body"],
+            ws.path(),
+        )?;
+        assert_success(&first)?;
+
+        let second = run_cli(
+            &["project", "amend", "add", "--text", "duplicate body"],
+            ws.path(),
+        )?;
+        assert_success(&second)?;
+        assert_contains(&second.stdout, "Duplicate", "duplicate output")?;
+
+        // Should still only have one amendment.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        let count = list
+            .stdout
+            .lines()
+            .filter(|line| line.contains("duplicate body"))
+            .count();
+        if count != 1 {
+            return Err(format!("expected 1 amendment, found {count}"));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_completed_project_reopen", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 reopen",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // With test-stub, --start runs the full workflow to completion.
+        let snap_before = read_run_snapshot(&ws, "stub-project")?;
+        if snap_before.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed status before amend, got: {:?}",
+                snap_before.get("status")
+            ));
+        }
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Post-completion fix"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        let snap_after = read_run_snapshot(&ws, "stub-project")?;
+        if snap_after.get("status").and_then(|v| v.as_str()) != Some("paused") {
+            return Err(format!(
+                "expected paused status after amend, got: {:?}",
+                snap_after.get("status")
+            ));
+        }
+        if snap_after.get("interrupted_run").is_none()
+            || snap_after
+                .get("interrupted_run")
+                .and_then(|v| v.as_null())
+                .is_some()
+        {
+            return Err("expected interrupted_run to be set after reopen".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_journal_records_manual_event", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 journal"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Journal test body"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        let journal = read_journal(&ws, "stub-project")?;
+        let amendment_event = journal
+            .iter()
+            .find(|e| e.get("event_type").and_then(|v| v.as_str()) == Some("amendment_queued"))
+            .ok_or_else(|| "missing amendment_queued event in journal".to_owned())?;
+
+        let details = amendment_event
+            .get("details")
+            .ok_or_else(|| "amendment_queued event missing details".to_owned())?;
+        if details.get("source").and_then(|v| v.as_str()) != Some("manual") {
+            return Err(format!(
+                "expected source=manual, got: {:?}",
+                details.get("source")
+            ));
+        }
+        if details.get("dedup_key").and_then(|v| v.as_str()).is_none() {
+            return Err("amendment_queued event missing dedup_key".to_owned());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_remove_missing_fails", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 missing remove"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let out = run_cli(
+            &["project", "amend", "remove", "nonexistent-amendment-id"],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+        assert_contains(&out.stderr, "not found", "remove missing stderr")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_restart_persistence", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 restart persist"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &[
+                "project",
+                "amend",
+                "add",
+                "--text",
+                "Persist across restart",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Re-list after bootstrapping (simulating a fresh CLI invocation).
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(&list.stdout, "Persist across restart", "amend persists")?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_completion_blocking", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 completion block",
+                "--start",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // After --start with test-stub, the project should be completed.
+        let snap_before = read_run_snapshot(&ws, "stub-project")?;
+        if snap_before.get("status").and_then(|v| v.as_str()) != Some("completed") {
+            return Err(format!(
+                "expected completed status before amend, got: {:?}",
+                snap_before.get("status")
+            ));
+        }
+
+        // Add an amendment to reopen.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Block completion"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // After reopen, status should be paused with a pending amendment.
+        let snap_after = read_run_snapshot(&ws, "stub-project")?;
+        if snap_after.get("status").and_then(|v| v.as_str()) != Some("paused") {
+            return Err(format!(
+                "expected paused status after amend, got: {:?}",
+                snap_after.get("status")
+            ));
+        }
+
+        // The amendment_queue.pending should not be empty in run.json.
+        let pending = snap_after
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {}
+            _ => {
+                return Err(
+                    "expected non-empty pending queue in run.json after amendment add".to_owned(),
+                );
+            }
+        }
+
+        // Assert actual blocking: the interrupted_run must rewind to the
+        // planning stage, proving completion was unwound.
+        let interrupted = snap_after
+            .get("interrupted_run")
+            .ok_or_else(|| "expected interrupted_run to be set after reopen".to_owned())?;
+        let stage = interrupted
+            .get("stage_cursor")
+            .and_then(|c| c.get("stage"))
+            .and_then(|s| s.as_str())
+            .ok_or_else(|| "expected stage_cursor.stage in interrupted_run".to_owned())?;
+        if stage != "planning" && stage != "flow_planning" {
+            return Err(format!(
+                "expected interrupted_run to rewind to planning stage, got: {stage}"
+            ));
+        }
+
+        // Try to resume the run — the engine should block at completion
+        // because the pending amendment has not been processed.
+        let resume = run_cli(&["run", "resume"], ws.path())?;
+        let snap_resumed = read_run_snapshot(&ws, "stub-project")?;
+        let final_status = snap_resumed
+            .get("status")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown");
+
+        // Either the run fails with a completion-blocked error, or
+        // the engine processes the amendment and completes. In both
+        // cases, the pending queue must be empty for completion to
+        // have succeeded.
+        if final_status == "completed" {
+            let final_pending = snap_resumed
+                .get("amendment_queue")
+                .and_then(|q| q.get("pending"))
+                .and_then(|p| p.as_array());
+            match final_pending {
+                Some(arr) if !arr.is_empty() => {
+                    return Err(
+                        "project completed but pending amendments remain — blocking not enforced"
+                            .to_owned(),
+                    );
+                }
+                _ => {} // OK: amendments were drained before completion
+            }
+        } else if !resume.success {
+            // Engine failed — verify the error mentions completion blocking.
+            if !resume.stderr.contains("blocked") && !resume.stderr.contains("pending amendment") {
+                return Err(format!(
+                    "run failed but error does not mention blocking: {}",
+                    resume.stderr
+                ));
+            }
+        }
+        // If status is paused/running/failed that's also acceptable —
+        // it means the engine did not complete while amendments are pending.
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_lease_conflict_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 lease conflict"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Simulate a writer lock by writing a lock file at the real path
+        // used by CliWriterLeaseGuard: .ralph-burning/daemon/leases/writer-{id}.lock
+        let project_id = "stub-project";
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Should fail"],
+            ws.path(),
+        )?;
+        assert_failure(&add)?;
+        assert_contains(&add.stderr, "lease", "lease conflict stderr")?;
+
+        // Verify no amendment was created.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(
+            &list.stdout,
+            "No pending amendments",
+            "no amendment created",
+        )?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_lease_conflict_remove", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 lease conflict remove",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add an amendment before the lock is held.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Amendment to remove"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+        let amendment_id = add
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID".to_owned())?
+            .trim()
+            .to_owned();
+
+        // Simulate a writer lock.
+        let project_id = "stub-project";
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let remove = run_cli(&["project", "amend", "remove", &amendment_id], ws.path())?;
+        assert_failure(&remove)?;
+        assert_contains(&remove.stderr, "lease", "remove lease conflict stderr")?;
+
+        // Clean up lock and verify the amendment still exists.
+        std::fs::remove_file(&lock_path).ok();
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert_contains(
+            &list.stdout,
+            &amendment_id,
+            "amendment should still be pending",
+        )?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_lease_conflict_clear", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &[
+                "project",
+                "bootstrap",
+                "--idea",
+                "Slice 3 lease conflict clear",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add an amendment before the lock is held.
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Amendment to clear"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Simulate a writer lock.
+        let project_id = "stub-project";
+        let leases_dir = ws.path().join(".ralph-burning/daemon/leases");
+        std::fs::create_dir_all(&leases_dir).ok();
+        let lock_path = leases_dir.join(format!("writer-{project_id}.lock"));
+        std::fs::write(&lock_path, "held-by-test").ok();
+
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+        assert_failure(&clear)?;
+        assert_contains(&clear.stderr, "lease", "clear lease conflict stderr")?;
+
+        // Clean up lock and verify amendments still exist.
+        std::fs::remove_file(&lock_path).ok();
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        assert!(
+            !list.stdout.contains("No pending amendments"),
+            "amendments should still be pending"
+        );
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_clear_partial_failure", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 clear partial"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Add two amendments.
+        let add1 = run_cli(
+            &["project", "amend", "add", "--text", "Amendment Alpha"],
+            ws.path(),
+        )?;
+        assert_success(&add1)?;
+        let id1 = add1
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from first add".to_owned())?
+            .trim()
+            .to_owned();
+
+        let add2 = run_cli(
+            &["project", "amend", "add", "--text", "Amendment Beta"],
+            ws.path(),
+        )?;
+        assert_success(&add2)?;
+        let id2 = add2
+            .stdout
+            .lines()
+            .find_map(|line| line.strip_prefix("Amendment: "))
+            .ok_or_else(|| "could not extract amendment ID from second add".to_owned())?
+            .trim()
+            .to_owned();
+
+        // Use the deterministic failpoint to make the second remove call fail.
+        // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
+        // remove succeeds and the second fails.
+        std::env::set_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1");
+
+        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
+
+        std::env::remove_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER");
+
+        // The clear must have partially failed.
+        assert_failure(&clear)?;
+
+        // Stderr must mention BOTH the exact removed and remaining IDs as a
+        // complete pair. Either ordering is valid since amendments are sorted
+        // by (created_at, batch_sequence).
+        let stderr = &clear.stderr;
+        let ordering_a = stderr.contains(&format!("removed: {id1}"))
+            && stderr.contains(&format!("remaining: {id2}"));
+        let ordering_b = stderr.contains(&format!("removed: {id2}"))
+            && stderr.contains(&format!("remaining: {id1}"));
+        if !ordering_a && !ordering_b {
+            return Err(format!(
+                "partial clear must report both exact removed AND remaining IDs.\n\
+                 Expected one of: removed={id1} remaining={id2}, or removed={id2} remaining={id1}\n\
+                 Got stderr: {stderr}"
+            ));
+        }
+
+        // run.json should reflect exactly one remaining pending amendment.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array())
+            .ok_or_else(|| "missing pending queue in run.json".to_owned())?;
+
+        if pending.len() != 1 {
+            return Err(format!(
+                "expected exactly 1 remaining amendment in run.json, got {}",
+                pending.len()
+            ));
+        }
+
+        // The remaining amendment ID in run.json must match the one reported
+        // as remaining in stderr.
+        let remaining_id = pending[0]
+            .get("amendment_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| "missing amendment_id in remaining pending".to_owned())?;
+        if !stderr.contains(&format!("remaining: {remaining_id}")) {
+            return Err(format!(
+                "run.json remaining ID '{remaining_id}' not found in stderr: {stderr}"
+            ));
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_run_json_sync", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 run json sync"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        let add = run_cli(
+            &["project", "amend", "add", "--text", "Sync body"],
+            ws.path(),
+        )?;
+        assert_success(&add)?;
+
+        // Read run.json and verify the pending queue has the amendment.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {
+                let first = &arr[0];
+                let body = first.get("body").and_then(|b| b.as_str()).unwrap_or("");
+                if body != "Sync body" {
+                    return Err(format!(
+                        "expected body 'Sync body' in run.json pending, got: {body}"
+                    ));
+                }
+            }
+            _ => {
+                return Err("expected non-empty pending queue in run.json after add".to_owned());
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice3_journal_append_failure_rollback", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+
+        let boot = run_cli(
+            &["project", "bootstrap", "--idea", "Slice 3 journal fail"],
+            ws.path(),
+        )?;
+        assert_success(&boot)?;
+
+        // Inject journal append failure: fail on the very first append after
+        // the bootstrap (RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER=0).
+        let add = run_cli_with_env(
+            &["project", "amend", "add", "--text", "Should not persist"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER", "0")],
+        )?;
+        assert_failure(&add)?;
+
+        // No amendment should be visible via list.
+        let list = run_cli(&["project", "amend", "list"], ws.path())?;
+        assert_success(&list)?;
+        if list.stdout.contains("Should not persist") {
+            return Err("amendment should not be visible after journal append failure".to_owned());
+        }
+
+        // run.json must have no pending amendments.
+        let snap = read_run_snapshot(&ws, "stub-project")?;
+        let pending = snap
+            .get("amendment_queue")
+            .and_then(|q| q.get("pending"))
+            .and_then(|p| p.as_array());
+        match pending {
+            Some(arr) if !arr.is_empty() => {
+                return Err(format!(
+                    "expected empty pending queue in run.json after journal append failure, got {} amendments",
+                    arr.len()
+                ));
+            }
+            _ => {}
+        }
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Backend Operations Parity — Slice 5 (5 scenarios)
+// ===========================================================================
+
+fn register_backend_operations_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "parity_slice5_backend_list", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(&["backend", "list", "--json"], ws.path())?;
+        assert_success(&out)?;
+
+        let entries: Vec<serde_json::Value> = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend list: {e}"))?;
+        if entries.len() != 4 {
+            return Err(format!("expected 4 families, got {}", entries.len()));
+        }
+
+        let families: Vec<&str> = entries
+            .iter()
+            .filter_map(|e| e.get("family").and_then(|v| v.as_str()))
+            .collect();
+        for expected in &["claude", "codex", "openrouter", "stub"] {
+            if !families.contains(expected) {
+                return Err(format!("missing backend family '{expected}'"));
+            }
+        }
+
+        // stub compile_only is build-sensitive: in test-stub builds it is
+        // null, in production builds it is true.
+        let stub_entry = entries
+            .iter()
+            .find(|e| e.get("family").and_then(|v| v.as_str()) == Some("stub"))
+            .ok_or("missing stub entry")?;
+        #[cfg(feature = "test-stub")]
+        {
+            if stub_entry.get("compile_only").is_some()
+                && !stub_entry.get("compile_only").unwrap().is_null()
+            {
+                return Err("stub compile_only should be null in test-stub build".into());
+            }
+        }
+        #[cfg(not(feature = "test-stub"))]
+        {
+            if stub_entry.get("compile_only").and_then(|v| v.as_bool()) != Some(true) {
+                return Err("stub should be marked compile_only in non-stub build".into());
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_check", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        // Default config should pass
+        let out = run_cli(&["backend", "check", "--json"], ws.path())?;
+        assert_success(&out)?;
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend check: {e}"))?;
+        if result.get("passed").and_then(|v| v.as_bool()) != Some(true) {
+            return Err("default config should pass backend check".into());
+        }
+
+        // Write config with disabled base backend
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(&["backend", "check", "--json"], ws.path())?;
+        assert_failure(&out)?;
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from backend check: {e}"))?;
+        if result.get("passed").and_then(|v| v.as_bool()) != Some(false) {
+            return Err("disabled base backend should fail check".into());
+        }
+        let failures = result
+            .get("failures")
+            .and_then(|v| v.as_array())
+            .ok_or("missing failures array")?;
+        if failures.is_empty() {
+            return Err("expected at least one failure".into());
+        }
+
+        // Verify read-only: no project state created
+        let projects_dir = ws.path().join(".ralph-burning/projects");
+        if projects_dir.is_dir() {
+            let entries: Vec<_> = std::fs::read_dir(&projects_dir)
+                .map_err(|e| format!("read projects dir: {e}"))?
+                .collect();
+            if !entries.is_empty() {
+                return Err("backend check should not create project state".into());
+            }
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_show_effective", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(&["backend", "show-effective", "--json"], ws.path())?;
+        assert_success(&out)?;
+
+        let view: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from show-effective: {e}"))?;
+
+        // Check required fields
+        let base = view.get("base_backend").ok_or("missing base_backend")?;
+        if base.get("value").is_none() || base.get("source").is_none() {
+            return Err("base_backend must have value and source".into());
+        }
+
+        // Source labels must be concrete precedence strings, not empty
+        let base_source = base.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if base_source.is_empty() {
+            return Err("base_backend.source must be a non-empty string".into());
+        }
+
+        // default_model must have value and source
+        let dm = view.get("default_model").ok_or("missing default_model")?;
+        let dm_source = dm.get("source").and_then(|v| v.as_str()).unwrap_or("");
+        if dm_source.is_empty() {
+            return Err("default_model.source must be a non-empty string".into());
+        }
+
+        let roles = view
+            .get("roles")
+            .and_then(|v| v.as_array())
+            .ok_or("missing roles array")?;
+        if roles.is_empty() {
+            return Err("roles should not be empty".into());
+        }
+
+        // Each role should have required fields including source labels
+        for role in roles {
+            for field in &[
+                "role",
+                "backend_family",
+                "model_id",
+                "timeout_seconds",
+                "override_source",
+                "model_source",
+                "timeout_source",
+            ] {
+                if role.get(*field).is_none() {
+                    return Err(format!("role entry missing field '{field}'"));
+                }
+            }
+            // Source labels must be non-empty strings
+            let ms = role
+                .get("model_source")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            if ms.is_empty() {
+                return Err("role model_source must be a non-empty string".into());
+            }
+        }
+
+        if view.get("default_timeout_seconds").is_none() {
+            return Err("missing default_timeout_seconds".into());
+        }
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_probe_completion_panel", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "completion_panel",
+                "--flow",
+                "standard",
+                "--json",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from probe: {e}"))?;
+
+        if result.get("role").and_then(|v| v.as_str()) != Some("completion_panel") {
+            return Err("expected role=completion_panel".into());
+        }
+
+        let panel = result.get("panel").ok_or("missing panel object")?;
+        if panel.get("panel_type").and_then(|v| v.as_str()) != Some("completion") {
+            return Err("expected panel_type=completion".into());
+        }
+
+        let members = panel
+            .get("members")
+            .and_then(|v| v.as_array())
+            .ok_or("missing panel members")?;
+        if members.is_empty() {
+            return Err("completion panel should have at least one member".into());
+        }
+
+        // Each member must have required/optional status, backend_family, and configured_index
+        for member in members {
+            if member.get("required").is_none() {
+                return Err("member missing required field".into());
+            }
+            if member.get("backend_family").is_none() {
+                return Err("member missing backend_family field".into());
+            }
+            if member.get("configured_index").is_none() {
+                return Err("member missing configured_index field".into());
+            }
+        }
+
+        // Verify probe failure semantics: disabled required backend exits non-zero
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "completion_panel",
+                "--flow",
+                "standard",
+            ],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+
+        Ok(())
+    });
+
+    reg!(m, "parity_slice5_backend_probe_final_review_panel", || {
+        let ws = TempWorkspace::new()?;
+        let out = run_cli(&["init"], ws.path())?;
+        assert_success(&out)?;
+
+        let out = run_cli(
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "final_review_panel",
+                "--flow",
+                "standard",
+                "--json",
+            ],
+            ws.path(),
+        )?;
+        assert_success(&out)?;
+
+        let result: serde_json::Value = serde_json::from_str(&out.stdout)
+            .map_err(|e| format!("invalid JSON from probe: {e}"))?;
+
+        if result.get("role").and_then(|v| v.as_str()) != Some("final_review_panel") {
+            return Err("expected role=final_review_panel".into());
+        }
+
+        let panel = result.get("panel").ok_or("missing panel object")?;
+        if panel.get("panel_type").and_then(|v| v.as_str()) != Some("final_review") {
+            return Err("expected panel_type=final_review".into());
+        }
+
+        let members = panel
+            .get("members")
+            .and_then(|v| v.as_array())
+            .ok_or("missing panel members")?;
+        if members.is_empty() {
+            return Err("final review panel should have at least one member".into());
+        }
+
+        // Each member must have backend_family and configured_index
+        for member in members {
+            if member.get("backend_family").is_none() {
+                return Err("member missing backend_family field".into());
+            }
+            if member.get("configured_index").is_none() {
+                return Err("member missing configured_index field".into());
+            }
+        }
+
+        // Verify probe failure semantics: disabled required backend exits non-zero
+        std::fs::write(
+            ws.path().join(".ralph-burning/workspace.toml"),
+            "version = 1\ncreated_at = \"2026-03-19T03:28:00Z\"\n\n[settings]\ndefault_backend = \"openrouter\"\n\n[backends.openrouter]\nenabled = false\n",
+        ).map_err(|e| format!("write config: {e}"))?;
+
+        let out = run_cli(
+            &[
+                "backend",
+                "probe",
+                "--role",
+                "final_review_panel",
+                "--flow",
+                "standard",
+            ],
+            ws.path(),
+        )?;
+        assert_failure(&out)?;
+
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Tmux And Streaming Parity (Slice 6)
+// ===========================================================================
+
+fn tmux_write_executable(path: &Path, contents: &str) -> Result<(), String> {
+    std::fs::write(path, contents).map_err(|e| format!("write executable: {e}"))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        let mut permissions = std::fs::metadata(path)
+            .map_err(|e| format!("stat executable: {e}"))?
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(path, permissions)
+            .map_err(|e| format!("chmod executable: {e}"))?;
+    }
+    Ok(())
+}
+
+fn tmux_planning_payload() -> serde_json::Value {
+    serde_json::json!({
+        "problem_framing": "tmux plan",
+        "assumptions_or_open_questions": ["none"],
+        "proposed_work": [{"order": 1, "summary": "do it", "details": "details"}],
+        "readiness": {"ready": true, "risks": []}
+    })
+}
+
+fn write_tmux_fake_claude(bin_dir: &Path, envelope_file: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("claude"),
+        &format!(
+            r#"#!/usr/bin/env bash
+echo "$@" > "$PWD/claude-args.txt"
+cat > "$PWD/claude-stdin.txt"
+cat "{}"
+"#,
+            envelope_file.display()
+        ),
+    )
+}
+
+fn write_tmux_sleeping_claude(bin_dir: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("claude"),
+        r#"#!/usr/bin/env bash
+trap 'exit 130' INT TERM
+while true; do
+  sleep 0.1
+done
+"#,
+    )
+}
+
+fn write_tmux_fake_tmux(bin_dir: &Path, state_dir: &Path) -> Result<(), String> {
+    tmux_write_executable(
+        &bin_dir.join("tmux"),
+        &format!(
+            r#"#!/usr/bin/env bash
+set -eu
+STATE_DIR="{}"
+mkdir -p "$STATE_DIR"
+cmd="$1"
+shift
+
+pid_file() {{
+  printf '%s/%s.pid' "$STATE_DIR" "$1"
+}}
+
+live_session() {{
+  local session="$1"
+  local file
+  file="$(pid_file "$session")"
+  if [ ! -f "$file" ]; then
+    return 1
+  fi
+  local pid
+  pid="$(cat "$file")"
+  if kill -0 "$pid" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$file"
+  return 1
+}}
+
+case "$cmd" in
+  new-session)
+    session=""
+    shell_cmd=""
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        -d)
+          shift
+          ;;
+        -s)
+          session="$2"
+          shift 2
+          ;;
+        -x|-y|-c)
+          shift 2
+          ;;
+        *)
+          shell_cmd="$1"
+          shift
+          ;;
+      esac
+    done
+    setsid bash -c "$shell_cmd" >/dev/null 2>&1 &
+    echo "$!" > "$(pid_file "$session")"
+    ;;
+  has-session)
+    session="$2"
+    if live_session "$session"; then
+      exit 0
+    fi
+    exit 1
+    ;;
+  kill-session)
+    session="$2"
+    file="$(pid_file "$session")"
+    if [ -f "$file" ]; then
+      pid="$(cat "$file")"
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+      sleep 0.1
+      kill -KILL "-$pid" 2>/dev/null || kill -KILL "$pid" 2>/dev/null || true
+      rm -f "$file"
+    fi
+    ;;
+  send-keys)
+    session="$2"
+    file="$(pid_file "$session")"
+    if [ -f "$file" ]; then
+      pid="$(cat "$file")"
+      kill -INT "-$pid" 2>/dev/null || kill -INT "$pid" 2>/dev/null || true
+    fi
+    ;;
+  attach-session)
+    session="$2"
+    if live_session "$session"; then
+      printf 'attached:%s\n' "$session"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *)
+    exit 1
+    ;;
+esac
+"#,
+            state_dir.display()
+        ),
+    )
+}
+
+fn write_tmux_claude_envelope(path: &Path, result_json: &serde_json::Value) -> Result<(), String> {
+    let envelope = serde_json::json!({
+        "type": "result",
+        "result": "{}",
+        "structured_output": result_json,
+        "session_id": "ses-tmux"
+    });
+    std::fs::write(
+        path,
+        serde_json::to_string(&envelope).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("write envelope: {e}"))
+}
+
+fn tmux_request_fixture(
+    invocation_id: &str,
+) -> Result<
+    (
+        TempWorkspace,
+        crate::contexts::agent_execution::model::InvocationRequest,
+    ),
+    String,
+> {
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+    };
+    use crate::shared::domain::{
+        BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+    };
+
+    let temp_dir = TempWorkspace::new()?;
+    std::fs::create_dir_all(temp_dir.path().join("runtime/temp"))
+        .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+    let request = InvocationRequest {
+        invocation_id: invocation_id.to_owned(),
+        project_root: temp_dir.path().to_path_buf(),
+        working_dir: temp_dir.path().to_path_buf(),
+        contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+        role: BackendRole::Planner,
+        resolved_target: ResolvedBackendTarget::new(
+            BackendFamily::Claude,
+            BackendFamily::Claude.default_model_id(),
+        ),
+        payload: InvocationPayload {
+            prompt: "Tmux adapter prompt".to_owned(),
+            context: serde_json::json!({"stage": "planning"}),
+        },
+        timeout: std::time::Duration::from_secs(5),
+        cancellation_token: CancellationToken::new(),
+        session_policy: SessionPolicy::NewSession,
+        prior_session: None,
+        attempt_number: 1,
+    };
+    Ok((temp_dir, request))
+}
+
+fn tmux_session_name_for_request(
+    request: &crate::contexts::agent_execution::model::InvocationRequest,
+) -> String {
+    let project_name = request
+        .project_root
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or("workspace");
+    crate::adapters::tmux::TmuxAdapter::session_name(project_name, &request.invocation_id, &request.project_root)
+}
+
+#[derive(Clone, Copy)]
+struct ConformanceInlineRawOutputStore;
+
+impl crate::contexts::agent_execution::service::RawOutputPort for ConformanceInlineRawOutputStore {
+    fn persist_raw_output(
+        &self,
+        _project_root: &Path,
+        _invocation_id: &str,
+        contents: &str,
+    ) -> crate::shared::error::AppResult<crate::contexts::agent_execution::model::RawOutputReference>
+    {
+        Ok(
+            crate::contexts::agent_execution::model::RawOutputReference::Inline(
+                contents.to_owned(),
+            ),
+        )
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ConformanceNoopSessionStore;
+
+impl crate::contexts::agent_execution::session::SessionStorePort for ConformanceNoopSessionStore {
+    fn load_sessions(
+        &self,
+        _project_root: &Path,
+    ) -> crate::shared::error::AppResult<crate::contexts::agent_execution::session::PersistedSessions>
+    {
+        Ok(crate::contexts::agent_execution::session::PersistedSessions::empty())
+    }
+
+    fn save_sessions(
+        &self,
+        _project_root: &Path,
+        _sessions: &crate::contexts::agent_execution::session::PersistedSessions,
+    ) -> crate::shared::error::AppResult<()> {
+        Ok(())
+    }
+}
+
+fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
+    reg!(m, "SC-TMUX-001", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Direct);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let project_id = crate::shared::domain::ProjectId::new("alpha")
+            .map_err(|e| format!("project id: {e}"))?;
+        let mut project = crate::shared::domain::ProjectConfig::default();
+        project.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        crate::adapters::fs::FileSystem::write_project_config(ws.path(), &project_id, &project)
+            .map_err(|e| format!("write project config: {e}"))?;
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+                ws.path(),
+                Some(&project_id),
+                crate::contexts::workspace_governance::config::CliBackendOverrides {
+                    execution_mode: Some(crate::shared::domain::ExecutionMode::Direct),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format!("load config: {e}"))?;
+
+        if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
+            return Err("execution.mode should resolve from CLI override".into());
+        }
+        let source = effective
+            .get("execution.mode")
+            .map_err(|e| format!("execution.mode source: {e}"))?;
+        if source.source
+            != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        {
+            return Err(format!(
+                "execution.mode source should be cli override, got {}",
+                source.source
+            ));
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-002", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.stream_output = Some(false);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load_for_project(
+                ws.path(),
+                None,
+                crate::contexts::workspace_governance::config::CliBackendOverrides {
+                    stream_output: Some(true),
+                    ..Default::default()
+                },
+            )
+            .map_err(|e| format!("load config: {e}"))?;
+
+        if !effective.effective_stream_output() {
+            return Err("execution.stream_output should resolve from CLI override".into());
+        }
+        let source = effective
+            .get("execution.stream_output")
+            .map_err(|e| format!("execution.stream_output source: {e}"))?;
+        if source.source
+            != crate::contexts::workspace_governance::config::ConfigValueSource::CliOverride
+        {
+            return Err(format!(
+                "execution.stream_output source should be cli override, got {}",
+                source.source
+            ));
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-003", || {
+        let root = std::path::Path::new("/tmp/test-workspace");
+        let session = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", root);
+        // Session name should contain the project id and a workspace hash prefix
+        if !session.starts_with("rb-") || !session.contains("alpha") || !session.contains("run-1") {
+            return Err(format!("unexpected session name format: {session}"));
+        }
+        // Same inputs should produce same name (deterministic)
+        let session2 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", root);
+        if session != session2 {
+            return Err(format!("session name not deterministic: {session} vs {session2}"));
+        }
+        // Different root should produce different name
+        let other_root = std::path::Path::new("/tmp/other-workspace");
+        let session3 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", other_root);
+        if session == session3 {
+            return Err("different workspace roots produced same session name".to_owned());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-004", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let workspace_root = ws.path().join(".ralph-burning");
+        let mut workspace = crate::shared::domain::WorkspaceConfig::new(chrono::Utc::now());
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        crate::adapters::fs::FileSystem::write_atomic(
+            &workspace_root.join("workspace.toml"),
+            &toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace config: {e}"))?;
+
+        let empty_path = std::env::temp_dir().join(format!("ralph-empty-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&empty_path).map_err(|e| format!("create empty path: {e}"))?;
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", empty_path.as_os_str());
+
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                .map_err(|e| format!("load config: {e}"))?;
+        let service = crate::contexts::agent_execution::diagnostics::BackendDiagnosticsService::new(
+            &effective,
+        );
+        let result = service.check_backends(crate::shared::domain::FlowPreset::Standard);
+
+        std::env::set_var("PATH", &original_path);
+        let _ = std::fs::remove_dir_all(&empty_path);
+
+        if !result.failures.iter().any(|failure| {
+            failure.failure_kind
+                == crate::contexts::agent_execution::diagnostics::BackendCheckFailureKind::TmuxUnavailable
+        }) {
+            return Err("expected tmux_unavailable failure".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-005", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "alpha", "standard")?;
+        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
+            &std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?,
+        )
+        .map_err(|e| format!("parse workspace.toml: {e}"))?;
+        workspace.execution.mode = Some(crate::shared::domain::ExecutionMode::Tmux);
+        std::fs::write(
+            &workspace_toml,
+            toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+        let out = run_cli(&["run", "attach"], ws.path())?;
+        assert_success(&out)?;
+        if !out.stdout.contains("No active tmux session exists") {
+            return Err("attach output should explain missing session".into());
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-TMUX-006", || {
+        // This test spawns real processes via fake tmux/claude scripts and
+        // requires a real tmux binary. Skip in sandboxed builds (nix).
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionPort;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        let (_direct_dir, direct_request) = tmux_request_fixture("direct-claude")?;
+        let direct_envelope = direct_request.working_dir.join("claude-envelope.json");
+        write_tmux_claude_envelope(&direct_envelope, &tmux_planning_payload())?;
+        write_tmux_fake_claude(bin_dir.path(), &direct_envelope)?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_tmux_dir, tmux_request) = tmux_request_fixture("tmux-claude")?;
+        let tmux_envelope = tmux_request.working_dir.join("claude-envelope.json");
+        write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
+        let result = block_on_result(async {
+            let direct = ProcessBackendAdapter::new()
+                .invoke(direct_request)
+                .await
+                .map_err(|e| format!("direct invoke: {e}"))?;
+            let tmux = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true)
+                .invoke(tmux_request)
+                .await
+                .map_err(|e| format!("tmux invoke: {e}"))?;
+
+            if direct.parsed_payload != tmux.parsed_payload {
+                return Err("parsed payloads should be identical".into());
+            }
+            if direct.raw_output_reference != tmux.raw_output_reference {
+                return Err("raw output references should be identical".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-007", || {
+        // Requires real tmux binary for process spawning. Skip in nix sandbox.
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionPort;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        write_tmux_sleeping_claude(bin_dir.path())?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_dir, request) = tmux_request_fixture("tmux-cancel")?;
+        let session_name = tmux_session_name_for_request(&request);
+        let adapter = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+        let invocation_id = request.invocation_id.clone();
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
+        let result = block_on_result(async {
+            let join = tokio::spawn({
+                let adapter = adapter.clone();
+                let request = request.clone();
+                async move { adapter.invoke(request).await }
+            });
+
+            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            if !crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should exist while invocation is running".into());
+            }
+
+            adapter
+                .cancel(&invocation_id)
+                .await
+                .map_err(|e| format!("cancel invocation: {e}"))?;
+            let _ = join.await.map_err(|e| format!("join invoke task: {e}"))?;
+
+            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should be cleaned up after cancel".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-008", || {
+        // Requires real tmux binary for process spawning. Skip in nix sandbox.
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
+        use crate::adapters::process_backend::ProcessBackendAdapter;
+        use crate::contexts::agent_execution::service::AgentExecutionService;
+
+        let bin_dir = TempWorkspace::new()?;
+        let state_dir = TempWorkspace::new()?;
+        write_tmux_sleeping_claude(bin_dir.path())?;
+        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+
+        let (_dir, mut request) = tmux_request_fixture("tmux-timeout")?;
+        request.timeout = std::time::Duration::from_millis(200);
+        let session_name = tmux_session_name_for_request(&request);
+        let service = AgentExecutionService::new(
+            crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true),
+            ConformanceInlineRawOutputStore,
+            ConformanceNoopSessionStore,
+        );
+
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var(
+            "PATH",
+            format!("{}:{original_path}", bin_dir.path().display()),
+        );
+        let result = block_on_result(async {
+            match service.invoke(request.clone()).await {
+                Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
+                Err(other) => return Err(format!("expected timeout, got {other}")),
+                Ok(_) => return Err("timeout should have failed the invocation".into()),
+            }
+
+            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+                .map_err(|e| format!("query session: {e}"))?
+            {
+                return Err("session should be cleaned up after timeout".into());
+            }
+            Ok(())
+        });
+        std::env::set_var("PATH", &original_path);
+        result
+    });
+    reg!(m, "SC-TMUX-009", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "watchable-stream", "standard")?;
+        let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+        let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
+            &std::fs::read_to_string(&workspace_toml)
+                .map_err(|e| format!("read workspace.toml: {e}"))?,
+        )
+        .map_err(|e| format!("parse workspace.toml: {e}"))?;
+        workspace.execution.stream_output = Some(true);
+        std::fs::write(
+            &workspace_toml,
+            toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+        )
+        .map_err(|e| format!("write workspace.toml: {e}"))?;
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+
+        let log_dir = conformance_project_root(&ws, "watchable-stream").join("runtime/logs");
+        std::fs::write(
+            log_dir.join("002.ndjson"),
+            r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"watcher log"}"#.to_owned()
+                + "\n",
+        )
+        .map_err(|e| format!("write runtime log: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(700));
+
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("watcher log") {
+            return Err(
+                "follow --logs should surface the appended runtime log before the 2-second polling fallback".into(),
+            );
+        }
+        Ok(())
+    });
+    reg!(m, "SC-TMUX-010", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let effective =
+            crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
+                .map_err(|e| format!("load config: {e}"))?;
+        if effective.effective_execution_mode() != crate::shared::domain::ExecutionMode::Direct {
+            return Err("default execution mode should be direct".into());
+        }
+        Ok(())
+    });
+}
+
+// ===========================================================================
+// Template Overrides — Slice 7 (10 scenarios)
+// ===========================================================================
+
+fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>) {
+    use crate::contexts::workspace_governance::template_catalog;
+
+    // @parity_slice7_workspace_override
+    reg!(m, "parity_slice7_workspace_override", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("planning.md"),
+            "CUSTOM: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        )
+        .map_err(|e| format!("write override: {e}"))?;
+        let resolved = template_catalog::resolve("planning", ws.path(), None)
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::WorkspaceOverride(_) => {}
+            other => return Err(format!("expected workspace override, got {other:?}")),
+        }
+        let rendered = template_catalog::render(
+            &resolved,
+            &[
+                ("role_instruction", "You are the Planner."),
+                ("project_prompt", "Build X."),
+                ("json_schema", "{}"),
+            ],
+        )
+        .map_err(|e| format!("render: {e}"))?;
+        if !rendered.starts_with("CUSTOM:") {
+            return Err(format!("expected custom prefix, got: {}", &rendered[..40]));
+        }
+        Ok(())
+    });
+
+    // @parity_slice7_project_override
+    reg!(m, "parity_slice7_project_override", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-proj", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-proj".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-proj/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("planning.md"),
+            "PROJECT: {{role_instruction}} | {{project_prompt}} | {{json_schema}}",
+        )
+        .map_err(|e| format!("write project override: {e}"))?;
+        let resolved = template_catalog::resolve("planning", ws.path(), Some(&pid))
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::ProjectOverride(_) => Ok(()),
+            other => Err(format!("expected project override, got {other:?}")),
+        }
+    });
+
+    // @parity_slice7_project_over_workspace
+    reg!(m, "parity_slice7_project_over_workspace", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-prec", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-prec".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let ws_templates = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws_templates)
+            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::write(
+            ws_templates.join("requirements_ideation.md"),
+            "WS: {{base_context}}",
+        )
+        .map_err(|e| format!("write ws override: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-prec/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("requirements_ideation.md"),
+            "PROJECT: {{base_context}}",
+        )
+        .map_err(|e| format!("write proj override: {e}"))?;
+        let resolved =
+            template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid))
+                .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::ProjectOverride(_) => Ok(()),
+            other => Err(format!("expected project override to win, got {other:?}")),
+        }
+    });
+
+    // @parity_slice7_malformed_workflow_rejection
+    reg!(m, "parity_slice7_malformed_workflow_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("planning.md"),
+            "No placeholders here.",
+        )
+        .map_err(|e| format!("write malformed: {e}"))?;
+        match template_catalog::resolve("planning", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("malformed template override") {
+                    Ok(())
+                } else {
+                    Err(format!("expected malformed template error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for malformed template".into()),
+        }
+    });
+
+    // @parity_slice7_malformed_requirements_rejection
+    reg!(m, "parity_slice7_malformed_requirements_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_draft.md"),
+            "Missing the idea placeholder.",
+        )
+        .map_err(|e| format!("write malformed: {e}"))?;
+        match template_catalog::resolve("requirements_draft", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("malformed template override") {
+                    Ok(())
+                } else {
+                    Err(format!("expected malformed template error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for malformed requirements template".into()),
+        }
+    });
+
+    // @parity_slice7_no_silent_fallback
+    reg!(m, "parity_slice7_no_silent_fallback", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        create_project_fixture(ws.path(), "tpl-nofb", "standard");
+        let pid = crate::shared::domain::ProjectId::new("tpl-nofb".to_owned())
+            .map_err(|e| format!("pid: {e}"))?;
+        let ws_templates = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&ws_templates)
+            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::write(
+            ws_templates.join("requirements_ideation.md"),
+            "WS valid: {{base_context}}",
+        )
+        .map_err(|e| format!("write ws override: {e}"))?;
+        let proj_templates = ws
+            .path()
+            .join(".ralph-burning/projects/tpl-nofb/templates");
+        std::fs::create_dir_all(&proj_templates)
+            .map_err(|e| format!("create proj templates: {e}"))?;
+        std::fs::write(
+            proj_templates.join("requirements_ideation.md"),
+            "Malformed — no placeholders.",
+        )
+        .map_err(|e| format!("write malformed proj: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid)) {
+            Err(_) => Ok(()),
+            Ok(_) => Err("must not silently fall back to workspace override".into()),
+        }
+    });
+
+    // @parity_slice7_built_in_default_preserved
+    reg!(m, "parity_slice7_built_in_default_preserved", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let resolved = template_catalog::resolve("planning", ws.path(), None)
+            .map_err(|e| format!("resolve: {e}"))?;
+        match resolved.source {
+            template_catalog::TemplateSource::BuiltIn => {}
+            other => return Err(format!("expected built-in, got {other:?}")),
+        }
+        let rendered = template_catalog::render(
+            &resolved,
+            &[
+                ("role_instruction", "You are the Planner."),
+                ("project_prompt", "Build X."),
+                ("json_schema", "{}"),
+            ],
+        )
+        .map_err(|e| format!("render: {e}"))?;
+        if !rendered.contains("# Stage Execution Prompt") {
+            return Err("rendered built-in should contain stage header".into());
+        }
+        if !rendered.contains("## Authoritative JSON Schema") {
+            return Err("rendered built-in should contain schema header".into());
+        }
+        Ok(())
+    });
+
+    // @parity_slice7_placeholder_validation
+    reg!(m, "parity_slice7_placeholder_validation", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_ideation.md"),
+            "{{base_context}} and {{unknown_field}}",
+        )
+        .map_err(|e| format!("write: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("unknown placeholder") && msg.contains("unknown_field") {
+                    Ok(())
+                } else {
+                    Err(format!("expected unknown placeholder error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for unknown placeholder".into()),
+        }
+    });
+
+    // @parity_slice7_non_utf8_rejection
+    reg!(m, "parity_slice7_non_utf8_rejection", || {
+        let ws = TempWorkspace::new()?;
+        init_workspace(&ws)?;
+        let templates_dir = ws.path().join(".ralph-burning/templates");
+        std::fs::create_dir_all(&templates_dir)
+            .map_err(|e| format!("create templates dir: {e}"))?;
+        std::fs::write(
+            templates_dir.join("requirements_ideation.md"),
+            &[0xFF, 0xFE, 0x00, 0x01],
+        )
+        .map_err(|e| format!("write non-utf8: {e}"))?;
+        match template_catalog::resolve("requirements_ideation", ws.path(), None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if msg.contains("UTF-8") {
+                    Ok(())
+                } else {
+                    Err(format!("expected UTF-8 error, got: {msg}"))
+                }
+            }
+            Ok(_) => Err("expected error for non-UTF-8 file".into()),
+        }
+    });
+
+    // @parity_slice7_invalid_marker_rejection
+    reg!(m, "parity_slice7_invalid_marker_rejection", || {
+        let tmp = std::env::temp_dir().join(format!(
+            "ralph-conformance-invalid-marker-{}",
+            uuid::Uuid::new_v4()
+        ));
+        let ws = tmp.join(".ralph-burning").join("templates");
+        std::fs::create_dir_all(&ws).map_err(|e| e.to_string())?;
+
+        // Override with hyphenated marker
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "{{base_context}} and {{invented-placeholder}}",
+        )
+        .map_err(|e| e.to_string())?;
+
+        match template_catalog::resolve("requirements_ideation", &tmp, None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("invented-placeholder") {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Err(format!(
+                        "error should cite 'invented-placeholder': {msg}"
+                    ));
+                }
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err("expected error for hyphenated placeholder marker".into());
+            }
+        }
+
+        // Override with spaced marker
+        std::fs::write(
+            ws.join("requirements_ideation.md"),
+            "{{base_context}} and {{with spaces}}",
+        )
+        .map_err(|e| e.to_string())?;
+
+        match template_catalog::resolve("requirements_ideation", &tmp, None) {
+            Err(e) => {
+                let msg = e.to_string();
+                if !msg.contains("with spaces") {
+                    let _ = std::fs::remove_dir_all(&tmp);
+                    return Err(format!("error should cite 'with spaces': {msg}"));
+                }
+            }
+            Ok(_) => {
+                let _ = std::fs::remove_dir_all(&tmp);
+                return Err("expected error for spaced placeholder marker".into());
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+        Ok(())
+    });
+
+    // Meta-conformance: all template IDs have manifests
+    reg!(m, "parity_slice7_all_ids_have_manifests", || {
+        for &id in template_catalog::STAGE_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!("missing manifest for stage template '{id}'"));
+            }
+        }
+        for &id in template_catalog::PANEL_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!("missing manifest for panel template '{id}'"));
+            }
+        }
+        for &id in template_catalog::REQUIREMENTS_TEMPLATE_IDS {
+            if template_catalog::manifest_for(id).is_none() {
+                return Err(format!(
+                    "missing manifest for requirements template '{id}'"
+                ));
+            }
+        }
         Ok(())
     });
 }

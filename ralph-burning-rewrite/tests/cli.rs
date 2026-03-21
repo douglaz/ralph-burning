@@ -1,8 +1,10 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use chrono::{Duration, Utc};
+use nix::sys::signal::{kill, Signal};
+use nix::unistd::Pid;
 use ralph_burning::contexts::automation_runtime::model::{
     CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, RoutingSource, TaskStatus, WorktreeLease,
 };
@@ -25,7 +27,7 @@ fn initialize_workspace_fixture() -> tempfile::TempDir {
 }
 
 fn create_project_fixture(base_dir: &std::path::Path, project_id: &str) {
-    let project_root = base_dir.join(".ralph-burning/projects").join(project_id);
+    let project_root = project_root(base_dir, project_id);
     fs::create_dir_all(&project_root).expect("create project directory");
     let prompt_contents = "# Fixture prompt\n";
     // Write a complete canonical ProjectRecord so validation passes
@@ -68,12 +70,161 @@ status_summary = "created"
     }
 }
 
+fn project_root(base_dir: &std::path::Path, project_id: &str) -> std::path::PathBuf {
+    base_dir.join(".ralph-burning/projects").join(project_id)
+}
+
+fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str) {
+    let project_root = project_root(base_dir, project_id);
+    let long_artifact = format!("# Planning\n{}\n", "A".repeat(140));
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"stage_entered","details":{{"stage_id":"planning","run_id":"run-1"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"stage_completed","details":{{"stage_id":"planning","cycle":1,"attempt":1,"payload_id":"p1","artifact_id":"a1"}}}}
+{{"sequence":4,"timestamp":"2026-03-19T03:03:00Z","event_type":"stage_entered","details":{{"stage_id":"implementation","run_id":"run-1"}}}}
+{{"sequence":5,"timestamp":"2026-03-19T03:04:00Z","event_type":"stage_completed","details":{{"stage_id":"implementation","cycle":1,"attempt":1,"payload_id":"p2","artifact_id":"a2"}}}}"#,
+        ),
+    )
+    .expect("write journal");
+    fs::write(
+        project_root.join("history/payloads/p1.json"),
+        r#"{
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:02:00Z",
+  "payload": { "summary": "planning payload", "steps": ["one", "two"] },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write payload p1");
+    fs::write(
+        project_root.join("history/payloads/p2.json"),
+        r#"{
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:04:00Z",
+  "payload": { "summary": "implementation payload", "diff": "full" },
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write payload p2");
+    fs::write(
+        project_root.join("history/artifacts/a1.json"),
+        format!(
+            r#"{{
+  "artifact_id": "a1",
+  "payload_id": "p1",
+  "stage_id": "planning",
+  "created_at": "2026-03-19T03:02:00Z",
+  "content": {},
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}}"#,
+            serde_json::to_string(&long_artifact).expect("serialize artifact content")
+        ),
+    )
+    .expect("write artifact a1");
+    fs::write(
+        project_root.join("history/artifacts/a2.json"),
+        r##"{
+  "artifact_id": "a2",
+  "payload_id": "p2",
+  "stage_id": "implementation",
+  "created_at": "2026-03-19T03:04:00Z",
+  "content": "# Implementation\nvisible artifact\n",
+  "record_kind": "stage_primary",
+  "completion_round": 1
+}"##,
+    )
+    .expect("write artifact a2");
+}
+
+fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
+    let project_root = project_root(base_dir, project_id);
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-03-19T03:00:00Z","event_type":"project_created","details":{{"project_id":"{project_id}","flow":"standard"}}}}
+{{"sequence":2,"timestamp":"2026-03-19T03:01:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-planning","stage_id":"planning","cycle":1,"git_sha":"abc123"}}}}
+{{"sequence":3,"timestamp":"2026-03-19T03:02:00Z","event_type":"rollback_created","details":{{"rollback_id":"rb-implementation","stage_id":"implementation","cycle":1}}}}"#,
+        ),
+    )
+    .expect("write rollback journal");
+    fs::write(
+        project_root.join("rollback/rb-planning.json"),
+        r#"{
+  "rollback_id": "rb-planning",
+  "created_at": "2026-03-19T03:01:00Z",
+  "stage_id": "planning",
+  "cycle": 1,
+  "git_sha": "abc123",
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .expect("write rollback point planning");
+    fs::write(
+        project_root.join("rollback/rb-implementation.json"),
+        r#"{
+  "rollback_id": "rb-implementation",
+  "created_at": "2026-03-19T03:02:00Z",
+  "stage_id": "implementation",
+  "cycle": 1,
+  "run_snapshot": {
+    "active_run": null,
+    "status": "paused",
+    "cycle_history": [],
+    "completion_rounds": 0,
+    "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+    "amendment_queue": { "pending": [], "processed_count": 0 },
+    "status_summary": "paused"
+  }
+}"#,
+    )
+    .expect("write rollback point implementation");
+}
+
 fn select_active_project_fixture(base_dir: &std::path::Path, project_id: &str) {
     fs::write(
         base_dir.join(".ralph-burning/active-project"),
         format!("{project_id}\n"),
     )
     .expect("write active-project");
+}
+
+#[cfg(feature = "test-stub")]
+fn requirements_run_ids(base_dir: &std::path::Path) -> Vec<String> {
+    let req_dir = base_dir.join(".ralph-burning/requirements");
+    let mut run_ids: Vec<String> = fs::read_dir(&req_dir)
+        .expect("read requirements dir")
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| entry.file_type().map(|ty| ty.is_dir()).unwrap_or(false))
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .collect();
+    run_ids.sort();
+    run_ids
+}
+
+#[cfg(feature = "test-stub")]
+fn only_requirements_run_id(base_dir: &std::path::Path) -> String {
+    let run_ids = requirements_run_ids(base_dir);
+    assert_eq!(run_ids.len(), 1, "expected exactly one requirements run");
+    run_ids[0].clone()
 }
 
 fn write_editor_script(
@@ -91,6 +242,7 @@ fn write_editor_script(
     script_path
 }
 
+#[cfg(feature = "test-stub")]
 fn write_daemon_task(base_dir: &std::path::Path, task: &DaemonTask) {
     let path = base_dir
         .join(".ralph-burning/daemon/tasks")
@@ -172,6 +324,7 @@ fn write_repo_registration(data_dir: &std::path::Path) {
     .expect("write registration");
 }
 
+#[cfg(feature = "test-stub")]
 /// Run a single daemon iteration in-process using the stub backend and the
 /// single-repo DaemonLoop::run path. This replaces the former CLI binary
 /// invocation that used `RALPH_BURNING_TEST_LEGACY_DAEMON=1`.
@@ -237,6 +390,7 @@ fn run_daemon_iteration_in_process(ws_path: &std::path::Path) {
     std::env::remove_var("RALPH_BURNING_BACKEND");
 }
 
+#[cfg(feature = "test-stub")]
 fn init_git_repo(base_dir: &std::path::Path) {
     let init = Command::new("git")
         .args(["init", "-b", "main"])
@@ -855,6 +1009,7 @@ fn daemon_reconcile_fails_stale_claimed_task() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
     let temp_dir = initialize_workspace_fixture();
@@ -921,6 +1076,7 @@ fn daemon_start_single_iteration_fails_and_cleans_up_on_post_claim_error() {
     assert!(!temp_dir.path().join("worktrees/task-conflict").exists());
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn daemon_start_single_iteration_processes_pending_task() {
     let temp_dir = initialize_workspace_fixture();
@@ -1481,6 +1637,378 @@ fn project_create_does_not_set_active_project() {
         .path()
         .join(".ralph-burning/active-project")
         .exists());
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_create_from_requirements_creates_project_and_selects_it() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let quick = Command::new(binary())
+        .args(["requirements", "quick", "--idea", "Build a REST API"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run requirements quick");
+    assert!(
+        quick.status.success(),
+        "requirements quick should succeed: {}",
+        String::from_utf8_lossy(&quick.stderr)
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", &run_id])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from requirements");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "create from requirements should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(stdout.contains("Project: stub-project (active)"));
+    assert!(stdout.contains("Flow: standard"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "stub-project"
+    );
+    assert_eq!(
+        fs::read_to_string(
+            temp_dir
+                .path()
+                .join(".ralph-burning/projects/stub-project/prompt.md")
+        )
+        .expect("read project prompt"),
+        "Stub prompt body for the project."
+    );
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/journal.ndjson"),
+    )
+    .expect("read project journal");
+    assert!(journal.contains("\"source\":\"requirements\""));
+    assert!(journal.contains(&format!("\"requirements_run_id\":\"{run_id}\"")));
+}
+
+#[test]
+fn project_create_from_requirements_fails_for_missing_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", "missing-run"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from missing run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("requirements run not found"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/missing-run")
+        .exists());
+}
+
+#[test]
+fn project_create_from_requirements_fails_for_incomplete_run() {
+    let temp_dir = initialize_workspace_fixture();
+    let run_id = "req-incomplete";
+    let run_root = temp_dir
+        .path()
+        .join(".ralph-burning/requirements")
+        .join(run_id);
+    fs::create_dir_all(&run_root).expect("create requirements run dir");
+    fs::write(
+        run_root.join("run.json"),
+        serde_json::json!({
+            "run_id": run_id,
+            "idea": "Pending requirements",
+            "mode": "draft",
+            "status": "awaiting_answers",
+            "question_round": 0,
+            "latest_question_set_id": null,
+            "latest_draft_id": null,
+            "latest_review_id": null,
+            "latest_seed_id": null,
+            "pending_question_count": 1,
+            "recommended_flow": null,
+            "created_at": "2026-03-18T22:00:00Z",
+            "updated_at": "2026-03-18T22:00:00Z",
+            "status_summary": "awaiting answers",
+            "current_stage": null,
+            "committed_stages": {},
+            "quick_revision_count": 0,
+            "last_transition_cached": false,
+            "failure_summary": null
+        })
+        .to_string(),
+    )
+    .expect("write incomplete run");
+
+    select_active_project_fixture(temp_dir.path(), "existing");
+    create_project_fixture(temp_dir.path(), "existing");
+
+    let output = Command::new(binary())
+        .args(["project", "create", "--from-requirements", run_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project create from incomplete run");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expected 'completed'"));
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "existing"
+    );
+    assert_eq!(
+        fs::read_dir(temp_dir.path().join(".ralph-burning/projects"))
+            .expect("read projects dir")
+            .count(),
+        1
+    );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_from_idea_creates_project_and_selects_it() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "standard",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap");
+
+    assert!(
+        output.status.success(),
+        "bootstrap should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+            .expect("read active-project")
+            .trim(),
+        "stub-project"
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+    assert_eq!(requirements_run_ids(temp_dir.path()).len(), 1);
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_from_file_quick_dev_start_runs_created_project() {
+    let temp_dir = initialize_workspace_fixture();
+    let idea_file = temp_dir.path().join("idea.md");
+    fs::write(&idea_file, "Build quick-dev flow from file input").expect("write idea file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-file",
+            idea_file.to_str().unwrap(),
+            "--flow",
+            "quick_dev",
+            "--start",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from file");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --from-file --start should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+
+    let run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stub-project/run.json"),
+    )
+    .expect("read run.json");
+    assert!(
+        !run_json.contains("\"status\":\"not_started\""),
+        "bootstrap --start should advance the run, got: {run_json}"
+    );
+
+    let run_id = only_requirements_run_id(temp_dir.path());
+    let requirements_run = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/requirements")
+            .join(run_id)
+            .join("run.json"),
+    )
+    .expect("read requirements run.json");
+    assert!(requirements_run.contains("Build quick-dev flow from file input"));
+}
+
+#[test]
+fn project_bootstrap_fails_for_invalid_flow_before_creating_requirements_run() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--idea",
+            "Build a REST API",
+            "--flow",
+            "invalid-flow",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap invalid flow");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown flow preset"));
+
+    let requirements_dir = temp_dir.path().join(".ralph-burning/requirements");
+    assert_eq!(
+        fs::read_dir(&requirements_dir)
+            .expect("read requirements dir")
+            .count(),
+        0,
+        "invalid flow should fail before requirements quick creates a run"
+    );
+}
+
+// ── Project Bootstrap --from-seed ──
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn project_bootstrap_from_seed_creates_project_directly() {
+    let temp_dir = initialize_workspace_fixture();
+    let seed_path = temp_dir.path().join("test-seed.json");
+    fs::write(
+        &seed_path,
+        r#"{
+  "version": 2,
+  "project_id": "seed-test-project",
+  "project_name": "Seed Test Project",
+  "flow": "standard",
+  "prompt_body": "Build a hello-world utility.",
+  "handoff_summary": "Minimal seed test."
+}"#,
+    )
+    .expect("write seed file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-seed",
+            seed_path.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from seed");
+
+    assert!(
+        output.status.success(),
+        "bootstrap --from-seed should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/seed-test-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+    assert!(project_toml.contains("seed-test-project"));
+}
+
+#[test]
+fn project_bootstrap_from_seed_rejects_invalid_seed_json() {
+    let temp_dir = initialize_workspace_fixture();
+    let seed_path = temp_dir.path().join("bad-seed.json");
+    fs::write(
+        &seed_path,
+        r#"{
+  "version": 2,
+  "project_id": "bad-project",
+  "project_name": "Bad Project",
+  "flow": "standard",
+  "prompt_body": "Hello",
+  "handoff_summary": "Bad.",
+  "source": {
+    "mode": "seed_file",
+    "run_id": "fake"
+  }
+}"#,
+    )
+    .expect("write bad seed file");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "bootstrap",
+            "--from-seed",
+            seed_path.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("project bootstrap from bad seed");
+
+    assert!(
+        !output.status.success(),
+        "bootstrap --from-seed with invalid source.mode should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("invalid project seed JSON"),
+        "should report invalid seed JSON, got: {stderr}"
+    );
+    // No project directory should be created
+    let projects_dir = temp_dir.path().join(".ralph-burning/projects");
+    let project_count = fs::read_dir(&projects_dir)
+        .map(|rd| rd.count())
+        .unwrap_or(0);
+    assert_eq!(
+        project_count, 0,
+        "invalid seed should not create any project"
+    );
 }
 
 // ── Project List ──
@@ -2150,6 +2678,337 @@ fn run_tail_with_logs_shows_only_newest_log_file() {
         !stdout.contains("old log entry"),
         "older log files should not be included"
     );
+}
+
+#[test]
+fn run_status_json_outputs_stable_fields() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let run_json = r#"{
+  "active_run": null,
+  "status": "paused",
+  "cycle_history": [],
+  "completion_rounds": 4,
+  "rollback_point_meta": { "last_rollback_id": null, "rollback_count": 0 },
+  "amendment_queue": {
+    "pending": [
+      {
+        "amendment_id": "am-1",
+        "source_stage": "planning",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "Fix it",
+        "created_at": "2026-03-19T03:00:00Z",
+        "batch_sequence": 0,
+        "source": "manual",
+        "dedup_key": "dedup-1"
+      }
+    ],
+    "processed_count": 0
+  },
+  "status_summary": "paused for review"
+}"#;
+    fs::write(
+        project_root(temp_dir.path(), "alpha").join("run.json"),
+        run_json,
+    )
+    .expect("write paused snapshot");
+
+    let output = Command::new(binary())
+        .args(["run", "status", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status json should parse");
+    assert_eq!(value["project_id"], "alpha");
+    assert_eq!(value["status"], "paused");
+    assert!(value["stage"].is_null());
+    assert_eq!(value["completion_round"], serde_json::Value::Null);
+    assert_eq!(value["summary"], "paused for review");
+    assert_eq!(value["amendment_queue_depth"], 1);
+}
+
+#[test]
+fn run_history_verbose_shows_details_metadata_and_preview() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--verbose"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --verbose");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("details:"));
+    assert!(stdout.contains("\"stage_id\": \"planning\""));
+    assert!(stdout.contains("metadata:"));
+    assert!(stdout.contains("\"payload_id\": \"p1\""));
+    assert!(stdout.contains("preview: # Planning"));
+    assert!(
+        stdout.contains("..."),
+        "long artifact preview should be truncated"
+    );
+}
+
+#[test]
+fn run_history_json_outputs_parseable_json() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("history json should parse");
+    assert_eq!(value["project_id"], "alpha");
+    assert_eq!(value["events"].as_array().expect("events array").len(), 5);
+    assert_eq!(
+        value["payloads"].as_array().expect("payloads array").len(),
+        2
+    );
+    assert!(
+        value["payloads"][0].get("payload").is_none(),
+        "compact history json should omit payload bodies"
+    );
+    assert!(
+        value["artifacts"][0].get("content").is_none(),
+        "compact history json should omit artifact content"
+    );
+}
+
+#[test]
+fn run_history_json_verbose_includes_payload_and_content() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--json", "--verbose"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --json --verbose");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("history json should parse");
+    assert_eq!(
+        value["payloads"][0]["payload"]["summary"],
+        "planning payload"
+    );
+    assert!(value["artifacts"][0]["content"]
+        .as_str()
+        .expect("artifact content")
+        .starts_with("# Planning"));
+}
+
+#[test]
+fn run_history_stage_filters_records() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--stage", "planning"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --stage planning");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("p1"));
+    assert!(stdout.contains("a1"));
+    assert!(!stdout.contains("p2"));
+    assert!(!stdout.contains("a2"));
+    assert!(!stdout.contains("ProjectCreated"));
+}
+
+#[test]
+fn run_history_stage_unknown_stage_fails_cleanly() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "history", "--stage", "unknown_stage"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run history --stage unknown_stage");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("unknown stage identifier"));
+}
+
+#[test]
+fn run_tail_last_limits_to_most_recent_events() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "tail", "--last", "2"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail --last 2");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(!stdout.contains("ProjectCreated"));
+    assert!(!stdout.contains("p1"));
+    assert!(stdout.contains("p2"));
+    assert!(stdout.contains("a2"));
+}
+
+#[test]
+fn run_tail_follow_starts_and_interrupts_cleanly() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    std::thread::sleep(std::time::Duration::from_millis(750));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Following project 'alpha'"));
+    assert!(stdout.contains("Stopped following."));
+}
+
+#[test]
+fn run_show_payload_prints_payload_json() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-payload", "p1"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-payload");
+
+    assert!(output.status.success());
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("payload output should parse");
+    assert_eq!(value["summary"], "planning payload");
+}
+
+#[test]
+fn run_show_payload_unknown_id_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-payload", "missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-payload missing");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("payload not found"));
+}
+
+#[test]
+fn run_show_artifact_prints_content() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-artifact", "a2"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-artifact");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("# Implementation"));
+    assert!(stdout.contains("visible artifact"));
+}
+
+#[test]
+fn run_show_artifact_unknown_id_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "show-artifact", "missing"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run show-artifact missing");
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("artifact not found"));
+}
+
+#[test]
+fn run_rollback_list_shows_visible_targets() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_rollback_targets_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "rollback", "--list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run rollback --list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Rollback ID"));
+    assert!(stdout.contains("rb-planning"));
+    assert!(stdout.contains("rb-implementation"));
+    assert!(stdout.contains("abc123"));
+}
+
+#[test]
+fn run_rollback_list_with_no_targets_reports_empty_state() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["run", "rollback", "--list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run rollback --list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("No rollback targets available."));
 }
 
 // ── Fail-fast on missing canonical files ──
@@ -3116,6 +3975,7 @@ fn delete_with_unremovable_active_pointer_restores_project() {
 
 // ── Run Start ──
 
+#[cfg(feature = "test-stub")]
 fn setup_project(temp_dir: &tempfile::TempDir, project_id: &str, flow: &str) {
     let prompt = write_prompt_fixture(temp_dir.path());
     let create = Command::new(binary())
@@ -3148,10 +4008,12 @@ fn setup_project(temp_dir: &tempfile::TempDir, project_id: &str, flow: &str) {
     assert!(select.status.success());
 }
 
+#[cfg(feature = "test-stub")]
 fn setup_standard_project(temp_dir: &tempfile::TempDir, project_id: &str) {
     setup_project(temp_dir, project_id, "standard");
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_standard_flow_end_to_end() {
     let temp_dir = initialize_workspace_fixture();
@@ -3175,6 +4037,7 @@ fn run_start_completes_standard_flow_end_to_end() {
     assert!(stdout.contains("Run completed successfully"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_docs_change_flow_end_to_end() {
     let temp_dir = initialize_workspace_fixture();
@@ -3215,6 +4078,7 @@ fn run_start_completes_docs_change_flow_end_to_end() {
     assert!(journal.contains("\"docs_validation\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_ci_improvement_flow_end_to_end() {
     let temp_dir = initialize_workspace_fixture();
@@ -3255,6 +4119,7 @@ fn run_start_completes_ci_improvement_flow_end_to_end() {
     assert!(journal.contains("\"ci_validation\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_produces_completed_snapshot() {
     let temp_dir = initialize_workspace_fixture();
@@ -3289,6 +4154,7 @@ fn run_start_produces_completed_snapshot() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_persists_journal_events() {
     let temp_dir = initialize_workspace_fixture();
@@ -3328,6 +4194,7 @@ fn run_start_persists_journal_events() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_persists_payload_and_artifact_records() {
     let temp_dir = initialize_workspace_fixture();
@@ -3379,6 +4246,7 @@ fn run_start_persists_payload_and_artifact_records() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_status_shows_completed_after_run() {
     let temp_dir = initialize_workspace_fixture();
@@ -3406,6 +4274,7 @@ fn run_start_status_shows_completed_after_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_completes_quick_dev_flow_end_to_end() {
     let temp_dir = initialize_workspace_fixture();
@@ -3447,6 +4316,7 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
     assert!(journal.contains("\"final_review\""));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
     let temp_dir = initialize_workspace_fixture();
@@ -3474,6 +4344,7 @@ fn run_start_quick_dev_produces_completed_snapshot_and_correct_status() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_resume_quick_dev_from_failed_state() {
     let temp_dir = initialize_workspace_fixture();
@@ -3517,6 +4388,7 @@ fn run_resume_quick_dev_from_failed_state() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_rejects_already_completed_project() {
     let temp_dir = initialize_workspace_fixture();
@@ -3547,6 +4419,7 @@ fn run_start_rejects_already_completed_project() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_rejects_already_running_project() {
     let temp_dir = initialize_workspace_fixture();
@@ -3577,6 +4450,7 @@ fn run_start_rejects_already_running_project() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_without_active_project_fails() {
     let temp_dir = initialize_workspace_fixture();
@@ -3596,6 +4470,7 @@ fn run_start_without_active_project_fails() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_with_prompt_review_disabled_produces_seven_stages() {
     let temp_dir = initialize_workspace_fixture();
@@ -3668,6 +4543,7 @@ fn run_start_with_prompt_review_disabled_produces_seven_stages() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_preflight_failure_leaves_state_unchanged() {
     let temp_dir = initialize_workspace_fixture();
@@ -3747,6 +4623,7 @@ fn run_start_preflight_failure_leaves_state_unchanged() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     let temp_dir = initialize_workspace_fixture();
@@ -3833,6 +4710,7 @@ fn run_start_backend_preflight_failure_leaves_state_unchanged() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn run_start_mid_stage_failure_no_partial_durable_history() {
     let temp_dir = initialize_workspace_fixture();
@@ -3918,6 +4796,7 @@ fn run_start_mid_stage_failure_no_partial_durable_history() {
 
 // ── Requirements CLI tests ──────────────────────────────────────────────────
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_quick_creates_completed_run() {
     let temp_dir = initialize_workspace_fixture();
@@ -3975,6 +4854,7 @@ fn requirements_quick_creates_completed_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_show_displays_completed_run() {
     let temp_dir = initialize_workspace_fixture();
@@ -4035,6 +4915,7 @@ fn requirements_show_displays_completed_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_draft_with_empty_questions_completes() {
     let temp_dir = initialize_workspace_fixture();
@@ -4060,6 +4941,7 @@ fn requirements_draft_with_empty_questions_completes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_show_on_nonexistent_run_fails() {
     let temp_dir = initialize_workspace_fixture();
@@ -4077,6 +4959,7 @@ fn requirements_show_on_nonexistent_run_fails() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_answer_happy_path_completes_run() {
     let temp_dir = initialize_workspace_fixture();
@@ -4200,6 +5083,7 @@ fn requirements_answer_happy_path_completes_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn requirements_answer_on_nonexistent_run_fails() {
     let temp_dir = initialize_workspace_fixture();
@@ -4221,6 +5105,7 @@ fn requirements_answer_on_nonexistent_run_fails() {
 // Conformance List / Run CLI surface tests
 // ===========================================================================
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_discovers_all_scenarios() {
     let output = Command::new(binary())
@@ -4245,6 +5130,7 @@ fn conformance_list_discovers_all_scenarios() {
     assert!(stdout.contains("SC-START-001"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_with_valid_filter_executes_one_scenario() {
     let output = Command::new(binary())
@@ -4265,6 +5151,7 @@ fn conformance_run_with_valid_filter_executes_one_scenario() {
     assert!(stderr.contains("Passed:    1"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_with_unknown_filter_exits_non_zero() {
     let output = Command::new(binary())
@@ -4281,6 +5168,7 @@ fn conformance_run_with_unknown_filter_exits_non_zero() {
     assert!(stderr.contains("nonexistent-scenario-id"));
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_validates_no_duplicate_ids() {
     // The checked-in corpus has no duplicates, so conformance list should succeed.
@@ -4307,6 +5195,7 @@ fn conformance_list_validates_no_duplicate_ids() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_list_fails_on_duplicate_ids() {
     // Create an isolated temp features directory with two feature files that share
@@ -4351,6 +5240,7 @@ fn conformance_list_fails_on_duplicate_ids() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_fail_fast_reports_summary_once() {
     // Run a single passing scenario - verify summary format and single-report invariant
@@ -4377,6 +5267,7 @@ fn conformance_run_fail_fast_reports_summary_once() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_fail_fast_stops_and_reports_not_run() {
     // Force a specific early scenario to fail, run the full suite, and verify
@@ -4432,6 +5323,7 @@ fn conformance_run_fail_fast_stops_and_reports_not_run() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_run_failure_exits_non_zero_with_single_report() {
     // Unknown filter causes non-zero exit before execution
@@ -4657,6 +5549,7 @@ fn daemon_abort_waiting_task_succeeds() {
 // Writer lock contention tests (CLI level)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_acquires_and_releases_writer_lock() {
     let temp_dir = initialize_workspace_fixture();
@@ -4698,6 +5591,7 @@ fn cli_run_start_acquires_and_releases_writer_lock() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_fails_when_writer_lock_held() {
     let temp_dir = initialize_workspace_fixture();
@@ -4738,6 +5632,7 @@ fn cli_run_start_fails_when_writer_lock_held() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_resume_acquires_and_releases_writer_lock() {
     let temp_dir = initialize_workspace_fixture();
@@ -4790,6 +5685,7 @@ fn cli_run_resume_acquires_and_releases_writer_lock() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_releases_lock_on_error() {
     let temp_dir = initialize_workspace_fixture();
@@ -4837,6 +5733,7 @@ fn cli_run_start_releases_lock_on_error() {
 // Guard close failure makes successful run exit non-zero (CLI level)
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn cli_run_start_close_failure_exits_nonzero() {
     // Regression: a successful run with a guard-close failure must exit
@@ -5136,6 +6033,7 @@ fn cli_daemon_reconcile_oversized_ttl_does_not_reclaim_fresh_cli_lease() {
 // Daemon lifecycle conformance regression tests
 // ---------------------------------------------------------------------------
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_daemon_lifecycle_007_passes() {
     let output = Command::new(binary())
@@ -5154,6 +6052,7 @@ fn conformance_daemon_lifecycle_007_passes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_daemon_lifecycle_008_passes() {
     let output = Command::new(binary())
@@ -5172,6 +6071,7 @@ fn conformance_daemon_lifecycle_008_passes() {
     );
 }
 
+#[cfg(feature = "test-stub")]
 #[test]
 fn conformance_full_suite_passes() {
     // Hard-link the CLI binary to a stable path under the test binary's
@@ -5208,5 +6108,1376 @@ fn conformance_full_suite_passes() {
     assert!(
         stderr.contains("Failed:    0"),
         "no scenarios should fail, got: {stderr}"
+    );
+}
+
+// ── Slice 3: Manual Amendment CLI Tests ───────────────────────────────────
+
+#[test]
+fn project_amend_add_text_succeeds_and_prints_id() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Fix the widget alignment",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+
+    assert!(
+        output.status.success(),
+        "amend add should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Amendment: manual-"),
+        "should print 'Amendment: <id>' starting with 'manual-', got: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_add_file_succeeds() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let amendment_file = temp_dir.path().join("amendment.md");
+    fs::write(&amendment_file, "# Amendment\nPlease fix the button color.")
+        .expect("write amendment file");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--file", "amendment.md"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add --file");
+
+    assert!(
+        output.status.success(),
+        "amend add --file should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Amendment: manual-"),
+        "should print 'Amendment: <id>', got: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_add_rejects_empty_body() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "  "])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add empty");
+
+    assert!(
+        !output.status.success(),
+        "amend add with empty text should fail"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("empty"),
+        "should mention empty body: {stderr}"
+    );
+}
+
+#[test]
+fn project_amend_list_empty() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should say no pending: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_add_then_list_shows_amendment() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Fix the UI alignment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
+
+    // List amendments
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    assert!(list_output.status.success());
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        stdout.contains(&amendment_id),
+        "list should contain amendment id: {stdout}"
+    );
+    assert!(
+        stdout.contains("[manual]"),
+        "list should show [manual] source: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_remove_existing() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Fix something"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
+
+    let remove_output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove");
+    assert!(remove_output.status.success());
+    let stdout = String::from_utf8_lossy(&remove_output.stdout);
+    assert!(
+        stdout.contains("Removed"),
+        "should confirm removal: {stdout}"
+    );
+
+    // Verify it's gone
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    assert!(list_output.status.success());
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should be empty after remove: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_remove_missing_fails() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", "nonexistent-id"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove missing");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("not found"),
+        "should mention not found: {stderr}"
+    );
+}
+
+#[test]
+fn project_amend_clear_removes_all() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add two amendments
+    for body in &["Fix A", "Fix B"] {
+        let output = Command::new(binary())
+            .args(["project", "amend", "add", "--text", body])
+            .current_dir(temp_dir.path())
+            .output()
+            .expect("run amend add");
+        assert!(output.status.success());
+    }
+
+    let clear_output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend clear");
+    assert!(clear_output.status.success());
+    let stdout = String::from_utf8_lossy(&clear_output.stdout);
+    assert!(
+        stdout.contains("Cleared 2"),
+        "should clear 2 amendments: {stdout}"
+    );
+
+    // Verify empty
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        stdout.contains("No pending amendments"),
+        "should be empty after clear"
+    );
+}
+
+#[test]
+fn project_amend_duplicate_manual_add_is_noop() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let body = "Exact same amendment text";
+
+    let first = Command::new(binary())
+        .args(["project", "amend", "add", "--text", body])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("first add");
+    assert!(first.status.success());
+    let first_stdout = String::from_utf8_lossy(&first.stdout);
+    let first_id = first_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
+
+    let second = Command::new(binary())
+        .args(["project", "amend", "add", "--text", body])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("second add");
+    assert!(second.status.success());
+    let second_stdout = String::from_utf8_lossy(&second.stdout);
+    assert!(
+        second_stdout.contains("Duplicate"),
+        "should report duplicate: {second_stdout}"
+    );
+    assert!(
+        second_stdout.contains(&first_id),
+        "should reference original id: {second_stdout}"
+    );
+
+    // Only one amendment should exist
+    let list = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("list");
+    let stdout = String::from_utf8_lossy(&list.stdout);
+    let count = stdout.lines().filter(|l| l.contains("manual-")).count();
+    assert_eq!(
+        count, 1,
+        "should have exactly 1 amendment after dup add: {stdout}"
+    );
+}
+
+#[test]
+fn project_amend_add_reopens_completed_project() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Set project to completed state
+    let project_root = temp_dir.path().join(".ralph-burning/projects/alpha");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"status":"completed","cycle_history":[{"cycle":1,"stage_id":"planning","started_at":"2026-03-11T19:00:00Z","completed_at":"2026-03-11T19:10:00Z"}],"completion_rounds":1,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    ).expect("write completed run.json");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Post-completion fix"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add on completed");
+    assert!(
+        output.status.success(),
+        "should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    // Verify the project is now paused
+    let run_json = fs::read_to_string(project_root.join("run.json")).expect("read run.json");
+    let snapshot: serde_json::Value = serde_json::from_str(&run_json).expect("parse run.json");
+    assert_eq!(
+        snapshot["status"], "paused",
+        "project should be paused after reopen"
+    );
+    assert!(
+        snapshot["interrupted_run"].is_object(),
+        "should have interrupted_run"
+    );
+}
+
+#[test]
+fn project_amend_add_journal_records_event() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Journal test amendment",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(output.status.success());
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/alpha/journal.ndjson"),
+    )
+    .expect("read journal");
+    let last_line = journal.lines().last().expect("journal has lines");
+    let event: serde_json::Value = serde_json::from_str(last_line).expect("parse event");
+    assert_eq!(event["event_type"], "amendment_queued");
+    assert_eq!(event["details"]["source"], "manual");
+    assert!(
+        event["details"]["dedup_key"].is_string(),
+        "should have dedup_key"
+    );
+    assert!(
+        event["details"]["amendment_id"].is_string(),
+        "should have amendment_id"
+    );
+}
+
+#[test]
+fn project_amend_add_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Should be rejected"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
+}
+
+#[test]
+fn project_amend_remove_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment first (no lock yet).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment to remove"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .trim()
+        .strip_prefix("Amendment: ")
+        .expect("should have 'Amendment: ' prefix")
+        .to_owned();
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend remove during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
+
+    // Verify the amendment was NOT removed.
+    fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        list_stdout.contains(&amendment_id),
+        "amendment should still be pending: {list_stdout}"
+    );
+}
+
+#[test]
+fn project_amend_clear_lease_conflict_rejects() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+
+    // Add an amendment first (no lock yet).
+    let add_output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Amendment to clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success());
+
+    // Create a writer lock file to simulate an active lease.
+    let leases_dir = temp_dir.path().join(".ralph-burning/daemon/leases");
+    fs::create_dir_all(&leases_dir).expect("create leases dir");
+    fs::write(leases_dir.join("writer-alpha.lock"), "fake-lease-id").expect("write lock");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend clear during lease");
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer lease") || stderr.contains("lock"),
+        "should mention lease conflict: {stderr}"
+    );
+
+    // Verify amendments were NOT cleared.
+    fs::remove_file(leases_dir.join("writer-alpha.lock")).ok();
+    let list_output = Command::new(binary())
+        .args(["project", "amend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend list");
+    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
+    assert!(
+        !list_stdout.contains("No pending amendments"),
+        "amendments should still be pending: {list_stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend add exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_add_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-add");
+    select_active_project_fixture(temp_dir.path(), "close-add");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Close failure test"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend add with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend add must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend remove exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_remove_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-rm");
+    select_active_project_fixture(temp_dir.path(), "close-rm");
+
+    // Add an amendment first (without close-failure seam).
+    let add_output = Command::new(binary())
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Amendment for close-rm test",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success(), "add should succeed");
+    let add_stdout = String::from_utf8_lossy(&add_output.stdout);
+    let amendment_id = add_stdout
+        .lines()
+        .find(|l| l.starts_with("Amendment: "))
+        .expect("should print amendment id")
+        .trim_start_matches("Amendment: ")
+        .trim()
+        .to_owned();
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "remove", &amendment_id])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend remove with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend remove must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Guard close failure makes successful amend clear exit non-zero (CLI level)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_clear_close_failure_exits_nonzero() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "close-clr");
+    select_active_project_fixture(temp_dir.path(), "close-clr");
+
+    // Add an amendment first (without close-failure seam).
+    let add_output = Command::new(binary())
+        .args([
+            "project",
+            "amend",
+            "add",
+            "--text",
+            "Amendment for close-clr test",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run amend add");
+    assert!(add_output.status.success(), "add should succeed");
+
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend clear with close failure");
+
+    assert!(
+        !output.status.success(),
+        "amend clear must exit non-zero when guard close fails, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("writer_lock_absent") || stderr.contains("guard close failed"),
+        "should report the close failure reason, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Combined partial-clear + close failure: partial-clear IDs are still surfaced
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cli_project_amend_clear_partial_failure_surfaces_ids_despite_close_failure() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "combo-clr");
+    select_active_project_fixture(temp_dir.path(), "combo-clr");
+
+    // Add two amendments so the partial failure has both removed and remaining.
+    let add1 = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "First amendment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("add first amendment");
+    assert!(add1.status.success(), "first add should succeed");
+
+    let add2 = Command::new(binary())
+        .args(["project", "amend", "add", "--text", "Second amendment"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("add second amendment");
+    assert!(add2.status.success(), "second add should succeed");
+
+    // Trigger partial clear (first remove succeeds, second fails) AND close failure.
+    let output = Command::new(binary())
+        .args(["project", "amend", "clear"])
+        .current_dir(temp_dir.path())
+        .env("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")
+        .env("RALPH_BURNING_TEST_DELETE_LOCK_BEFORE_CLOSE", "1")
+        .output()
+        .expect("run amend clear with partial + close failure");
+
+    assert!(
+        !output.status.success(),
+        "should exit non-zero on partial clear + close failure"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    // The partial-clear contract requires exact removed/remaining IDs.
+    assert!(
+        stderr.contains("removed:"),
+        "must surface removed IDs even when close also fails, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("remaining:"),
+        "must surface remaining IDs even when close also fails, got: {stderr}"
+    );
+
+    // The close failure should also be mentioned.
+    assert!(
+        stderr.contains("writer-lease cleanup also failed")
+            || stderr.contains("writer_lock_absent")
+            || stderr.contains("guard close failed"),
+        "should note the close failure alongside partial-clear details, got: {stderr}"
+    );
+}
+
+// ── backend command tests (Slice 5) ─────────────────────────────────────────
+
+#[test]
+fn backend_list_shows_all_families() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list");
+
+    assert!(
+        output.status.success(),
+        "backend list should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("claude"), "should list claude");
+    assert!(stdout.contains("codex"), "should list codex");
+    assert!(stdout.contains("openrouter"), "should list openrouter");
+    assert!(stdout.contains("stub"), "should list stub");
+}
+
+#[test]
+fn backend_list_json_is_valid() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "list", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list --json");
+
+    assert!(
+        output.status.success(),
+        "backend list --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.is_array(), "JSON output should be an array");
+    let arr = parsed.as_array().unwrap();
+    assert_eq!(4, arr.len(), "should have 4 backend families");
+}
+
+#[test]
+fn backend_check_succeeds_with_defaults() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "check"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check");
+
+    assert!(
+        output.status.success(),
+        "backend check should succeed with defaults: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("passed"),
+        "should report passed: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_check_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "check", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check --json");
+
+    assert!(
+        output.status.success(),
+        "backend check --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(
+        parsed.get("passed").is_some(),
+        "JSON should have 'passed' field"
+    );
+    assert!(
+        parsed.get("failures").is_some(),
+        "JSON should have 'failures' field"
+    );
+}
+
+#[test]
+fn backend_show_effective_text_output() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("Base backend"), "should show base backend");
+    assert!(
+        stdout.contains("Per-role resolution"),
+        "should show per-role section"
+    );
+}
+
+#[test]
+fn backend_show_effective_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective --json");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(
+        parsed.get("base_backend").is_some(),
+        "JSON should have 'base_backend'"
+    );
+    assert!(parsed.get("roles").is_some(), "JSON should have 'roles'");
+    assert!(
+        parsed.get("default_timeout_seconds").is_some(),
+        "JSON should have 'default_timeout_seconds'"
+    );
+}
+
+#[test]
+fn backend_probe_singular_role() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend", "probe", "--role", "planner", "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe");
+
+    assert!(
+        output.status.success(),
+        "backend probe should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("planner"), "should show probed role");
+    assert!(stdout.contains("standard"), "should show flow");
+}
+
+#[test]
+fn backend_probe_completion_panel() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "completion_panel",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe completion panel");
+
+    assert!(
+        output.status.success(),
+        "backend probe completion_panel should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("completion"),
+        "should show panel type: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_probe_final_review_panel() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "final_review_panel",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe final_review_panel");
+
+    assert!(
+        output.status.success(),
+        "backend probe final_review_panel should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("final_review"),
+        "should show panel type: {}",
+        stdout
+    );
+}
+
+#[test]
+fn backend_probe_json_contract() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend", "probe", "--role", "planner", "--flow", "standard", "--json",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe --json");
+
+    assert!(
+        output.status.success(),
+        "backend probe --json should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    assert!(parsed.get("role").is_some(), "JSON should have 'role'");
+    assert!(parsed.get("flow").is_some(), "JSON should have 'flow'");
+    assert!(parsed.get("target").is_some(), "JSON should have 'target'");
+}
+
+#[test]
+fn backend_check_nonzero_exit_on_failure() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Write config with a disabled base backend
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args(["backend", "check"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend check should exit non-zero when base backend is disabled"
+    );
+}
+
+#[test]
+fn backend_show_effective_with_cli_override() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective", "--json", "--backend", "codex"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective with override");
+
+    assert!(
+        output.status.success(),
+        "backend show-effective with override should succeed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value = serde_json::from_str(&stdout).expect("should be valid JSON");
+    let base_value = parsed["base_backend"]["value"]
+        .as_str()
+        .expect("base_backend.value");
+    assert!(
+        base_value.contains("codex"),
+        "base backend should be overridden to codex, got: {}",
+        base_value
+    );
+}
+
+#[test]
+fn backend_probe_nonzero_exit_on_disabled_backend() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Disable the base backend so probing any role that depends on it fails
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args([
+            "backend", "probe", "--role", "planner", "--flow", "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend probe should exit non-zero when required backend is disabled"
+    );
+}
+
+#[test]
+fn backend_probe_nonzero_exit_on_panel_minimum_violation() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Configure completion panel with min_completers=2 but only one backend
+    // enabled (claude required + openrouter optional but disabled).
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[backends.openrouter]
+enabled = false
+
+[completion]
+backends = ["claude", "?openrouter"]
+min_completers = 2
+consensus_threshold = 0.66
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "probe",
+            "--role",
+            "completion_panel",
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend probe with insufficient panel members");
+
+    assert!(
+        !output.status.success(),
+        "backend probe should exit non-zero when optional omission drops panel below minimum"
+    );
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("insufficient") || stderr.contains("panel") || stderr.contains("minimum"),
+        "error output should mention panel minimum violation: {}",
+        stderr
+    );
+}
+
+#[test]
+fn backend_check_nonzero_exit_json_reports_failures() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Disable the base backend
+    let workspace_toml = r#"version = 1
+created_at = "2026-03-19T03:28:00Z"
+
+[settings]
+default_backend = "openrouter"
+
+[backends.openrouter]
+enabled = false
+"#;
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        workspace_toml,
+    )
+    .expect("write workspace.toml");
+
+    let output = Command::new(binary())
+        .args(["backend", "check", "--json"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend check --json with disabled backend");
+
+    assert!(
+        !output.status.success(),
+        "backend check --json should exit non-zero when base backend is disabled"
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let parsed: serde_json::Value =
+        serde_json::from_str(&stdout).expect("should be valid JSON even on failure");
+    assert_eq!(
+        parsed["passed"].as_bool(),
+        Some(false),
+        "passed should be false"
+    );
+    let failures = parsed["failures"]
+        .as_array()
+        .expect("failures should be an array");
+    assert!(
+        !failures.is_empty(),
+        "failures array should contain at least one entry"
+    );
+    // Each failure should have the expected contract fields
+    let failure = &failures[0];
+    assert!(failure.get("role").is_some(), "failure should have 'role'");
+    assert!(
+        failure.get("backend_family").is_some(),
+        "failure should have 'backend_family'"
+    );
+    assert!(
+        failure.get("failure_kind").is_some(),
+        "failure should have 'failure_kind'"
+    );
+}
+
+#[test]
+fn backend_list_nonzero_exit_without_workspace() {
+    let temp_dir = tempdir().expect("create temp dir");
+    // No workspace initialized — backend list should fail
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list without workspace");
+
+    assert!(
+        !output.status.success(),
+        "backend list should exit non-zero when no workspace exists"
+    );
+}
+
+#[test]
+fn backend_show_effective_nonzero_exit_without_workspace() {
+    let temp_dir = tempdir().expect("create temp dir");
+    // No workspace initialized — show-effective should fail
+
+    let output = Command::new(binary())
+        .args(["backend", "show-effective"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective without workspace");
+
+    assert!(
+        !output.status.success(),
+        "backend show-effective should exit non-zero when no workspace exists"
+    );
+}
+
+#[test]
+fn backend_list_nonzero_exit_with_corrupt_config() {
+    let temp_dir = initialize_workspace_fixture();
+
+    // Corrupt the workspace.toml
+    fs::write(
+        temp_dir.path().join(".ralph-burning/workspace.toml"),
+        "this is not valid toml {{{",
+    )
+    .expect("write corrupt config");
+
+    let output = Command::new(binary())
+        .args(["backend", "list"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend list with corrupt config");
+
+    assert!(
+        !output.status.success(),
+        "backend list should exit non-zero with corrupt workspace config"
+    );
+}
+
+#[test]
+fn backend_show_effective_nonzero_exit_with_invalid_override() {
+    let temp_dir = initialize_workspace_fixture();
+
+    let output = Command::new(binary())
+        .args([
+            "backend",
+            "show-effective",
+            "--backend",
+            "not-a-real-backend",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run backend show-effective with invalid override");
+
+    assert!(
+        !output.status.success(),
+        "backend show-effective should exit non-zero with invalid backend override"
+    );
+}
+
+// ── Slice 7: Template override CLI integration tests ────────────────────
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_change() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "tpl-malformed");
+
+    // Install a malformed workspace template override for "planning"
+    // (the first stage in a standard flow). Missing all required placeholders.
+    let ws_templates = temp_dir
+        .path()
+        .join(".ralph-burning")
+        .join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "This override has no placeholders at all.",
+    )
+    .expect("write malformed override");
+
+    // Capture pre-run state
+    let pre_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/run.json"),
+    )
+    .expect("read run.json before");
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start with malformed override");
+
+    assert!(
+        !output.status.success(),
+        "run start should fail with malformed template override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("malformed template override") || stderr.contains("MalformedTemplate"),
+        "stderr should mention malformed template: {stderr}"
+    );
+
+    // Verify no durable state was mutated beyond run_started
+    let post_run_json = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/run.json"),
+    )
+    .expect("read run.json after");
+    let post_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/tpl-malformed/journal.ndjson"),
+    )
+    .expect("read journal after");
+
+    // The journal must not contain a stage_entered event for "planning"
+    // (the stage whose template was malformed). Earlier stages like
+    // prompt_review may legitimately enter and complete before the
+    // malformed planning template is reached.
+    for line in post_journal.lines() {
+        if line.contains("stage_entered") && line.contains("planning") {
+            panic!("no stage_entered event should be written for the malformed planning stage");
+        }
+        if line.contains("stage_completed") && line.contains("planning") {
+            panic!("no stage_completed event should be written for the malformed planning stage");
+        }
+    }
+
+    // run.json must not record a running stage for the failed template
+    assert!(
+        !post_run_json.contains("\"status\":\"running\"")
+            || post_run_json == pre_run_json,
+        "run.json must not show running status for a malformed template failure"
+    );
+
+    // No payloads should exist for the planning stage specifically.
+    // Earlier stages like prompt_review may legitimately write payloads.
+    let payloads_dir = temp_dir
+        .path()
+        .join(".ralph-burning/projects/tpl-malformed/history/payloads");
+    if payloads_dir.exists() {
+        let planning_payloads: Vec<_> = fs::read_dir(&payloads_dir)
+            .expect("read payloads dir")
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .contains("planning")
+            })
+            .collect();
+        assert!(
+            planning_payloads.is_empty(),
+            "no planning payloads should be written for a malformed template, found: {:?}",
+            planning_payloads.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+        );
+    }
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_standard_project(&temp_dir, "tpl-no-fallback");
+
+    // Install a VALID workspace override
+    let ws_templates = temp_dir
+        .path()
+        .join(".ralph-burning")
+        .join("templates");
+    fs::create_dir_all(&ws_templates).expect("create templates dir");
+    fs::write(
+        ws_templates.join("planning.md"),
+        "VALID WS\n\n{{role_instruction}}\n\n{{project_prompt}}\n\n{{json_schema}}",
+    )
+    .expect("write valid workspace override");
+
+    // Install a MALFORMED project override (should NOT fall back to workspace)
+    let proj_templates = temp_dir
+        .path()
+        .join(".ralph-burning/projects/tpl-no-fallback/templates");
+    fs::create_dir_all(&proj_templates).expect("create project templates dir");
+    fs::write(
+        proj_templates.join("planning.md"),
+        "BROKEN PROJECT OVERRIDE — no placeholders",
+    )
+    .expect("write malformed project override");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start with malformed project override");
+
+    assert!(
+        !output.status.success(),
+        "malformed project override must not silently fall back to workspace override"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("malformed template override") || stderr.contains("MalformedTemplate"),
+        "stderr should mention malformed template: {stderr}"
     );
 }

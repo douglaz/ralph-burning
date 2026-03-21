@@ -31,7 +31,9 @@ use ralph_burning::contexts::workflow_composition::engine;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
 use ralph_burning::contexts::workspace_governance;
 use ralph_burning::contexts::workspace_governance::config::EffectiveConfig;
-use ralph_burning::shared::domain::{FailureClass, FlowPreset, ProjectId, RunId, StageId};
+use ralph_burning::shared::domain::{
+    BackendFamily, FailureClass, FlowPreset, ProjectId, RunId, StageId,
+};
 use ralph_burning::shared::error::{AppError, AppResult};
 
 const JOURNAL_APPEND_FAIL_AFTER_ENV: &str = "RALPH_BURNING_TEST_JOURNAL_APPEND_FAIL_AFTER";
@@ -184,6 +186,37 @@ fn role_mapping_is_deterministic() {
     assert_eq!(
         engine::role_for_stage(StageId::FinalReview),
         BackendRole::CompletionJudge
+    );
+}
+
+#[test]
+fn final_review_planner_drift_is_detected_without_breaking_old_snapshots() {
+    use ralph_burning::contexts::agent_execution::policy::ResolvedPanelMember;
+    use ralph_burning::shared::domain::ResolvedBackendTarget;
+
+    let reviewers = [ResolvedPanelMember {
+        target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-model"),
+        required: true,
+        configured_index: 0,
+    }];
+    let arbiter = ResolvedBackendTarget::new(BackendFamily::Codex, "arbiter-model");
+    let planner_a = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-a");
+    let planner_b = ResolvedBackendTarget::new(BackendFamily::Claude, "planner-b");
+
+    let original =
+        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_a, &arbiter);
+    let drifted =
+        engine::build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_b, &arbiter);
+    assert!(
+        engine::resolution_has_drifted(&original, &drifted),
+        "planner changes must trigger final-review drift"
+    );
+
+    let mut legacy_snapshot = original.clone();
+    legacy_snapshot.final_review_planner = None;
+    assert!(
+        !engine::resolution_has_drifted(&legacy_snapshot, &original),
+        "old snapshots without planner baselines must not false-positive on resume"
     );
 }
 
@@ -1624,24 +1657,62 @@ fn resolve_stage_plan_produces_correct_targets() {
 
 #[tokio::test]
 async fn preflight_check_succeeds_with_default_stub() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+    let config = EffectiveConfig::load(temp.path()).unwrap();
     let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
     let stages = engine::standard_stage_plan(true);
     let plan = engine::resolve_stage_plan(&stages, &resolver, None).unwrap();
 
     let adapter = StubBackendAdapter::default();
-    let result = engine::preflight_check(&adapter, &plan).await;
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
     assert!(result.is_ok());
 }
 
 #[tokio::test]
 async fn preflight_check_fails_with_unavailable_backend() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+    let config = EffectiveConfig::load(temp.path()).unwrap();
     let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
     let stages = engine::standard_stage_plan(true);
     let plan = engine::resolve_stage_plan(&stages, &resolver, None).unwrap();
 
     let adapter = StubBackendAdapter::default().unavailable();
-    let result = engine::preflight_check(&adapter, &plan).await;
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
     assert!(result.is_err());
+}
+
+#[tokio::test]
+async fn preflight_check_validates_final_review_planner_member() {
+    let temp = tempdir().unwrap();
+    setup_workspace(temp.path());
+
+    let workspace_toml = temp.path().join(".ralph-burning/workspace.toml");
+    let content = fs::read_to_string(&workspace_toml).unwrap();
+    let patched = if content.contains("[workflow]") {
+        content.replace("[workflow]", "[workflow]\nplanner_backend = \"openrouter\"")
+    } else {
+        format!("{content}\n[workflow]\nplanner_backend = \"openrouter\"\n")
+    };
+    fs::write(&workspace_toml, patched).unwrap();
+
+    let config = EffectiveConfig::load(temp.path()).unwrap();
+    let resolver = ralph_burning::contexts::agent_execution::service::BackendResolver::new();
+    let plan = engine::resolve_stage_plan(&[StageId::FinalReview], &resolver, None).unwrap();
+
+    let adapter = StubBackendAdapter::default();
+    let result = engine::preflight_check(&adapter, &config, 1, &plan).await;
+    match result {
+        Err(AppError::PreflightFailed { stage_id, details }) => {
+            assert_eq!(stage_id, StageId::FinalReview);
+            assert!(
+                details.contains("planner"),
+                "expected planner-specific preflight failure, got: {details}"
+            );
+        }
+        other => panic!("expected planner preflight failure, got: {other:?}"),
+    }
 }
 
 // ── Failing-port tests: journal-append and snapshot-write errors ─────────

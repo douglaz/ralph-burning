@@ -4,19 +4,18 @@ use std::path::Path;
 use chrono::Utc;
 use serde_json::json;
 
-use crate::adapters::fs::FileSystem;
 use crate::adapters::github::{GithubComment, GithubPort, GithubReview};
 use crate::contexts::agent_execution::model::CancellationToken;
 use crate::contexts::automation_runtime::repo_registry::parse_repo_slug;
 use crate::contexts::automation_runtime::{
     DaemonStorePort, DaemonTask, DaemonTaskService, ReviewWhitelist, TaskStatus,
 };
-use crate::contexts::project_run_record::model::{ActiveRun, QueuedAmendment, RunStatus};
+use crate::contexts::project_run_record::model::QueuedAmendment;
 use crate::contexts::project_run_record::service::{
-    AmendmentQueuePort, ProjectStorePort, RunSnapshotPort, RunSnapshotWritePort,
+    self as record_service, AmendmentQueuePort, JournalStorePort, ProjectStorePort,
+    RunSnapshotPort, RunSnapshotWritePort,
 };
-use crate::contexts::workspace_governance::WORKSPACE_DIR;
-use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
+use crate::shared::domain::{ProjectId, StageId};
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -63,6 +62,7 @@ pub struct PrReviewIngestionService<'a, G> {
     run_snapshot_read: &'a dyn RunSnapshotPort,
     run_snapshot_write: &'a dyn RunSnapshotWritePort,
     amendment_queue: &'a dyn AmendmentQueuePort,
+    journal_store: &'a dyn JournalStorePort,
     github: &'a G,
 }
 
@@ -73,6 +73,7 @@ impl<'a, G> PrReviewIngestionService<'a, G> {
         run_snapshot_read: &'a dyn RunSnapshotPort,
         run_snapshot_write: &'a dyn RunSnapshotWritePort,
         amendment_queue: &'a dyn AmendmentQueuePort,
+        journal_store: &'a dyn JournalStorePort,
         github: &'a G,
     ) -> Self {
         Self {
@@ -81,6 +82,7 @@ impl<'a, G> PrReviewIngestionService<'a, G> {
             run_snapshot_read,
             run_snapshot_write,
             amendment_queue,
+            journal_store,
             github,
         }
     }
@@ -149,13 +151,69 @@ where
             .collect::<Vec<_>>();
         let accepted = self.filter_by_whitelist(items, whitelist);
         let amendments = self.convert_to_amendments(workspace_dir, &task, &accepted)?;
-        if !amendments.is_empty() {
-            self.stage_amendments(workspace_dir, &task, &amendments)?;
-        }
 
+        // For active tasks, only write amendment files to disk without touching
+        // canonical run state (run.json/journal). The workflow engine owns
+        // snapshot mutations during execution and will pick up staged files.
+        // For completed/paused tasks, use the full shared staging service which
+        // handles dedup, journal persistence, snapshot sync, and reopen.
+        let staged_ids: Vec<String> = if !amendments.is_empty() {
+            let project_id = ProjectId::new(task.project_id.clone())?;
+            if task.status == TaskStatus::Active {
+                // Disk-only staging: write amendment files without run.json mutation.
+                // Deduplicate by dedup_key against existing on-disk amendments.
+                let existing = self.amendment_queue
+                    .list_pending_amendments(workspace_dir, &project_id)?;
+                let mut seen_keys: std::collections::HashSet<String> = existing
+                    .iter()
+                    .map(|a| a.dedup_key.clone())
+                    .collect();
+                let mut ids = Vec::new();
+                for amendment in &amendments {
+                    if !seen_keys.insert(amendment.dedup_key.clone()) {
+                        continue;
+                    }
+                    if let Err(e) = self.amendment_queue
+                        .write_amendment(workspace_dir, &project_id, amendment)
+                    {
+                        // Roll back files written earlier in this batch so a
+                        // partial failure doesn't leak a subset of amendments.
+                        for written_id in &ids {
+                            let _ = self.amendment_queue
+                                .remove_amendment(workspace_dir, &project_id, written_id);
+                        }
+                        return Err(e.into());
+                    }
+                    ids.push(amendment.amendment_id.clone());
+                }
+                ids
+            } else {
+                // Full staging with canonical state updates
+                let staged_ids = record_service::stage_amendment_batch(
+                    self.amendment_queue,
+                    self.run_snapshot_read,
+                    self.run_snapshot_write,
+                    self.journal_store,
+                    self.project_store,
+                    workspace_dir,
+                    &project_id,
+                    &amendments,
+                )?;
+                staged_ids
+            }
+        } else {
+            Vec::new()
+        };
+        let staged_count = staged_ids.len();
+
+        // Check if the project was reopened (task was completed + amendments staged).
         let mut reopened_project = false;
-        if task.status == TaskStatus::Completed && !amendments.is_empty() {
-            self.reopen_completed_project(workspace_dir, &mut task)?;
+        if task.status == TaskStatus::Completed && staged_count > 0 {
+            // The shared service already reopened the project; just update task state.
+            task.status = TaskStatus::Pending;
+            task.failure_class = None;
+            task.failure_message = None;
+            task.updated_at = Utc::now();
             reopened_project = true;
         }
 
@@ -172,20 +230,20 @@ where
                 "task_id": task.task_id,
                 "pr_url": pr_url,
                 "accepted_count": accepted.len(),
-                "staged_count": amendments.len(),
+                "staged_count": staged_count,
                 "last_seen_comment_id": next_comment_cursor,
                 "last_seen_review_id": next_review_cursor,
             }),
         )?;
-        if !amendments.is_empty() {
+        if staged_count > 0 {
             DaemonTaskService::append_journal_event(
                 self.store,
                 daemon_dir,
                 super::model::DaemonJournalEventType::AmendmentsStaged,
                 json!({
                     "task_id": task.task_id,
-                    "count": amendments.len(),
-                    "amendment_ids": amendments.iter().map(|a| a.amendment_id.as_str()).collect::<Vec<_>>(),
+                    "count": staged_count,
+                    "amendment_ids": &staged_ids,
                 }),
             )?;
         }
@@ -203,7 +261,7 @@ where
         }
 
         Ok(IngestedReviewBatch {
-            staged_count: amendments.len(),
+            staged_count,
             reopened_project,
             last_seen_comment_id: next_comment_cursor,
             last_seen_review_id: next_review_cursor,
@@ -258,8 +316,7 @@ where
             // Skip approval-only reviews — only COMMENTED and CHANGES_REQUESTED
             // states should create amendments. An APPROVED review with text like
             // "LGTM" should not reopen a completed task.
-            if review.state.eq_ignore_ascii_case("APPROVED")
-            {
+            if review.state.eq_ignore_ascii_case("APPROVED") {
                 continue;
             }
             let item = ReviewItem::Review(review);
@@ -296,84 +353,23 @@ where
         Ok(items
             .iter()
             .enumerate()
-            .map(|(idx, item)| QueuedAmendment {
-                amendment_id: format!("pr-review-{}", item.key().replace(':', "-")),
-                source_stage: StageId::Review,
-                source_cycle,
-                source_completion_round,
-                body: item.body().trim().to_owned(),
-                created_at,
-                batch_sequence: (idx + 1) as u32,
+            .map(|(idx, item)| {
+                let body = item.body().trim().to_owned();
+                let source = crate::contexts::project_run_record::model::AmendmentSource::PrReview;
+                let dedup_key = QueuedAmendment::compute_dedup_key(&source, &body);
+                QueuedAmendment {
+                    amendment_id: format!("pr-review-{}", item.key().replace(':', "-")),
+                    source_stage: StageId::Review,
+                    source_cycle,
+                    source_completion_round,
+                    body,
+                    created_at,
+                    batch_sequence: (idx + 1) as u32,
+                    source,
+                    dedup_key,
+                }
             })
             .collect())
-    }
-
-    fn stage_amendments(
-        &self,
-        base_dir: &Path,
-        task: &DaemonTask,
-        amendments: &[QueuedAmendment],
-    ) -> AppResult<()> {
-        let project_id = ProjectId::new(task.project_id.clone())?;
-        for amendment in amendments {
-            self.amendment_queue
-                .write_amendment(base_dir, &project_id, amendment)?;
-        }
-        Ok(())
-    }
-
-    fn reopen_completed_project(&self, base_dir: &Path, task: &mut DaemonTask) -> AppResult<()> {
-        let project_id = ProjectId::new(task.project_id.clone())?;
-        let project_record = self
-            .project_store
-            .read_project_record(base_dir, &project_id)?;
-        let mut snapshot = self
-            .run_snapshot_read
-            .read_run_snapshot(base_dir, &project_id)?;
-        if snapshot.status == RunStatus::Completed {
-            let prompt_path = base_dir
-                .join(WORKSPACE_DIR)
-                .join("projects")
-                .join(project_id.as_str())
-                .join(&project_record.prompt_reference);
-            let prompt_contents =
-                std::fs::read_to_string(&prompt_path).map_err(|error| AppError::CorruptRecord {
-                    file: prompt_path.display().to_string(),
-                    details: format!("failed to read prompt for project reopen: {error}"),
-                })?;
-            let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
-            let planning_stage =
-                planning_stage_for_flow(task.resolved_flow.unwrap_or(project_record.flow));
-            let current_cycle = snapshot
-                .cycle_history
-                .last()
-                .map(|entry| entry.cycle)
-                .unwrap_or(1);
-            let completion_round = snapshot.completion_rounds.max(1);
-
-            snapshot.interrupted_run = Some(ActiveRun {
-                run_id: format!("reopen-{}", task.project_id),
-                stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, completion_round)?,
-                started_at: Utc::now(),
-                prompt_hash_at_cycle_start: prompt_hash.clone(),
-                prompt_hash_at_stage_start: prompt_hash,
-                qa_iterations_current_cycle: 0,
-                review_iterations_current_cycle: 0,
-                final_review_restart_count: 0,
-                stage_resolution_snapshot: snapshot.last_stage_resolution_snapshot.clone(),
-            });
-            snapshot.active_run = None;
-            snapshot.status = RunStatus::Paused;
-            snapshot.status_summary = "paused: PR review amendments staged".to_owned();
-            self.run_snapshot_write
-                .write_run_snapshot(base_dir, &project_id, &snapshot)?;
-        }
-
-        task.status = TaskStatus::Pending;
-        task.failure_class = None;
-        task.failure_message = None;
-        task.updated_at = Utc::now();
-        Ok(())
     }
 
     fn ensure_not_cancelled(&self, cancel: &CancellationToken) -> AppResult<()> {
@@ -393,15 +389,6 @@ fn combine_max_id(current: Option<u64>, next: Option<u64>) -> Option<u64> {
         (Some(current), None) => Some(current),
         (None, Some(next)) => Some(next),
         (None, None) => None,
-    }
-}
-
-fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
-    match flow {
-        FlowPreset::Standard => StageId::Planning,
-        FlowPreset::QuickDev => StageId::PlanAndImplement,
-        FlowPreset::DocsChange => StageId::DocsPlan,
-        FlowPreset::CiImprovement => StageId::CiPlan,
     }
 }
 

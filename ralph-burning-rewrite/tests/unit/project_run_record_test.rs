@@ -1,9 +1,12 @@
+use std::cell::RefCell;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::model::*;
+use ralph_burning::contexts::project_run_record::service;
 use ralph_burning::contexts::project_run_record::service::*;
+use ralph_burning::contexts::requirements_drafting::service::SeedHandoff;
 use ralph_burning::shared::domain::{FlowPreset, ProjectId};
 use ralph_burning::shared::error::{AppError, AppResult};
 
@@ -24,6 +27,103 @@ impl FakeProjectStore {
         Self {
             existing_ids: ids.iter().map(|s| s.to_string()).collect(),
         }
+    }
+}
+
+#[derive(Clone)]
+struct CapturedProjectCreate {
+    record: ProjectRecord,
+    prompt_contents: String,
+    initial_journal_line: String,
+    run_snapshot: RunSnapshot,
+}
+
+struct RecordingProjectStore {
+    existing_ids: Vec<String>,
+    captured: RefCell<Option<CapturedProjectCreate>>,
+}
+
+impl RecordingProjectStore {
+    fn empty() -> Self {
+        Self {
+            existing_ids: Vec::new(),
+            captured: RefCell::new(None),
+        }
+    }
+
+    fn with_existing(ids: &[&str]) -> Self {
+        Self {
+            existing_ids: ids.iter().map(|id| id.to_string()).collect(),
+            captured: RefCell::new(None),
+        }
+    }
+
+    fn captured(&self) -> CapturedProjectCreate {
+        self.captured
+            .borrow()
+            .clone()
+            .expect("project creation should be captured")
+    }
+}
+
+impl ProjectStorePort for RecordingProjectStore {
+    fn project_exists(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<bool> {
+        Ok(self.existing_ids.contains(&project_id.to_string()))
+    }
+
+    fn read_project_record(
+        &self,
+        _base_dir: &Path,
+        project_id: &ProjectId,
+    ) -> AppResult<ProjectRecord> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(make_project_record(project_id.as_str()))
+    }
+
+    fn list_project_ids(&self, _base_dir: &Path) -> AppResult<Vec<ProjectId>> {
+        self.existing_ids
+            .iter()
+            .map(|id| ProjectId::new(id.as_str()))
+            .collect()
+    }
+
+    fn stage_delete(&self, _base_dir: &Path, project_id: &ProjectId) -> AppResult<()> {
+        if !self.existing_ids.contains(&project_id.to_string()) {
+            return Err(AppError::ProjectNotFound {
+                project_id: project_id.to_string(),
+            });
+        }
+        Ok(())
+    }
+
+    fn commit_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn rollback_delete(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<()> {
+        Ok(())
+    }
+
+    fn create_project_atomic(
+        &self,
+        _base_dir: &Path,
+        record: &ProjectRecord,
+        prompt_contents: &str,
+        run_snapshot: &RunSnapshot,
+        initial_journal_line: &str,
+        _sessions: &SessionStore,
+    ) -> AppResult<()> {
+        self.captured.replace(Some(CapturedProjectCreate {
+            record: record.clone(),
+            prompt_contents: prompt_contents.to_owned(),
+            initial_journal_line: initial_journal_line.to_owned(),
+            run_snapshot: run_snapshot.clone(),
+        }));
+        Ok(())
     }
 }
 
@@ -105,18 +205,28 @@ impl JournalStorePort for FakeJournalStore {
 
 struct FakeRunSnapshotStore {
     has_active_run: bool,
+    custom_snapshot: Option<RunSnapshot>,
 }
 
 impl FakeRunSnapshotStore {
     fn no_run() -> Self {
         Self {
             has_active_run: false,
+            custom_snapshot: None,
         }
     }
 
     fn active_run() -> Self {
         Self {
             has_active_run: true,
+            custom_snapshot: None,
+        }
+    }
+
+    fn with_snapshot(snapshot: RunSnapshot) -> Self {
+        Self {
+            has_active_run: false,
+            custom_snapshot: Some(snapshot),
         }
     }
 }
@@ -127,6 +237,9 @@ impl RunSnapshotPort for FakeRunSnapshotStore {
         _base_dir: &Path,
         _project_id: &ProjectId,
     ) -> AppResult<RunSnapshot> {
+        if let Some(ref snap) = self.custom_snapshot {
+            return Ok(snap.clone());
+        }
         if self.has_active_run {
             Ok(RunSnapshot {
                 active_run: Some(ActiveRun {
@@ -220,6 +333,22 @@ fn dummy_base_dir() -> std::path::PathBuf {
     std::path::PathBuf::from("/tmp/test")
 }
 
+fn make_seed_handoff(
+    project_id: &str,
+    flow: FlowPreset,
+    recommended_flow: Option<FlowPreset>,
+) -> SeedHandoff {
+    SeedHandoff {
+        requirements_run_id: "req-20260318-220000".to_owned(),
+        project_id: project_id.to_owned(),
+        project_name: format!("Project {project_id}"),
+        flow,
+        prompt_body: "# Seed prompt\nUse the payload body.".to_owned(),
+        prompt_path: std::path::PathBuf::from("/tmp/requirements/seed/prompt.md"),
+        recommended_flow,
+    }
+}
+
 // ── Domain Tests ──
 
 #[test]
@@ -299,6 +428,139 @@ fn create_project_fails_on_duplicate_id() {
         result.unwrap_err(),
         AppError::DuplicateProject { .. }
     ));
+}
+
+#[test]
+fn create_project_from_seed_uses_seed_flow_without_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-alpha",
+        FlowPreset::Standard,
+        Some(FlowPreset::QuickDev),
+    );
+
+    let record = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    assert_eq!(record.id.as_str(), "seed-alpha");
+    assert_eq!(record.flow, FlowPreset::Standard);
+    assert_eq!(captured.record.flow, FlowPreset::Standard);
+    assert_eq!(captured.record.prompt_reference, "prompt.md");
+    assert_eq!(captured.run_snapshot.status, RunStatus::NotStarted);
+}
+
+#[test]
+fn create_project_from_seed_applies_flow_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-override",
+        FlowPreset::Standard,
+        Some(FlowPreset::QuickDev),
+    );
+
+    let record = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        Some(FlowPreset::QuickDev),
+        test_timestamp(),
+    )
+    .expect("create project from seed with override");
+
+    let captured = store.captured();
+    assert_eq!(record.flow, FlowPreset::QuickDev);
+    assert_eq!(captured.record.flow, FlowPreset::QuickDev);
+
+    let event: JournalEvent =
+        serde_json::from_str(&captured.initial_journal_line).expect("parse journal line");
+    assert_eq!(event.details["flow"], "quick_dev");
+    assert_eq!(event.details["seed_flow"], "standard");
+    assert_eq!(event.details["recommended_flow"], "quick_dev");
+}
+
+#[test]
+fn create_project_from_seed_writes_prompt_body_not_prompt_path_contents() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let mut handoff = make_seed_handoff("seed-prompt", FlowPreset::Standard, None);
+    handoff.prompt_body = "Prompt body from seed payload".to_owned();
+    handoff.prompt_path = std::path::PathBuf::from("/tmp/requirements/seed/other-prompt.md");
+
+    create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    assert_eq!(captured.prompt_contents, "Prompt body from seed payload");
+    assert_eq!(
+        captured.record.prompt_hash,
+        ralph_burning::adapters::fs::FileSystem::prompt_hash("Prompt body from seed payload")
+    );
+}
+
+#[test]
+fn create_project_from_seed_journal_records_requirements_metadata() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff(
+        "seed-journal",
+        FlowPreset::DocsChange,
+        Some(FlowPreset::Standard),
+    );
+
+    create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect("create project from seed");
+
+    let captured = store.captured();
+    let event: JournalEvent =
+        serde_json::from_str(&captured.initial_journal_line).expect("parse journal line");
+    assert_eq!(event.event_type, JournalEventType::ProjectCreated);
+    assert_eq!(event.details["source"], "requirements");
+    assert_eq!(event.details["requirements_run_id"], "req-20260318-220000");
+    assert_eq!(event.details["flow"], "docs_change");
+}
+
+#[test]
+fn create_project_from_seed_rejects_duplicate_project_id() {
+    let store = RecordingProjectStore::with_existing(&["dup-seed"]);
+    let journal_store = FakeJournalStore;
+    let handoff = make_seed_handoff("dup-seed", FlowPreset::Standard, None);
+
+    let error = create_project_from_seed(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        handoff,
+        None,
+        test_timestamp(),
+    )
+    .expect_err("duplicate seed project should fail");
+
+    assert!(matches!(error, AppError::DuplicateProject { .. }));
 }
 
 #[test]
@@ -944,6 +1206,7 @@ fn stage_resolution_snapshot_single_target_round_trip() {
         prompt_review_refiner: None,
         completion_completers: Vec::new(),
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     };
 
@@ -974,6 +1237,7 @@ fn stage_resolution_snapshot_panel_target_round_trip() {
             },
         ],
         final_review_reviewers: Vec::new(),
+        final_review_planner: None,
         final_review_arbiter: None,
     };
 
@@ -1007,6 +1271,7 @@ fn active_run_with_snapshot_round_trip() {
             prompt_review_refiner: None,
             completion_completers: Vec::new(),
             final_review_reviewers: Vec::new(),
+            final_review_planner: None,
             final_review_arbiter: None,
         }),
     };
@@ -1014,6 +1279,27 @@ fn active_run_with_snapshot_round_trip() {
     let json = serde_json::to_string(&active).unwrap();
     let deserialized: ActiveRun = serde_json::from_str(&json).unwrap();
     assert_eq!(active, deserialized);
+}
+
+#[test]
+fn stage_resolution_snapshot_defaults_missing_final_review_planner_for_backwards_compat() {
+    let json = r#"{
+        "stage_id": "final_review",
+        "resolved_at": "2025-01-01T00:00:00Z",
+        "final_review_reviewers": [
+            {"backend_family": "claude", "model_id": "claude-opus"}
+        ],
+        "final_review_arbiter": {"backend_family": "codex", "model_id": "codex-1"}
+    }"#;
+
+    let snapshot: StageResolutionSnapshot = serde_json::from_str(json).unwrap();
+    assert_eq!(
+        snapshot.stage_id,
+        ralph_burning::shared::domain::StageId::FinalReview
+    );
+    assert_eq!(snapshot.final_review_reviewers.len(), 1);
+    assert!(snapshot.final_review_planner.is_none());
+    assert!(snapshot.final_review_arbiter.is_some());
 }
 
 #[test]
@@ -1084,4 +1370,2236 @@ fn payload_record_defaults_from_legacy_json() {
     assert_eq!(record.record_kind, RecordKind::StagePrimary);
     assert!(record.producer.is_none());
     assert_eq!(record.completion_round, 1); // default_completion_round returns 1
+}
+
+// ── Amendment Service Unit Tests ──────────────────────────────────────────
+
+use ralph_burning::contexts::project_run_record::model::{AmendmentSource, QueuedAmendment};
+use ralph_burning::shared::domain::StageId;
+
+// -- Fake AmendmentQueuePort for service tests --
+
+struct FakeAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FakeAmendmentQueue {
+    fn empty() -> Self {
+        Self {
+            amendments: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FakeAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+struct FailingRemoveAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FailingRemoveAmendmentQueue {
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailingRemoveAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment_id: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated remove failure",
+        )))
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+// -- Fake RunSnapshotWritePort --
+
+struct FakeRunSnapshotWriteStore {
+    written: RefCell<Option<RunSnapshot>>,
+}
+
+impl FakeRunSnapshotWriteStore {
+    fn new() -> Self {
+        Self {
+            written: RefCell::new(None),
+        }
+    }
+
+    fn written_snapshot(&self) -> Option<RunSnapshot> {
+        self.written.borrow().clone()
+    }
+}
+
+impl RunSnapshotWritePort for FakeRunSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        self.written.replace(Some(snapshot.clone()));
+        Ok(())
+    }
+}
+
+// -- SharedRunSnapshotStore: read+write store for tests that call service
+// functions multiple times and need writes to be visible on subsequent reads.
+
+struct SharedRunSnapshotStore {
+    snapshot: RefCell<RunSnapshot>,
+}
+
+impl SharedRunSnapshotStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+        }
+    }
+
+    fn initial() -> Self {
+        Self::new(RunSnapshot::initial())
+    }
+}
+
+impl RunSnapshotPort for SharedRunSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for SharedRunSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        self.snapshot.replace(snapshot.clone());
+        Ok(())
+    }
+}
+
+// -- Dedup key determinism tests --
+
+#[test]
+fn dedup_key_is_deterministic_for_same_input() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    assert_eq!(key1, key2);
+}
+
+#[test]
+fn dedup_key_normalizes_whitespace() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix  the\n bug");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    assert_eq!(key1, key2);
+}
+
+#[test]
+fn dedup_key_differs_by_source() {
+    let manual = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix the bug");
+    let pr = QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "fix the bug");
+    assert_ne!(manual, pr);
+}
+
+#[test]
+fn dedup_key_differs_by_body() {
+    let key1 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix bug A");
+    let key2 = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix bug B");
+    assert_ne!(key1, key2);
+}
+
+#[test]
+fn dedup_key_is_sha256_hex() {
+    let key = QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test");
+    assert_eq!(key.len(), 64); // SHA-256 produces 64 hex chars
+    assert!(key.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+// -- AmendmentSource serialization tests --
+
+#[test]
+fn amendment_source_serializes_to_snake_case() {
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::Manual).unwrap(),
+        "\"manual\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::PrReview).unwrap(),
+        "\"pr_review\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::IssueCommand).unwrap(),
+        "\"issue_command\""
+    );
+    assert_eq!(
+        serde_json::to_string(&AmendmentSource::WorkflowStage).unwrap(),
+        "\"workflow_stage\""
+    );
+}
+
+#[test]
+fn amendment_source_round_trips() {
+    for source in &[
+        AmendmentSource::Manual,
+        AmendmentSource::PrReview,
+        AmendmentSource::IssueCommand,
+        AmendmentSource::WorkflowStage,
+    ] {
+        let json = serde_json::to_string(source).unwrap();
+        let deserialized: AmendmentSource = serde_json::from_str(&json).unwrap();
+        assert_eq!(source, &deserialized);
+    }
+}
+
+#[test]
+fn amendment_source_display_matches_as_str() {
+    assert_eq!(format!("{}", AmendmentSource::Manual), "manual");
+    assert_eq!(format!("{}", AmendmentSource::PrReview), "pr_review");
+    assert_eq!(
+        format!("{}", AmendmentSource::IssueCommand),
+        "issue_command"
+    );
+    assert_eq!(
+        format!("{}", AmendmentSource::WorkflowStage),
+        "workflow_stage"
+    );
+}
+
+// -- QueuedAmendment backwards-compat deserialization --
+
+#[test]
+fn queued_amendment_defaults_source_to_workflow_stage_on_missing() {
+    let json = r#"{
+        "amendment_id": "legacy-1",
+        "source_stage": "qa",
+        "source_cycle": 1,
+        "source_completion_round": 1,
+        "body": "fix the thing",
+        "created_at": "2026-03-18T00:00:00Z"
+    }"#;
+    let amendment: QueuedAmendment = serde_json::from_str(json).unwrap();
+    assert_eq!(amendment.source, AmendmentSource::WorkflowStage);
+    assert_eq!(amendment.dedup_key, ""); // default empty string
+}
+
+// -- add_manual_amendment service tests --
+
+#[test]
+fn add_manual_amendment_creates_and_returns_id() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    assert!(result.is_ok());
+    match result.unwrap() {
+        service::AmendmentAddResult::Created { amendment_id } => {
+            assert!(amendment_id.starts_with("manual-"));
+        }
+        service::AmendmentAddResult::Duplicate { .. } => {
+            panic!("expected Created, got Duplicate");
+        }
+    }
+
+    // The amendment should be in the queue.
+    let pending = queue.amendments.borrow();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].body, "fix the bug");
+    assert_eq!(pending[0].source, AmendmentSource::Manual);
+    assert!(!pending[0].dedup_key.is_empty());
+}
+
+#[test]
+fn add_manual_amendment_rejects_running_project() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::active_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::AmendmentLeaseConflict { .. }
+    ));
+}
+
+#[test]
+fn add_manual_amendment_deduplicates() {
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // First add
+    let first = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+    assert!(matches!(first, service::AmendmentAddResult::Created { .. }));
+
+    // Second add with same body
+    let second = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+    assert!(matches!(
+        second,
+        service::AmendmentAddResult::Duplicate { .. }
+    ));
+
+    // Only one amendment should be on disk
+    assert_eq!(queue.amendments.borrow().len(), 1);
+}
+
+#[test]
+fn add_manual_amendment_dedup_normalizes_whitespace() {
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix  the\nbug",
+    )
+    .unwrap();
+
+    let second = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        second,
+        service::AmendmentAddResult::Duplicate { .. }
+    ));
+}
+
+// -- list_amendments service tests --
+
+#[test]
+fn list_amendments_empty_returns_empty() {
+    let run_store = FakeRunSnapshotStore::no_run();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::list_amendments(&run_store, &base, &pid).unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn list_amendments_returns_all_pending() {
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    // Build a snapshot with two pending amendments in the canonical queue.
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    for (id, body) in &[("manual-1", "fix bug A"), ("manual-2", "fix bug B")] {
+        let dedup_key = QueuedAmendment::compute_dedup_key(&source, body);
+        snapshot.amendment_queue.pending.push(QueuedAmendment {
+            amendment_id: id.to_string(),
+            source_stage: ralph_burning::shared::domain::StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: body.to_string(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: source.clone(),
+            dedup_key,
+        });
+    }
+
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let result = service::list_amendments(&run_store, &base, &pid).unwrap();
+    assert_eq!(result.len(), 2);
+}
+
+// -- remove_amendment service tests --
+
+#[test]
+fn remove_amendment_succeeds_for_existing() {
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix bug",
+    )
+    .unwrap();
+    let amendment_id = match result {
+        service::AmendmentAddResult::Created { amendment_id } => amendment_id,
+        _ => panic!("expected Created"),
+    };
+
+    let remove_result = service::remove_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &base,
+        &pid,
+        &amendment_id,
+    );
+    assert!(remove_result.is_ok());
+}
+
+#[test]
+fn remove_amendment_fails_for_missing() {
+    let queue = FakeAmendmentQueue::empty();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let result =
+        service::remove_amendment(&queue, &run_store, &run_write, &base, &pid, "nonexistent");
+    assert!(result.is_err());
+    assert!(matches!(
+        result.unwrap_err(),
+        AppError::AmendmentNotFound { .. }
+    ));
+}
+
+// -- clear_amendments service tests --
+
+#[test]
+fn clear_amendments_empty_returns_empty() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid).unwrap();
+    assert!(result.is_empty());
+}
+
+#[test]
+fn clear_amendments_removes_all() {
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix A",
+    )
+    .unwrap();
+    service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix B",
+    )
+    .unwrap();
+
+    let removed =
+        service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
+    assert_eq!(removed.len(), 2);
+}
+
+#[test]
+fn clear_amendments_partial_failure_reports_remaining() {
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "amend-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix A".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+        },
+        QueuedAmendment {
+            amendment_id: "amend-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix B".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+        },
+    ];
+
+    // Populate snapshot with the amendments so clear reads them from canonical state.
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = amendments.clone();
+    let shared_store = SharedRunSnapshotStore::new(snapshot);
+
+    let queue = FailingRemoveAmendmentQueue::with(amendments);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::AmendmentClearPartial {
+            removed_count,
+            total,
+            remaining,
+            ..
+        } => {
+            assert_eq!(removed_count, 0);
+            assert_eq!(total, 2);
+            assert_eq!(remaining.len(), 2);
+        }
+        other => panic!("expected AmendmentClearPartial, got: {other}"),
+    }
+}
+
+// -- FailingRunSnapshotWriteStore for snapshot-write failure tests --
+
+struct FailingRunSnapshotWriteStore;
+
+impl RunSnapshotWritePort for FailingRunSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated snapshot write failure",
+        )))
+    }
+}
+
+#[test]
+fn add_manual_amendment_rolls_back_file_on_snapshot_write_failure() {
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "fix the bug",
+    );
+
+    // The add must fail.
+    assert!(result.is_err());
+
+    // The amendment file must be rolled back — the queue should be empty.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment file should be rolled back on snapshot write failure"
+    );
+}
+
+#[test]
+fn remove_amendment_preserves_amendment_on_snapshot_write_failure() {
+    // Pre-populate the queue with one amendment.
+    let queue = FakeAmendmentQueue::empty();
+    let run_store_add = FakeRunSnapshotStore::no_run();
+    let run_write_add = FakeRunSnapshotWriteStore::new();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store_add,
+        &run_write_add,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "keep me",
+    )
+    .unwrap();
+    let amendment_id = match result {
+        service::AmendmentAddResult::Created { amendment_id } => amendment_id,
+        _ => panic!("expected Created"),
+    };
+
+    // Build a snapshot with the amendment in it (as canonical state).
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, "keep me");
+    snapshot.amendment_queue.pending.push(QueuedAmendment {
+        amendment_id: amendment_id.clone(),
+        source_stage: ralph_burning::shared::domain::StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "keep me".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source,
+        dedup_key,
+    });
+    let run_store_rm = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let run_write_rm = FailingRunSnapshotWriteStore;
+
+    let remove_result = service::remove_amendment(
+        &queue,
+        &run_store_rm,
+        &run_write_rm,
+        &base,
+        &pid,
+        &amendment_id,
+    );
+
+    // Remove must fail.
+    assert!(remove_result.is_err());
+
+    // The amendment must still be in the queue — snapshot write failed so
+    // no mutation should be visible.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        1,
+        "amendment must not be removed when snapshot write fails"
+    );
+}
+
+#[test]
+fn remove_amendment_fails_when_file_deletion_fails() {
+    // Build a snapshot with one amendment.
+    let source = AmendmentSource::Manual;
+    let mut snapshot = RunSnapshot::initial();
+    let dedup_key = QueuedAmendment::compute_dedup_key(&source, "keep me");
+    let amendment = QueuedAmendment {
+        amendment_id: "manual-test-123".to_owned(),
+        source_stage: ralph_burning::shared::domain::StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "keep me".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source,
+        dedup_key,
+    };
+    snapshot.amendment_queue.pending.push(amendment.clone());
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+    let run_write = FakeRunSnapshotWriteStore::new();
+
+    // Use FailingRemoveAmendmentQueue so file deletion fails.
+    let queue = FailingRemoveAmendmentQueue::with(vec![amendment]);
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::remove_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &base,
+        &pid,
+        "manual-test-123",
+    );
+
+    // Remove must fail because the file couldn't be deleted.
+    assert!(result.is_err());
+
+    // Snapshot should NOT have been updated — no mutation visible.
+    assert!(
+        run_write.written_snapshot().is_none(),
+        "snapshot must not be updated when file deletion fails"
+    );
+}
+
+#[test]
+fn clear_amendments_preserves_all_on_snapshot_write_failure() {
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "amend-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix A".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix A"),
+        },
+        QueuedAmendment {
+            amendment_id: "amend-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "fix B".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::Manual,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "fix B"),
+        },
+    ];
+
+    // Build a snapshot with the amendments in canonical state.
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = amendments.clone();
+    let run_store = FakeRunSnapshotStore::with_snapshot(snapshot);
+
+    let queue = FakeAmendmentQueue::with(amendments);
+    let run_write = FailingRunSnapshotWriteStore;
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &run_store, &run_write, &base, &pid);
+
+    // Clear must fail because snapshot write fails.
+    assert!(result.is_err());
+
+    // Files are deleted first, but since snapshot write fails the service
+    // restores them. Both amendments must be back in the queue.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        2,
+        "amendment files must be restored when snapshot write fails"
+    );
+}
+
+// -- FailingJournalStore: read_journal always fails --
+
+struct FailingJournalStore;
+
+impl JournalStorePort for FailingJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated journal read failure",
+        )))
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn add_manual_amendment_fails_cleanly_on_journal_read_failure() {
+    // With the journal preparation happening before mutations, a journal
+    // read failure should prevent any mutation from occurring.
+    let queue = FakeAmendmentQueue::empty();
+    let run_store = FakeRunSnapshotStore::no_run();
+    let run_write = FakeRunSnapshotWriteStore::new();
+    let journal = FailingJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should not persist",
+    );
+
+    // Must fail (journal read fails before any mutation).
+    assert!(result.is_err());
+
+    // No amendment file should have been written.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "no amendment file should be written when journal read fails"
+    );
+
+    // No snapshot should have been written.
+    assert!(
+        run_write.written_snapshot().is_none(),
+        "no snapshot should be written when journal read fails"
+    );
+}
+
+// -- FailAfterNWritesAmendmentQueue: write_amendment fails after N successes --
+
+struct FailAfterNWritesAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    writes_before_failure: usize,
+    write_count: RefCell<usize>,
+}
+
+impl FailAfterNWritesAmendmentQueue {
+    fn new(writes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(Vec::new()),
+            writes_before_failure,
+            write_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailAfterNWritesAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        let mut count = self.write_count.borrow_mut();
+        if *count >= self.writes_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated write failure",
+            )));
+        }
+        *count += 1;
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+#[test]
+fn stage_amendment_batch_rolls_back_earlier_files_on_mid_batch_write_failure() {
+    // The second write will fail, so the first file must be rolled back.
+    let queue = FailAfterNWritesAmendmentQueue::new(1);
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the second write fails.
+    assert!(result.is_err());
+
+    // The first file must be rolled back — no amendment files should remain.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "earlier files must be rolled back when a later write fails in the batch"
+    );
+
+    // Canonical snapshot must not have been updated.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must not be updated when batch staging fails"
+    );
+}
+
+// -- FailingRepairWriteStore: first write succeeds, second (repair) fails --
+
+struct FailingRepairWriteStore {
+    snapshot: RefCell<RunSnapshot>,
+}
+
+impl FailingRepairWriteStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+        }
+    }
+}
+
+impl RunSnapshotPort for FailingRepairWriteStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for FailingRepairWriteStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        // All writes fail — simulates the repair write failing during
+        // partial clear.
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated repair write failure",
+        )))
+    }
+}
+
+#[test]
+fn clear_partial_failure_restores_files_when_repair_write_fails() {
+    // Build a scenario where one remove succeeds and one fails, then the
+    // repair snapshot write also fails.
+    let source = AmendmentSource::Manual;
+    let amendment_a = QueuedAmendment {
+        amendment_id: "amend-a".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "fix A".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: source.clone(),
+        dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix A"),
+    };
+    let amendment_b = QueuedAmendment {
+        amendment_id: "amend-b".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "fix B".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: source.clone(),
+        dedup_key: QueuedAmendment::compute_dedup_key(&source, "fix B"),
+    };
+
+    // Use FailAfterNRemovesAmendmentQueue: first remove succeeds, second fails.
+    let queue =
+        FailAfterNRemovesAmendmentQueue::new(vec![amendment_a.clone(), amendment_b.clone()], 1);
+
+    let mut snapshot = RunSnapshot::initial();
+    snapshot.amendment_queue.pending = vec![amendment_a.clone(), amendment_b.clone()];
+
+    // Use FailingRepairWriteStore so the repair snapshot write also fails.
+    let store = FailingRepairWriteStore::new(snapshot);
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
+
+    // Must fail with an I/O error (not AmendmentClearPartial), because the
+    // repair write failed.
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::AmendmentClearPartial { .. } => {
+            panic!("should return I/O error, not AmendmentClearPartial, when repair write fails");
+        }
+        AppError::Io(_) => {} // expected
+        other => panic!("unexpected error type: {:?}", other),
+    }
+
+    // The deleted file must be restored — both amendments should be on disk.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        2,
+        "deleted files must be restored when repair write fails"
+    );
+}
+
+// -- FailAfterNRemovesAmendmentQueue: remove fails after N successes --
+
+struct FailAfterNRemovesAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    removes_before_failure: usize,
+    remove_count: RefCell<usize>,
+}
+
+impl FailAfterNRemovesAmendmentQueue {
+    fn new(amendments: Vec<QueuedAmendment>, removes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+            removes_before_failure,
+            remove_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailAfterNRemovesAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        self.amendments.borrow_mut().push(amendment.clone());
+        Ok(())
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut count = self.remove_count.borrow_mut();
+        if *count >= self.removes_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated remove failure",
+            )));
+        }
+        *count += 1;
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+// -- FailingAppendJournalStore: read_journal succeeds but append_event always fails --
+
+struct FailingAppendJournalStore;
+
+impl JournalStorePort for FailingAppendJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Ok(vec![make_project_created_event()])
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated journal append failure",
+        )))
+    }
+}
+
+#[test]
+fn add_manual_amendment_fails_when_journal_append_fails() {
+    // Journal read/serialize succeeds, but append_event fails. The amendment
+    // must be rolled back so no amendment is visible without its history event.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should not persist",
+    );
+
+    // Must fail because the journal append failed.
+    assert!(result.is_err());
+
+    // No amendment file should remain — rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment file must be rolled back when journal append fails"
+    );
+
+    // Snapshot must be restored to pre-mutation state (no pending amendments).
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored when journal append fails"
+    );
+}
+
+#[test]
+fn stage_amendment_batch_fails_when_journal_append_fails() {
+    // Batch staging where journal append fails after snapshot commit.
+    // All amendments and the snapshot must be rolled back.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the journal append failed.
+    assert!(result.is_err());
+
+    // All amendment files must be rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "all amendment files must be rolled back when journal append fails"
+    );
+
+    // Snapshot must be restored to pre-mutation state.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored when journal append fails during batch staging"
+    );
+}
+
+// -- FailAfterNAppendsJournalStore: first N appends succeed, then fail --
+
+struct FailAfterNAppendsJournalStore {
+    appends_before_failure: usize,
+    append_count: RefCell<usize>,
+}
+
+impl FailAfterNAppendsJournalStore {
+    fn new(appends_before_failure: usize) -> Self {
+        Self {
+            appends_before_failure,
+            append_count: RefCell::new(0),
+        }
+    }
+}
+
+impl JournalStorePort for FailAfterNAppendsJournalStore {
+    fn read_journal(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<JournalEvent>> {
+        Ok(vec![make_project_created_event()])
+    }
+
+    fn append_event(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _line: &str,
+    ) -> AppResult<()> {
+        let mut count = self.append_count.borrow_mut();
+        if *count >= self.appends_before_failure {
+            return Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated journal append failure after N successes",
+            )));
+        }
+        *count += 1;
+        Ok(())
+    }
+}
+
+// -- FailingRollbackSnapshotStore: first write succeeds, subsequent writes fail --
+
+struct FailingRollbackSnapshotStore {
+    snapshot: RefCell<RunSnapshot>,
+    write_count: RefCell<usize>,
+}
+
+impl FailingRollbackSnapshotStore {
+    fn new(initial: RunSnapshot) -> Self {
+        Self {
+            snapshot: RefCell::new(initial),
+            write_count: RefCell::new(0),
+        }
+    }
+
+    fn initial() -> Self {
+        Self::new(RunSnapshot::initial())
+    }
+}
+
+impl RunSnapshotPort for FailingRollbackSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for FailingRollbackSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        let mut count = self.write_count.borrow_mut();
+        if *count == 0 {
+            // First write succeeds (canonical commit).
+            *count += 1;
+            self.snapshot.replace(snapshot.clone());
+            Ok(())
+        } else {
+            // Subsequent writes fail (rollback attempt).
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "simulated rollback snapshot write failure",
+            )))
+        }
+    }
+}
+
+#[test]
+fn stage_amendment_batch_surfaces_partial_journal_as_corrupt_record() {
+    // Two amendments: first journal append succeeds, second fails.
+    // The first journal line is permanent — canonical state (snapshot + files)
+    // is rolled back but the journal has orphaned entries.
+    // Must return CorruptRecord, not a plain I/O error.
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailAfterNAppendsJournalStore::new(1); // succeed once, then fail
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![
+        QueuedAmendment {
+            amendment_id: "batch-1".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "first".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 0,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+        },
+        QueuedAmendment {
+            amendment_id: "batch-2".to_owned(),
+            source_stage: StageId::Planning,
+            source_cycle: 1,
+            source_completion_round: 1,
+            body: "second".to_owned(),
+            created_at: test_timestamp(),
+            batch_sequence: 1,
+            source: AmendmentSource::PrReview,
+            dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "second"),
+        },
+    ];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail with CorruptRecord because the first journal line persisted
+    // but canonical state was rolled back.
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("batch journal append failed after 1 of 2 events"),
+                "CorruptRecord should describe partial journal state, got: {details}"
+            );
+        }
+        other => panic!("expected CorruptRecord for partial journal persistence, got: {other:?}"),
+    }
+
+    // Amendment files must still be rolled back.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment files must be rolled back even with partial journal"
+    );
+
+    // Snapshot must be restored to pre-mutation state.
+    let snap = shared_store.read_run_snapshot(&base, &pid).unwrap();
+    assert!(
+        snap.amendment_queue.pending.is_empty(),
+        "snapshot must be restored after partial journal rollback"
+    );
+}
+
+#[test]
+fn add_manual_amendment_returns_corrupt_record_when_rollback_fails() {
+    // Journal append fails, then the rollback snapshot write also fails.
+    // Must return CorruptRecord with both error details.
+    let queue = FakeAmendmentQueue::empty();
+    let store = FailingRollbackSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should trigger rollback failure",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("amendment journal append failed"),
+                "CorruptRecord should mention journal append failure, got: {details}"
+            );
+            assert!(
+                details.contains("rollback also failed"),
+                "CorruptRecord should mention rollback failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when rollback fails after journal error, got: {other:?}")
+        }
+    }
+}
+
+#[test]
+fn stage_amendment_batch_returns_corrupt_record_when_rollback_fails() {
+    // Journal append fails on the first event, but rollback snapshot write
+    // also fails. Must return CorruptRecord even though no partial journal
+    // entries exist.
+    let queue = FakeAmendmentQueue::empty();
+    let store = FailingRollbackSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("batch journal append failed"),
+                "CorruptRecord should describe the journal failure, got: {details}"
+            );
+            assert!(
+                details.contains("snapshot restore:") && !details.contains("snapshot restore: ok"),
+                "CorruptRecord should indicate snapshot restore failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when rollback fails after journal error, got: {other:?}")
+        }
+    }
+}
+
+#[test]
+fn add_manual_amendment_returns_corrupt_record_when_file_rollback_fails() {
+    // Journal append fails, snapshot restore succeeds, but amendment file
+    // removal fails. Must still return CorruptRecord with file cleanup detail.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let shared_store = SharedRunSnapshotStore::initial();
+    let journal = FailingAppendJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should trigger file rollback failure",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("amendment journal append failed"),
+                "CorruptRecord should mention journal append failure, got: {details}"
+            );
+            assert!(
+                details.contains("file cleanup:") && !details.contains("file cleanup: ok"),
+                "CorruptRecord should indicate file cleanup failure, got: {details}"
+            );
+        }
+        other => panic!(
+            "expected CorruptRecord when file cleanup fails after journal error, got: {other:?}"
+        ),
+    }
+}
+
+// -- AlwaysFailingSnapshotStore: reads succeed, every write fails --
+
+struct AlwaysFailingSnapshotStore {
+    snapshot: RunSnapshot,
+}
+
+impl AlwaysFailingSnapshotStore {
+    fn initial() -> Self {
+        Self {
+            snapshot: RunSnapshot::initial(),
+        }
+    }
+}
+
+impl RunSnapshotPort for AlwaysFailingSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.clone())
+    }
+}
+
+impl RunSnapshotWritePort for AlwaysFailingSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "simulated snapshot write failure",
+        )))
+    }
+}
+
+// -- FailingWriteAmendmentQueue: remove succeeds, write always fails --
+// Used for remove/clear tests where the file was successfully deleted
+// but cannot be restored.
+
+struct FailingWriteAmendmentQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+}
+
+impl FailingWriteAmendmentQueue {
+    fn with(amendments: Vec<QueuedAmendment>) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+        }
+    }
+}
+
+impl AmendmentQueuePort for FailingWriteAmendmentQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated write failure",
+        )))
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut amendments = self.amendments.borrow_mut();
+        let pos = amendments
+            .iter()
+            .position(|a| a.amendment_id == amendment_id);
+        match pos {
+            Some(idx) => {
+                amendments.remove(idx);
+                Ok(())
+            }
+            None => Err(AppError::AmendmentNotFound {
+                amendment_id: amendment_id.to_owned(),
+            }),
+        }
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        let mut amendments = self.amendments.borrow_mut();
+        let count = amendments.len() as u32;
+        amendments.clear();
+        Ok(count)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+// ── Pre-commit rollback failure tests (Required Change 1) ──
+
+#[test]
+fn add_manual_amendment_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
+    // Snapshot/reopen write fails, and amendment file cleanup also fails.
+    // Must return CorruptRecord with both failures, not just the snapshot error.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let store = AlwaysFailingSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::add_manual_amendment(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        "should fail on snapshot then fail on cleanup",
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot/reopen write failed"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file cleanup also failed"),
+                "CorruptRecord should mention cleanup failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}")
+        }
+    }
+}
+
+#[test]
+fn stage_amendment_batch_returns_corrupt_when_snapshot_and_cleanup_both_fail() {
+    // Snapshot/reopen write fails, and file cleanup also fails.
+    let queue = FailingRemoveAmendmentQueue::with(vec![]);
+    let store = AlwaysFailingSnapshotStore::initial();
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::PrReview, "first"),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &store,
+        &store,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot/reopen write failed"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file cleanup also failed"),
+                "CorruptRecord should mention cleanup failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when both snapshot and cleanup fail, got: {other:?}")
+        }
+    }
+}
+
+// ── Remove/clear restore failure tests (Required Change 2) ──
+
+#[test]
+fn remove_amendment_returns_corrupt_when_snapshot_and_restore_both_fail() {
+    // File deletion succeeds, snapshot write fails, file restore also fails.
+    let amendment = QueuedAmendment {
+        amendment_id: "manual-test-123".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "test body".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+    };
+
+    // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
+    let queue = FailingWriteAmendmentQueue::with(vec![amendment.clone()]);
+
+    // Use a shared store seeded with the amendment in run.json, then make
+    // snapshot write always fail by wrapping in AlwaysFailingSnapshotStore.
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(amendment);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::remove_amendment(&queue, &store, &store, &base, &pid, "manual-test-123");
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot write failed after amendment file deletion"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when both snapshot and restore fail, got: {other:?}")
+        }
+    }
+}
+
+#[test]
+fn clear_amendments_returns_corrupt_when_snapshot_and_restore_both_fail() {
+    // All file deletions succeed, snapshot write fails, file restores also fail.
+    let amendment = QueuedAmendment {
+        amendment_id: "clear-test-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "test body".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "test body"),
+    };
+
+    // FailingWriteAmendmentQueue: remove succeeds, write (restore) fails.
+    let queue = FailingWriteAmendmentQueue::with(vec![amendment.clone()]);
+
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(amendment);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot write failed after clearing amendments"),
+                "CorruptRecord should mention snapshot failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => {
+            panic!("expected CorruptRecord when both snapshot and restore fail, got: {other:?}")
+        }
+    }
+}
+
+// -- PartialRemoveFailingWriteQueue: first N removes succeed, rest fail;
+// write always fails. Used for partial-clear + restore-failure tests. --
+
+struct PartialRemoveFailingWriteQueue {
+    amendments: RefCell<Vec<QueuedAmendment>>,
+    removes_before_failure: usize,
+    remove_count: RefCell<usize>,
+}
+
+impl PartialRemoveFailingWriteQueue {
+    fn new(amendments: Vec<QueuedAmendment>, removes_before_failure: usize) -> Self {
+        Self {
+            amendments: RefCell::new(amendments),
+            removes_before_failure,
+            remove_count: RefCell::new(0),
+        }
+    }
+}
+
+impl AmendmentQueuePort for PartialRemoveFailingWriteQueue {
+    fn write_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        _amendment: &QueuedAmendment,
+    ) -> AppResult<()> {
+        Err(AppError::Io(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "simulated write failure",
+        )))
+    }
+
+    fn list_pending_amendments(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<Vec<QueuedAmendment>> {
+        Ok(self.amendments.borrow().clone())
+    }
+
+    fn remove_amendment(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        amendment_id: &str,
+    ) -> AppResult<()> {
+        let mut count = self.remove_count.borrow_mut();
+        if *count < self.removes_before_failure {
+            *count += 1;
+            let mut amendments = self.amendments.borrow_mut();
+            amendments.retain(|a| a.amendment_id != amendment_id);
+            Ok(())
+        } else {
+            Err(AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "simulated remove failure",
+            )))
+        }
+    }
+
+    fn drain_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<u32> {
+        Ok(0)
+    }
+
+    fn has_pending_amendments(&self, _base_dir: &Path, _project_id: &ProjectId) -> AppResult<bool> {
+        Ok(!self.amendments.borrow().is_empty())
+    }
+}
+
+#[test]
+fn clear_amendments_partial_returns_corrupt_when_repair_and_restore_both_fail() {
+    // Partial file deletion: first remove succeeds, second fails. Then repair
+    // snapshot write also fails, and restoring the deleted file also fails.
+    let a1 = QueuedAmendment {
+        amendment_id: "clear-p-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "first".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 0,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "first"),
+    };
+    let a2 = QueuedAmendment {
+        amendment_id: "clear-p-2".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "second".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::Manual,
+        dedup_key: QueuedAmendment::compute_dedup_key(&AmendmentSource::Manual, "second"),
+    };
+
+    // First remove succeeds (a1 deleted), second fails (a2 remains).
+    // Write always fails, so restoring deleted a1 is impossible.
+    let queue = PartialRemoveFailingWriteQueue::new(vec![a1.clone(), a2.clone()], 1);
+
+    let mut snap = RunSnapshot::initial();
+    snap.amendment_queue.pending.push(a1);
+    snap.amendment_queue.pending.push(a2);
+    let store = AlwaysFailingSnapshotStore { snapshot: snap };
+
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let result = service::clear_amendments(&queue, &store, &store, &base, &pid);
+
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        AppError::CorruptRecord { details, .. } => {
+            assert!(
+                details.contains("snapshot repair write failed after partial clear"),
+                "CorruptRecord should mention repair failure, got: {details}"
+            );
+            assert!(
+                details.contains("amendment file restore also failed"),
+                "CorruptRecord should mention restore failure, got: {details}"
+            );
+        }
+        other => panic!("expected CorruptRecord when both repair and restore fail, got: {other:?}"),
+    }
+}
+
+// ── Completed-project reopen failure: staged amendments must persist ─────
+
+#[test]
+fn stage_amendment_batch_preserves_files_on_completed_project_reopen_failure() {
+    // When the project is completed and the reopen/snapshot write fails,
+    // amendment files already written must remain on disk. The project
+    // snapshot stays at its last committed state and no journal events
+    // are written.
+    let queue = FakeAmendmentQueue::empty();
+    let completed_snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Completed,
+        cycle_history: vec![CycleHistoryEntry {
+            cycle: 1,
+            stage_id: StageId::FinalReview,
+            started_at: test_timestamp(),
+            completed_at: Some(test_timestamp()),
+        }],
+        completion_rounds: 1,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    // The read store returns the completed snapshot; the write store always fails.
+    let shared_store = SharedRunSnapshotStore::new(completed_snapshot);
+    let failing_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "pr-review-persist-me".to_owned(),
+        source_stage: StageId::Review,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "persist me before failure".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(
+            &AmendmentSource::PrReview,
+            "persist me before failure",
+        ),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &failing_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    // Must fail because the reopen/snapshot write fails.
+    assert!(result.is_err());
+
+    // Amendment files must remain on disk — they must NOT be rolled back.
+    assert_eq!(
+        queue.amendments.borrow().len(),
+        1,
+        "staged amendment files must persist when reopen/snapshot write fails for a completed project"
+    );
+
+    // Verify the correct amendment survived.
+    assert_eq!(
+        queue.amendments.borrow()[0].amendment_id,
+        "pr-review-persist-me"
+    );
+}
+
+#[test]
+fn stage_amendment_batch_rolls_back_files_on_non_completed_snapshot_write_failure() {
+    // When the project is NOT completed and the snapshot write fails,
+    // amendment files must be rolled back (no pre-commit files leak).
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::initial(); // status: NotStarted
+    let failing_write = FailingRunSnapshotWriteStore;
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let amendments = vec![QueuedAmendment {
+        amendment_id: "batch-rollback-1".to_owned(),
+        source_stage: StageId::Planning,
+        source_cycle: 1,
+        source_completion_round: 1,
+        body: "should be rolled back".to_owned(),
+        created_at: test_timestamp(),
+        batch_sequence: 1,
+        source: AmendmentSource::PrReview,
+        dedup_key: QueuedAmendment::compute_dedup_key(
+            &AmendmentSource::PrReview,
+            "should be rolled back",
+        ),
+    }];
+
+    let result = service::stage_amendment_batch(
+        &queue,
+        &shared_store,
+        &failing_write,
+        &journal,
+        &project_store,
+        &base,
+        &pid,
+        &amendments,
+    );
+
+    assert!(result.is_err());
+
+    // Amendment files must be rolled back for non-completed projects.
+    assert!(
+        queue.amendments.borrow().is_empty(),
+        "amendment files must be rolled back when snapshot write fails for non-completed project"
+    );
 }

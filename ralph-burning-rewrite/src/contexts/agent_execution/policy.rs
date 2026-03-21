@@ -14,6 +14,10 @@ use crate::shared::error::{AppError, AppResult};
 pub struct ResolvedPanelMember {
     pub target: ResolvedBackendTarget,
     pub required: bool,
+    /// The index of this member in the original configured spec list.
+    /// Used by diagnostics to report the exact configured member identity,
+    /// even after optional members have been filtered out.
+    pub configured_index: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,6 +34,7 @@ pub struct PromptReviewPanelResolution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinalReviewPanelResolution {
+    pub planner: ResolvedBackendTarget,
     pub reviewers: Vec<ResolvedPanelMember>,
     pub arbiter: ResolvedBackendTarget,
 }
@@ -121,6 +126,7 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     pub fn resolve_final_review_panel(&self, cycle: u32) -> AppResult<FinalReviewPanelResolution> {
+        let planner = self.resolve_role_target(BackendPolicyRole::Planner, cycle)?;
         let reviewers = self.resolve_panel_backends(
             &self.config.final_review_policy().backends,
             self.config.final_review_policy().min_reviewers,
@@ -135,7 +141,11 @@ impl<'a> BackendPolicyService<'a> {
             .transpose()?
             .unwrap_or(self.resolve_role_target(BackendPolicyRole::Arbiter, cycle)?);
 
-        Ok(FinalReviewPanelResolution { reviewers, arbiter })
+        Ok(FinalReviewPanelResolution {
+            planner,
+            reviewers,
+            arbiter,
+        })
     }
 
     pub fn timeout_for_role(&self, backend: BackendFamily, role: BackendPolicyRole) -> Duration {
@@ -183,21 +193,7 @@ impl<'a> BackendPolicyService<'a> {
     }
 
     pub fn policy_role_for_stage(&self, stage_id: StageId) -> BackendPolicyRole {
-        match stage_id {
-            StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
-                BackendPolicyRole::Planner
-            }
-            StageId::Implementation
-            | StageId::PlanAndImplement
-            | StageId::ApplyFixes
-            | StageId::DocsUpdate
-            | StageId::CiUpdate => BackendPolicyRole::Implementer,
-            StageId::Qa | StageId::DocsValidation | StageId::CiValidation => BackendPolicyRole::Qa,
-            StageId::AcceptanceQa => BackendPolicyRole::AcceptanceQa,
-            StageId::Review => BackendPolicyRole::Reviewer,
-            StageId::CompletionPanel => BackendPolicyRole::Completer,
-            StageId::FinalReview => BackendPolicyRole::FinalReviewer,
-        }
+        stage_to_policy_role(stage_id)
     }
 
     fn resolve_panel_backends(
@@ -208,7 +204,7 @@ impl<'a> BackendPolicyService<'a> {
     ) -> AppResult<Vec<ResolvedPanelMember>> {
         let mut resolved = Vec::new();
 
-        for spec in specs {
+        for (idx, spec) in specs.iter().enumerate() {
             let backend = spec.backend();
             if !self.panel_backend_resolvable(backend) {
                 if spec.is_optional() {
@@ -223,6 +219,7 @@ impl<'a> BackendPolicyService<'a> {
             resolved.push(ResolvedPanelMember {
                 target: self.target_for_family(role, backend, None)?,
                 required: !spec.is_optional(),
+                configured_index: idx,
             });
         }
 
@@ -242,13 +239,13 @@ impl<'a> BackendPolicyService<'a> {
     fn default_completion_targets(&self, cycle: u32) -> AppResult<Vec<ResolvedPanelMember>> {
         let target = self.resolve_role_target(BackendPolicyRole::Completer, cycle)?;
         let count = self.config.completion_policy().min_completers.max(1);
-        Ok(vec![
-            ResolvedPanelMember {
-                target,
+        Ok((0..count)
+            .map(|i| ResolvedPanelMember {
+                target: target.clone(),
                 required: true,
-            };
-            count
-        ])
+                configured_index: i,
+            })
+            .collect())
     }
 
     fn selection_to_target(
@@ -297,6 +294,12 @@ impl<'a> BackendPolicyService<'a> {
         Ok(ResolvedBackendTarget::new(family, model_id))
     }
 
+    /// Returns `true` if the given role has an explicit backend selection
+    /// configured (as opposed to falling through to base backend resolution).
+    pub fn has_explicit_override(&self, role: BackendPolicyRole) -> bool {
+        self.selection_for_role(role).is_some()
+    }
+
     fn selection_for_role(&self, role: BackendPolicyRole) -> Option<&BackendSelection> {
         match role {
             BackendPolicyRole::Planner => self.config.backend_policy().planner_backend.as_ref(),
@@ -330,6 +333,12 @@ impl<'a> BackendPolicyService<'a> {
         self.config.backend_policy().backends.get(family.as_str())
     }
 
+    /// Returns `true` if the given backend family is considered enabled
+    /// in the effective configuration.
+    pub fn backend_enabled_public(&self, family: BackendFamily) -> bool {
+        self.backend_enabled(family)
+    }
+
     fn backend_enabled(&self, family: BackendFamily) -> bool {
         self.runtime_settings(family)
             .and_then(|settings| settings.enabled)
@@ -341,5 +350,30 @@ impl<'a> BackendPolicyService<'a> {
 
     fn panel_backend_resolvable(&self, family: BackendFamily) -> bool {
         self.backend_enabled(family)
+    }
+
+    /// Map a stage ID to its corresponding backend policy role.
+    /// Used by both execution and diagnostics to ensure consistent resolution.
+    pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
+        stage_to_policy_role(stage_id)
+    }
+}
+
+/// Map a stage ID to its corresponding backend policy role (free function).
+pub fn stage_to_policy_role(stage_id: StageId) -> BackendPolicyRole {
+    match stage_id {
+        StageId::PromptReview | StageId::Planning | StageId::DocsPlan | StageId::CiPlan => {
+            BackendPolicyRole::Planner
+        }
+        StageId::Implementation
+        | StageId::PlanAndImplement
+        | StageId::ApplyFixes
+        | StageId::DocsUpdate
+        | StageId::CiUpdate => BackendPolicyRole::Implementer,
+        StageId::Qa | StageId::DocsValidation | StageId::CiValidation => BackendPolicyRole::Qa,
+        StageId::AcceptanceQa => BackendPolicyRole::AcceptanceQa,
+        StageId::Review => BackendPolicyRole::Reviewer,
+        StageId::CompletionPanel => BackendPolicyRole::Completer,
+        StageId::FinalReview => BackendPolicyRole::FinalReviewer,
     }
 }

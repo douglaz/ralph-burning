@@ -30,6 +30,19 @@
             pkgs.rustfmt
             pkgs.clippy
           ];
+
+          # Tests generate mock backend scripts at runtime with
+          # #!/usr/bin/env bash shebangs. The sandbox doesn't provide
+          # /usr/bin/env, so patch the shebang string in the test source
+          # to use the Nix store bash path directly.
+          postPatch = ''
+            for f in src/contexts/conformance_spec/scenarios.rs tests/unit/tmux_adapter_test.rs tests/run_attach_tmux.rs; do
+              if [ -f "$f" ]; then
+                substituteInPlace "$f" \
+                  --replace-quiet '#!/usr/bin/env bash' '#!${pkgs.bash}/bin/bash'
+              fi
+            done
+          '';
         };
 
         staticPackage = pkgs.pkgsStatic.rustPlatform.buildRustPackage (commonArgs // {

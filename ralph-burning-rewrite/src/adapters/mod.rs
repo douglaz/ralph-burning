@@ -5,6 +5,7 @@ pub mod openrouter_backend;
 pub mod process_backend;
 #[cfg(feature = "test-stub")]
 pub mod stub_backend;
+pub mod tmux;
 pub mod validation_runner;
 pub mod worktree;
 
@@ -19,11 +20,13 @@ use self::openrouter_backend::OpenRouterBackendAdapter;
 use self::process_backend::ProcessBackendAdapter;
 #[cfg(feature = "test-stub")]
 use self::stub_backend::StubBackendAdapter;
+use self::tmux::TmuxAdapter;
 
 pub enum BackendAdapter {
     #[cfg(feature = "test-stub")]
     Stub(StubBackendAdapter),
     Process(ProcessBackendAdapter),
+    Tmux(TmuxAdapter),
     OpenRouter(OpenRouterBackendAdapter),
 }
 
@@ -45,6 +48,7 @@ impl AgentExecutionPort for BackendAdapter {
                     adapter.check_capability(backend, contract).await
                 }
             }
+            Self::Tmux(adapter) => adapter.check_capability(backend, contract).await,
             Self::OpenRouter(adapter) => adapter.check_capability(backend, contract).await,
         }
     }
@@ -62,6 +66,7 @@ impl AgentExecutionPort for BackendAdapter {
                     adapter.check_availability(backend).await
                 }
             }
+            Self::Tmux(adapter) => adapter.check_availability(backend).await,
             Self::OpenRouter(adapter) => adapter.check_availability(backend).await,
         }
     }
@@ -77,6 +82,7 @@ impl AgentExecutionPort for BackendAdapter {
                     adapter.invoke(request).await
                 }
             }
+            Self::Tmux(adapter) => adapter.invoke(request).await,
             Self::OpenRouter(adapter) => adapter.invoke(request).await,
         }
     }
@@ -86,6 +92,7 @@ impl AgentExecutionPort for BackendAdapter {
             #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.cancel(invocation_id).await,
             Self::Process(adapter) => adapter.cancel(invocation_id).await,
+            Self::Tmux(adapter) => adapter.cancel(invocation_id).await,
             Self::OpenRouter(adapter) => adapter.cancel(invocation_id).await,
         }
     }
