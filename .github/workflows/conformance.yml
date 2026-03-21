@@ -33,13 +33,10 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build (locked)
-        working-directory: ralph-burning-rewrite
         run: cargo build --locked
 
       - name: Run unit and integration tests
-        working-directory: ralph-burning-rewrite
         run: cargo test --locked
 
       - name: Run conformance gate
-        working-directory: ralph-burning-rewrite
         run: cargo run --locked -- conformance run
