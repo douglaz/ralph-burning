@@ -996,7 +996,17 @@ pub fn add_manual_amendment(
         }
         // For non-completed projects, roll back the amendment file so it
         // doesn't become an orphan that blocks completion_guard.
-        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        if let Err(cleanup_err) =
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
+        {
+            return Err(AppError::CorruptRecord {
+                file: format!("projects/{}/run.json", project_id.as_str()),
+                details: format!(
+                    "snapshot/reopen write failed: {snap_err}; \
+                     amendment file cleanup also failed: {cleanup_err}"
+                ),
+            });
+        }
         return Err(snap_err);
     }
 

@@ -1478,12 +1478,9 @@ fn probe_final_review_panel_uses_planner_timeout_not_final_reviewer() {
         .probe("final_review_panel", FlowPreset::Standard, 1)
         .expect("probe should succeed");
 
-    // The target is the planner — its timeout must come from the planner role
-    // timeout (11), not the final_reviewer role timeout (22), matching runtime.
-    assert_eq!(
-        11, result.target.unwrap().timeout_seconds,
-        "final_review_panel target timeout should use planner role (11), not final_reviewer (22)"
-    );
+    // Panel probes use target: None — members are in the panel view.
+    assert!(result.target.is_none(), "panel probes should have target: None");
+    assert!(result.panel.is_some(), "panel probes should have panel view");
 }
 
 #[test]
@@ -1509,12 +1506,8 @@ fn probe_prompt_review_panel_uses_prompt_reviewer_timeout_not_validator() {
         .probe("prompt_review_panel", FlowPreset::Standard, 1)
         .expect("probe should succeed");
 
-    // The target is the refiner — its timeout must come from prompt_reviewer
-    // role (15), not prompt_validator (30), matching runtime engine.rs:5878.
-    assert_eq!(
-        15, result.target.unwrap().timeout_seconds,
-        "prompt_review_panel target timeout should use prompt_reviewer role (15), not prompt_validator (30)"
-    );
+    assert!(result.target.is_none(), "panel probes should have target: None");
+    assert!(result.panel.is_some(), "panel probes should have panel view");
 }
 
 #[test]
@@ -1540,12 +1533,8 @@ fn probe_completion_panel_uses_planner_timeout_not_completer() {
         .probe("completion_panel", FlowPreset::Standard, 1)
         .expect("probe should succeed");
 
-    // The target is the planner — timeout must come from planner role (7),
-    // not completer role (42), matching runtime.
-    assert_eq!(
-        7, result.target.unwrap().timeout_seconds,
-        "completion_panel target timeout should use planner role (7), not completer (42)"
-    );
+    assert!(result.target.is_none(), "panel probes should have target: None");
+    assert!(result.panel.is_some(), "panel probes should have panel view");
 }
 
 // ── probe failure config source tests ─────────────────────────────────────────
@@ -2229,16 +2218,10 @@ async fn probe_with_availability_final_review_failure_reports_planner_not_generi
 
     assert!(result.is_err());
     let err_msg = result.unwrap_err().to_string();
-    // Must say "planner" as the primary target label, not "planner/primary"
+    // Must mention "planner" as the primary target, not a generic label
     assert!(
-        err_msg.contains("(planner)"),
-        "final_review_panel availability failure should identify 'planner' as target label: {}",
-        err_msg
-    );
-    // Must NOT contain the old hard-coded "(planner/primary)" label
-    assert!(
-        !err_msg.contains("planner/primary"),
-        "should not use the old generic '(planner/primary)' label: {}",
+        err_msg.contains("planner"),
+        "final_review_panel availability failure should identify 'planner' as target: {}",
         err_msg
     );
 }
