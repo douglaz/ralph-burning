@@ -1,1 +1,0 @@
-Smoke test: validate backend end-to-end with a minimal standard flow. Create a single-file utility that prints 'smoke ok' to stdout.

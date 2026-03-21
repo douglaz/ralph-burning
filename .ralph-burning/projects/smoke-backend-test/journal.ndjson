@@ -1,1 +1,0 @@
-{"sequence":1,"timestamp":"2026-03-19T20:10:14.302369793Z","event_type":"project_created","details":{"flow":"standard","project_id":"smoke-backend-test","requirements_run_id":"seed-file:/root/new-ralph-burning/ralph-burning-rewrite/scripts/smoke-seed.json","seed_flow":"standard","source":"requirements"}}
