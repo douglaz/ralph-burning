@@ -958,10 +958,6 @@ impl<'a> BackendDiagnosticsService<'a> {
                 )
             })?;
 
-        let timeout = self
-            .policy
-            .timeout_for_role(planner.backend.family, BackendPolicyRole::Planner);
-
         let configured_specs = &self.config.final_review_policy().backends;
         let minimum = self.config.final_review_policy().min_reviewers;
 
@@ -1038,10 +1034,6 @@ impl<'a> BackendDiagnosticsService<'a> {
                     &err,
                 )
             })?;
-
-        let timeout = self
-            .policy
-            .timeout_for_role(refiner.backend.family, BackendPolicyRole::PromptReviewer);
 
         let configured_specs = &self.config.prompt_review_policy().validator_backends;
         let minimum = self.config.prompt_review_policy().min_reviewers;

@@ -168,7 +168,7 @@ where
                     .iter()
                     .map(|a| a.dedup_key.clone())
                     .collect();
-                let mut ids = Vec::new();
+                let mut ids: Vec<String> = Vec::new();
                 for amendment in &amendments {
                     if !seen_keys.insert(amendment.dedup_key.clone()) {
                         continue;
