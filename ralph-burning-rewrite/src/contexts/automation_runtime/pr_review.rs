@@ -173,8 +173,17 @@ where
                     if !seen_keys.insert(amendment.dedup_key.clone()) {
                         continue;
                     }
-                    self.amendment_queue
-                        .write_amendment(workspace_dir, &project_id, amendment)?;
+                    if let Err(e) = self.amendment_queue
+                        .write_amendment(workspace_dir, &project_id, amendment)
+                    {
+                        // Roll back files written earlier in this batch so a
+                        // partial failure doesn't leak a subset of amendments.
+                        for written_id in &ids {
+                            let _ = self.amendment_queue
+                                .remove_amendment(workspace_dir, &project_id, written_id);
+                        }
+                        return Err(e.into());
+                    }
                     ids.push(amendment.amendment_id.clone());
                 }
                 ids
