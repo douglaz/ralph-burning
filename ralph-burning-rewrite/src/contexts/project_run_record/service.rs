@@ -1510,9 +1510,14 @@ pub fn reopen_completed_project_with_snapshot(
         })?;
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
+    // Advance the completion round so the resumed run creates new
+    // payload/artifact IDs instead of overwriting the original history.
+    let next_completion_round = completion_round + 1;
+    snapshot.completion_rounds = next_completion_round;
+
     snapshot.interrupted_run = Some(ActiveRun {
         run_id: format!("reopen-{}", project_id.as_str()),
-        stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, completion_round)?,
+        stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, next_completion_round)?,
         started_at: Utc::now(),
         prompt_hash_at_cycle_start: prompt_hash.clone(),
         prompt_hash_at_stage_start: prompt_hash,
