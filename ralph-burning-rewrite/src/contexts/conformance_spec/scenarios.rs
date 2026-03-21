@@ -19376,6 +19376,12 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-TMUX-006", || {
+        // This test spawns real processes via fake tmux/claude scripts and
+        // requires a real tmux binary. Skip in sandboxed builds (nix).
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
 
