@@ -319,6 +319,7 @@ pub fn amendment_queued_manual_event(
         details: serde_json::json!({
             "amendment_id": amendment_id,
             "source": source,
+            "source_stage": "planning",
             "dedup_key": dedup_key,
             "body": body,
         }),
