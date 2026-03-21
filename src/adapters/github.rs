@@ -4,9 +4,20 @@
 //! GitHub REST API. The adapter is designed for daemon use — every method is
 //! self-contained and does not hold persistent connections between calls.
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use serde::{Deserialize, Serialize};
 
 use crate::shared::error::{AppError, AppResult};
+
+const PATH_SEGMENT_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~');
+
+fn encode_ref_for_url(ref_name: &str) -> String {
+    utf8_percent_encode(ref_name, PATH_SEGMENT_ENCODE_SET).to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Client
@@ -765,13 +776,10 @@ impl GithubClient {
         base: &str,
         head: &str,
     ) -> AppResult<bool> {
-        // URL-encode ref names: branch names like `rb/42-project` contain
-        // slashes that must be percent-encoded in the compare URL path.
-        let encode_ref = |r: &str| r.replace('%', "%25").replace('/', "%2F");
         let url = self.api_url(&format!(
             "/repos/{owner}/{repo}/compare/{}...{}",
-            encode_ref(base),
-            encode_ref(head),
+            encode_ref_for_url(base),
+            encode_ref_for_url(head),
         ));
         let resp = self
             .http
@@ -1491,5 +1499,41 @@ impl GithubPort for InMemoryGithubClient {
     ) -> AppResult<bool> {
         let ahead = self.branches_ahead.lock().unwrap();
         Ok(ahead.contains(&format!("{owner}/{repo}:{base}...{head}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_ref_for_url;
+
+    #[test]
+    fn leaves_unreserved_ref_characters_unescaped() {
+        assert_eq!(encode_ref_for_url("main"), "main");
+        assert_eq!(encode_ref_for_url("release-1.2_3~4"), "release-1.2_3~4");
+    }
+
+    #[test]
+    fn encodes_reserved_path_characters_in_refs() {
+        assert_eq!(encode_ref_for_url("rb/42-project"), "rb%2F42-project");
+        assert_eq!(encode_ref_for_url("fix#123"), "fix%23123");
+        assert_eq!(encode_ref_for_url("topic?x=y&z"), "topic%3Fx%3Dy%26z");
+    }
+
+    #[test]
+    fn encodes_non_ascii_utf8_bytes_in_refs() {
+        assert_eq!(encode_ref_for_url("feature/cafe"), "feature%2Fcafe");
+        assert_eq!(
+            encode_ref_for_url("feature/cafe\u{301}"),
+            "feature%2Fcafe%CC%81"
+        );
+        assert_eq!(encode_ref_for_url("feature/café"), "feature%2Fcaf%C3%A9");
+    }
+
+    #[test]
+    fn compare_separator_is_not_encoded_with_ref_segments() {
+        let base = encode_ref_for_url("release/1.0");
+        let head = encode_ref_for_url("feature#123");
+
+        assert_eq!(format!("{base}...{head}"), "release%2F1.0...feature%23123");
     }
 }
