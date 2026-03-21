@@ -36,7 +36,7 @@ jobs:
         run: cargo build --locked
 
       - name: Run unit and integration tests
-        run: cargo test --locked
+        run: cargo test --locked --features test-stub
 
       - name: Run conformance gate
-        run: cargo run --locked -- conformance run
+        run: cargo run --locked --features test-stub -- conformance run
