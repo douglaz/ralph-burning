@@ -19424,6 +19424,11 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         result
     });
     reg!(m, "SC-TMUX-007", || {
+        // Requires real tmux binary for process spawning. Skip in nix sandbox.
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
 
@@ -19473,6 +19478,11 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         result
     });
     reg!(m, "SC-TMUX-008", || {
+        // Requires real tmux binary for process spawning. Skip in nix sandbox.
+        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+            return Ok(());
+        }
+
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionService;
 
