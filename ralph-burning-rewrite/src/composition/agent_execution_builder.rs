@@ -111,16 +111,31 @@ pub fn build_backend_adapter_with_config(
 pub fn build_backend_adapter_for_diagnostics(
     effective_config: &EffectiveConfig,
 ) -> AppResult<BackendAdapter> {
-    // Temporarily clear RALPH_BURNING_BACKEND so the normal builder
-    // uses its config-driven default ("process") instead of an env override.
-    let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
-    std::env::remove_var("RALPH_BURNING_BACKEND");
-    let result = build_backend_adapter_with_config(Some(effective_config));
-    // Restore the env var
-    if let Some(val) = saved {
-        std::env::set_var("RALPH_BURNING_BACKEND", val);
+    // In test-stub mode, always use the stub adapter for diagnostics.
+    // In production, use the normal config-driven builder but override
+    // any env var to "process" so RALPH_BURNING_BACKEND=openrouter
+    // doesn't redirect checks to the wrong transport.
+    #[cfg(feature = "test-stub")]
+    {
+        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
+        std::env::set_var("RALPH_BURNING_BACKEND", "stub");
+        let result = build_backend_adapter_with_config(Some(effective_config));
+        match saved {
+            Some(val) => std::env::set_var("RALPH_BURNING_BACKEND", val),
+            None => std::env::remove_var("RALPH_BURNING_BACKEND"),
+        }
+        return result;
     }
-    result
+    #[cfg(not(feature = "test-stub"))]
+    {
+        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
+        std::env::remove_var("RALPH_BURNING_BACKEND");
+        let result = build_backend_adapter_with_config(Some(effective_config));
+        if let Some(val) = saved {
+            std::env::set_var("RALPH_BURNING_BACKEND", val);
+        }
+        result
+    }
 }
 
 /// Build an `AgentExecutionService` backed by the environment-selected adapter.

@@ -303,13 +303,14 @@ pub fn amendment_queued_event(
     }
 }
 
-/// Build an `amendment_queued` journal event for manual amendments (no run_id).
+/// Build an `amendment_queued` journal event for manual/batch amendments (no run_id).
 pub fn amendment_queued_manual_event(
     sequence: u64,
     timestamp: DateTime<Utc>,
     amendment_id: &str,
     body: &str,
     source: &str,
+    source_stage: &str,
     dedup_key: &str,
 ) -> JournalEvent {
     JournalEvent {
@@ -319,7 +320,7 @@ pub fn amendment_queued_manual_event(
         details: serde_json::json!({
             "amendment_id": amendment_id,
             "source": source,
-            "source_stage": "planning",
+            "source_stage": source_stage,
             "dedup_key": dedup_key,
             "body": body,
         }),

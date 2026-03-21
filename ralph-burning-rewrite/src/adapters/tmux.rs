@@ -23,7 +23,7 @@ use crate::contexts::agent_execution::model::{
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::project_run_record::model::{LogLevel, RuntimeLogEntry};
-use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget};
+use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
 const SESSION_POLL_INTERVAL: Duration = Duration::from_millis(100);

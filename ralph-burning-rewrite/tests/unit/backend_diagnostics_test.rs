@@ -301,7 +301,7 @@ fn probe_singular_role() {
     assert_eq!("standard", result.flow);
     assert_eq!(1, result.cycle);
     assert!(result.panel.is_none());
-    assert!(!result.target.backend_family.is_empty());
+    assert!(!result.target.unwrap().backend_family.is_empty());
 }
 
 #[test]
@@ -1481,7 +1481,7 @@ fn probe_final_review_panel_uses_planner_timeout_not_final_reviewer() {
     // The target is the planner — its timeout must come from the planner role
     // timeout (11), not the final_reviewer role timeout (22), matching runtime.
     assert_eq!(
-        11, result.target.timeout_seconds,
+        11, result.target.unwrap().timeout_seconds,
         "final_review_panel target timeout should use planner role (11), not final_reviewer (22)"
     );
 }
@@ -1512,7 +1512,7 @@ fn probe_prompt_review_panel_uses_prompt_reviewer_timeout_not_validator() {
     // The target is the refiner — its timeout must come from prompt_reviewer
     // role (15), not prompt_validator (30), matching runtime engine.rs:5878.
     assert_eq!(
-        15, result.target.timeout_seconds,
+        15, result.target.unwrap().timeout_seconds,
         "prompt_review_panel target timeout should use prompt_reviewer role (15), not prompt_validator (30)"
     );
 }
@@ -1543,7 +1543,7 @@ fn probe_completion_panel_uses_planner_timeout_not_completer() {
     // The target is the planner — timeout must come from planner role (7),
     // not completer role (42), matching runtime.
     assert_eq!(
-        7, result.target.timeout_seconds,
+        7, result.target.unwrap().timeout_seconds,
         "completion_panel target timeout should use planner role (7), not completer (42)"
     );
 }

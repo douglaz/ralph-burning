@@ -956,6 +956,7 @@ pub fn add_manual_amendment(
             &amendment_id,
             body,
             "manual",
+            "planning",
             &dedup_key,
         );
         journal::serialize_event(&journal_event)?
@@ -1363,6 +1364,7 @@ pub fn stage_amendment_batch(
             &amendment.amendment_id,
             &amendment.body,
             amendment.source.as_str(),
+            amendment.source_stage.as_str(),
             &amendment.dedup_key,
         );
         match journal::serialize_event(&journal_event) {
