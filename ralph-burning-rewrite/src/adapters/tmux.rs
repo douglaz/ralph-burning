@@ -101,11 +101,12 @@ impl TmuxAdapter {
     }
 
     pub fn session_exists(session_name: &str) -> AppResult<bool> {
-        if let Err(error) = Self::check_tmux_available() {
-            // Propagate the error instead of returning false so that callers
-            // (like `run attach`) don't clear the persisted session handle
-            // when tmux is merely unavailable in the current environment.
-            return Err(error);
+        if let Err(_) = Self::check_tmux_available() {
+            // Return false when tmux is unavailable — the session may still
+            // exist but we can't verify. Callers that need to preserve state
+            // (like `run attach`) should check tmux availability separately
+            // before making destructive decisions.
+            return Ok(false);
         }
 
         let status = StdCommand::new("tmux")
