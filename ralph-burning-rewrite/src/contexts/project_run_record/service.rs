@@ -988,10 +988,14 @@ pub fn add_manual_amendment(
     };
 
     if let Err(snap_err) = snap_result {
-        // Preserve the amendment file on disk so the operator's input is not
-        // lost. The amendment is already written and can be picked up on
-        // retry or manual recovery. This matches the batch staging path's
-        // durability invariant (staged amendments survive reopen failures).
+        if old_snapshot.status == RunStatus::Completed {
+            // Preserve the amendment file for completed-project reopen failures
+            // so the operator's input is not lost on retry.
+            return Err(snap_err);
+        }
+        // For non-completed projects, roll back the amendment file so it
+        // doesn't become an orphan that blocks completion_guard.
+        let _ = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
         return Err(snap_err);
     }
 
