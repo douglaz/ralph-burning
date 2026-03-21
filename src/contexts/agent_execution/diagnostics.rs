@@ -931,8 +931,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Resolve planner separately for exact error identity
-        let planner = self
-            .policy
+        self.policy
             .resolve_role_target(BackendPolicyRole::Planner, cycle)
             .map_err(|err| {
                 self.make_probe_target_error(
@@ -1022,8 +1021,7 @@ impl<'a> BackendDiagnosticsService<'a> {
         cycle: u32,
     ) -> AppResult<BackendProbeResult> {
         // Resolve refiner separately for exact error identity
-        let refiner = self
-            .policy
+        self.policy
             .resolve_role_target(BackendPolicyRole::PromptReviewer, cycle)
             .map_err(|err| {
                 self.make_probe_target_error(

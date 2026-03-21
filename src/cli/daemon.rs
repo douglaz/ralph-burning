@@ -21,6 +21,10 @@ use crate::composition::agent_execution_builder::{
 
 #[derive(Debug, Args)]
 pub struct DaemonCommand {
+    /// GitHub personal access token for API and git HTTPS auth.
+    #[arg(long, env = "GITHUB_TOKEN", global = true)]
+    pub github_token: Option<String>,
+
     #[command(subcommand)]
     pub command: DaemonSubcommand,
 }
@@ -86,6 +90,7 @@ pub enum DaemonSubcommand {
 }
 
 pub async fn handle(command: DaemonCommand) -> AppResult<()> {
+    let github_token = command.github_token;
     match command.command {
         DaemonSubcommand::Start {
             poll_seconds,
@@ -95,7 +100,15 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
             verbose,
         } => {
             if let Some(ref dd) = data_dir {
-                handle_start_multi_repo(dd, &repos, poll_seconds, single_iteration, verbose).await
+                handle_start_multi_repo(
+                    dd,
+                    &repos,
+                    poll_seconds,
+                    single_iteration,
+                    verbose,
+                    github_token.as_deref(),
+                )
+                .await
             } else {
                 Err(AppError::InvalidConfigValue {
                     key: "data-dir".to_owned(),
@@ -112,16 +125,16 @@ pub async fn handle(command: DaemonCommand) -> AppResult<()> {
             ref identifier,
             ref data_dir,
             ref repo,
-        } => handle_abort_by_issue(data_dir, repo, identifier).await,
+        } => handle_abort_by_issue(data_dir, repo, identifier, github_token.as_deref()).await,
         DaemonSubcommand::Retry {
             ref identifier,
             ref data_dir,
             ref repo,
-        } => handle_retry_by_issue(data_dir, repo, identifier).await,
+        } => handle_retry_by_issue(data_dir, repo, identifier, github_token.as_deref()).await,
         DaemonSubcommand::Reconcile {
             ref data_dir,
             ttl_seconds,
-        } => handle_reconcile_multi_repo(data_dir, ttl_seconds).await,
+        } => handle_reconcile_multi_repo(data_dir, ttl_seconds, github_token.as_deref()).await,
     }
 }
 
@@ -135,6 +148,7 @@ async fn handle_start_multi_repo(
     poll_seconds: u64,
     single_iteration: bool,
     verbose: bool,
+    github_token: Option<&str>,
 ) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     repo_registry::validate_data_dir(data_dir_path)?;
@@ -146,6 +160,22 @@ async fn handle_start_multi_repo(
             reason: "at least one --repo is required with --data-dir".to_owned(),
         });
     }
+
+    // Resolve GitHub token: explicit arg > GITHUB_TOKEN env > `gh auth token`
+    let token = resolve_github_token(github_token)?;
+
+    // Configure git to use `gh` as credential helper for HTTPS operations.
+    // This makes `git clone`/`git push` work transparently without manual
+    // token injection into each git command.
+    setup_gh_git_auth()?;
+
+    // Create GitHub client early so we fail fast if token is invalid
+    let github_config = GithubClientConfig {
+        token: token.clone(),
+        api_base_url: std::env::var("GITHUB_API_URL")
+            .unwrap_or_else(|_| "https://api.github.com".to_owned()),
+    };
+    let github_client = GithubClient::new(github_config);
 
     // Register, bootstrap, and validate all repos upfront.
     // Bootstrap clones the repo if the checkout dir is empty; validate
@@ -182,10 +212,6 @@ async fn handle_start_multi_repo(
         );
     }
 
-    // Create GitHub client early so we fail fast if GITHUB_TOKEN is missing
-    let github_config = GithubClientConfig::from_env()?;
-    let github_client = GithubClient::new(github_config);
-
     // Persist registrations so status/reconcile can discover them later
     let registry_store = FsRepoRegistryStore;
     for reg in &registrations {
@@ -195,7 +221,7 @@ async fn handle_start_multi_repo(
     let agent_service = build_agent_execution_service()?;
 
     let daemon_store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter;
+    let worktree = WorktreeAdapter::default();
     let project_store = FsProjectStore;
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot_write = FsRunSnapshotWriteStore;
@@ -290,11 +316,16 @@ fn print_multi_repo_status(
     Ok(())
 }
 
-async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
+async fn handle_abort_by_issue(
+    data_dir: &str,
+    repo_slug: &str,
+    identifier: &str,
+    github_token: Option<&str>,
+) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
     let store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter;
+    let worktree = WorktreeAdapter::default();
     let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
     let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
 
@@ -339,9 +370,8 @@ async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
 
     // Sync GitHub label: Aborted → rb:failed
     let aborted_task = store.read_task(&daemon_dir, &task_id)?;
-    match GithubClientConfig::from_env() {
-        Ok(gh_config) => {
-            let gh = GithubClient::new(gh_config);
+    match make_github_client(github_token) {
+        Some(gh) => {
             if let Err(e) = crate::contexts::automation_runtime::github_intake::sync_label_for_task(
                 &gh,
                 &aborted_task,
@@ -352,9 +382,9 @@ async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
                 let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
             }
         }
-        Err(_) => {
+        None => {
             eprintln!(
-                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+                "warning: GitHub token not available — marking label_dirty for later reconcile"
             );
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task_id);
         }
@@ -364,7 +394,12 @@ async fn handle_abort_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
     Ok(())
 }
 
-async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str) -> AppResult<()> {
+async fn handle_retry_by_issue(
+    data_dir: &str,
+    repo_slug: &str,
+    identifier: &str,
+    github_token: Option<&str>,
+) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
     let store = FsDataDirDaemonStore;
@@ -388,7 +423,7 @@ async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
     // If the task retains a lease from partial cleanup, attempt cleanup
     // before retry so retry_task() doesn't reject it.
     if let Some(ref lid) = task.lease_id {
-        let worktree = WorktreeAdapter;
+        let worktree = WorktreeAdapter::default();
         let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
         if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
             let result = LeaseService::release(
@@ -416,9 +451,8 @@ async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
     let task = DaemonTaskService::retry_task(&store, &daemon_dir, &task.task_id)?;
 
     // Sync GitHub label: retried task is Pending → rb:ready
-    match GithubClientConfig::from_env() {
-        Ok(gh_config) => {
-            let gh = GithubClient::new(gh_config);
+    match make_github_client(github_token) {
+        Some(gh) => {
             if let Err(e) =
                 crate::contexts::automation_runtime::github_intake::sync_label_for_task(&gh, &task)
                     .await
@@ -427,9 +461,9 @@ async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
                 let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
             }
         }
-        Err(_) => {
+        None => {
             eprintln!(
-                "warning: GITHUB_TOKEN not available — marking label_dirty for later reconcile"
+                "warning: GitHub token not available — marking label_dirty for later reconcile"
             );
             let _ = DaemonTaskService::mark_label_dirty(&store, &daemon_dir, &task.task_id);
         }
@@ -442,12 +476,16 @@ async fn handle_retry_by_issue(data_dir: &str, repo_slug: &str, identifier: &str
     Ok(())
 }
 
-async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -> AppResult<()> {
+async fn handle_reconcile_multi_repo(
+    data_dir: &str,
+    ttl_seconds: Option<u64>,
+    github_token: Option<&str>,
+) -> AppResult<()> {
     let data_dir_path = std::path::Path::new(data_dir);
     repo_registry::validate_data_dir(data_dir_path)?;
 
     let store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter;
+    let worktree = WorktreeAdapter::default();
     let registry = FsRepoRegistryStore;
 
     let registrations = match registry.list_registrations(data_dir_path) {
@@ -504,8 +542,8 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
     let mut total_label_repair_failed = 0usize;
 
     // Attempt GitHub label repair for tasks with label_dirty = true.
-    // Best-effort: if GitHub credentials are unavailable, skip label repair.
-    let github_client = GithubClientConfig::from_env().ok().map(GithubClient::new);
+    // Best-effort: if GitHub token is unavailable, skip label repair.
+    let github_client = make_github_client(github_token);
 
     for reg in &registrations {
         let (owner, repo_name) = repo_registry::parse_repo_slug(&reg.repo_slug)?;
@@ -605,6 +643,70 @@ async fn handle_reconcile_multi_repo(data_dir: &str, ttl_seconds: Option<u64>) -
 // ===========================================================================
 // Shared helpers
 // ===========================================================================
+
+/// Resolve GitHub token from: explicit arg > `gh auth token` fallback.
+fn resolve_github_token(explicit: Option<&str>) -> AppResult<String> {
+    if let Some(t) = explicit {
+        if !t.is_empty() {
+            return Ok(t.to_owned());
+        }
+    }
+    // Fallback: ask `gh` CLI for its stored token
+    let output = std::process::Command::new("gh")
+        .args(["auth", "token"])
+        .output()
+        .map_err(|e| AppError::InvalidConfigValue {
+            key: "github-token".to_owned(),
+            value: String::new(),
+            reason: format!("failed to run `gh auth token`: {e}"),
+        })?;
+    if output.status.success() {
+        let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        if !token.is_empty() {
+            return Ok(token);
+        }
+    }
+    Err(AppError::InvalidConfigValue {
+        key: "github-token".to_owned(),
+        value: String::new(),
+        reason: "no GitHub token: pass --github-token, set GITHUB_TOKEN, or run `gh auth login`"
+            .to_owned(),
+    })
+}
+
+/// Build a `GithubClient` from an optional explicit token, falling back to
+/// `gh auth token`. Returns `None` if no token is available (best-effort).
+fn make_github_client(explicit: Option<&str>) -> Option<GithubClient> {
+    let token = resolve_github_token(explicit).ok()?;
+    let config = GithubClientConfig {
+        token,
+        api_base_url: std::env::var("GITHUB_API_URL")
+            .unwrap_or_else(|_| "https://api.github.com".to_owned()),
+    };
+    Some(GithubClient::new(config))
+}
+
+/// Run `gh auth setup-git` to configure the `gh` credential helper for
+/// git HTTPS operations (clone, push, fetch).
+fn setup_gh_git_auth() -> AppResult<()> {
+    let output = std::process::Command::new("gh")
+        .args(["auth", "setup-git"])
+        .output()
+        .map_err(|e| AppError::InvalidConfigValue {
+            key: "gh".to_owned(),
+            value: String::new(),
+            reason: format!("failed to run `gh auth setup-git`: {e}"),
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(AppError::InvalidConfigValue {
+            key: "gh".to_owned(),
+            value: String::new(),
+            reason: format!("gh auth setup-git failed: {}", stderr.trim()),
+        });
+    }
+    Ok(())
+}
 
 /// Clean up lease and worktree resources for an aborted task.
 ///

@@ -329,30 +329,11 @@ pub fn bootstrap_repo_checkout(data_dir: &Path, repo_slug: &str) -> AppResult<()
         }
     }
 
-    // Clone URL is always credential-free so it persists cleanly in
-    // the cloned repo's remote config.
+    // Clone URL is credential-free — git auth is handled by the `gh`
+    // credential helper configured at daemon startup via `gh auth setup-git`.
     let clone_url = format!("https://github.com/{owner}/{repo}.git");
 
-    // Pass GITHUB_TOKEN via environment-based Git config injection
-    // (`GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*`).
-    // Unlike `-c http.extraHeader=...`, this mechanism:
-    //  - Does NOT expose the token in process arguments (visible via
-    //    `/proc/<pid>/cmdline` on Linux).
-    //  - Does NOT persist the credential into the cloned repo's
-    //    `.git/config`.
-    // Environment variables are inherited by the child process but are
-    // not visible to other users via `/proc/<pid>/cmdline`.
-    let token = std::env::var("GITHUB_TOKEN").ok();
     let mut cmd = std::process::Command::new("git");
-
-    if let Some(ref t) = token {
-        if !t.is_empty() {
-            cmd.env("GIT_CONFIG_COUNT", "1")
-                .env("GIT_CONFIG_KEY_0", "http.extraHeader")
-                .env("GIT_CONFIG_VALUE_0", format!("Authorization: Bearer {t}"));
-        }
-    }
-
     cmd.args(["clone", &clone_url, &checkout_path.to_string_lossy()])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
