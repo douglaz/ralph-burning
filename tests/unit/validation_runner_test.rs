@@ -7,6 +7,8 @@ use ralph_burning::adapters::validation_runner::{
 };
 use ralph_burning::contexts::workflow_composition::validation;
 
+use super::env_test_support::{lock_path_mutex, PathGuard};
+
 fn rt() -> tokio::runtime::Runtime {
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -315,12 +317,9 @@ fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
         std::fs::set_permissions(&fake_cargo, std::fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    // Prepend the fake bin dir so our script shadows the real `cargo`.
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    // SAFETY: we restore PATH immediately after the async block.
-    unsafe {
-        std::env::set_var("PATH", format!("{}:{}", bin_dir.display(), original_path));
-    }
+    // Serialize with other PATH-mutating tests to avoid race conditions.
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(&bin_dir);
 
     let result = rt.block_on(run_pre_commit_checks(
         tmp.path(),
@@ -330,10 +329,6 @@ fn pre_commit_fmt_auto_fix_failure_keeps_group_failed() {
         true,  // fmt_auto_fix
         Duration::from_secs(10),
     ));
-
-    unsafe {
-        std::env::set_var("PATH", &original_path);
-    }
 
     // The group must be failed because the repair attempt itself failed,
     // even though the recheck passed.
