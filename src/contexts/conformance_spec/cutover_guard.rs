@@ -37,7 +37,7 @@ fn scan_directory(dir: &Path) -> AppResult<()> {
         let path = entry.path();
         if path.is_dir() {
             scan_directory(&path)?;
-        } else if path.extension().map_or(false, |ext| ext == "rs") {
+        } else if path.extension().is_some_and(|ext| ext == "rs") {
             // Skip only this file (cutover_guard.rs) which defines the legacy
             // pattern constants as string literals. All other conformance_spec
             // files are scanned normally.

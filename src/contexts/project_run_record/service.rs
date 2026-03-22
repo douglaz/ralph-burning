@@ -874,6 +874,7 @@ pub enum AmendmentAddResult {
 
 /// Add a manual amendment. Performs dedup check, writes durably, emits a journal
 /// event, syncs the canonical snapshot, and reopens completed projects.
+#[allow(clippy::too_many_arguments)]
 pub fn add_manual_amendment(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -1244,6 +1245,7 @@ pub fn clear_amendments(
 /// snapshot, and reopens the project if it is completed. This is the shared
 /// path that both manual and automated amendment intake converge on.
 /// Returns the IDs of amendments that were actually staged (after dedup).
+#[allow(clippy::too_many_arguments)]
 pub fn stage_amendment_batch(
     amendment_queue: &dyn AmendmentQueuePort,
     run_port: &dyn RunSnapshotPort,
@@ -1419,8 +1421,7 @@ pub fn stage_amendment_batch(
     // Track successful appends so we can detect partial-journal state: if
     // earlier lines are already on disk when a later append fails, the
     // journal has orphaned entries that cannot be un-appended.
-    let mut appended_count: usize = 0;
-    for line in &journal_lines {
+    for (appended_count, line) in journal_lines.iter().enumerate() {
         if let Err(journal_err) = journal_port.append_event(base_dir, project_id, line) {
             // Attempt rollback: restore snapshot and remove amendment files.
             let snap_result =
@@ -1461,7 +1462,6 @@ pub fn stage_amendment_batch(
 
             return Err(journal_err);
         }
-        appended_count += 1;
     }
 
     Ok(staged_ids)

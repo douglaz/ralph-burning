@@ -560,6 +560,7 @@ where
 
     /// Process a single task in multi-repo mode with separate store_dir and
     /// repo_root paths, and data-dir-aware worktree overrides.
+    #[allow(clippy::too_many_arguments)]
     async fn process_task_multi_repo<G: GithubPort>(
         &self,
         store_dir: &Path,
@@ -1344,7 +1345,7 @@ where
     /// Handle requirements_quick dispatch: invoke requirements quick, link the
     /// run ID to the task, derive seed, and update the task with project metadata
     /// + Workflow mode so the caller can continue into the standard claim/project/
-    /// dispatch path in the same daemon cycle.
+    ///   dispatch path in the same daemon cycle.
     async fn handle_requirements_quick(
         &self,
         base_dir: &Path,
@@ -1776,6 +1777,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drive_dispatch_multi_repo<G: GithubPort>(
         &self,
         base_dir: &Path,
@@ -1846,6 +1848,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn drive_dispatch(
         &self,
         base_dir: &Path,
@@ -1903,6 +1906,7 @@ where
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn dispatch_in_worktree(
         &self,
         base_dir: &Path,
@@ -2200,6 +2204,7 @@ where
         EffectiveConfig::load_for_project(repo_root, Some(&project_id), Default::default())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn handle_completion_pr_with_cancellation<G: GithubPort>(
         &self,
         base_dir: &Path,

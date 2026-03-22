@@ -91,7 +91,7 @@ impl RoutingEngine {
     /// These commands (`/rb run`, `/rb retry`, `/rb abort`) are handled by the
     /// daemon directly and should not be passed to flow routing.
     pub fn is_daemon_command(command: &str) -> bool {
-        let tokens: Vec<_> = command.trim().split_whitespace().collect();
+        let tokens: Vec<_> = command.split_whitespace().collect();
         tokens.len() == 2
             && matches!(tokens[0], "/rb" | "rb")
             && matches!(tokens[1], "run" | "retry" | "abort")

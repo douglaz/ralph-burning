@@ -221,7 +221,7 @@ async fn handle_start_multi_repo(
     let agent_service = build_agent_execution_service()?;
 
     let daemon_store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter::default();
+    let worktree = WorktreeAdapter;
     let project_store = FsProjectStore;
     let run_snapshot_read = FsRunSnapshotStore;
     let run_snapshot_write = FsRunSnapshotWriteStore;
@@ -325,7 +325,7 @@ async fn handle_abort_by_issue(
     let data_dir_path = std::path::Path::new(data_dir);
     let (owner, repo) = repo_registry::parse_repo_slug(repo_slug)?;
     let store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter::default();
+    let worktree = WorktreeAdapter;
     let daemon_dir = DataDirLayout::daemon_dir(data_dir_path, owner, repo);
     let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
 
@@ -423,7 +423,7 @@ async fn handle_retry_by_issue(
     // If the task retains a lease from partial cleanup, attempt cleanup
     // before retry so retry_task() doesn't reject it.
     if let Some(ref lid) = task.lease_id {
-        let worktree = WorktreeAdapter::default();
+        let worktree = WorktreeAdapter;
         let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
         if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
             let result = LeaseService::release(
@@ -485,7 +485,7 @@ async fn handle_reconcile_multi_repo(
     repo_registry::validate_data_dir(data_dir_path)?;
 
     let store = FsDataDirDaemonStore;
-    let worktree = WorktreeAdapter::default();
+    let worktree = WorktreeAdapter;
     let registry = FsRepoRegistryStore;
 
     let registrations = match registry.list_registrations(data_dir_path) {

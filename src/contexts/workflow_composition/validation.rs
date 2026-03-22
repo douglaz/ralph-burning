@@ -216,6 +216,7 @@ pub fn pre_commit_remediation_context(group_result: &ValidationGroupResult) -> s
 
 /// Persist pre-commit validation evidence as supporting records and emit a
 /// runtime log entry.
+#[allow(clippy::too_many_arguments)]
 pub fn persist_pre_commit_evidence(
     artifact_write: &dyn PayloadArtifactWritePort,
     log_write: &dyn RuntimeLogWritePort,

@@ -108,6 +108,7 @@ impl DaemonTaskService {
         Ok(task)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn claim_task(
         store: &dyn DaemonStorePort,
         worktree: &dyn WorktreePort,
@@ -176,7 +177,7 @@ impl DaemonTaskService {
         let now = Utc::now();
         task.transition_to(TaskStatus::Claimed, now)?;
         task.attach_lease(lease.lease_id.clone());
-        store.write_task(base_dir, &task).map_err(|error| {
+        store.write_task(base_dir, &task).inspect_err(|_error| {
             let _ = LeaseService::release(
                 store,
                 worktree,
@@ -185,7 +186,6 @@ impl DaemonTaskService {
                 &lease,
                 ReleaseMode::Idempotent,
             );
-            error
         })?;
 
         if let Err(journal_err) = Self::append_journal_event(
@@ -215,7 +215,7 @@ impl DaemonTaskService {
             );
             let resources_released = release_result
                 .as_ref()
-                .map_or(false, |r| r.resources_released);
+                .is_ok_and(|r| r.resources_released);
 
             if resources_released {
                 // Physical resources released — safe to restore Pending.
@@ -246,7 +246,7 @@ impl DaemonTaskService {
                         t.transition_to(TaskStatus::Failed, Utc::now())?;
                         t.set_failure(
                             "claim_journal_failed",
-                            &format!(
+                            format!(
                                 "LeaseAcquired journal failed and rollback write failed: {journal_err}"
                             ),
                         );
@@ -273,7 +273,7 @@ impl DaemonTaskService {
                     t.transition_to(TaskStatus::Failed, Utc::now())?;
                     t.set_failure(
                         "claim_journal_failed",
-                        &format!(
+                        format!(
                             "LeaseAcquired journal failed and lease release failed: {journal_err}; release: {release_detail}"
                         ),
                     );
@@ -318,13 +318,13 @@ impl DaemonTaskService {
             );
             let resources_released = release_result
                 .as_ref()
-                .map_or(false, |r| r.resources_released);
+                .is_ok_and(|r| r.resources_released);
             let _ = (|| -> AppResult<()> {
                 let mut t = store.read_task(base_dir, &task.task_id)?;
                 t.transition_to(TaskStatus::Failed, Utc::now())?;
                 t.set_failure(
                     "claim_journal_failed",
-                    &format!("TaskClaimed journal append failed: {journal_err}"),
+                    format!("TaskClaimed journal append failed: {journal_err}"),
                 );
                 if resources_released {
                     t.clear_lease();

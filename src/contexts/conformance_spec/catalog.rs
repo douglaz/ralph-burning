@@ -54,7 +54,7 @@ pub fn discover_scenarios_from(dir: &Path) -> AppResult<Vec<ScenarioMeta>> {
         .filter_map(|entry| {
             let entry = entry.ok()?;
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "feature") {
+            if path.extension().is_some_and(|ext| ext == "feature") {
                 Some(path)
             } else {
                 None

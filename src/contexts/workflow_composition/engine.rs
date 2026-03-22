@@ -68,6 +68,7 @@ pub fn role_for_stage(stage_id: StageId) -> BackendRole {
     BackendRole::for_stage(stage_id)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn build_stage_prompt(
     artifact_store: &dyn ArtifactStorePort,
     base_dir: &Path,
@@ -308,7 +309,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                 adapter
                     .check_capability(
                         &entry.target,
-                        &InvocationContract::Stage(entry.contract.clone()),
+                        &InvocationContract::Stage(entry.contract),
                     )
                     .await
                     .map_err(|e| AppError::PreflightFailed {
@@ -512,6 +513,7 @@ fn project_prompt_hash(project_root: &Path, prompt_reference: &str) -> AppResult
     Ok(FileSystem::prompt_hash(&prompt))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_active_run(
     run_id: &RunId,
     stage_cursor: StageCursor,
@@ -581,6 +583,7 @@ fn carry_forward_active_run(
     ))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn reset_cycle_active_run(
     snapshot: &RunSnapshot,
     run_id: &RunId,
@@ -2901,11 +2904,9 @@ where
                             .await;
                         }
 
-                        let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
-                            AppError::StageCursorOverflow {
-                                field: "cycle",
-                                value: cursor.cycle,
-                            }
+                        let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
+                            field: "cycle",
+                            value: cursor.cycle,
                         })?;
                         if next_cycle > retry_policy.max_remediation_cycles() {
                             return fail_run_result(
@@ -3446,11 +3447,9 @@ where
                                 .await;
                                 }
 
-                                let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
-                                    AppError::StageCursorOverflow {
-                                        field: "cycle",
-                                        value: cursor.cycle,
-                                    }
+                                let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
+                                    field: "cycle",
+                                    value: cursor.cycle,
                                 })?;
                                 if next_cycle > retry_policy.max_remediation_cycles() {
                                     return fail_run_result(
@@ -3941,11 +3940,9 @@ where
                         .await;
                     }
 
-                    let next_cycle = cursor.cycle.checked_add(1).ok_or_else(|| {
-                        AppError::StageCursorOverflow {
-                            field: "cycle",
-                            value: cursor.cycle,
-                        }
+                    let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
+                        field: "cycle",
+                        value: cursor.cycle,
                     })?;
                     if next_cycle > retry_policy.max_remediation_cycles() {
                         return fail_run_result(
@@ -4804,6 +4801,7 @@ fn checkpoint_completion_round(snapshot: &RunSnapshot) -> u32 {
         .unwrap_or_else(|| snapshot.completion_rounds.max(1))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn persist_rollback_point(
     rollback_store: &dyn RollbackPointStorePort,
     journal_store: &dyn JournalStorePort,
@@ -4882,6 +4880,7 @@ fn persist_rollback_point(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn complete_run(
     snapshot: &mut RunSnapshot,
     run_snapshot_write: &dyn RunSnapshotWritePort,
@@ -5694,11 +5693,9 @@ fn derive_resume_state(
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
                 current_cycle = match detail_u32(event, "to_cycle") {
                     Some(to_cycle) => to_cycle,
-                    None => current_cycle.checked_add(1).ok_or_else(|| {
-                        AppError::StageCursorOverflow {
-                            field: "cycle",
-                            value: current_cycle,
-                        }
+                    None => current_cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
+                        field: "cycle",
+                        value: current_cycle,
                     })?,
                 };
                 next_stage_index = execution_stage_index;
@@ -5706,11 +5703,9 @@ fn derive_resume_state(
             crate::contexts::project_run_record::model::JournalEventType::CompletionRoundAdvanced => {
                 current_completion_round = match detail_u32(event, "to_round") {
                     Some(to_round) => to_round,
-                    None => current_completion_round.checked_add(1).ok_or_else(|| {
-                        AppError::StageCursorOverflow {
-                            field: "completion_round",
-                            value: current_completion_round,
-                        }
+                    None => current_completion_round.checked_add(1).ok_or(AppError::StageCursorOverflow {
+                        field: "completion_round",
+                        value: current_completion_round,
                     })?,
                 };
                 next_stage_index = planning_stage_index;

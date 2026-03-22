@@ -618,8 +618,8 @@ async fn handle_rollback_list(
     }
 
     println!(
-        "{:<24} {:<20} {:<5} {:<25} {}",
-        "Rollback ID", "Stage", "Cycle", "Created At", "Git SHA"
+        "{:<24} {:<20} {:<5} {:<25} Git SHA",
+        "Rollback ID", "Stage", "Cycle", "Created At"
     );
     for target in targets {
         println!(

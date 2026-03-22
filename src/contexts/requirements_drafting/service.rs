@@ -226,6 +226,7 @@ where
     ///
     /// Derives its read model from `run.json` and `journal.ndjson`, not by
     /// scanning artifacts. Stage-aware progress reported from canonical state.
+    #[allow(clippy::if_same_then_else)]
     pub fn show(&self, base_dir: &Path, run_id: &str) -> AppResult<RequirementsShowResult> {
         let run = self.store.read_run(base_dir, run_id)?;
         let journal = self.store.read_journal(base_dir, run_id)?;
@@ -418,6 +419,7 @@ where
 
     // ── Full-mode staged pipeline ───────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_full_mode_pipeline(
         &self,
         base_dir: &Path,
@@ -1173,6 +1175,7 @@ where
     /// the pipeline block that calls this method made any mutations. If the
     /// journal append fails, this value is restored so `run.json` reflects
     /// only the last durable stage.
+    #[allow(clippy::too_many_arguments)]
     async fn commit_full_mode_stage(
         &self,
         base_dir: &Path,
@@ -1292,6 +1295,7 @@ where
 
     // ── Quick-mode revision loop ────────────────────────────────────────
 
+    #[allow(clippy::too_many_arguments)]
     async fn run_quick_mode_pipeline(
         &self,
         base_dir: &Path,

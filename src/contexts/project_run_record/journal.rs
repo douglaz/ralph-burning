@@ -278,6 +278,7 @@ pub fn completion_round_advanced_event(
 }
 
 /// Build an `amendment_queued` journal event with source metadata.
+#[allow(clippy::too_many_arguments)]
 pub fn amendment_queued_event(
     sequence: u64,
     timestamp: DateTime<Utc>,
@@ -357,6 +358,7 @@ pub fn rollback_created_event(
 }
 
 /// Build a `rollback_performed` journal event.
+#[allow(clippy::too_many_arguments)]
 pub fn rollback_performed_event(
     sequence: u64,
     timestamp: DateTime<Utc>,

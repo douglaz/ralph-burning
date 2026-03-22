@@ -26,7 +26,7 @@ impl IssueWatcherPort for FileIssueWatcher {
         for entry in std::fs::read_dir(&watched_dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let contents = std::fs::read_to_string(&path)?;

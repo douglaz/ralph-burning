@@ -246,14 +246,14 @@ impl ManagedChild {
                     format!("process id {pid} exceeds libc::pid_t range"),
                 )
             })?;
-            return match nix::sys::signal::kill(
+            match nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid),
                 nix::sys::signal::Signal::SIGTERM,
             ) {
                 Ok(()) => Ok(()),
                 Err(nix::errno::Errno::ESRCH) => Ok(()),
                 Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
-            };
+            }
         }
 
         #[cfg(not(unix))]
@@ -278,14 +278,14 @@ impl ManagedChild {
                     format!("process id {pid} exceeds libc::pid_t range"),
                 )
             })?;
-            return match nix::sys::signal::kill(
+            match nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(pid),
                 nix::sys::signal::Signal::SIGKILL,
             ) {
                 Ok(()) => Ok(()),
                 Err(nix::errno::Errno::ESRCH) => Ok(()),
                 Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
-            };
+            }
         }
 
         #[cfg(not(unix))]
@@ -306,12 +306,12 @@ impl ManagedChild {
                     // so cancel() can still acquire the handle and signal it.
                     ManagedChildState::Running(child) => match child.try_wait()? {
                         Some(status) => {
-                            *state = ManagedChildState::Exited(status.clone());
+                            *state = ManagedChildState::Exited(status);
                             Some(status)
                         }
                         None => None,
                     },
-                    ManagedChildState::Exited(status) => return Ok(status.clone()),
+                    ManagedChildState::Exited(status) => return Ok(*status),
                 }
             };
 
@@ -940,8 +940,7 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
         let is_object = map
             .get("type")
-            .and_then(|t| t.as_str())
-            .map_or(false, |t| t == "object");
+            .and_then(|t| t.as_str()) == Some("object");
         if is_object {
             // 1. additionalProperties: false
             if !map.contains_key("additionalProperties") {
@@ -975,19 +974,15 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
             }
         }
         // Recurse into properties
-        if let Some(props) = map.get_mut("properties") {
-            if let serde_json::Value::Object(props_map) = props {
-                for prop_value in props_map.values_mut() {
-                    enforce_strict_mode_schema(prop_value);
-                }
+        if let Some(serde_json::Value::Object(props_map)) = map.get_mut("properties") {
+            for prop_value in props_map.values_mut() {
+                enforce_strict_mode_schema(prop_value);
             }
         }
         // Recurse into definitions
-        if let Some(defs) = map.get_mut("definitions") {
-            if let serde_json::Value::Object(defs_map) = defs {
-                for def_value in defs_map.values_mut() {
-                    enforce_strict_mode_schema(def_value);
-                }
+        if let Some(serde_json::Value::Object(defs_map)) = map.get_mut("definitions") {
+            for def_value in defs_map.values_mut() {
+                enforce_strict_mode_schema(def_value);
             }
         }
         // Recurse into items (for array types)

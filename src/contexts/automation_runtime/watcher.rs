@@ -64,7 +64,7 @@ pub fn parse_requirements_command(text: &str) -> AppResult<Option<DispatchMode>>
 /// Check if a routing command string is a requirements command (not a flow command).
 /// Used to prevent requirements commands from being passed to flow routing.
 pub fn is_requirements_command(text: &str) -> bool {
-    let tokens: Vec<&str> = text.trim().split_whitespace().collect();
+    let tokens: Vec<&str> = text.split_whitespace().collect();
     tokens.len() >= 2 && matches!(tokens[0], "/rb" | "rb") && tokens[1] == "requirements"
 }
 

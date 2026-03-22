@@ -1375,7 +1375,7 @@ impl DaemonStorePort for FsDaemonStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let file = format!(
@@ -1447,7 +1447,7 @@ impl DaemonStorePort for FsDaemonStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let file = format!(
@@ -1630,8 +1630,7 @@ fn release_writer_lock_impl(
                     Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                         // Canonical lock was recreated — leave staged
                         // artifact durable and return error.
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(AppError::Io(std::io::Error::other(
                             format!(
                                 "writer lock release: verification failed ({e}) \
                                  and canonical lock was recreated; staged artifact preserved"
@@ -1641,8 +1640,7 @@ fn release_writer_lock_impl(
                     Err(link_err) => {
                         // Cannot restore — staged artifact remains
                         // durable for later recovery.
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(AppError::Io(std::io::Error::other(
                             format!(
                                 "writer lock release: verification failed ({e}) \
                                  and could not restore lock from staging: {link_err}"
@@ -1665,8 +1663,7 @@ fn release_writer_lock_impl(
                     Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                         // Canonical lock was recreated — leave staged
                         // artifact durable and return error.
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(AppError::Io(std::io::Error::other(
                             format!(
                                 "writer lock release: staging verification failed ({e}) \
                                  and canonical lock was recreated; staged artifact preserved"
@@ -1674,8 +1671,7 @@ fn release_writer_lock_impl(
                         )));
                     }
                     Err(link_err) => {
-                        return Err(AppError::Io(std::io::Error::new(
-                            std::io::ErrorKind::Other,
+                        return Err(AppError::Io(std::io::Error::other(
                             format!(
                                 "writer lock release: staging verification failed ({e}) \
                                  and could not restore lock: {link_err}"
@@ -1708,8 +1704,7 @@ fn release_writer_lock_impl(
                     // error rather than masquerading as OwnerMismatch
                     // so callers know the lock is not at the canonical
                     // path and the staging artifact is still durable.
-                    return Err(AppError::Io(std::io::Error::new(
-                        std::io::ErrorKind::Other,
+                    return Err(AppError::Io(std::io::Error::other(
                         format!(
                             "writer lock release: inode mismatch detected \
                              but could not restore replacement lock: {restore_err}"
@@ -1802,7 +1797,7 @@ impl DaemonStorePort for FsDataDirDaemonStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let file = format!(
@@ -1874,7 +1869,7 @@ impl DaemonStorePort for FsDataDirDaemonStore {
         for entry in fs::read_dir(&dir)? {
             let entry = entry?;
             let path = entry.path();
-            if !path.extension().is_some_and(|ext| ext == "json") {
+            if path.extension().is_none_or(|ext| ext != "json") {
                 continue;
             }
             let file = format!(

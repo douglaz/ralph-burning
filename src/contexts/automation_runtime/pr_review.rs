@@ -182,14 +182,14 @@ where
                             let _ = self.amendment_queue
                                 .remove_amendment(workspace_dir, &project_id, written_id);
                         }
-                        return Err(e.into());
+                        return Err(e);
                     }
                     ids.push(amendment.amendment_id.clone());
                 }
                 ids
             } else {
                 // Full staging with canonical state updates
-                let staged_ids = record_service::stage_amendment_batch(
+                record_service::stage_amendment_batch(
                     self.amendment_queue,
                     self.run_snapshot_read,
                     self.run_snapshot_write,
@@ -198,8 +198,7 @@ where
                     workspace_dir,
                     &project_id,
                     &amendments,
-                )?;
-                staged_ids
+                )?
             }
         } else {
             Vec::new()

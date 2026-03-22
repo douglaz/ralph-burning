@@ -753,7 +753,7 @@ impl StageCursor {
         let attempt = self
             .attempt
             .checked_add(1)
-            .ok_or_else(|| AppError::StageCursorOverflow {
+            .ok_or(AppError::StageCursorOverflow {
                 field: "attempt",
                 value: self.attempt,
             })?;
@@ -774,7 +774,7 @@ impl StageCursor {
         let cycle = self
             .cycle
             .checked_add(1)
-            .ok_or_else(|| AppError::StageCursorOverflow {
+            .ok_or(AppError::StageCursorOverflow {
                 field: "cycle",
                 value: self.cycle,
             })?;
@@ -786,7 +786,7 @@ impl StageCursor {
         let completion_round =
             self.completion_round
                 .checked_add(1)
-                .ok_or_else(|| AppError::StageCursorOverflow {
+                .ok_or(AppError::StageCursorOverflow {
                     field: "completion_round",
                     value: self.completion_round,
                 })?;

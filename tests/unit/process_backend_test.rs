@@ -1464,3 +1464,109 @@ async fn transport_failure_includes_stderr_text() {
         other => panic!("expected TransportFailure, got: {other:?}"),
     }
 }
+
+// ── Stdout JSON error extraction ─────────────────────────────────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn stdout_json_error_extracted_on_nonzero_exit() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Fake claude that writes an is_error JSON envelope to stdout and exits non-zero
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\necho '{\"is_error\": true, \"result\": \"model overloaded\"}'\nexit 1\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("model overloaded"),
+                "should contain stdout error message: {details}"
+            );
+        }
+        other => panic!("expected TransportFailure, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn stdout_json_error_combined_with_stderr() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Fake claude that writes both stderr and a stdout JSON error
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\necho 'stderr message' >&2\necho '{\"is_error\": true, \"result\": \"rate limited\"}'\nexit 1\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("stderr message"),
+                "should contain stderr: {details}"
+            );
+            assert!(
+                details.contains("stdout error: rate limited"),
+                "should contain stdout error: {details}"
+            );
+        }
+        other => panic!("expected TransportFailure, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invalid_stdout_json_falls_back_to_stderr() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Fake claude that writes invalid JSON to stdout and an error to stderr
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\necho 'not json at all'\necho 'fallback error' >&2\nexit 1\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::TransportFailure,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("fallback error"),
+                "should contain stderr when stdout JSON is invalid: {details}"
+            );
+            assert!(
+                !details.contains("stdout error"),
+                "should not contain stdout error label when JSON is invalid: {details}"
+            );
+        }
+        other => panic!("expected TransportFailure, got: {other:?}"),
+    }
+}

@@ -101,7 +101,7 @@ impl TmuxAdapter {
     }
 
     pub fn session_exists(session_name: &str) -> AppResult<bool> {
-        if let Err(_) = Self::check_tmux_available() {
+        if Self::check_tmux_available().is_err() {
             // Return false when tmux is unavailable — the session may still
             // exist but we can't verify. Callers that need to preserve state
             // (like `run attach`) should check tmux availability separately
@@ -813,6 +813,7 @@ impl CaptureTail {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_wrapper_script(
     working_dir: &Path,
     binary: &str,

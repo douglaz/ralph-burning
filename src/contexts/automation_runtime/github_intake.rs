@@ -374,8 +374,8 @@ async fn handle_explicit_command<G: GithubPort>(
                 return Err(e);
             }
         }
-    } else if cmd == "/rb abort" {
-        if !task.status.is_terminal() {
+    } else if cmd == "/rb abort"
+        && !task.status.is_terminal() {
             let original_status = task.status;
             DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
 
@@ -417,7 +417,6 @@ async fn handle_explicit_command<G: GithubPort>(
                 let _ = DaemonTaskService::mark_label_dirty(store, base_dir, &aborted.task_id);
                 return Err(e);
             }
-        }
     }
 
     Ok(())

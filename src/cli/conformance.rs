@@ -36,8 +36,8 @@ fn handle_list() -> AppResult<()> {
     catalog::validate_ids(&scenarios)?;
 
     println!(
-        "{:<30} {:<40} {:<40} {}",
-        "SCENARIO ID", "FEATURE", "SCENARIO", "SOURCE"
+        "{:<30} {:<40} {:<40} SOURCE",
+        "SCENARIO ID", "FEATURE", "SCENARIO"
     );
     println!("{}", "-".repeat(140));
 
@@ -62,10 +62,10 @@ fn handle_run(filter: Option<String>) -> AppResult<()> {
     #[cfg(not(feature = "test-stub"))]
     {
         let _ = filter;
-        return Err(AppError::ConformanceDiscoveryFailed {
+        Err(AppError::ConformanceDiscoveryFailed {
             details: "conformance run requires a binary built with the test-stub cargo feature"
                 .to_owned(),
-        });
+        })
     }
 
     #[cfg(feature = "test-stub")]

@@ -108,6 +108,7 @@ impl ReleaseResult {
 pub struct LeaseService;
 
 impl LeaseService {
+    #[allow(clippy::too_many_arguments)]
     pub fn acquire(
         store: &dyn DaemonStorePort,
         worktree: &dyn WorktreePort,
@@ -259,14 +260,9 @@ impl LeaseService {
 
         // PHASE 1: Worktree removal. If it fails, keep all durable lease
         // state (writer lock, lease file) intact so a later reconcile can retry.
-        let worktree_already_absent;
-        match worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id) {
-            Ok(WorktreeCleanupOutcome::Removed) => {
-                worktree_already_absent = false;
-            }
-            Ok(WorktreeCleanupOutcome::AlreadyAbsent) => {
-                worktree_already_absent = true;
-            }
+        let worktree_already_absent = match worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id) {
+            Ok(WorktreeCleanupOutcome::Removed) => false,
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent) => true,
             Err(e) => {
                 // Worktree removal failed — do not attempt writer-lock
                 // release or lease-file deletion.
@@ -282,7 +278,7 @@ impl LeaseService {
                     writer_lock_error: None,
                 });
             }
-        }
+        };
 
         // PHASE 2: Owner-aware writer-lock release. Must succeed before
         // the lease file is deleted so the durable lease record remains

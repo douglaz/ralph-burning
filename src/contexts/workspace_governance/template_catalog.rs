@@ -698,7 +698,7 @@ pub fn render(
             let trimmed = raw_name.trim();
             if let Some(value) = values_map.get(trimmed) {
                 result.push_str(value);
-            } else if all_placeholders.iter().any(|p| *p == trimmed) {
+            } else if all_placeholders.contains(&trimmed) {
                 // Known optional placeholder not supplied — expand to empty
             } else {
                 // Not a known placeholder — preserve the original marker
