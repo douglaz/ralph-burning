@@ -1616,6 +1616,9 @@ where
     S: SessionStorePort,
 {
     let project_root = project_root_path(base_dir, project_id);
+    // When a worktree is active, backends must execute there (not in base_dir)
+    // so they see/edit the worktree's working tree. State storage still uses base_dir.
+    let backend_working_dir = execution_cwd.unwrap_or(base_dir).to_path_buf();
     let mut stage_index = start_stage_index;
     let mut cursor = start_cursor;
 
@@ -1639,6 +1642,7 @@ where
                 journal_store,
                 base_dir,
                 &project_root,
+                &backend_working_dir,
                 project_id,
                 run_id,
                 seq,
@@ -1774,6 +1778,7 @@ where
                 journal_store,
                 base_dir,
                 &project_root,
+                &backend_working_dir,
                 project_id,
                 run_id,
                 seq,
@@ -2261,6 +2266,7 @@ where
                 journal_store,
                 base_dir,
                 &project_root,
+                &backend_working_dir,
                 project_id,
                 run_id,
                 seq,
@@ -5842,6 +5848,7 @@ async fn dispatch_prompt_review_panel<A, R, S>(
     journal_store: &dyn JournalStorePort,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
@@ -5971,6 +5978,7 @@ where
         log_write,
         base_dir,
         project_root,
+        backend_working_dir,
         project_id,
         run_id,
         cursor,
@@ -6121,6 +6129,7 @@ async fn dispatch_completion_panel<A, R, S>(
     journal_store: &dyn JournalStorePort,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
@@ -6234,6 +6243,7 @@ where
         log_write,
         base_dir,
         project_root,
+        backend_working_dir,
         project_id,
         run_id,
         cursor,
@@ -6315,6 +6325,7 @@ async fn dispatch_final_review_panel<A, R, S>(
     journal_store: &dyn JournalStorePort,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     seq: &mut u64,
@@ -6441,6 +6452,7 @@ where
         log_write,
         base_dir,
         project_root,
+        backend_working_dir,
         project_id,
         run_id,
         cursor,

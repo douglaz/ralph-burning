@@ -172,6 +172,7 @@ pub async fn execute_final_review_panel<A, R, S>(
     _log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     cursor: &StageCursor,
@@ -206,6 +207,7 @@ where
         let reviewer_payload = invoke_final_review_member(
             agent_service,
             project_root,
+            backend_working_dir,
             run_id,
             stage_id,
             cursor,
@@ -313,6 +315,7 @@ where
     let planner_vote_payload = invoke_final_review_member(
         agent_service,
         project_root,
+        backend_working_dir,
         run_id,
         stage_id,
         cursor,
@@ -380,6 +383,7 @@ where
         let vote_payload = invoke_final_review_member(
             agent_service,
             project_root,
+            backend_working_dir,
             run_id,
             stage_id,
             cursor,
@@ -504,6 +508,7 @@ where
         let arbiter_payload = invoke_final_review_member(
             agent_service,
             project_root,
+            backend_working_dir,
             run_id,
             stage_id,
             cursor,
@@ -809,6 +814,7 @@ fn validate_arbiter_payload(
 async fn invoke_final_review_member<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     project_root: &Path,
+    backend_working_dir: &Path,
     run_id: &RunId,
     stage_id: StageId,
     cursor: &StageCursor,
@@ -832,7 +838,7 @@ where
     let request = InvocationRequest {
         invocation_id,
         project_root: project_root.to_path_buf(),
-        working_dir: project_root.to_path_buf(),
+        working_dir: backend_working_dir.to_path_buf(),
         contract: InvocationContract::Panel {
             stage_id,
             role: panel_role.to_owned(),
@@ -1298,6 +1304,7 @@ mod tests {
             &crate::adapters::fs::FsRuntimeLogWriteStore,
             base_dir,
             &project_root(base_dir, &project_id),
+            base_dir,
             &project_id,
             &run_id,
             &cursor,
@@ -1378,6 +1385,7 @@ mod tests {
             &crate::adapters::fs::FsRuntimeLogWriteStore,
             base_dir,
             &project_root(base_dir, &project_id),
+            base_dir,
             &project_id,
             &run_id,
             &cursor,

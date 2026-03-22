@@ -81,6 +81,7 @@ pub async fn execute_completion_panel<A, R, S>(
     _log_write: &dyn RuntimeLogWritePort,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
     cursor: &StageCursor,
@@ -120,6 +121,7 @@ where
             agent_service,
             base_dir,
             project_root,
+            backend_working_dir,
             run_id,
             stage_id,
             cursor,
@@ -219,6 +221,7 @@ async fn invoke_completer<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     base_dir: &Path,
     project_root: &Path,
+    backend_working_dir: &Path,
     run_id: &RunId,
     stage_id: StageId,
     cursor: &StageCursor,
@@ -256,7 +259,7 @@ where
     let request = InvocationRequest {
         invocation_id,
         project_root: project_root.to_path_buf(),
-        working_dir: project_root.to_path_buf(),
+        working_dir: backend_working_dir.to_path_buf(),
         contract: InvocationContract::Panel {
             stage_id,
             role: "completer".to_owned(),
