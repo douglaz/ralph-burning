@@ -809,38 +809,42 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     };
                     if !fresh_output.status.success() {
                         let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
+                        let fresh_stdout_error = extract_stdout_error(&fresh_output.stdout);
                         let code = fresh_output.status.code().map_or("signal".to_owned(), |c| c.to_string());
                         fresh_prepared.cleanup().await;
+                        let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
+                            (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
+                            (false, None) => format!(": {fresh_stderr}"),
+                            (true, Some(out)) => format!(": {out}"),
+                            (true, None) => String::new(),
+                        };
                         return Err(Self::invocation_failed(
                             &fresh_request,
                             FailureClass::TransportFailure,
                             format!(
-                                "{} exited with code {code}{}",
+                                "{} exited with code {code}{detail}",
                                 fresh_prepared.binary(),
-                                if fresh_stderr.is_empty() {
-                                    String::new()
-                                } else {
-                                    format!(": {fresh_stderr}")
-                                }
                             ),
                         ));
                     }
                     return fresh_prepared.finish(&fresh_request, fresh_output).await;
                 }
 
+                let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
                 prepared.cleanup().await;
+                let detail = match (stderr.is_empty(), stdout_error) {
+                    (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
+                    (false, None) => format!(": {stderr}"),
+                    (true, Some(out)) => format!(": {out}"),
+                    (true, None) => String::new(),
+                };
                 Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
                     format!(
-                        "{} exited with code {code}{}",
+                        "{} exited with code {code}{detail}",
                         prepared.binary(),
-                        if stderr.is_empty() {
-                            String::new()
-                        } else {
-                            format!(": {stderr}")
-                        }
                     ),
                 ))
             }
@@ -893,6 +897,20 @@ pub(crate) struct ChildOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+}
+
+/// Try to extract an error message from Claude's stdout JSON envelope.
+/// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
+fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_slice(stdout).ok()?;
+    if value.get("is_error")?.as_bool()? {
+        value
+            .get("result")
+            .and_then(|r| r.as_str())
+            .map(|s| s.to_owned())
+    } else {
+        None
+    }
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
