@@ -52,6 +52,15 @@ type ConfiguredAgentServiceBuilder =
         &EffectiveConfig,
     ) -> AppResult<crate::composition::agent_execution_builder::ProductionAgentService>;
 
+type ConfiguredRequirementsServiceBuilder = Box<
+    dyn Fn(
+            &EffectiveConfig,
+        )
+            -> AppResult<crate::composition::agent_execution_builder::ProductionRequirementsService>
+        + Send
+        + Sync,
+>;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DaemonLoopConfig {
     pub poll_interval: Duration,
@@ -87,6 +96,7 @@ pub struct DaemonLoop<'a, A, R, S> {
     watcher: Option<&'a dyn IssueWatcherPort>,
     requirements_store: Option<&'a dyn RequirementsStorePort>,
     configured_agent_service_builder: Option<ConfiguredAgentServiceBuilder>,
+    configured_requirements_service_builder: Option<ConfiguredRequirementsServiceBuilder>,
     /// Multi-repo registrations. When non-empty, the daemon iterates across
     /// registered repos each cycle instead of using the file watcher.
     registrations: Vec<RepoRegistration>,
@@ -125,6 +135,7 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
             watcher: None,
             requirements_store: None,
             configured_agent_service_builder: None,
+            configured_requirements_service_builder: None,
             registrations: Vec::new(),
             data_dir: None,
         }
@@ -146,6 +157,26 @@ impl<'a, A, R, S> DaemonLoop<'a, A, R, S> {
     ) -> Self {
         self.configured_agent_service_builder = Some(builder);
         self
+    }
+
+    pub fn with_configured_requirements_service_builder(
+        mut self,
+        builder: ConfiguredRequirementsServiceBuilder,
+    ) -> Self {
+        self.configured_requirements_service_builder = Some(builder);
+        self
+    }
+
+    /// Build a requirements service using the configured builder callback,
+    /// or fall back to `build_requirements_service_default` (which reads env).
+    fn build_requirements_service(
+        &self,
+        effective_config: &EffectiveConfig,
+    ) -> AppResult<crate::composition::agent_execution_builder::ProductionRequirementsService> {
+        match self.configured_requirements_service_builder {
+            Some(ref builder) => builder(effective_config),
+            None => build_requirements_service_default(effective_config),
+        }
     }
 
     pub fn with_registrations(mut self, registrations: Vec<RepoRegistration>) -> Self {
@@ -1365,17 +1396,20 @@ where
             .clone()
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
-        // Build a fresh requirements service with workspace defaults (same as CLI path)
-        let req_svc = build_requirements_service_default(effective_config).map_err(|e| {
-            let _ = DaemonTaskService::mark_failed(
-                self.store,
-                base_dir,
-                &task.task_id,
-                "requirements_quick_failed",
-                &format!("failed to build requirements service: {e}"),
-            );
-            e
-        })?;
+        // Build a fresh requirements service — use the configured builder if available,
+        // otherwise fall back to the default (which reads RALPH_BURNING_BACKEND from env).
+        let req_svc = self
+            .build_requirements_service(effective_config)
+            .map_err(|e| {
+                let _ = DaemonTaskService::mark_failed(
+                    self.store,
+                    base_dir,
+                    &task.task_id,
+                    "requirements_quick_failed",
+                    &format!("failed to build requirements service: {e}"),
+                );
+                e
+            })?;
         let run_id = match req_svc.quick(workspace_dir, &idea, Utc::now(), None).await {
             Ok(run_id) => run_id,
             Err(e) => {
@@ -1546,7 +1580,7 @@ where
             .clone()
             .unwrap_or_else(|| format!("Automated task for issue {}", task.issue_ref));
 
-        let req_svc = match build_requirements_service_default(effective_config) {
+        let req_svc = match self.build_requirements_service(effective_config) {
             Ok(svc) => svc,
             Err(e) => {
                 let _ = DaemonTaskService::mark_failed(

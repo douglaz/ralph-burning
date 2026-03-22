@@ -71,109 +71,158 @@ pub fn resolve_filter<'a>(
 
 /// Execute selected scenarios with fail-fast semantics.
 ///
-/// Runs scenarios in the order given. On the first failure, stops immediately,
-/// marks remaining scenarios as not-run, and returns the full report.
+/// Runs scenarios in parallel across threads. On the first failure, signals
+/// remaining in-flight scenarios to skip (they complete their current work
+/// but no new scenarios are started), marks unstarted scenarios as not-run,
+/// and returns the full report with results in the original discovery order.
 pub fn run_scenarios(
     selected: &[&ScenarioMeta],
     registry: &HashMap<String, ScenarioExecutor>,
 ) -> ConformanceReport {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
     let wall_start = Instant::now();
     let total = selected.len();
-    let mut results = Vec::with_capacity(total);
+    let failed_flag = Arc::new(AtomicBool::new(false));
+
+    // Build work items preserving discovery order index.
+    let work: Vec<(usize, &ScenarioMeta, &ScenarioExecutor)> = selected
+        .iter()
+        .enumerate()
+        .map(|(idx, scenario)| {
+            let executor = registry.get(&scenario.id).expect("validated registry");
+            (idx, *scenario, executor)
+        })
+        .collect();
+
+    // Execute in parallel using a scoped thread pool.
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+
+    let mut indexed_results: Vec<(usize, ScenarioResult)> = Vec::with_capacity(total);
+
+    std::thread::scope(|scope| {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut spawned = 0;
+
+        // Chunk work into batches to limit concurrency.
+        for chunk in work.chunks(parallelism) {
+            let mut handles = Vec::new();
+            for &(idx, scenario, executor) in chunk {
+                if failed_flag.load(Ordering::Relaxed) {
+                    // Fail-fast: don't start new scenarios after a failure.
+                    let _ = tx.send((
+                        idx,
+                        ScenarioResult {
+                            id: scenario.id.clone(),
+                            outcome: ScenarioOutcome::NotRun,
+                            duration: Duration::ZERO,
+                        },
+                    ));
+                    spawned += 1;
+                    continue;
+                }
+
+                let flag = failed_flag.clone();
+                let tx = tx.clone();
+                handles.push(scope.spawn(move || {
+                    let scenario_start = Instant::now();
+
+                    let forced_fail = std::env::var("RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR")
+                        .ok()
+                        .is_some_and(|id| id == scenario.id);
+
+                    let exec_result = if forced_fail {
+                        Ok(Err(
+                            "forced failure via RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR"
+                                .to_owned(),
+                        ))
+                    } else {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(executor))
+                    };
+                    let duration = scenario_start.elapsed();
+
+                    let result = match exec_result {
+                        Ok(Ok(())) => ScenarioResult {
+                            id: scenario.id.clone(),
+                            outcome: ScenarioOutcome::Passed,
+                            duration,
+                        },
+                        Ok(Err(reason)) => {
+                            flag.store(true, Ordering::Relaxed);
+                            ScenarioResult {
+                                id: scenario.id.clone(),
+                                outcome: ScenarioOutcome::Failed(reason),
+                                duration,
+                            }
+                        }
+                        Err(panic_info) => {
+                            flag.store(true, Ordering::Relaxed);
+                            let reason = if let Some(msg) = panic_info.downcast_ref::<String>() {
+                                msg.clone()
+                            } else if let Some(msg) = panic_info.downcast_ref::<&str>() {
+                                msg.to_string()
+                            } else {
+                                "panic (no message)".to_owned()
+                            };
+                            ScenarioResult {
+                                id: scenario.id.clone(),
+                                outcome: ScenarioOutcome::Failed(format!("panic: {reason}")),
+                                duration,
+                            }
+                        }
+                    };
+                    let _ = tx.send((idx, result));
+                }));
+                spawned += 1;
+            }
+
+            // Wait for this batch to complete before starting the next.
+            for handle in handles {
+                let _ = handle.join();
+            }
+        }
+
+        drop(tx);
+
+        // Collect results from channel.
+        for received in rx {
+            indexed_results.push(received);
+        }
+    });
+
+    // Sort by original discovery order.
+    indexed_results.sort_by_key(|(idx, _)| *idx);
+
     let mut passed = 0usize;
     let mut failed = 0usize;
-    let mut hit_failure = false;
 
-    for (idx, scenario) in selected.iter().enumerate() {
-        if hit_failure {
-            // Mark remaining as not-run
-            results.push(ScenarioResult {
-                id: scenario.id.clone(),
-                outcome: ScenarioOutcome::NotRun,
-                duration: Duration::ZERO,
-            });
-            continue;
-        }
-
-        let executor = registry.get(&scenario.id).expect("validated registry");
-
-        let scenario_start = Instant::now();
-
-        // Test-only seam: force a specific executor to fail for CLI fail-fast testing.
-        let forced_fail = std::env::var("RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR")
-            .ok()
-            .is_some_and(|id| id == scenario.id);
-
-        // Execute with panic catching for isolation
-        let exec_result = if forced_fail {
-            Ok(Err(
-                "forced failure via RALPH_BURNING_TEST_CONFORMANCE_FAIL_EXECUTOR".to_owned(),
-            ))
-        } else {
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(executor))
-        };
-        let scenario_duration = scenario_start.elapsed();
-
-        match exec_result {
-            Ok(Ok(())) => {
-                eprintln!(
-                    "  [{}/{}] {} ... PASS ({:.2}s)",
-                    idx + 1,
-                    total,
-                    scenario.id,
-                    scenario_duration.as_secs_f64()
-                );
-                results.push(ScenarioResult {
-                    id: scenario.id.clone(),
-                    outcome: ScenarioOutcome::Passed,
-                    duration: scenario_duration,
-                });
+    for (idx, result) in &indexed_results {
+        let label = match &result.outcome {
+            ScenarioOutcome::Passed => {
                 passed += 1;
+                "PASS"
             }
-            Ok(Err(reason)) => {
-                eprintln!(
-                    "  [{}/{}] {} ... FAIL ({:.2}s)",
-                    idx + 1,
-                    total,
-                    scenario.id,
-                    scenario_duration.as_secs_f64()
-                );
-                eprintln!("    Reason: {reason}");
-                results.push(ScenarioResult {
-                    id: scenario.id.clone(),
-                    outcome: ScenarioOutcome::Failed(reason),
-                    duration: scenario_duration,
-                });
+            ScenarioOutcome::Failed(reason) => {
                 failed += 1;
-                hit_failure = true;
-            }
-            Err(panic_info) => {
-                let reason = if let Some(msg) = panic_info.downcast_ref::<String>() {
-                    msg.clone()
-                } else if let Some(msg) = panic_info.downcast_ref::<&str>() {
-                    msg.to_string()
-                } else {
-                    "panic (no message)".to_owned()
-                };
-                eprintln!(
-                    "  [{}/{}] {} ... PANIC ({:.2}s)",
-                    idx + 1,
-                    total,
-                    scenario.id,
-                    scenario_duration.as_secs_f64()
-                );
                 eprintln!("    Reason: {reason}");
-                results.push(ScenarioResult {
-                    id: scenario.id.clone(),
-                    outcome: ScenarioOutcome::Failed(format!("panic: {reason}")),
-                    duration: scenario_duration,
-                });
-                failed += 1;
-                hit_failure = true;
+                "FAIL"
             }
-        }
+            ScenarioOutcome::NotRun => "SKIP",
+        };
+        eprintln!(
+            "  [{}/{}] {} ... {} ({:.2}s)",
+            idx + 1,
+            total,
+            result.id,
+            label,
+            result.duration.as_secs_f64()
+        );
     }
 
+    let results: Vec<ScenarioResult> = indexed_results.into_iter().map(|(_, r)| r).collect();
     let not_run = total - passed - failed;
 
     ConformanceReport {

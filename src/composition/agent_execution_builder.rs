@@ -59,9 +59,7 @@ pub fn build_backend_adapter() -> AppResult<BackendAdapter> {
 pub fn build_backend_adapter_with_config(
     effective_config: Option<&EffectiveConfig>,
 ) -> AppResult<BackendAdapter> {
-    let tmux_enabled = effective_config
-        .is_some_and(|config| config.effective_execution_mode() == ExecutionMode::Tmux);
-    let backend_selector = match std::env::var("RALPH_BURNING_BACKEND") {
+    let selector = match std::env::var("RALPH_BURNING_BACKEND") {
         Ok(value) => value,
         Err(std::env::VarError::NotPresent) => "process".to_owned(),
         Err(std::env::VarError::NotUnicode(_)) => {
@@ -72,8 +70,20 @@ pub fn build_backend_adapter_with_config(
             });
         }
     };
+    build_backend_adapter_for_selector(&selector, effective_config)
+}
 
-    match backend_selector.as_str() {
+/// Build a `BackendAdapter` from an explicit selector string.
+/// This is the core builder — CLI and daemon resolve the selector from
+/// clap args / env and pass it here. No env vars are read.
+pub fn build_backend_adapter_for_selector(
+    backend_selector: &str,
+    effective_config: Option<&EffectiveConfig>,
+) -> AppResult<BackendAdapter> {
+    let tmux_enabled = effective_config
+        .is_some_and(|config| config.effective_execution_mode() == ExecutionMode::Tmux);
+
+    match backend_selector {
         #[cfg(feature = "test-stub")]
         "stub" => Ok(BackendAdapter::Stub(build_stub_backend_adapter())),
         #[cfg(not(feature = "test-stub"))]
@@ -105,37 +115,16 @@ pub fn build_backend_adapter_with_config(
 }
 
 /// Build a backend adapter for diagnostics, using the same routing as normal
-/// execution but ignoring `RALPH_BURNING_BACKEND` env var. This ensures
-/// diagnostics check the actual configured backends with correct per-target
-/// dispatch (Process for Claude/Codex, OpenRouter for OpenRouter targets).
+/// execution but forcing a known selector. This ensures diagnostics check the
+/// actual configured backends with correct per-target dispatch.
 pub fn build_backend_adapter_for_diagnostics(
     effective_config: &EffectiveConfig,
 ) -> AppResult<BackendAdapter> {
-    // In test-stub mode, always use the stub adapter for diagnostics.
-    // In production, use the normal config-driven builder but override
-    // any env var to "process" so RALPH_BURNING_BACKEND=openrouter
-    // doesn't redirect checks to the wrong transport.
     #[cfg(feature = "test-stub")]
-    {
-        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
-        std::env::set_var("RALPH_BURNING_BACKEND", "stub");
-        let result = build_backend_adapter_with_config(Some(effective_config));
-        match saved {
-            Some(val) => std::env::set_var("RALPH_BURNING_BACKEND", val),
-            None => std::env::remove_var("RALPH_BURNING_BACKEND"),
-        }
-        return result;
-    }
+    let selector = "stub";
     #[cfg(not(feature = "test-stub"))]
-    {
-        let saved = std::env::var("RALPH_BURNING_BACKEND").ok();
-        std::env::remove_var("RALPH_BURNING_BACKEND");
-        let result = build_backend_adapter_with_config(Some(effective_config));
-        if let Some(val) = saved {
-            std::env::set_var("RALPH_BURNING_BACKEND", val);
-        }
-        result
-    }
+    let selector = "process";
+    build_backend_adapter_for_selector(selector, Some(effective_config))
 }
 
 /// Build an `AgentExecutionService` backed by the environment-selected adapter.
@@ -167,10 +156,22 @@ pub fn build_agent_execution_service_for_config(
 pub fn build_requirements_service(
     effective_config: &EffectiveConfig,
 ) -> AppResult<ProductionRequirementsService> {
-    let adapter = build_backend_adapter_with_config(Some(effective_config))?;
+    let selector = match std::env::var("RALPH_BURNING_BACKEND") {
+        Ok(value) => value,
+        Err(_) => "process".to_owned(),
+    };
+    build_requirements_service_for_selector(&selector, effective_config)
+}
+
+/// Build a `RequirementsService` from an explicit backend selector string.
+/// No environment variables are read — the selector is passed explicitly.
+pub fn build_requirements_service_for_selector(
+    backend_selector: &str,
+    effective_config: &EffectiveConfig,
+) -> AppResult<ProductionRequirementsService> {
+    let adapter = build_backend_adapter_for_selector(backend_selector, Some(effective_config))?;
 
     #[cfg(feature = "test-stub")]
-    // When using the stub adapter, apply test-only label overrides.
     let adapter = apply_label_overrides_if_stub(adapter);
 
     let workspace_defaults = BackendSelectionConfig::from_effective_config(effective_config)?;
@@ -192,34 +193,40 @@ fn apply_label_overrides_if_stub(adapter: BackendAdapter) -> BackendAdapter {
     }
 }
 
-/// Apply `RALPH_BURNING_TEST_LABEL_OVERRIDES` to a `StubBackendAdapter`.
-/// Public so that in-process test harnesses (e.g. conformance daemon helper)
-/// can replicate the same override behaviour without spawning a CLI binary.
+/// Apply label overrides from an explicit map to a `StubBackendAdapter`.
 #[cfg(feature = "test-stub")]
-pub fn apply_test_label_overrides(mut adapter: StubBackendAdapter) -> StubBackendAdapter {
+pub fn apply_label_overrides_from_map(
+    mut adapter: StubBackendAdapter,
+    overrides: &HashMap<String, serde_json::Value>,
+) -> StubBackendAdapter {
+    for (label, payload) in overrides {
+        let full_label = if label.starts_with("requirements:")
+            || label.starts_with("prompt_review:")
+            || label.starts_with("completion_panel:")
+            || label.starts_with("final_review:")
+        {
+            label.clone()
+        } else {
+            format!("requirements:{label}")
+        };
+        if let Some(arr) = payload.as_array() {
+            adapter = adapter.with_label_payload_sequence(full_label, arr.clone());
+        } else {
+            adapter = adapter.with_label_payload(full_label, payload.clone());
+        }
+    }
+    adapter
+}
+
+/// Apply `RALPH_BURNING_TEST_LABEL_OVERRIDES` from the environment to a
+/// `StubBackendAdapter`. Delegates to `apply_label_overrides_from_map`.
+#[cfg(feature = "test-stub")]
+pub fn apply_test_label_overrides(adapter: StubBackendAdapter) -> StubBackendAdapter {
     if let Ok(overrides_json) = std::env::var("RALPH_BURNING_TEST_LABEL_OVERRIDES") {
         if let Ok(overrides) =
             serde_json::from_str::<HashMap<String, serde_json::Value>>(&overrides_json)
         {
-            for (label, payload) in overrides {
-                let full_label = if label.starts_with("requirements:")
-                    || label.starts_with("prompt_review:")
-                    || label.starts_with("completion_panel:")
-                    || label.starts_with("final_review:")
-                {
-                    label
-                } else {
-                    format!("requirements:{label}")
-                };
-                // If the payload is an array, treat it as a sequence so the stub
-                // returns different responses on successive invocations with the
-                // same label (e.g. validation → needs_questions, then pass).
-                if let Some(arr) = payload.as_array() {
-                    adapter = adapter.with_label_payload_sequence(full_label, arr.clone());
-                } else {
-                    adapter = adapter.with_label_payload(full_label, payload);
-                }
-            }
+            return apply_label_overrides_from_map(adapter, &overrides);
         }
     }
     adapter
