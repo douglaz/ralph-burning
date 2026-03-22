@@ -1630,22 +1630,18 @@ fn release_writer_lock_impl(
                     Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                         // Canonical lock was recreated — leave staged
                         // artifact durable and return error.
-                        return Err(AppError::Io(std::io::Error::other(
-                            format!(
-                                "writer lock release: verification failed ({e}) \
+                        return Err(AppError::Io(std::io::Error::other(format!(
+                            "writer lock release: verification failed ({e}) \
                                  and canonical lock was recreated; staged artifact preserved"
-                            ),
-                        )));
+                        ))));
                     }
                     Err(link_err) => {
                         // Cannot restore — staged artifact remains
                         // durable for later recovery.
-                        return Err(AppError::Io(std::io::Error::other(
-                            format!(
-                                "writer lock release: verification failed ({e}) \
+                        return Err(AppError::Io(std::io::Error::other(format!(
+                            "writer lock release: verification failed ({e}) \
                                  and could not restore lock from staging: {link_err}"
-                            ),
-                        )));
+                        ))));
                     }
                 }
                 return Err(e.into());
@@ -1663,20 +1659,16 @@ fn release_writer_lock_impl(
                     Err(link_err) if link_err.kind() == std::io::ErrorKind::AlreadyExists => {
                         // Canonical lock was recreated — leave staged
                         // artifact durable and return error.
-                        return Err(AppError::Io(std::io::Error::other(
-                            format!(
-                                "writer lock release: staging verification failed ({e}) \
+                        return Err(AppError::Io(std::io::Error::other(format!(
+                            "writer lock release: staging verification failed ({e}) \
                                  and canonical lock was recreated; staged artifact preserved"
-                            ),
-                        )));
+                        ))));
                     }
                     Err(link_err) => {
-                        return Err(AppError::Io(std::io::Error::other(
-                            format!(
-                                "writer lock release: staging verification failed ({e}) \
+                        return Err(AppError::Io(std::io::Error::other(format!(
+                            "writer lock release: staging verification failed ({e}) \
                                  and could not restore lock: {link_err}"
-                            ),
-                        )));
+                        ))));
                     }
                 }
                 return Err(e.into());
@@ -1704,12 +1696,10 @@ fn release_writer_lock_impl(
                     // error rather than masquerading as OwnerMismatch
                     // so callers know the lock is not at the canonical
                     // path and the staging artifact is still durable.
-                    return Err(AppError::Io(std::io::Error::other(
-                        format!(
-                            "writer lock release: inode mismatch detected \
+                    return Err(AppError::Io(std::io::Error::other(format!(
+                        "writer lock release: inode mismatch detected \
                              but could not restore replacement lock: {restore_err}"
-                        ),
-                    )));
+                    ))));
                 }
             }
             return Ok(WriterLockReleaseOutcome::OwnerMismatch {

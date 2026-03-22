@@ -1479,8 +1479,14 @@ fn probe_final_review_panel_uses_planner_timeout_not_final_reviewer() {
         .expect("probe should succeed");
 
     // Panel probes use target: None — members are in the panel view.
-    assert!(result.target.is_none(), "panel probes should have target: None");
-    assert!(result.panel.is_some(), "panel probes should have panel view");
+    assert!(
+        result.target.is_none(),
+        "panel probes should have target: None"
+    );
+    assert!(
+        result.panel.is_some(),
+        "panel probes should have panel view"
+    );
 }
 
 #[test]
@@ -1506,8 +1512,14 @@ fn probe_prompt_review_panel_uses_prompt_reviewer_timeout_not_validator() {
         .probe("prompt_review_panel", FlowPreset::Standard, 1)
         .expect("probe should succeed");
 
-    assert!(result.target.is_none(), "panel probes should have target: None");
-    assert!(result.panel.is_some(), "panel probes should have panel view");
+    assert!(
+        result.target.is_none(),
+        "panel probes should have target: None"
+    );
+    assert!(
+        result.panel.is_some(),
+        "panel probes should have panel view"
+    );
 }
 
 #[test]
@@ -1533,8 +1545,14 @@ fn probe_completion_panel_uses_planner_timeout_not_completer() {
         .probe("completion_panel", FlowPreset::Standard, 1)
         .expect("probe should succeed");
 
-    assert!(result.target.is_none(), "panel probes should have target: None");
-    assert!(result.panel.is_some(), "panel probes should have panel view");
+    assert!(
+        result.target.is_none(),
+        "panel probes should have target: None"
+    );
+    assert!(
+        result.panel.is_some(),
+        "panel probes should have panel view"
+    );
 }
 
 // ── probe failure config source tests ─────────────────────────────────────────

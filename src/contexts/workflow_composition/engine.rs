@@ -307,10 +307,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
             }
             _ => {
                 adapter
-                    .check_capability(
-                        &entry.target,
-                        &InvocationContract::Stage(entry.contract),
-                    )
+                    .check_capability(&entry.target, &InvocationContract::Stage(entry.contract))
                     .await
                     .map_err(|e| AppError::PreflightFailed {
                         stage_id: entry.stage_id,
@@ -2904,10 +2901,14 @@ where
                             .await;
                         }
 
-                        let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
-                            field: "cycle",
-                            value: cursor.cycle,
-                        })?;
+                        let next_cycle =
+                            cursor
+                                .cycle
+                                .checked_add(1)
+                                .ok_or(AppError::StageCursorOverflow {
+                                    field: "cycle",
+                                    value: cursor.cycle,
+                                })?;
                         if next_cycle > retry_policy.max_remediation_cycles() {
                             return fail_run_result(
                                 &AppError::RemediationExhausted {
@@ -3447,10 +3448,12 @@ where
                                 .await;
                                 }
 
-                                let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
-                                    field: "cycle",
-                                    value: cursor.cycle,
-                                })?;
+                                let next_cycle = cursor.cycle.checked_add(1).ok_or(
+                                    AppError::StageCursorOverflow {
+                                        field: "cycle",
+                                        value: cursor.cycle,
+                                    },
+                                )?;
                                 if next_cycle > retry_policy.max_remediation_cycles() {
                                     return fail_run_result(
                                         &AppError::RemediationExhausted {
@@ -3940,10 +3943,14 @@ where
                         .await;
                     }
 
-                    let next_cycle = cursor.cycle.checked_add(1).ok_or(AppError::StageCursorOverflow {
-                        field: "cycle",
-                        value: cursor.cycle,
-                    })?;
+                    let next_cycle =
+                        cursor
+                            .cycle
+                            .checked_add(1)
+                            .ok_or(AppError::StageCursorOverflow {
+                                field: "cycle",
+                                value: cursor.cycle,
+                            })?;
                     if next_cycle > retry_policy.max_remediation_cycles() {
                         return fail_run_result(
                             &AppError::RemediationExhausted {

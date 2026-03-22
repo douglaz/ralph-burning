@@ -74,20 +74,20 @@ impl PreparedCommand {
                     structured
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
-                    serde_json::from_str(&envelope.result).or_else(|_| {
-                        extract_json_from_text(&envelope.result)
-                    }).map_err(|error| {
-                        ProcessBackendAdapter::invocation_failed(
-                            request,
-                            FailureClass::SchemaValidationFailure,
-                            format!(
-                                "invalid Claude result JSON: {error} \
+                    serde_json::from_str(&envelope.result)
+                        .or_else(|_| extract_json_from_text(&envelope.result))
+                        .map_err(|error| {
+                            ProcessBackendAdapter::invocation_failed(
+                                request,
+                                FailureClass::SchemaValidationFailure,
+                                format!(
+                                    "invalid Claude result JSON: {error} \
                                  (contract: {}, result_len: {})",
-                                request.contract.label(),
-                                envelope.result.len(),
-                            ),
-                        )
-                    })?
+                                    request.contract.label(),
+                                    envelope.result.len(),
+                                ),
+                            )
+                        })?
                 } else {
                     // Both structured_output and result are empty.
                     // Last resort: try to find JSON in the raw stdout beyond the envelope.
@@ -810,7 +810,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     if !fresh_output.status.success() {
                         let fresh_stderr = String::from_utf8_lossy(&fresh_output.stderr);
                         let fresh_stdout_error = extract_stdout_error(&fresh_output.stdout);
-                        let code = fresh_output.status.code().map_or("signal".to_owned(), |c| c.to_string());
+                        let code = fresh_output
+                            .status
+                            .code()
+                            .map_or("signal".to_owned(), |c| c.to_string());
                         fresh_prepared.cleanup().await;
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
                             (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
@@ -842,10 +845,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
-                    format!(
-                        "{} exited with code {code}{detail}",
-                        prepared.binary(),
-                    ),
+                    format!("{} exited with code {code}{detail}", prepared.binary(),),
                 ))
             }
             _ => prepared.finish(&request, output).await,
@@ -938,9 +938,7 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
 /// violates OpenAI's strict-mode contract.
 pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
-        let is_object = map
-            .get("type")
-            .and_then(|t| t.as_str()) == Some("object");
+        let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object");
         if is_object {
             // 1. additionalProperties: false
             if !map.contains_key("additionalProperties") {
@@ -965,10 +963,7 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
                         }
                     }
                     _ => {
-                        map.insert(
-                            "required".to_owned(),
-                            serde_json::Value::Array(all_keys),
-                        );
+                        map.insert("required".to_owned(), serde_json::Value::Array(all_keys));
                     }
                 }
             }
@@ -1004,7 +999,10 @@ fn looks_like_claude_envelope(val: &serde_json::Value) -> bool {
     // `structured_output`. If we see at least two of these three keys,
     // this is almost certainly the envelope, not a contract payload.
     let envelope_keys = ["result", "session_id", "structured_output"];
-    let matches = envelope_keys.iter().filter(|k| obj.contains_key(**k)).count();
+    let matches = envelope_keys
+        .iter()
+        .filter(|k| obj.contains_key(**k))
+        .count();
     matches >= 2
 }
 
@@ -1092,8 +1090,10 @@ mod tests {
 
         let required = schema["required"].as_array().unwrap();
         let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(required_strings.contains(&"follow_ups"),
-            "follow_ups should be added to required; got: {required_strings:?}");
+        assert!(
+            required_strings.contains(&"follow_ups"),
+            "follow_ups should be added to required; got: {required_strings:?}"
+        );
         assert!(required_strings.contains(&"outcome"));
         assert!(required_strings.contains(&"evidence"));
         assert!(required_strings.contains(&"findings"));
@@ -1139,9 +1139,14 @@ mod tests {
 
         let nested = &schema["properties"]["source"];
         let nested_required = nested["required"].as_array().unwrap();
-        let nested_strings: Vec<&str> = nested_required.iter().map(|v| v.as_str().unwrap()).collect();
-        assert!(nested_strings.contains(&"quick_revisions"),
-            "quick_revisions should be added to nested required; got: {nested_strings:?}");
+        let nested_strings: Vec<&str> = nested_required
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+        assert!(
+            nested_strings.contains(&"quick_revisions"),
+            "quick_revisions should be added to nested required; got: {nested_strings:?}"
+        );
         assert_eq!(nested["additionalProperties"], json!(false));
     }
 
@@ -1161,7 +1166,8 @@ mod tests {
 
     #[test]
     fn extract_json_from_text_embedded_object() {
-        let text = "The result is: {\"outcome\": \"approved\", \"evidence\": [\"ok\"]} and that's it.";
+        let text =
+            "The result is: {\"outcome\": \"approved\", \"evidence\": [\"ok\"]} and that's it.";
         let val = extract_json_from_text(text).unwrap();
         assert_eq!(val["outcome"], "approved");
     }
@@ -1215,12 +1221,12 @@ mod tests {
 
     // ── Integration-style tests for the full Claude finish() fallback ────
 
-    use std::os::unix::process::ExitStatusExt;
-    use std::path::PathBuf;
     use crate::contexts::agent_execution::model::{
         CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
     };
     use crate::shared::domain::{BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy};
+    use std::os::unix::process::ExitStatusExt;
+    use std::path::PathBuf;
 
     fn make_test_request() -> InvocationRequest {
         InvocationRequest {
@@ -1302,7 +1308,10 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await;
 
-        assert!(result.is_err(), "should fail when only envelope is in stdout");
+        assert!(
+            result.is_err(),
+            "should fail when only envelope is in stdout"
+        );
         let err = result.unwrap_err().to_string();
         assert!(
             err.contains("empty result"),

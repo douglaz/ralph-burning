@@ -260,25 +260,26 @@ impl LeaseService {
 
         // PHASE 1: Worktree removal. If it fails, keep all durable lease
         // state (writer lock, lease file) intact so a later reconcile can retry.
-        let worktree_already_absent = match worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id) {
-            Ok(WorktreeCleanupOutcome::Removed) => false,
-            Ok(WorktreeCleanupOutcome::AlreadyAbsent) => true,
-            Err(e) => {
-                // Worktree removal failed — do not attempt writer-lock
-                // release or lease-file deletion.
-                return Ok(ReleaseResult {
-                    resources_released: false,
-                    journal_error: None,
-                    worktree_already_absent: false,
-                    worktree_error: Some(e.to_string()),
-                    lease_file_already_absent: false,
-                    writer_lock_already_absent: false,
-                    writer_lock_owner_mismatch: false,
-                    lease_file_error: None,
-                    writer_lock_error: None,
-                });
-            }
-        };
+        let worktree_already_absent =
+            match worktree.remove_worktree(repo_root, &lease.worktree_path, &lease.task_id) {
+                Ok(WorktreeCleanupOutcome::Removed) => false,
+                Ok(WorktreeCleanupOutcome::AlreadyAbsent) => true,
+                Err(e) => {
+                    // Worktree removal failed — do not attempt writer-lock
+                    // release or lease-file deletion.
+                    return Ok(ReleaseResult {
+                        resources_released: false,
+                        journal_error: None,
+                        worktree_already_absent: false,
+                        worktree_error: Some(e.to_string()),
+                        lease_file_already_absent: false,
+                        writer_lock_already_absent: false,
+                        writer_lock_owner_mismatch: false,
+                        lease_file_error: None,
+                        writer_lock_error: None,
+                    });
+                }
+            };
 
         // PHASE 2: Owner-aware writer-lock release. Must succeed before
         // the lease file is deleted so the durable lease record remains

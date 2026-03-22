@@ -1,3 +1,4 @@
+// test
 #![forbid(unsafe_code)]
 
 use std::process::ExitCode;

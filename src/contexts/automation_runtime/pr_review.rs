@@ -162,25 +162,28 @@ where
             if task.status == TaskStatus::Active {
                 // Disk-only staging: write amendment files without run.json mutation.
                 // Deduplicate by dedup_key against existing on-disk amendments.
-                let existing = self.amendment_queue
+                let existing = self
+                    .amendment_queue
                     .list_pending_amendments(workspace_dir, &project_id)?;
-                let mut seen_keys: std::collections::HashSet<String> = existing
-                    .iter()
-                    .map(|a| a.dedup_key.clone())
-                    .collect();
+                let mut seen_keys: std::collections::HashSet<String> =
+                    existing.iter().map(|a| a.dedup_key.clone()).collect();
                 let mut ids: Vec<String> = Vec::new();
                 for amendment in &amendments {
                     if !seen_keys.insert(amendment.dedup_key.clone()) {
                         continue;
                     }
-                    if let Err(e) = self.amendment_queue
-                        .write_amendment(workspace_dir, &project_id, amendment)
+                    if let Err(e) =
+                        self.amendment_queue
+                            .write_amendment(workspace_dir, &project_id, amendment)
                     {
                         // Roll back files written earlier in this batch so a
                         // partial failure doesn't leak a subset of amendments.
                         for written_id in &ids {
-                            let _ = self.amendment_queue
-                                .remove_amendment(workspace_dir, &project_id, written_id);
+                            let _ = self.amendment_queue.remove_amendment(
+                                workspace_dir,
+                                &project_id,
+                                written_id,
+                            );
                         }
                         return Err(e);
                     }

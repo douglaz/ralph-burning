@@ -213,9 +213,7 @@ impl DaemonTaskService {
                 &lease,
                 ReleaseMode::Idempotent,
             );
-            let resources_released = release_result
-                .as_ref()
-                .is_ok_and(|r| r.resources_released);
+            let resources_released = release_result.as_ref().is_ok_and(|r| r.resources_released);
 
             if resources_released {
                 // Physical resources released — safe to restore Pending.
@@ -316,9 +314,7 @@ impl DaemonTaskService {
                 &lease,
                 ReleaseMode::Idempotent,
             );
-            let resources_released = release_result
-                .as_ref()
-                .is_ok_and(|r| r.resources_released);
+            let resources_released = release_result.as_ref().is_ok_and(|r| r.resources_released);
             let _ = (|| -> AppResult<()> {
                 let mut t = store.read_task(base_dir, &task.task_id)?;
                 t.transition_to(TaskStatus::Failed, Utc::now())?;

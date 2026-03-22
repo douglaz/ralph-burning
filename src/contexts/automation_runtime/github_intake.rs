@@ -374,49 +374,48 @@ async fn handle_explicit_command<G: GithubPort>(
                 return Err(e);
             }
         }
-    } else if cmd == "/rb abort"
-        && !task.status.is_terminal() {
-            let original_status = task.status;
-            DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
+    } else if cmd == "/rb abort" && !task.status.is_terminal() {
+        let original_status = task.status;
+        DaemonTaskService::mark_aborted(store, base_dir, &task.task_id)?;
 
-            // Clean up lease/worktree for Claimed/Active tasks (same as
-            // the CLI abort path) to prevent stranding live resources.
-            if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
-                if let Some(ref lid) = task.lease_id {
-                    if let Ok(lease) = store.read_lease(base_dir, lid) {
-                        let result = LeaseService::release(
-                            store,
-                            worktree,
-                            base_dir,
-                            &registration.repo_root,
-                            &lease,
-                            ReleaseMode::Idempotent,
-                        );
-                        match result {
-                            Ok(ref r) if r.resources_released => {
-                                let _ = DaemonTaskService::clear_lease_reference(
-                                    store,
-                                    base_dir,
-                                    &task.task_id,
-                                );
-                            }
-                            _ => {
-                                // Partial cleanup: lease reference preserved for
-                                // reconcile. This is not fatal — the task is already
-                                // aborted and the resources remain discoverable.
-                            }
+        // Clean up lease/worktree for Claimed/Active tasks (same as
+        // the CLI abort path) to prevent stranding live resources.
+        if matches!(original_status, TaskStatus::Claimed | TaskStatus::Active) {
+            if let Some(ref lid) = task.lease_id {
+                if let Ok(lease) = store.read_lease(base_dir, lid) {
+                    let result = LeaseService::release(
+                        store,
+                        worktree,
+                        base_dir,
+                        &registration.repo_root,
+                        &lease,
+                        ReleaseMode::Idempotent,
+                    );
+                    match result {
+                        Ok(ref r) if r.resources_released => {
+                            let _ = DaemonTaskService::clear_lease_reference(
+                                store,
+                                base_dir,
+                                &task.task_id,
+                            );
+                        }
+                        _ => {
+                            // Partial cleanup: lease reference preserved for
+                            // reconcile. This is not fatal — the task is already
+                            // aborted and the resources remain discoverable.
                         }
                     }
                 }
             }
+        }
 
-            let aborted = store.read_task(base_dir, &task.task_id)?;
-            // Reconcile label: Aborted → rb:failed
-            // Mark label_dirty on failure so reconcile can repair.
-            if let Err(e) = sync_label_for_task(github, &aborted).await {
-                let _ = DaemonTaskService::mark_label_dirty(store, base_dir, &aborted.task_id);
-                return Err(e);
-            }
+        let aborted = store.read_task(base_dir, &task.task_id)?;
+        // Reconcile label: Aborted → rb:failed
+        // Mark label_dirty on failure so reconcile can repair.
+        if let Err(e) = sync_label_for_task(github, &aborted).await {
+            let _ = DaemonTaskService::mark_label_dirty(store, base_dir, &aborted.task_id);
+            return Err(e);
+        }
     }
 
     Ok(())
