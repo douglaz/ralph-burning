@@ -33,11 +33,11 @@ use crate::contexts::workflow_composition::panel_contracts::{
     PromptValidationPayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendFamily, BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy,
     StageCursor, StageId,
 };
-use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 /// Result of a successful prompt review execution.

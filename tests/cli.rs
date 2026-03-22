@@ -7343,10 +7343,7 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
 
     // Install a malformed workspace template override for "planning"
     // (the first stage in a standard flow). Missing all required placeholders.
-    let ws_templates = temp_dir
-        .path()
-        .join(".ralph-burning")
-        .join("templates");
+    let ws_templates = temp_dir.path().join(".ralph-burning").join("templates");
     fs::create_dir_all(&ws_templates).expect("create templates dir");
     fs::write(
         ws_templates.join("planning.md"),
@@ -7407,8 +7404,7 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
 
     // run.json must not record a running stage for the failed template
     assert!(
-        !post_run_json.contains("\"status\":\"running\"")
-            || post_run_json == pre_run_json,
+        !post_run_json.contains("\"status\":\"running\"") || post_run_json == pre_run_json,
         "run.json must not show running status for a malformed template failure"
     );
 
@@ -7421,16 +7417,15 @@ fn run_start_malformed_template_override_exits_nonzero_with_no_durable_state_cha
         let planning_payloads: Vec<_> = fs::read_dir(&payloads_dir)
             .expect("read payloads dir")
             .filter_map(|e| e.ok())
-            .filter(|e| {
-                e.file_name()
-                    .to_string_lossy()
-                    .contains("planning")
-            })
+            .filter(|e| e.file_name().to_string_lossy().contains("planning"))
             .collect();
         assert!(
             planning_payloads.is_empty(),
             "no planning payloads should be written for a malformed template, found: {:?}",
-            planning_payloads.iter().map(|e| e.file_name()).collect::<Vec<_>>()
+            planning_payloads
+                .iter()
+                .map(|e| e.file_name())
+                .collect::<Vec<_>>()
         );
     }
 }
@@ -7442,10 +7437,7 @@ fn run_start_malformed_project_override_does_not_fall_back_to_workspace() {
     setup_standard_project(&temp_dir, "tpl-no-fallback");
 
     // Install a VALID workspace override
-    let ws_templates = temp_dir
-        .path()
-        .join(".ralph-burning")
-        .join("templates");
+    let ws_templates = temp_dir.path().join(".ralph-burning").join("templates");
     fs::create_dir_all(&ws_templates).expect("create templates dir");
     fs::write(
         ws_templates.join("planning.md"),

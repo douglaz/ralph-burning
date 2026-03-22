@@ -61,7 +61,10 @@ fn workspace_override_takes_precedence_over_built_in() {
     .unwrap();
 
     let resolved = template_catalog::resolve("planning", tmp.path(), None).unwrap();
-    assert!(matches!(resolved.source, TemplateSource::WorkspaceOverride(_)));
+    assert!(matches!(
+        resolved.source,
+        TemplateSource::WorkspaceOverride(_)
+    ));
     assert!(resolved.content.contains("Custom:"));
 }
 
@@ -94,7 +97,10 @@ fn project_override_takes_precedence_over_workspace() {
     .unwrap();
 
     let resolved = template_catalog::resolve("planning", tmp.path(), Some(&pid)).unwrap();
-    assert!(matches!(resolved.source, TemplateSource::ProjectOverride(_)));
+    assert!(matches!(
+        resolved.source,
+        TemplateSource::ProjectOverride(_)
+    ));
     assert!(resolved.content.starts_with("Project:"));
 }
 
@@ -113,7 +119,10 @@ fn workspace_override_used_when_no_project_override() {
     .unwrap();
 
     let resolved = template_catalog::resolve("planning", tmp.path(), Some(&pid)).unwrap();
-    assert!(matches!(resolved.source, TemplateSource::WorkspaceOverride(_)));
+    assert!(matches!(
+        resolved.source,
+        TemplateSource::WorkspaceOverride(_)
+    ));
 }
 
 // ── Placeholder validation ──────────────────────────────────────────────
@@ -177,11 +186,7 @@ fn missing_required_placeholder_rejected() {
     let tmp = tempdir().unwrap();
     let ws = tmp.path().join(".ralph-burning").join("templates");
     std::fs::create_dir_all(&ws).unwrap();
-    std::fs::write(
-        ws.join("requirements_ideation.md"),
-        "No placeholders here.",
-    )
-    .unwrap();
+    std::fs::write(ws.join("requirements_ideation.md"), "No placeholders here.").unwrap();
 
     let result = template_catalog::resolve("requirements_ideation", tmp.path(), None);
     assert!(result.is_err());
@@ -196,11 +201,7 @@ fn optional_placeholder_not_required() {
     let ws = tmp.path().join(".ralph-burning").join("templates");
     std::fs::create_dir_all(&ws).unwrap();
     // requirements_draft has required: idea, optional: answers
-    std::fs::write(
-        ws.join("requirements_draft.md"),
-        "Just the idea: {{idea}}",
-    )
-    .unwrap();
+    std::fs::write(ws.join("requirements_draft.md"), "Just the idea: {{idea}}").unwrap();
 
     let result = template_catalog::resolve("requirements_draft", tmp.path(), None);
     assert!(result.is_ok());
@@ -373,14 +374,20 @@ fn render_preserves_verbatim_pre_rendered_blocks() {
     .unwrap();
 
     // JSON structure preserved
-    assert!(rendered.contains(json_block), "JSON block must be preserved verbatim");
+    assert!(
+        rendered.contains(json_block),
+        "JSON block must be preserved verbatim"
+    );
     // Multi-line prompt preserved
     assert!(
         rendered.contains(multi_line_prompt),
         "multi-line prompt content must be preserved verbatim"
     );
     // No triple newlines after normalization
-    assert!(!rendered.contains("\n\n\n"), "runs of 3+ newlines should be collapsed");
+    assert!(
+        !rendered.contains("\n\n\n"),
+        "runs of 3+ newlines should be collapsed"
+    );
 }
 
 // ── Resolve and render convenience ──────────────────────────────────────
@@ -428,7 +435,11 @@ fn resolve_and_render_requirements_validation() {
 #[test]
 fn has_override_false_when_no_files() {
     let tmp = tempdir().unwrap();
-    assert!(!template_catalog::has_override("planning", tmp.path(), None));
+    assert!(!template_catalog::has_override(
+        "planning",
+        tmp.path(),
+        None
+    ));
 }
 
 #[test]

@@ -35,10 +35,10 @@ use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewVotePayload, RecordKind, RecordProducer,
 };
 use crate::contexts::workflow_composition::renderers;
+use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendRole, ProjectId, ResolvedBackendTarget, RunId, SessionPolicy, StageCursor, StageId,
 };
-use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -323,7 +323,13 @@ where
         BackendRole::Planner,
         "planner",
         "voter",
-        build_voter_prompt("Planner Positions", &amendments, None, base_dir, Some(project_id))?,
+        build_voter_prompt(
+            "Planner Positions",
+            &amendments,
+            None,
+            base_dir,
+            Some(project_id),
+        )?,
         json!({
             "amendments": amendments
                 .iter()
@@ -391,7 +397,13 @@ where
             BackendRole::Reviewer,
             &reviewer.reviewer_id,
             "voter",
-            build_voter_prompt("Final Review Votes", &amendments, Some(&planner_votes), base_dir, Some(project_id))?,
+            build_voter_prompt(
+                "Final Review Votes",
+                &amendments,
+                Some(&planner_votes),
+                base_dir,
+                Some(project_id),
+            )?,
             json!({
                 "amendments": amendments
                     .iter()
@@ -516,7 +528,13 @@ where
             BackendRole::Reviewer,
             "arbiter",
             "arbiter",
-            build_arbiter_prompt(&disputed_set, &planner_votes, &reviewer_votes, base_dir, Some(project_id))?,
+            build_arbiter_prompt(
+                &disputed_set,
+                &planner_votes,
+                &reviewer_votes,
+                base_dir,
+                Some(project_id),
+            )?,
             json!({
                 "disputed_amendments": disputed_set
                     .values()

@@ -77,9 +77,7 @@
         };
 
         devShells.default = pkgs.mkShell {
-          packages = [
-            self.packages.${system}.default
-          ] ++ (with pkgs; [
+          packages = with pkgs; [
             cargo
             rustc
             rustfmt
@@ -88,7 +86,7 @@
             git
             gh
             jq
-          ]);
+          ];
 
           RUST_SRC_PATH = "${pkgs.rustPlatform.rustLibSrc}";
         };

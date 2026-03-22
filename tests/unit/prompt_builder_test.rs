@@ -571,9 +571,7 @@ fn build_stage_prompt_with_workspace_template_override() {
     )
     .expect("write override");
 
-    let artifact_store = InMemoryArtifactStore {
-        payloads: vec![],
-    };
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
 
     let prompt = build_stage_prompt(
         &artifact_store,
@@ -590,7 +588,10 @@ fn build_stage_prompt_with_workspace_template_override() {
     )
     .expect("build prompt with override");
 
-    assert!(prompt.starts_with("CUSTOM PLANNING"), "override should be used");
+    assert!(
+        prompt.starts_with("CUSTOM PLANNING"),
+        "override should be used"
+    );
     assert!(prompt.contains("Build a calculator."));
     assert!(prompt.contains("You are the Planner."));
 }
@@ -626,9 +627,7 @@ fn build_stage_prompt_fails_on_malformed_workspace_override() {
     )
     .expect("write malformed override");
 
-    let artifact_store = InMemoryArtifactStore {
-        payloads: vec![],
-    };
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
 
     let result = build_stage_prompt(
         &artifact_store,

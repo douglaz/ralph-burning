@@ -4,9 +4,47 @@
 //! GitHub REST API. The adapter is designed for daemon use — every method is
 //! self-contained and does not hold persistent connections between calls.
 
+use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
 use serde::{Deserialize, Serialize};
 
 use crate::shared::error::{AppError, AppResult};
+
+// Encode compare refs as URL path segments while preserving RFC 3986
+// unreserved characters (`A-Z a-z 0-9 - . _ ~`).
+const GITHUB_COMPARE_REF_SEGMENT: &AsciiSet = &CONTROLS
+    .add(b' ')
+    .add(b'!')
+    .add(b'"')
+    .add(b'#')
+    .add(b'$')
+    .add(b'%')
+    .add(b'&')
+    .add(b'\'')
+    .add(b'(')
+    .add(b')')
+    .add(b'*')
+    .add(b'+')
+    .add(b',')
+    .add(b'/')
+    .add(b':')
+    .add(b';')
+    .add(b'<')
+    .add(b'=')
+    .add(b'>')
+    .add(b'?')
+    .add(b'@')
+    .add(b'[')
+    .add(b'\\')
+    .add(b']')
+    .add(b'^')
+    .add(b'`')
+    .add(b'{')
+    .add(b'|')
+    .add(b'}');
+
+fn encode_compare_ref(reference: &str) -> String {
+    utf8_percent_encode(reference, GITHUB_COMPARE_REF_SEGMENT).to_string()
+}
 
 // ---------------------------------------------------------------------------
 // Client
@@ -765,13 +803,10 @@ impl GithubClient {
         base: &str,
         head: &str,
     ) -> AppResult<bool> {
-        // URL-encode ref names: branch names like `rb/42-project` contain
-        // slashes that must be percent-encoded in the compare URL path.
-        let encode_ref = |r: &str| r.replace('%', "%25").replace('/', "%2F");
         let url = self.api_url(&format!(
             "/repos/{owner}/{repo}/compare/{}...{}",
-            encode_ref(base),
-            encode_ref(head),
+            encode_compare_ref(base),
+            encode_compare_ref(head),
         ));
         let resp = self
             .http
@@ -1491,5 +1526,26 @@ impl GithubPort for InMemoryGithubClient {
     ) -> AppResult<bool> {
         let ahead = self.branches_ahead.lock().unwrap();
         Ok(ahead.contains(&format!("{owner}/{repo}:{base}...{head}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_compare_ref;
+
+    #[test]
+    fn encode_compare_ref_preserves_unreserved_characters() {
+        assert_eq!(
+            encode_compare_ref("release-1.0_main~candidate"),
+            "release-1.0_main~candidate"
+        );
+    }
+
+    #[test]
+    fn encode_compare_ref_handles_reserved_and_utf8_characters() {
+        assert_eq!(
+            encode_compare_ref("feature/%ready#über@team"),
+            "feature%2F%25ready%23%C3%BCber%40team"
+        );
     }
 }

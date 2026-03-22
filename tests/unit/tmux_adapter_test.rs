@@ -310,7 +310,9 @@ fn tmux_session_name_is_deterministic() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_adapter_matches_direct_process_output() {
-    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() { return; }
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();
@@ -351,7 +353,9 @@ async fn tmux_adapter_matches_direct_process_output() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running() {
-    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() { return; }
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();
@@ -400,7 +404,9 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_adapter_cancel_uses_sigterm_before_sigkill_when_backend_ignores_term() {
-    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() { return; }
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();
@@ -459,7 +465,9 @@ async fn tmux_adapter_cancel_uses_sigterm_before_sigkill_when_backend_ignores_te
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill() {
-    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() { return; }
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
     let bin_dir = tempdir().expect("create bin dir");
     let state_dir = tempdir().expect("create state dir");
     let _env_lock = lock_path_mutex();

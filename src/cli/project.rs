@@ -463,19 +463,22 @@ fn load_seed_from_file(
         base_dir.join(seed_path)
     };
 
-    let raw = std::fs::read_to_string(&resolved).map_err(|error| AppError::Io(
-        std::io::Error::new(
+    let raw = std::fs::read_to_string(&resolved).map_err(|error| {
+        AppError::Io(std::io::Error::new(
             error.kind(),
-            format!("failed to read seed file '{}': {}", resolved.display(), error),
-        ),
-    ))?;
+            format!(
+                "failed to read seed file '{}': {}",
+                resolved.display(),
+                error
+            ),
+        ))
+    })?;
 
-    let seed: ProjectSeedPayload = serde_json::from_str(&raw).map_err(|error| {
-        AppError::RequirementsHandoffFailed {
+    let seed: ProjectSeedPayload =
+        serde_json::from_str(&raw).map_err(|error| AppError::RequirementsHandoffFailed {
             task_id: resolved.display().to_string(),
             details: format!("invalid project seed JSON: {error}"),
-        }
-    })?;
+        })?;
 
     if !SUPPORTED_SEED_VERSIONS.contains(&seed.version) {
         return Err(AppError::RequirementsHandoffFailed {

@@ -1135,7 +1135,10 @@ impl<'a> BackendDiagnosticsService<'a> {
                             backend: primary.backend.family.as_str().to_owned(),
                             details: format!(
                                 "required primary '{}' for '{}' unavailable: {} [source: {}]",
-                                role.as_str(), role_str, err, primary_source
+                                role.as_str(),
+                                role_str,
+                                err,
+                                primary_source
                             ),
                         });
                     }

@@ -562,11 +562,7 @@ fn read_override_file(path: &Path) -> AppResult<String> {
 
 /// Validate that the template text uses only known placeholders and includes
 /// all required ones.
-fn validate_template(
-    content: &str,
-    manifest: &TemplateManifest,
-    path: &Path,
-) -> AppResult<()> {
+fn validate_template(content: &str, manifest: &TemplateManifest, path: &Path) -> AppResult<()> {
     // Extract ALL marker-shaped tokens (including those with invalid names
     // like hyphens or spaces) so we can reject them.
     let all_tokens = extract_all_marker_tokens(content);
@@ -606,10 +602,7 @@ fn validate_template(
         if !valid_placeholders.contains(req) {
             return Err(AppError::MalformedTemplate {
                 path: path.display().to_string(),
-                reason: format!(
-                    "missing required placeholder '{{{{{}}}}}' in template",
-                    req
-                ),
+                reason: format!("missing required placeholder '{{{{{}}}}}' in template", req),
             });
         }
     }
@@ -668,10 +661,7 @@ fn extract_all_marker_tokens(content: &str) -> HashSet<String> {
 /// Replaces each `{{name}}` with its value. Optional placeholders that are
 /// not supplied expand to empty string. Collapses runs of 3+ consecutive
 /// newlines to exactly 2.
-pub fn render(
-    resolved: &ResolvedTemplate,
-    values: &[(&str, &str)],
-) -> AppResult<String> {
+pub fn render(resolved: &ResolvedTemplate, values: &[(&str, &str)]) -> AppResult<String> {
     let values_map: HashMap<&str, &str> = values.iter().copied().collect();
     let mut output = resolved.content.clone();
 
@@ -760,11 +750,7 @@ pub fn resolve_and_render(
 }
 
 /// Check whether any override exists for a template ID without reading it.
-pub fn has_override(
-    template_id: &str,
-    base_dir: &Path,
-    project_id: Option<&ProjectId>,
-) -> bool {
+pub fn has_override(template_id: &str, base_dir: &Path, project_id: Option<&ProjectId>) -> bool {
     if let Some(pid) = project_id {
         if project_template_path(base_dir, pid, template_id).exists() {
             return true;
@@ -894,10 +880,7 @@ mod tests {
     #[test]
     fn workspace_override_used_when_present() {
         let tmp = tempfile::tempdir().unwrap();
-        let ws_templates = tmp
-            .path()
-            .join(".ralph-burning")
-            .join("templates");
+        let ws_templates = tmp.path().join(".ralph-burning").join("templates");
         std::fs::create_dir_all(&ws_templates).unwrap();
         std::fs::write(
             ws_templates.join("requirements_ideation.md"),
@@ -906,7 +889,10 @@ mod tests {
         .unwrap();
 
         let resolved = resolve("requirements_ideation", tmp.path(), None).unwrap();
-        assert!(matches!(resolved.source, TemplateSource::WorkspaceOverride(_)));
+        assert!(matches!(
+            resolved.source,
+            TemplateSource::WorkspaceOverride(_)
+        ));
         let rendered = render(&resolved, &[("base_context", "test idea")]).unwrap();
         assert_eq!(rendered, "Custom ideation: test idea");
     }
@@ -940,7 +926,10 @@ mod tests {
         .unwrap();
 
         let resolved = resolve("requirements_ideation", tmp.path(), Some(&pid)).unwrap();
-        assert!(matches!(resolved.source, TemplateSource::ProjectOverride(_)));
+        assert!(matches!(
+            resolved.source,
+            TemplateSource::ProjectOverride(_)
+        ));
         let rendered = render(&resolved, &[("base_context", "test")]).unwrap();
         assert_eq!(rendered, "Project: test");
     }

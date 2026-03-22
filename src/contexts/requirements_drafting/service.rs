@@ -21,8 +21,8 @@ use crate::contexts::agent_execution::service::{
 };
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::RawOutputPort;
-use crate::shared::domain::{BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::contexts::workspace_governance::template_catalog;
+use crate::shared::domain::{BackendRole, FlowPreset, ProjectId, SessionPolicy};
 use crate::shared::error::{AppError, AppResult};
 
 use super::contracts::{RequirementsContract, RequirementsPayload, RequirementsValidatedBundle};
@@ -276,7 +276,12 @@ where
     ///
     /// Valid only for runs in `awaiting_answers` status, or failed runs whose
     /// latest durable boundary is a committed question set.
-    pub async fn answer(&self, base_dir: &Path, run_id: &str, project_id: Option<&ProjectId>) -> AppResult<()> {
+    pub async fn answer(
+        &self,
+        base_dir: &Path,
+        run_id: &str,
+        project_id: Option<&ProjectId>,
+    ) -> AppResult<()> {
         let mut run = self.store.read_run(base_dir, run_id)?;
 
         match run.status {
@@ -565,7 +570,10 @@ where
                 "requirements_research",
                 base_dir,
                 project_id,
-                &[("base_context", &base_context), ("ideation_artifact", &ideation_artifact)],
+                &[
+                    ("base_context", &base_context),
+                    ("ideation_artifact", &ideation_artifact),
+                ],
             )?;
 
             run.current_stage = Some(FullModeStage::Research);
@@ -1018,7 +1026,11 @@ where
         let run_root = requirements_run_root(base_dir, &run_id);
 
         // Generate questions about the missing information
-        let missing_info_text = missing_info.iter().map(|m| format!("- {m}")).collect::<Vec<_>>().join("\n");
+        let missing_info_text = missing_info
+            .iter()
+            .map(|m| format!("- {m}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let question_prompt = template_catalog::resolve_and_render(
             "requirements_question_set",
             base_dir,
@@ -2247,7 +2259,12 @@ fn parse_and_validate_answers<Q: RequirementsStorePort>(
     Ok(PersistedAnswers { answers })
 }
 
-fn build_draft_prompt(idea: &str, answers: &[(String, String)], base_dir: &Path, project_id: Option<&ProjectId>) -> AppResult<String> {
+fn build_draft_prompt(
+    idea: &str,
+    answers: &[(String, String)],
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+) -> AppResult<String> {
     let answers_text = if answers.is_empty() {
         String::new()
     } else {

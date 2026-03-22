@@ -6746,8 +6746,14 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         // question_round tracks completed rounds (incremented by answer());
         // at awaiting_answers, verify latest_question_set_id is set instead.
-        if run.get("latest_question_set_id").and_then(|v| v.as_str()).is_none() {
-            return Err("expected latest_question_set_id to be set after question generation".into());
+        if run
+            .get("latest_question_set_id")
+            .and_then(|v| v.as_str())
+            .is_none()
+        {
+            return Err(
+                "expected latest_question_set_id to be set after question generation".into(),
+            );
         }
 
         // Answer overrides: validation passes so the pipeline completes.
@@ -7449,7 +7455,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
         let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
         let now = chrono::Utc::now();
-        let run_id = block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None))?;
+        let run_id =
+            block_on_app_result(service.quick(ws.path(), "Quick revision test", now, None))?;
 
         let store = FsRequirementsStore;
         let run = store
@@ -7789,7 +7796,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             let service = RequirementsService::new(agent_service, FsRequirementsStore);
 
             let now = chrono::Utc::now();
-            let run_id = block_on_app_result(service.draft(ws.path(), "Invalidation test", now, None))?;
+            let run_id =
+                block_on_app_result(service.draft(ws.path(), "Invalidation test", now, None))?;
 
             let store = FsRequirementsStore;
             let run = store
@@ -12266,10 +12274,9 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
     );
 
     reg!(m, "parity_slice0_ref_encoding_reserved_chars", || {
-        let base_ref = "release/%base";
-        let head_ref = "feature/%head/with/slash";
-        let expected_path =
-            "/repos/acme/widgets/compare/release%2F%25base...feature%2F%25head%2Fwith%2Fslash";
+        let base_ref = "release/%base#stable";
+        let head_ref = "feature/über-fix@team#rollout";
+        let expected_path = "/repos/acme/widgets/compare/release%2F%25base%23stable...feature%2F%C3%BCber-fix%40team%23rollout";
 
         block_on_result(async {
             let server = ScenarioHttpServer::start(vec![ScenarioHttpResponse::json(
@@ -19162,7 +19169,11 @@ fn tmux_session_name_for_request(
         .file_name()
         .and_then(|value| value.to_str())
         .unwrap_or("workspace");
-    crate::adapters::tmux::TmuxAdapter::session_name(project_name, &request.invocation_id, &request.project_root)
+    crate::adapters::tmux::TmuxAdapter::session_name(
+        project_name,
+        &request.invocation_id,
+        &request.project_root,
+    )
 }
 
 #[derive(Clone, Copy)]
@@ -19303,11 +19314,14 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         // Same inputs should produce same name (deterministic)
         let session2 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", root);
         if session != session2 {
-            return Err(format!("session name not deterministic: {session} vs {session2}"));
+            return Err(format!(
+                "session name not deterministic: {session} vs {session2}"
+            ));
         }
         // Different root should produce different name
         let other_root = std::path::Path::new("/tmp/other-workspace");
-        let session3 = crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", other_root);
+        let session3 =
+            crate::adapters::tmux::TmuxAdapter::session_name("alpha", "run-1", other_root);
         if session == session3 {
             return Err("different workspace roots produced same session name".to_owned());
         }
@@ -19636,9 +19650,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         create_project_fixture(ws.path(), "tpl-proj", "standard");
         let pid = crate::shared::domain::ProjectId::new("tpl-proj".to_owned())
             .map_err(|e| format!("pid: {e}"))?;
-        let proj_templates = ws
-            .path()
-            .join(".ralph-burning/projects/tpl-proj/templates");
+        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-proj/templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
@@ -19662,16 +19674,13 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         let pid = crate::shared::domain::ProjectId::new("tpl-prec".to_owned())
             .map_err(|e| format!("pid: {e}"))?;
         let ws_templates = ws.path().join(".ralph-burning/templates");
-        std::fs::create_dir_all(&ws_templates)
-            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::create_dir_all(&ws_templates).map_err(|e| format!("create ws templates: {e}"))?;
         std::fs::write(
             ws_templates.join("requirements_ideation.md"),
             "WS: {{base_context}}",
         )
         .map_err(|e| format!("write ws override: {e}"))?;
-        let proj_templates = ws
-            .path()
-            .join(".ralph-burning/projects/tpl-prec/templates");
+        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-prec/templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
@@ -19679,9 +19688,8 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
             "PROJECT: {{base_context}}",
         )
         .map_err(|e| format!("write proj override: {e}"))?;
-        let resolved =
-            template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid))
-                .map_err(|e| format!("resolve: {e}"))?;
+        let resolved = template_catalog::resolve("requirements_ideation", ws.path(), Some(&pid))
+            .map_err(|e| format!("resolve: {e}"))?;
         match resolved.source {
             template_catalog::TemplateSource::ProjectOverride(_) => Ok(()),
             other => Err(format!("expected project override to win, got {other:?}")),
@@ -19695,11 +19703,8 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         let templates_dir = ws.path().join(".ralph-burning/templates");
         std::fs::create_dir_all(&templates_dir)
             .map_err(|e| format!("create templates dir: {e}"))?;
-        std::fs::write(
-            templates_dir.join("planning.md"),
-            "No placeholders here.",
-        )
-        .map_err(|e| format!("write malformed: {e}"))?;
+        std::fs::write(templates_dir.join("planning.md"), "No placeholders here.")
+            .map_err(|e| format!("write malformed: {e}"))?;
         match template_catalog::resolve("planning", ws.path(), None) {
             Err(e) => {
                 let msg = e.to_string();
@@ -19746,16 +19751,13 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         let pid = crate::shared::domain::ProjectId::new("tpl-nofb".to_owned())
             .map_err(|e| format!("pid: {e}"))?;
         let ws_templates = ws.path().join(".ralph-burning/templates");
-        std::fs::create_dir_all(&ws_templates)
-            .map_err(|e| format!("create ws templates: {e}"))?;
+        std::fs::create_dir_all(&ws_templates).map_err(|e| format!("create ws templates: {e}"))?;
         std::fs::write(
             ws_templates.join("requirements_ideation.md"),
             "WS valid: {{base_context}}",
         )
         .map_err(|e| format!("write ws override: {e}"))?;
-        let proj_templates = ws
-            .path()
-            .join(".ralph-burning/projects/tpl-nofb/templates");
+        let proj_templates = ws.path().join(".ralph-burning/projects/tpl-nofb/templates");
         std::fs::create_dir_all(&proj_templates)
             .map_err(|e| format!("create proj templates: {e}"))?;
         std::fs::write(
@@ -19868,9 +19870,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
                 let msg = e.to_string();
                 if !msg.contains("invented-placeholder") {
                     let _ = std::fs::remove_dir_all(&tmp);
-                    return Err(format!(
-                        "error should cite 'invented-placeholder': {msg}"
-                    ));
+                    return Err(format!("error should cite 'invented-placeholder': {msg}"));
                 }
             }
             Ok(_) => {
@@ -19918,9 +19918,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
         }
         for &id in template_catalog::REQUIREMENTS_TEMPLATE_IDS {
             if template_catalog::manifest_for(id).is_none() {
-                return Err(format!(
-                    "missing manifest for requirements template '{id}'"
-                ));
+                return Err(format!("missing manifest for requirements template '{id}'"));
             }
         }
         Ok(())

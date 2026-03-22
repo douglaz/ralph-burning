@@ -215,8 +215,7 @@ pub fn apply_test_label_overrides(mut adapter: StubBackendAdapter) -> StubBacken
                 // returns different responses on successive invocations with the
                 // same label (e.g. validation → needs_questions, then pass).
                 if let Some(arr) = payload.as_array() {
-                    adapter =
-                        adapter.with_label_payload_sequence(full_label, arr.clone());
+                    adapter = adapter.with_label_payload_sequence(full_label, arr.clone());
                 } else {
                     adapter = adapter.with_label_payload(full_label, payload);
                 }
