@@ -1164,26 +1164,43 @@ pub(crate) fn inline_schema_refs(value: &mut serde_json::Value) {
     let Some(map) = value.as_object_mut() else {
         return;
     };
-    let Some(definitions_val) = map.remove("definitions") else {
+    // Check that `definitions` is present and is an object before removing it.
+    // Non-object `definitions` (e.g. array, string, number) must leave the
+    // schema completely unchanged (AC 6).
+    let Some(definitions) = map
+        .get("definitions")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+    else {
         return;
     };
-    let Some(definitions) = definitions_val.as_object().cloned() else {
-        // Non-object `definitions` (e.g. array, string, number) — no-op.
-        return;
-    };
-    resolve_refs(value, &definitions);
+    map.remove("definitions");
+    let mut expanding = std::collections::HashSet::new();
+    resolve_refs(value, &definitions, &mut expanding);
 }
 
-fn resolve_refs(node: &mut serde_json::Value, definitions: &serde_json::Map<String, serde_json::Value>) {
+fn resolve_refs(
+    node: &mut serde_json::Value,
+    definitions: &serde_json::Map<String, serde_json::Value>,
+    expanding: &mut std::collections::HashSet<String>,
+) {
     if let serde_json::Value::Object(map) = node {
         // Check if this node is a `$ref` object: exactly one key `"$ref"` with a
         // string value starting with `"#/definitions/"`.
         if map.len() == 1 {
             if let Some(serde_json::Value::String(ref_str)) = map.get("$ref") {
                 if let Some(name) = ref_str.strip_prefix("#/definitions/") {
+                    // Cycle guard: if this definition is already being expanded
+                    // up the call stack, leave the $ref unresolved to prevent
+                    // infinite recursion (spec: recursive refs left unresolved).
+                    if expanding.contains(name) {
+                        return;
+                    }
                     if let Some(def) = definitions.get(name) {
                         let mut replacement = def.clone();
-                        resolve_refs(&mut replacement, definitions);
+                        expanding.insert(name.to_owned());
+                        resolve_refs(&mut replacement, definitions, expanding);
+                        expanding.remove(name);
                         *node = replacement;
                         return;
                     }
@@ -1192,11 +1209,11 @@ fn resolve_refs(node: &mut serde_json::Value, definitions: &serde_json::Map<Stri
         }
         // Recurse into all values
         for val in map.values_mut() {
-            resolve_refs(val, definitions);
+            resolve_refs(val, definitions, expanding);
         }
     } else if let serde_json::Value::Array(arr) = node {
         for item in arr.iter_mut() {
-            resolve_refs(item, definitions);
+            resolve_refs(item, definitions, expanding);
         }
     }
 }
@@ -1729,16 +1746,15 @@ mod tests {
         assert_eq!(schema["properties"]["item"], json!({ "$ref": "#/definitions/Missing" }));
         assert!(schema.get("definitions").is_none());
 
-        // Sub-case 2: definitions is a non-object
+        // Sub-case 2: definitions is a non-object — schema must be completely unchanged
         let mut schema = json!({
             "type": "object",
             "properties": { "x": { "type": "string" } },
             "definitions": 42
         });
+        let original = schema.clone();
         inline_schema_refs(&mut schema);
-        assert_eq!(schema["properties"]["x"], json!({ "type": "string" }));
-        // definitions key was consumed (removed) even though it was non-object
-        assert!(schema.get("definitions").is_none());
+        assert_eq!(schema, original);
 
         // Sub-case 3: definitions present but no $ref anywhere
         let mut schema = json!({
@@ -1751,6 +1767,81 @@ mod tests {
         inline_schema_refs(&mut schema);
         assert!(schema.get("definitions").is_none());
         assert_eq!(schema["properties"]["y"], json!({ "type": "boolean" }));
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_self_referential_definition() {
+        // A definition that references itself should not cause infinite recursion.
+        // The self-referential $ref should be left unresolved.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "tree": { "$ref": "#/definitions/Node" }
+            },
+            "definitions": {
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string" },
+                        "child": { "$ref": "#/definitions/Node" }
+                    }
+                }
+            }
+        });
+        inline_schema_refs(&mut schema);
+
+        // Top-level $ref should be resolved to the Node definition body
+        assert!(schema.get("definitions").is_none());
+        assert_eq!(schema["properties"]["tree"]["type"], "object");
+        assert_eq!(
+            schema["properties"]["tree"]["properties"]["value"],
+            json!({ "type": "string" })
+        );
+        // The nested self-reference should be left as an unresolved $ref
+        assert_eq!(
+            schema["properties"]["tree"]["properties"]["child"],
+            json!({ "$ref": "#/definitions/Node" })
+        );
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_mutually_recursive_definitions() {
+        // Two definitions that reference each other should not cause infinite recursion.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "a": { "$ref": "#/definitions/A" }
+            },
+            "definitions": {
+                "A": {
+                    "type": "object",
+                    "properties": {
+                        "b": { "$ref": "#/definitions/B" }
+                    }
+                },
+                "B": {
+                    "type": "object",
+                    "properties": {
+                        "a": { "$ref": "#/definitions/A" }
+                    }
+                }
+            }
+        });
+        inline_schema_refs(&mut schema);
+
+        assert!(schema.get("definitions").is_none());
+        // A is resolved
+        assert_eq!(schema["properties"]["a"]["type"], "object");
+        // B inside A is resolved
+        assert_eq!(
+            schema["properties"]["a"]["properties"]["b"]["type"],
+            "object"
+        );
+        // A inside B is left unresolved (cycle: A -> B -> A)
+        assert_eq!(
+            schema["properties"]["a"]["properties"]["b"]["properties"]["a"],
+            json!({ "$ref": "#/definitions/A" })
+        );
     }
 
     #[test]
