@@ -1090,6 +1090,15 @@ fn normalize_nullable_type_array(map: &mut serde_json::Map<String, serde_json::V
 
     // Build non-null variant: carry over remaining schema properties (format, minimum, etc.)
     let mut non_null_variant = std::mem::take(map);
+
+    // Strip schema-wide annotations that don't belong on the non-null variant.
+    // schemars 0.8 emits `"default": null` for defaulted `Option<T>` fields — placing
+    // that on the non-null arm would produce `{"type":"string","default":null}` which
+    // is not the intended strict-mode shape.
+    if non_null_variant.get("default") == Some(&serde_json::Value::Null) {
+        non_null_variant.remove("default");
+    }
+
     if non_null_types.len() == 1 {
         non_null_variant.insert(
             "type".to_owned(),
@@ -1478,7 +1487,7 @@ mod tests {
                     "type": "object",
                     "properties": {
                         "body": { "type": "string" },
-                        "rationale": { "type": ["string", "null"] }
+                        "rationale": { "default": null, "type": ["string", "null"] }
                     },
                     "required": ["body"]
                 }
@@ -1510,6 +1519,64 @@ mod tests {
         let any_of = rationale["anyOf"].as_array().unwrap();
         assert_eq!(any_of[0], json!({"type": "string"}));
         assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_strips_default_null_from_non_null_variant() {
+        // Regression: schemars 0.8 emits `"default": null` alongside type arrays
+        // for defaulted `Option<T>` fields. The non-null variant must NOT carry
+        // `"default": null` — that would produce `{"type":"string","default":null}`.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "rationale": {
+                    "default": null,
+                    "type": ["string", "null"]
+                }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let rationale = &schema["properties"]["rationale"];
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        // Non-null variant must NOT have "default": null
+        assert!(
+            any_of[0].get("default").is_none(),
+            "non-null variant should not carry 'default: null'; got: {}",
+            any_of[0]
+        );
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
+        // "default" should not appear at wrapper level either
+        assert!(rationale.get("default").is_none());
+    }
+
+    #[test]
+    fn enforce_strict_mode_preserves_non_null_default() {
+        // A non-null default (e.g., "default": 0 on a nullable integer) should
+        // be preserved on the non-null variant since it's meaningful.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "count": {
+                    "default": 0,
+                    "type": ["integer", "null"],
+                    "format": "uint32"
+                }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let count = &schema["properties"]["count"];
+        let any_of = count["anyOf"].as_array().unwrap();
+        assert_eq!(any_of[0]["type"], "integer");
+        assert_eq!(any_of[0]["default"], 0);
+        assert_eq!(any_of[0]["format"], "uint32");
     }
 
     #[test]
