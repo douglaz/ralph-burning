@@ -58,7 +58,8 @@ impl PreparedCommand {
         }
     }
 
-    pub(crate) async fn preserve_failure_artifacts(
+    // Failure cleanup preserves backend artifacts for operator inspection.
+    pub(crate) async fn cleanup_failed_invocation(
         &self,
         request: &InvocationRequest,
         output: &ChildOutput,
@@ -103,7 +104,7 @@ impl PreparedCommand {
                 let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
                     Ok(val) => val,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -121,7 +122,7 @@ impl PreparedCommand {
                     {
                         Ok(val) => val,
                         Err(error) => {
-                            self.preserve_failure_artifacts(request, &output).await;
+                            self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -146,7 +147,7 @@ impl PreparedCommand {
                     {
                         Some(val) => val,
                         None => {
-                            self.preserve_failure_artifacts(request, &output).await;
+                            self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -195,7 +196,7 @@ impl PreparedCommand {
                 let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -207,7 +208,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -457,6 +458,7 @@ impl ProcessBackendAdapter {
                 let model_id = &request.resolved_target.model.model_id;
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
+                inline_schema_refs(&mut schema_value);
                 let schema_json = serde_json::to_string(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
@@ -504,6 +506,7 @@ impl ProcessBackendAdapter {
 
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
+                inline_schema_refs(&mut schema_value);
                 let schema_json = serde_json::to_string_pretty(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
 
@@ -874,9 +877,8 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
                         fresh_prepared
-                            .preserve_failure_artifacts(&fresh_request, &fresh_output)
+                            .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
-                        fresh_prepared.cleanup().await;
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
                             (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
                             (false, None) => format!(": {fresh_stderr}"),
@@ -897,8 +899,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                prepared.preserve_failure_artifacts(&request, &output).await;
-                prepared.cleanup().await;
+                prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
                     (false, None) => format!(": {stderr}"),
@@ -1153,6 +1154,70 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     }
 }
 
+/// Resolve all `{"$ref": "#/definitions/X"}` references in-place by substituting
+/// the referenced definition object, then remove the top-level `definitions` key.
+///
+/// This is called after `enforce_strict_mode_schema` so that inlined definitions
+/// are already strict-mode-compliant. The function handles nested refs transitively
+/// and leaves unresolvable refs (missing target) unchanged.
+pub(crate) fn inline_schema_refs(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    // Check that `definitions` is present and is an object before removing it.
+    // Non-object `definitions` (e.g. array, string, number) must leave the
+    // schema completely unchanged (AC 6).
+    let Some(definitions) = map
+        .get("definitions")
+        .and_then(serde_json::Value::as_object)
+        .cloned()
+    else {
+        return;
+    };
+    map.remove("definitions");
+    let mut expanding = std::collections::HashSet::new();
+    resolve_refs(value, &definitions, &mut expanding);
+}
+
+fn resolve_refs(
+    node: &mut serde_json::Value,
+    definitions: &serde_json::Map<String, serde_json::Value>,
+    expanding: &mut std::collections::HashSet<String>,
+) {
+    if let serde_json::Value::Object(map) = node {
+        // Check if this node is a `$ref` object: exactly one key `"$ref"` with a
+        // string value starting with `"#/definitions/"`.
+        if map.len() == 1 {
+            if let Some(serde_json::Value::String(ref_str)) = map.get("$ref") {
+                if let Some(name) = ref_str.strip_prefix("#/definitions/") {
+                    // Cycle guard: if this definition is already being expanded
+                    // up the call stack, leave the $ref unresolved to prevent
+                    // infinite recursion (spec: recursive refs left unresolved).
+                    if expanding.contains(name) {
+                        return;
+                    }
+                    if let Some(def) = definitions.get(name) {
+                        let mut replacement = def.clone();
+                        expanding.insert(name.to_owned());
+                        resolve_refs(&mut replacement, definitions, expanding);
+                        expanding.remove(name);
+                        *node = replacement;
+                        return;
+                    }
+                }
+            }
+        }
+        // Recurse into all values
+        for val in map.values_mut() {
+            resolve_refs(val, definitions, expanding);
+        }
+    } else if let serde_json::Value::Array(arr) = node {
+        for item in arr.iter_mut() {
+            resolve_refs(item, definitions, expanding);
+        }
+    }
+}
+
 /// Returns `true` if the given JSON value looks like a Claude CLI envelope
 /// (contains `result` and/or `session_id` top-level keys) rather than a
 /// contract payload. Used to guard the empty-result fallback from accidentally
@@ -1235,6 +1300,7 @@ fn extract_json_from_text(text: &str) -> Result<serde_json::Value, serde_json::E
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn enforce_strict_mode_adds_missing_required_fields() {
@@ -1567,6 +1633,217 @@ mod tests {
         assert_eq!(any_of[0]["format"], "uint32");
     }
 
+    // ── inline_schema_refs tests ──────────────────────────────────────────────
+
+    #[test]
+    fn inline_schema_refs_resolves_simple_ref() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "action": { "$ref": "#/definitions/Action" }
+            },
+            "definitions": {
+                "Action": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["name"]
+                }
+            }
+        });
+
+        inline_schema_refs(&mut schema);
+
+        // $ref replaced with the definition body
+        assert_eq!(
+            schema["properties"]["action"],
+            json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "additionalProperties": false,
+                "required": ["name"]
+            })
+        );
+        // definitions key removed
+        assert!(schema.get("definitions").is_none());
+    }
+
+    #[test]
+    fn inline_schema_refs_resolves_nested_refs() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outer": { "$ref": "#/definitions/Outer" }
+            },
+            "definitions": {
+                "Outer": {
+                    "type": "object",
+                    "properties": {
+                        "inner": { "$ref": "#/definitions/Inner" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["inner"]
+                },
+                "Inner": {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "integer" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["value"]
+                }
+            }
+        });
+
+        inline_schema_refs(&mut schema);
+
+        // Both refs resolved transitively
+        assert_eq!(
+            schema["properties"]["outer"]["properties"]["inner"],
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer" } },
+                "additionalProperties": false,
+                "required": ["value"]
+            })
+        );
+        assert!(schema.get("definitions").is_none());
+    }
+
+    #[test]
+    fn inline_schema_refs_no_op_without_refs() {
+        let original = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "count": { "type": "integer" }
+            },
+            "required": ["name", "count"],
+            "additionalProperties": false
+        });
+        let mut schema = original.clone();
+
+        inline_schema_refs(&mut schema);
+
+        assert_eq!(schema, original);
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_edge_cases() {
+        // Sub-case 1: $ref to missing definition — node left unchanged
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "item": { "$ref": "#/definitions/Missing" }
+            },
+            "definitions": {
+                "Other": { "type": "string" }
+            }
+        });
+        inline_schema_refs(&mut schema);
+        assert_eq!(schema["properties"]["item"], json!({ "$ref": "#/definitions/Missing" }));
+        assert!(schema.get("definitions").is_none());
+
+        // Sub-case 2: definitions is a non-object — schema must be completely unchanged
+        let mut schema = json!({
+            "type": "object",
+            "properties": { "x": { "type": "string" } },
+            "definitions": 42
+        });
+        let original = schema.clone();
+        inline_schema_refs(&mut schema);
+        assert_eq!(schema, original);
+
+        // Sub-case 3: definitions present but no $ref anywhere
+        let mut schema = json!({
+            "type": "object",
+            "properties": { "y": { "type": "boolean" } },
+            "definitions": {
+                "Unused": { "type": "string" }
+            }
+        });
+        inline_schema_refs(&mut schema);
+        assert!(schema.get("definitions").is_none());
+        assert_eq!(schema["properties"]["y"], json!({ "type": "boolean" }));
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_self_referential_definition() {
+        // A definition that references itself should not cause infinite recursion.
+        // The self-referential $ref should be left unresolved.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "tree": { "$ref": "#/definitions/Node" }
+            },
+            "definitions": {
+                "Node": {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "string" },
+                        "child": { "$ref": "#/definitions/Node" }
+                    }
+                }
+            }
+        });
+        inline_schema_refs(&mut schema);
+
+        // Top-level $ref should be resolved to the Node definition body
+        assert!(schema.get("definitions").is_none());
+        assert_eq!(schema["properties"]["tree"]["type"], "object");
+        assert_eq!(
+            schema["properties"]["tree"]["properties"]["value"],
+            json!({ "type": "string" })
+        );
+        // The nested self-reference should be left as an unresolved $ref
+        assert_eq!(
+            schema["properties"]["tree"]["properties"]["child"],
+            json!({ "$ref": "#/definitions/Node" })
+        );
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_mutually_recursive_definitions() {
+        // Two definitions that reference each other should not cause infinite recursion.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "a": { "$ref": "#/definitions/A" }
+            },
+            "definitions": {
+                "A": {
+                    "type": "object",
+                    "properties": {
+                        "b": { "$ref": "#/definitions/B" }
+                    }
+                },
+                "B": {
+                    "type": "object",
+                    "properties": {
+                        "a": { "$ref": "#/definitions/A" }
+                    }
+                }
+            }
+        });
+        inline_schema_refs(&mut schema);
+
+        assert!(schema.get("definitions").is_none());
+        // A is resolved
+        assert_eq!(schema["properties"]["a"]["type"], "object");
+        // B inside A is resolved
+        assert_eq!(
+            schema["properties"]["a"]["properties"]["b"]["type"],
+            "object"
+        );
+        // A inside B is left unresolved (cycle: A -> B -> A)
+        assert_eq!(
+            schema["properties"]["a"]["properties"]["b"]["properties"]["a"],
+            json!({ "$ref": "#/definitions/A" })
+        );
+    }
+
     #[test]
     fn extract_json_from_text_direct_parse() {
         let text = r#"{"project_id": "test-123", "flow": "standard"}"#;
@@ -1667,11 +1944,41 @@ mod tests {
         }
     }
 
+    fn make_codex_test_request(project_root: PathBuf) -> InvocationRequest {
+        InvocationRequest {
+            invocation_id: "test-inv-001".to_owned(),
+            working_dir: project_root.clone(),
+            project_root,
+            contract: InvocationContract::Requirements {
+                label: "requirements:project_seed".to_owned(),
+            },
+            role: BackendRole::Implementer,
+            resolved_target: ResolvedBackendTarget::new(BackendFamily::Codex, "codex-test"),
+            payload: InvocationPayload {
+                prompt: "test".to_owned(),
+                context: json!({}),
+            },
+            timeout: Duration::from_secs(60),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        }
+    }
+
     fn make_child_output(stdout: &str) -> ChildOutput {
         ChildOutput {
             status: ExitStatus::from_raw(0),
             stdout: stdout.as_bytes().to_vec(),
             stderr: Vec::new(),
+        }
+    }
+
+    fn make_failed_child_output(stdout: &str, stderr: &str) -> ChildOutput {
+        ChildOutput {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
         }
     }
 
@@ -1789,6 +2096,184 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn cleanup_failed_invocation_moves_codex_artifacts_and_writes_raw_output() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = make_failed_child_output("stdout-body", "stderr-body");
+        prepared.cleanup_failed_invocation(&request, &output).await;
+
+        let failed_dir = project_dir.path().join("runtime/failed");
+        assert!(!schema_path.exists());
+        assert!(!message_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.schema.json")).unwrap(),
+            "{\"type\":\"object\"}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.last-message.json")).unwrap(),
+            "{\"outcome\":\"failed\"}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.failed.raw")).unwrap(),
+            "=== stdout ===\nstdout-body\n=== stderr ===\nstderr-body\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_failed_invocation_keeps_codex_temp_files_if_move_fails() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        let failed_path = project_dir.path().join("runtime/failed");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+        std::fs::create_dir_all(failed_path.parent().unwrap()).unwrap();
+        std::fs::write(&failed_path, "not-a-directory").unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = make_failed_child_output("stdout-body", "stderr-body");
+        prepared.cleanup_failed_invocation(&request, &output).await;
+
+        assert!(schema_path.exists());
+        assert!(message_path.exists());
+        assert!(!failed_path.join("test-inv-001.failed.raw").exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_codex_temp_files_on_success() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"ok\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        prepared.cleanup().await;
+
+        assert!(!schema_path.exists());
+        assert!(!message_path.exists());
+        assert!(!project_dir.path().join("runtime/failed").exists());
+    }
+
+    // ── Integration: build_command produces ref-free schemas ─────────────
+
+    /// Recursively assert that a JSON value contains no `$ref` keys.
+    fn assert_no_refs(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Object(map) => {
+                assert!(
+                    !map.contains_key("$ref"),
+                    "found $ref at {path}"
+                );
+                for (k, v) in map {
+                    assert_no_refs(v, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, v) in arr.iter().enumerate() {
+                    assert_no_refs(v, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn build_command_claude_schema_has_no_refs_or_definitions() {
+        let request = make_test_request();
+        let adapter = ProcessBackendAdapter::new();
+        let prepared = adapter.build_command(&request).await.unwrap();
+
+        // The --json-schema arg is the last arg in the args list
+        let schema_idx = prepared
+            .args
+            .iter()
+            .position(|a| a == "--json-schema")
+            .expect("--json-schema flag should be present");
+        let schema_json = &prepared.args[schema_idx + 1];
+        let schema: serde_json::Value =
+            serde_json::from_str(schema_json).expect("schema should be valid JSON");
+
+        assert!(
+            schema.get("definitions").is_none(),
+            "top-level definitions should be removed"
+        );
+        assert_no_refs(&schema, "root");
+    }
+
+    #[tokio::test]
+    async fn build_command_codex_schema_file_has_no_refs_or_definitions() {
+        let project_dir = tempdir().unwrap();
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let adapter = ProcessBackendAdapter::new();
+        let prepared = adapter.build_command(&request).await.unwrap();
+
+        // Extract schema file path from --output-schema arg
+        let schema_idx = prepared
+            .args
+            .iter()
+            .position(|a| a == "--output-schema")
+            .expect("--output-schema flag should be present");
+        let schema_path = &prepared.args[schema_idx + 1];
+        let schema_json =
+            std::fs::read_to_string(schema_path).expect("schema file should exist");
+        let schema: serde_json::Value =
+            serde_json::from_str(&schema_json).expect("schema should be valid JSON");
+
+        assert!(
+            schema.get("definitions").is_none(),
+            "top-level definitions should be removed"
+        );
+        assert_no_refs(&schema, "root");
     }
 
 }

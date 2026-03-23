@@ -1,0 +1,17 @@
+{
+  "idea": "Inline all $ref references in JSON schemas before passing to claude --json-schema. Add a function inline_schema_refs(value: &mut serde_json::Value) in src/adapters/process_backend.rs that: 1) Collects all definitions from the top-level 'definitions' key, 2) Recursively walks the schema tree, 3) Replaces any {\"$ref\": \"#/definitions/Foo\"} with the actual definition object, 4) Removes the top-level 'definitions' key. Call it in build_command() after enforce_strict_mode_schema() but before passing schema_json to --json-schema. Add tests: verify a schema with $ref gets inlined, verify nested $ref, verify schema without $ref is unchanged. This fixes issue #46 — claude model fails structured output validation when schema contains $ref under load.",
+  "idea_hash": "ed8022adf7ab",
+  "writer_backend": "claude",
+  "reviewer_backend": "codex",
+  "started_at": "2026-03-23T20:53:56Z",
+  "completed_at": "2026-03-23T21:05:03Z",
+  "revision_count": 1,
+  "approved": false,
+  "draft_time_secs": 123.733307817,
+  "review_times_secs": [
+    352.268958522
+  ],
+  "revision_times_secs": [
+    191.555364049
+  ]
+}

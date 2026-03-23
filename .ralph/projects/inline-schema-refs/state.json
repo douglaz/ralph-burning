@@ -1,0 +1,23 @@
+{
+  "project_id": "inline-schema-refs",
+  "project_name": "Inline all $ref references in JSON schemas before passing to",
+  "created_at": "2026-03-23T21:05:03.792943921Z",
+  "prompt_file": "prompt.md",
+  "prompt_hash": "3e5f5b40c009afb2e2c2b8044319c8a51d124a019d3d59314f582d53ed38a709",
+  "prompt_hash_at_loop_start": "3e5f5b40c009afb2e2c2b8044319c8a51d124a019d3d59314f582d53ed38a709",
+  "prompt_review_completed": false,
+  "parent_project": null,
+  "current_loop": 1,
+  "current_phase": "reviewing",
+  "quick_dev_phase": "codex_review",
+  "phase_iteration": 1,
+  "status": "in_progress",
+  "loops": [],
+  "completion_attempts": [],
+  "session_store": {
+    "records": []
+  },
+  "pr_url": null,
+  "quick_dev_review_iteration": 0,
+  "quick_dev_final_review_attempts": 1
+}

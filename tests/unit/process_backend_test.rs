@@ -64,6 +64,24 @@ fn read_logged_args(path: &Path) -> Vec<String> {
         .collect()
 }
 
+/// Recursively assert that a JSON value contains no `"$ref"` keys anywhere.
+fn assert_no_ref_keys(value: &serde_json::Value, path: &str) {
+    match value {
+        serde_json::Value::Object(map) => {
+            assert!(!map.contains_key("$ref"), "found $ref key at {path}");
+            for (key, val) in map {
+                assert_no_ref_keys(val, &format!("{path}.{key}"));
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, val) in arr.iter().enumerate() {
+                assert_no_ref_keys(val, &format!("{path}[{i}]"));
+            }
+        }
+        _ => {}
+    }
+}
+
 fn process_exists(pid: u32) -> bool {
     Command::new("kill")
         .arg("-0")
@@ -87,6 +105,7 @@ fn process_is_running(pid: u32) -> bool {
 }
 
 /// Write a fake claude script that outputs an envelope file and logs args/stdin.
+/// Also extracts the `--json-schema` argument value to `claude-json-schema.json`.
 fn write_fake_claude(bin_dir: &std::path::Path, envelope_file: &std::path::Path) {
     let envelope_path = envelope_file.to_string_lossy();
     write_executable(
@@ -94,6 +113,17 @@ fn write_fake_claude(bin_dir: &std::path::Path, envelope_file: &std::path::Path)
         &format!(
             r#"#!/bin/sh
 echo "$@" > "$PWD/claude-args.txt"
+# Extract --json-schema value to a separate file for structured parsing
+next_is_schema=0
+for arg in "$@"; do
+    if [ "$next_is_schema" = "1" ]; then
+        printf '%s' "$arg" > "$PWD/claude-json-schema.json"
+        next_is_schema=0
+    fi
+    if [ "$arg" = "--json-schema" ]; then
+        next_is_schema=1
+    fi
+done
 cat > "$PWD/claude-stdin.txt"
 cat "{envelope_path}"
 "#
@@ -128,6 +158,7 @@ fn planning_payload() -> serde_json::Value {
 }
 
 /// Write a fake codex script that writes last-message from a prepared file.
+/// Also copies the `--output-schema` file to `codex-schema-captured.json`.
 fn write_fake_codex(bin_dir: &std::path::Path, payload_file: &std::path::Path) {
     let payload_path = payload_file.to_string_lossy();
     write_executable(
@@ -136,20 +167,32 @@ fn write_fake_codex(bin_dir: &std::path::Path, payload_file: &std::path::Path) {
             r#"#!/bin/sh
 echo "$@" > "$PWD/codex-args.txt"
 cat > "$PWD/codex-stdin.txt"
-# Parse --output-last-message path from args
+# Parse --output-last-message and --output-schema paths from args
 msg_path=""
+schema_path=""
 next_is_msg=0
+next_is_schema=0
 for arg in "$@"; do
     if [ "$next_is_msg" = "1" ]; then
         msg_path="$arg"
         next_is_msg=0
     fi
+    if [ "$next_is_schema" = "1" ]; then
+        schema_path="$arg"
+        next_is_schema=0
+    fi
     if [ "$arg" = "--output-last-message" ]; then
         next_is_msg=1
+    fi
+    if [ "$arg" = "--output-schema" ]; then
+        next_is_schema=1
     fi
 done
 if [ -n "$msg_path" ]; then
     cp "{payload_path}" "$msg_path"
+fi
+if [ -n "$schema_path" ] && [ -f "$schema_path" ]; then
+    cp "$schema_path" "$PWD/codex-schema-captured.json"
 fi
 "#
         ),
@@ -459,6 +502,21 @@ async fn claude_command_construction_and_double_parse() {
         args_text.contains("--json-schema"),
         "should have --json-schema"
     );
+
+    // Parse the actual --json-schema JSON value and validate schema structure
+    let schema_file = request.working_dir.join("claude-json-schema.json");
+    let schema_text = fs::read_to_string(&schema_file)
+        .expect("fake claude should have captured --json-schema value");
+    let schema: serde_json::Value = serde_json::from_str(&schema_text)
+        .expect("--json-schema value should be valid JSON");
+    assert!(
+        !schema
+            .as_object()
+            .expect("schema should be an object")
+            .contains_key("definitions"),
+        "schema should not have top-level definitions key"
+    );
+    assert_no_ref_keys(&schema, "schema");
     // Should NOT have --resume for new session
     assert!(
         !args_text.contains("--resume"),
@@ -590,6 +648,21 @@ async fn codex_command_construction_and_temp_files() {
             "-".to_owned(),
         ]
     );
+
+    // Verify the schema file contents captured by fake codex before cleanup
+    let captured_schema_file = request.working_dir.join("codex-schema-captured.json");
+    let schema_text = fs::read_to_string(&captured_schema_file)
+        .expect("fake codex should have captured --output-schema file");
+    let schema: serde_json::Value = serde_json::from_str(&schema_text)
+        .expect("schema file should be valid JSON");
+    assert!(
+        !schema
+            .as_object()
+            .expect("schema should be an object")
+            .contains_key("definitions"),
+        "schema should not have top-level definitions key"
+    );
+    assert_no_ref_keys(&schema, "schema");
 
     assert!(
         !schema_path.exists(),
