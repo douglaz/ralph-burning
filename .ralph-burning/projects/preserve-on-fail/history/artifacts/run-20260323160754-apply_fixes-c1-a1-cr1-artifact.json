@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323160754-apply_fixes-c1-a1-cr1-artifact",
+  "payload_id": "run-20260323160754-apply_fixes-c1-a1-cr1",
+  "stage_id": "apply_fixes",
+  "created_at": "2026-03-23T16:18:19.951545103Z",
+  "content": "# Apply Fixes\n\n## Change Summary\n\n`src/adapters/process_backend.rs` now preserves non-zero-exit artifacts instead of deleting them: `PreparedCommand` tracks an `invocation_failed` flag, `cleanup()` returns early after a recorded invocation failure, and the non-zero-exit paths in `invoke()` call `preserve_failure_artifacts()` to move Codex temp files into `runtime/failed` and write combined stdout/stderr to `runtime/failed/<invocation_id>.failed.raw`. Coverage in `tests/unit/process_backend_test.rs` verifies both Codex temp-file preservation and failed raw-output capture for Codex and Claude backends.\n\n## Steps\n\n0. [Completed] Inspect the current `process_backend` failure-handling and cleanup flow to confirm where non-zero exits preserve or delete invocation artifacts.\n1. [Completed] Verify the requested fix is implemented so failed Codex temp files are moved into `runtime/failed`, failed raw output is written to `<invocation_id>.failed.raw`, and `cleanup()` skips deletion after a recorded failure.\n2. [Completed] Run formatting and targeted backend tests to validate the preserved-artifact behavior and raw-output capture paths.\n\n## Validation Evidence\n\n- Manual inspection confirmed `PreparedCommand::cleanup()` short-circuits when `invocation_failed` is set and `preserve_failure_artifacts()` moves Codex schema/last-message files into `runtime/failed` while writing `<invocation_id>.failed.raw`.\n- `nix develop -c cargo fmt --check` passed.\n- `nix develop -c cargo test --features test-stub process_backend -- --nocapture` passed, including 15 `src/adapters/process_backend.rs` tests and 37 `tests/unit/process_backend_test.rs` tests.\n- Validated coverage includes `codex_nonzero_exit_moves_temp_files_to_runtime_failed` and `nonzero_exit_writes_failed_raw_output_for_claude`, exercising the requested non-zero-exit preservation behavior.\n\n## Outstanding Risks\n\nNone identified.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

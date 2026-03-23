@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323045611-completion_panel-completer-1-c3-a1-cr2-artifact",
+  "payload_id": "run-20260323045611-completion_panel-completer-1-c3-a1-cr2-payload",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-23T05:55:56.892121819Z",
+  "content": "# Completion Vote\n**Producer:** agent:codex/gpt-5.4\n\n## Vote: Complete\n\n## Evidence\n\n- `src/contexts/workflow_composition/engine.rs:4647-4651` now derives agent record metadata from `envelope.metadata.backend_used.family` and `envelope.metadata.model_used.model_id`, and `src/contexts/workflow_composition/engine.rs:4704-4712` persists that producer onto the `ArtifactRecord` written for stage artifacts.\n- `src/adapters/fs.rs:1079-1106` serializes the full `ArtifactRecord` with `serde_json::to_string_pretty(artifact)`, so the backend/model metadata attached in engine persistence is what lands in `history/artifacts/*.json`.\n- `src/contexts/agent_execution/service.rs:402-437` has a regression test proving `InvocationEnvelope.metadata` preserves the adapter-reported backend/model rather than the configured target.\n- `src/contexts/workflow_composition/final_review.rs:1513-1604` has an end-to-end regression test asserting persisted artifact JSON uses the envelope metadata (`codex` / `actual-model-from-envelope`) instead of the configured target, and it passes. I also verified `nix develop -c cargo check` passes.\n\n## Remaining Work\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

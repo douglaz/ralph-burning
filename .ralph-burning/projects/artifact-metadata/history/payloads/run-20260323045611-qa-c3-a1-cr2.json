@@ -1,0 +1,33 @@
+{
+  "payload_id": "run-20260323045611-qa-c3-a1-cr2",
+  "stage_id": "qa",
+  "cycle": 3,
+  "attempt": 1,
+  "created_at": "2026-03-23T05:48:26.120542430Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "`src/contexts/agent_execution/service.rs:219-246` now preserves the adapter-returned `envelope.metadata.backend_used` and `envelope.metadata.model_used`; the post-invoke normalization only updates duration, attempt number, payload/raw-output references, and timestamp.",
+        "Invocation-backed artifact producers now source persisted producer metadata from `InvocationEnvelope.metadata` across the workflow paths: `src/contexts/workflow_composition/completion.rs:138-141`, `src/contexts/workflow_composition/prompt_review.rs:111-114`, `src/contexts/workflow_composition/prompt_review.rs:170-173`, `src/contexts/workflow_composition/final_review.rs:239-242`, `src/contexts/workflow_composition/final_review.rs:351-354`, `src/contexts/workflow_composition/final_review.rs:443-446`, `src/contexts/workflow_composition/final_review.rs:559-562`, and `src/contexts/workflow_composition/engine.rs:4647-4650`.",
+        "`src/adapters/fs.rs:1084-1106` writes the `ArtifactRecord` with `serde_json::to_string_pretty(artifact)` and does not transform producer fields, so `producer.backend_family` and `producer.model_id` are persisted directly into `history/artifacts/*.json`.",
+        "Executable validation passed with the available Rust toolchain: `nix develop -c cargo check` succeeded, with only unrelated pre-existing warnings in `src/contexts/conformance_spec/runner.rs` about the unused `spawned` variable.",
+        "Targeted regression coverage passed: `nix develop -c cargo test --lib invoke_preserves_adapter_reported_backend_and_model_metadata` ran `contexts::agent_execution::service::tests::invoke_preserves_adapter_reported_backend_and_model_metadata` successfully, validating that adapter-reported backend/model metadata survives invocation completion (`src/contexts/agent_execution/service.rs:401-437`).",
+        "End-to-end persistence coverage passed: `nix develop -c cargo test --lib persisted_artifacts_use_envelope_metadata_not_resolved_target` ran `contexts::workflow_composition::final_review::tests::persisted_artifacts_use_envelope_metadata_not_resolved_target` successfully, asserting persisted artifact JSON records `codex` / `actual-model-from-envelope` rather than configured target values (`src/contexts/workflow_composition/final_review.rs:1513-1605`).",
+        "Broader regression validation also passed: `nix develop -c cargo test --lib` completed successfully with 86 passed, 0 failed."
+      ],
+      "findings_or_gaps": [
+        "No requirement gaps or functional defects were identified in QA validation; the only diagnostics observed were unrelated pre-existing unused-variable warnings in `src/contexts/conformance_spec/runner.rs`."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

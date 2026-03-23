@@ -1,0 +1,46 @@
+{
+  "payload_id": "run-20260323200256-apply_fixes-c1-a1-cr1",
+  "stage_id": "apply_fixes",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-23T20:10:27.953720237Z",
+  "payload": {
+    "data": {
+      "change_summary": "Updated `src/adapters/process_backend.rs` so failed backend invocations no longer flow through success cleanup. Failure paths now call a dedicated `cleanup_failed_invocation()` helper that moves schema/last-message temp files into `runtime/failed/`, writes combined stdout/stderr to `<invocation_id>.failed.raw`, and preserves originals if a move or copy fails. Successful invocations still use normal cleanup. Added unit tests covering failure artifact preservation, failed-move fallback, and success-path deletion.",
+      "outstanding_risks": [
+        "Validation did not include a full end-to-end backend invocation; coverage is limited to targeted `process_backend` unit tests run under `nix-shell` because `cargo` is not available directly on PATH in this environment."
+      ],
+      "steps": [
+        {
+          "description": "Inspect `src/adapters/process_backend.rs` failure and cleanup paths to confirm where failed invocations still deleted temp artifacts.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Refactor failure handling so non-zero exits and post-run parsing/read failures preserve artifacts in `runtime/failed/` and emit a `.failed.raw` capture instead of deleting temp files.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Add focused tests for failed-artifact preservation, move-failure fallback, and normal success cleanup behavior.",
+          "order": 2,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`nix-shell -p cargo rustc --run 'cargo test cleanup_failed_invocation -- --nocapture'` passed: 2 tests passed, 0 failed.",
+        "`nix-shell -p cargo rustc --run 'cargo test cleanup_deletes_codex_temp_files_on_success -- --nocapture'` passed: 1 test passed, 0 failed.",
+        "`nix-shell -p cargo rustc --run 'cargo test adapters::process_backend::tests -- --nocapture'` passed: 26 tests passed, 0 failed.",
+        "Review outcome was `approved`; reviewer confirmed failure paths in `invoke()` and `finish()` now use `cleanup_failed_invocation()` without a follow-up success cleanup."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

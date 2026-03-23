@@ -1,0 +1,21 @@
+{
+  "approved": false,
+  "issues": [
+    {
+      "area": "Simplification",
+      "feedback": "The design jumps straight to a custom ref walker, but `schemars` already supports inlining via `SchemaSettings::inline_subschemas`. The spec should at least compare against that option or explain why backend-local post-processing is preferable; otherwise it is not clear this is the minimum mechanism."
+    },
+    {
+      "area": "Testing",
+      "feedback": "Acceptance criterion 5 is not actually verified. The proposed tests only call `inline_schema_refs()` directly, while the regression risk is the `build_command()` wiring. Reuse existing command-construction coverage in `tests/unit/process_backend_test.rs`, or add same-module `build_command()` tests that assert the Claude `--json-schema` payload and Codex schema file contain no `$ref`/`definitions` for a schema that really produces refs."
+    },
+    {
+      "area": "Backend scope",
+      "feedback": "The helper is defined as shared backend-facing schema normalization next to `enforce_strict_mode_schema()`, but the spec excludes `src/adapters/openrouter_backend.rs`, which already reuses the strict-mode helper and also sends strict JSON Schema. Either include OpenRouter or explicitly document why `$ref` is safe there and why only Claude/Codex should diverge."
+    },
+    {
+      "area": "Edge cases",
+      "feedback": "The algorithm does not define behavior for malformed or partial inputs: missing ref targets, a non-object top-level `definitions`, or schemas that have `definitions` but no matching `$ref`. It also implicitly assumes pure `{\"$ref\":\"#/definitions/X\"}` nodes. The spec should state whether these cases are no-ops or errors so the implementation can avoid panics and the acceptance criteria stay unambiguous."
+    }
+  ]
+}

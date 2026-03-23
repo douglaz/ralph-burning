@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323045611-qa-c3-a1-cr1-artifact",
+  "payload_id": "run-20260323045611-qa-c3-a1-cr1",
+  "stage_id": "qa",
+  "created_at": "2026-03-23T05:28:27.509742660Z",
+  "content": "# QA\n\n## Outcome\n\n**Conditionally Approved**\n\n## Evidence\n\n- `src/contexts/agent_execution/service.rs:219-224` no longer overwrites `envelope.metadata.backend_used` or `envelope.metadata.model_used` after the adapter returns, so adapter-reported metadata now survives to downstream persistence.\n- `src/contexts/workflow_composition/engine.rs:4647-4650` constructs `RecordProducer::Agent` from `envelope.metadata.backend_used.family` and `envelope.metadata.model_used.model_id`; the prompt-review, completion, and final-review persistence paths use the same envelope-metadata pattern.\n- `src/adapters/fs.rs:1105-1106` serializes the `ArtifactRecord` unchanged, so the populated `producer.backend_family` and `producer.model_id` are written into `history/artifacts/*.json`.\n- `src/contexts/workflow_composition/final_review.rs:1513-1605` contains an end-to-end regression asserting persisted artifact JSON uses envelope metadata instead of the configured target, and `src/contexts/agent_execution/service.rs:401-437` adds focused coverage that the service preserves adapter-reported backend/model metadata.\n- `command -v cargo && command -v rustc && command -v rustfmt` returned no path in this environment, so executable Rust validation could not be performed.\n\n## Findings and Gaps\n\n- No functional defect was found in static review, but executable validation remains incomplete because the Rust toolchain (`cargo`, `rustc`, `rustfmt`) is unavailable here.\n\n## Follow-up and Amendments\n\n- Run `cargo test invoke_preserves_adapter_reported_backend_and_model_metadata persisted_artifacts_use_envelope_metadata_not_resolved_target` or the relevant Rust test suite once the toolchain is available.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

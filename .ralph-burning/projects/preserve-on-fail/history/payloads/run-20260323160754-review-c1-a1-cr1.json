@@ -1,0 +1,32 @@
+{
+  "payload_id": "run-20260323160754-review-c1-a1-cr1",
+  "stage_id": "review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-23T16:17:16.251466462Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 52 tests pass: 15 internal unit tests + 37 integration tests, including two new tests (`codex_nonzero_exit_moves_temp_files_to_runtime_failed`, `nonzero_exit_writes_failed_raw_output_for_claude`).",
+        "`cargo fmt --check` passes with no issues.",
+        "All three non-zero-exit error paths in `invoke()` call `preserve_failure_artifacts()` before `cleanup()`: stale-session path (line 859), stale-session retry failure (line 886-888), and main non-zero exit (line 910).",
+        "`cleanup()` correctly short-circuits when `invocation_failed` is `true` (line 53-55), preventing deletion of preserved artifacts.",
+        "Spawn-failure paths (lines 845, 875) correctly skip `preserve_failure_artifacts` since there is no child output to preserve, and cleanup runs normally to remove temp files.",
+        "`best_effort_move_file` handles cross-filesystem moves via copy+delete fallback, and silently ignores NotFound errors.",
+        "`format_failed_raw_output` produces well-structured output with `=== stdout ===` and `=== stderr ===` sections, verified by test assertions.",
+        "New `invocation_failed: Arc<AtomicBool>` field added to `PreparedCommand` struct and initialized at all construction sites (Claude and Codex prepare paths)."
+      ],
+      "findings_or_gaps": [],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

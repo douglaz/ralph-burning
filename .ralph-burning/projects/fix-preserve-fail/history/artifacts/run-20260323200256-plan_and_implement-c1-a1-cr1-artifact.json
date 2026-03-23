@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323200256-plan_and_implement-c1-a1-cr1-artifact",
+  "payload_id": "run-20260323200256-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-03-23T20:07:59.216645128Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRefactored `src/adapters/process_backend.rs` so failure handling uses a dedicated `cleanup_failed_invocation()` path instead of preserving artifacts and then calling normal cleanup. Non-zero exits and post-run parse/read failures now move Codex temp files into `runtime/failed/`, write a `<invocation_id>.failed.raw` file with combined stdout/stderr, and avoid deleting the original temp files if the move itself fails. Normal successful cleanup still removes temp files. Added unit coverage for successful failure-artifact preservation, failed-move preservation fallback, and normal success cleanup.\n\n## Steps\n\n0. [Completed] Inspect current `process_backend.rs` invoke/cleanup behavior to confirm where failed backend exits were still followed by normal temp-file deletion.\n1. [Completed] Refactor failure cleanup to preserve Codex schema/last-message artifacts and `.failed.raw` output without a follow-up delete, and update all relevant error paths to use it.\n2. [Completed] Add focused tests for failed-artifact preservation, failed move fallback, and normal success cleanup behavior.\n\n## Validation Evidence\n\n- `nix-shell -p cargo rustc --run 'cargo test cleanup_failed_invocation -- --nocapture'` passed: 2 tests passed, 0 failed.\n- `nix-shell -p cargo rustc --run 'cargo test cleanup_deletes_codex_temp_files_on_success -- --nocapture'` passed: 1 test passed, 0 failed.\n- `nix-shell -p cargo rustc --run 'cargo test adapters::process_backend::tests -- --nocapture'` passed: 26 tests passed, 0 failed.\n\n## Outstanding Risks\n\n- Did not run a full end-to-end backend invocation; validation was limited to targeted `process_backend` tests under `nix-shell` because `cargo` is not available on PATH in this environment.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

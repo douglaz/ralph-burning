@@ -1,0 +1,25 @@
+{
+  "payload_id": "run-20260323045611-completion_panel-completer-1-c3-a1-cr1-payload",
+  "stage_id": "completion_panel",
+  "cycle": 3,
+  "attempt": 1,
+  "created_at": "2026-03-23T05:37:05.648066285Z",
+  "payload": {
+    "evidence": [
+      "Primary stage artifact persistence is wired correctly: `src/contexts/workflow_composition/engine.rs:4647-4655` builds `RecordProducer::Agent` from `envelope.metadata.backend_used.family` and `envelope.metadata.model_used.model_id`, and `src/contexts/workflow_composition/engine.rs:4704-4712` stores that producer on the persisted `ArtifactRecord`.",
+      "Supporting artifact persistence paths also use `InvocationEnvelope` metadata rather than configured targets in `src/contexts/workflow_composition/completion.rs:138-140`, `src/contexts/workflow_composition/prompt_review.rs:111-113` and `170-172`, and `src/contexts/workflow_composition/final_review.rs:239-241`, `351-353`, `443-445`, and `559-561`.",
+      "`ArtifactRecord` carries producer metadata in `src/contexts/project_run_record/model.rs:328-344`, and the filesystem adapter writes the full artifact struct unchanged with `serde_json::to_string_pretty(artifact)` in `src/adapters/fs.rs:1105-1106`, so `backend_family` and `model_id` reach `history/artifacts/*.json`.",
+      "`AgentExecutionService` preserves adapter-reported backend/model metadata before persistence in `src/contexts/agent_execution/service.rs:219-224`, and the unit test at `src/contexts/agent_execution/service.rs:401-437` asserts divergent adapter metadata survives invocation.",
+      "There is end-to-end regression coverage for persisted artifacts using envelope metadata instead of configured targets in `src/contexts/workflow_composition/final_review.rs:1513-1605`."
+    ],
+    "remaining_work": [],
+    "vote_complete": true
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

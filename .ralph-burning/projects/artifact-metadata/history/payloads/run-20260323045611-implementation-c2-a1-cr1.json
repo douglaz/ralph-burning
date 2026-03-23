@@ -1,0 +1,84 @@
+{
+  "payload_id": "run-20260323045611-implementation-c2-a1-cr1",
+  "stage_id": "implementation",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-23T05:12:46.722767746Z",
+  "payload": {
+    "data": {
+      "change_summary": "Changed all three panel invoke helpers (invoke_completer in completion.rs, invoke_panel_member in prompt_review.rs, invoke_final_review_member in final_review.rs) to return the full InvocationEnvelope instead of just the parsed payload. Updated every call site that constructs RecordProducer::Agent to derive backend_family and model_id from envelope.metadata.backend_used and envelope.metadata.model_used, matching the pattern already used in the primary stage path in engine.rs. Added a regression test in final_review.rs with a DivergentMetadataAdapter that returns envelope metadata different from the resolved target, then asserts all persisted artifact files carry the envelope values.",
+      "outstanding_risks": [
+        "The Rust toolchain is not available in this environment, so compilation and test execution could not be verified. The changes are structurally consistent with the existing engine.rs pattern and the existing test infrastructure, but a CI build is required to confirm no type errors or test failures.",
+        "The ReviewerProposalRecord.backend_family and model_id fields in final_review.rs still use member.target values (not envelope metadata) for the merge_final_review_amendments source labels. These are used for FinalReviewAmendmentSource attribution, not for persisted artifact producer metadata, so they are not directly in scope for this fix but represent a secondary inconsistency."
+      ],
+      "steps": [
+        {
+          "description": "Add InvocationEnvelope to imports in completion.rs, prompt_review.rs, and final_review.rs",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Change invoke_completer return type from AppResult<Value> to AppResult<InvocationEnvelope> and return envelope directly",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Update execute_completion_panel caller to extract RecordProducer from envelope.metadata.backend_used/model_used",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Change invoke_panel_member return type from AppResult<Value> to AppResult<InvocationEnvelope> and return envelope directly",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Update refiner and validator callers in execute_prompt_review to extract RecordProducer from envelope metadata",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Change invoke_final_review_member return type from AppResult<Value> to AppResult<InvocationEnvelope> and return envelope directly",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Update all four call sites in execute_final_review_panel (reviewer proposals, planner votes, reviewer votes, arbiter) to extract RecordProducer from envelope metadata",
+          "order": 7,
+          "status": "completed"
+        },
+        {
+          "description": "Add DivergentMetadataAdapter mock and persisted_artifacts_use_envelope_metadata_not_resolved_target regression test in final_review.rs",
+          "order": 8,
+          "status": "completed"
+        },
+        {
+          "description": "Fix test assertion to use internal serde tagging (type field) instead of external tagging for RecordProducer JSON",
+          "order": 9,
+          "status": "completed"
+        },
+        {
+          "description": "Verify compilation (blocked: no Rust toolchain in environment)",
+          "order": 10,
+          "status": "skipped"
+        }
+      ],
+      "validation_evidence": [
+        "All three invoke helpers now return InvocationEnvelope, matching the engine.rs primary path pattern at line 4647-4651",
+        "All seven RecordProducer::Agent construction sites across completion.rs (1 site), prompt_review.rs (2 sites), and final_review.rs (4 sites) now source from envelope.metadata.backend_used.family and envelope.metadata.model_used.model_id",
+        "Regression test DivergentMetadataAdapter returns BackendFamily::Codex with model_id 'actual-model-from-envelope' while resolved targets use BackendFamily::Claude with 'configured-*' model IDs, ensuring any test pass proves envelope metadata is used",
+        "Test reads persisted artifact JSON files from history/artifacts/ and asserts producer.backend_family == 'codex' and producer.model_id == 'actual-model-from-envelope' for all Agent-produced records",
+        "RecordProducer serde tag format verified: uses #[serde(tag = \"type\", rename_all = \"snake_case\")] internal tagging, test assertion correctly checks producer[\"type\"] == \"agent\"",
+        "Manual code review confirmed no unused imports introduced and all existing imports remain needed"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}
