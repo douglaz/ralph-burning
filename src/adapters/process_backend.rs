@@ -1040,16 +1040,65 @@ fn format_failed_raw_output(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
     combined
 }
 
+/// Rewrite `{"type": ["T", "null"], ...props}` → `{"anyOf": [{"type": "T", ...props}, {"type": "null"}]}`.
+/// Leaves schemas with single-string `type` (e.g., `"array"`, `"integer"`) unchanged.
+fn normalize_nullable_type_array(map: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_null_in_type_array = match map.get("type") {
+        Some(serde_json::Value::Array(arr)) => arr.iter().any(|v| v.as_str() == Some("null")),
+        _ => return,
+    };
+    if !has_null_in_type_array {
+        return;
+    }
+
+    // Extract type array
+    let types = match map.remove("type") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => return,
+    };
+    let non_null_types: Vec<serde_json::Value> = types
+        .into_iter()
+        .filter(|v| v.as_str() != Some("null"))
+        .collect();
+
+    // Build non-null variant: carry over remaining schema properties (format, minimum, etc.)
+    let mut non_null_variant = std::mem::take(map);
+    if non_null_types.len() == 1 {
+        non_null_variant.insert(
+            "type".to_owned(),
+            non_null_types.into_iter().next().unwrap(),
+        );
+    } else {
+        non_null_variant.insert("type".to_owned(), serde_json::Value::Array(non_null_types));
+    }
+
+    // Replace map contents with anyOf wrapper
+    map.insert(
+        "anyOf".to_owned(),
+        serde_json::Value::Array(vec![
+            serde_json::Value::Object(non_null_variant),
+            serde_json::json!({"type": "null"}),
+        ]),
+    );
+}
+
 /// Recursively enforce OpenAI strict-mode schema requirements:
-/// 1. Inject `"additionalProperties": false` on every object schema.
-/// 2. Ensure `"required"` includes every key from `"properties"` — strict mode
+/// 1. Normalize schemars nullable type arrays (`["T", "null"]`) into `anyOf` format.
+/// 2. Inject `"additionalProperties": false` on every object schema.
+/// 3. Ensure `"required"` includes every key from `"properties"` — strict mode
 ///    rejects schemas where a property key is missing from the required array.
+/// 4. Recurse into `anyOf`/`oneOf`/`allOf` composition arrays.
 ///
 /// This is needed because `schemars` honours `#[serde(default)]` by omitting
 /// the field from `required`, which is correct for general JSON Schema but
-/// violates OpenAI's strict-mode contract.
+/// violates OpenAI's strict-mode contract. Additionally, `schemars` 0.8
+/// represents `Option<T>` as `{"type": ["T", "null"]}` which is incompatible
+/// with OpenAI strict mode's requirement for single-string `type` values.
 pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
+        // Convert type arrays like ["string", "null"] to anyOf format
+        normalize_nullable_type_array(map);
+
         let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object");
         if is_object {
             // 1. additionalProperties: false
@@ -1095,6 +1144,14 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
         // Recurse into items (for array types)
         if let Some(items) = map.get_mut("items") {
             enforce_strict_mode_schema(items);
+        }
+        // Recurse into anyOf/oneOf/allOf composition arrays
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            if let Some(serde_json::Value::Array(variants)) = map.get_mut(keyword) {
+                for variant in variants.iter_mut() {
+                    enforce_strict_mode_schema(variant);
+                }
+            }
         }
     }
 }
@@ -1260,6 +1317,172 @@ mod tests {
             "quick_revisions should be added to nested required; got: {nested_strings:?}"
         );
         assert_eq!(nested["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_normalizes_nullable_type_array() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "rationale": { "type": ["string", "null"] }
+            },
+            "required": ["name"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"rationale"));
+        assert!(required_strings.contains(&"name"));
+
+        // rationale should be rewritten to anyOf format
+        let rationale = &schema["properties"]["rationale"];
+        assert!(rationale.get("type").is_none(), "type key should be removed");
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_preserves_format_on_nullable_integer() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": ["integer", "null"], "format": "uint32", "minimum": 0 }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let count = &schema["properties"]["count"];
+        let any_of = count["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0]["type"], "integer");
+        assert_eq!(any_of[0]["format"], "uint32");
+        assert_eq!(any_of[0]["minimum"], 0);
+        assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_leaves_non_nullable_defaults_unchanged() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outcome": { "type": "string" },
+                "follow_ups": { "type": "array", "items": { "type": "string" } },
+                "version": { "type": "integer" }
+            },
+            "required": ["outcome"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"follow_ups"));
+        assert!(required_strings.contains(&"version"));
+
+        // follow_ups schema unchanged — no anyOf, no null
+        assert_eq!(schema["properties"]["follow_ups"]["type"], "array");
+        assert!(schema["properties"]["follow_ups"].get("anyOf").is_none());
+
+        // version schema unchanged
+        assert_eq!(schema["properties"]["version"]["type"], "integer");
+        assert!(schema["properties"]["version"].get("anyOf").is_none());
+    }
+
+    #[test]
+    fn enforce_strict_mode_recurses_into_one_of() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "producer": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "model": { "type": "string" }
+                            },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "path": { "type": "string" }
+                            },
+                            "required": ["type"]
+                        }
+                    ]
+                }
+            },
+            "required": ["producer"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let one_of = schema["properties"]["producer"]["oneOf"].as_array().unwrap();
+        for (i, variant) in one_of.iter().enumerate() {
+            assert_eq!(
+                variant["additionalProperties"],
+                json!(false),
+                "variant {i} should have additionalProperties: false"
+            );
+            let req = variant["required"].as_array().unwrap();
+            assert!(
+                req.len() == 2,
+                "variant {i} should have all properties in required, got {req:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_strict_mode_final_review_proposal_round_trip() {
+        // Simulates the schemars output for FinalReviewProposalPayload
+        let mut schema = json!({
+            "type": "object",
+            "definitions": {
+                "FinalReviewProposal": {
+                    "type": "object",
+                    "properties": {
+                        "body": { "type": "string" },
+                        "rationale": { "type": ["string", "null"] }
+                    },
+                    "required": ["body"]
+                }
+            },
+            "properties": {
+                "amendments": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/FinalReviewProposal" }
+                }
+            },
+            "required": ["amendments"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        // Definition should be enforced
+        let def = &schema["definitions"]["FinalReviewProposal"];
+        assert_eq!(def["additionalProperties"], json!(false));
+
+        let def_required = def["required"].as_array().unwrap();
+        let def_req_strings: Vec<&str> =
+            def_required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(def_req_strings.contains(&"body"));
+        assert!(def_req_strings.contains(&"rationale"));
+
+        // rationale should be anyOf, not type array
+        let rationale = &def["properties"]["rationale"];
+        assert!(rationale.get("type").is_none());
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
     }
 
     #[test]
