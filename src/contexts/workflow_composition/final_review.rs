@@ -41,6 +41,8 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
+use super::agent_record_producer;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalAmendment {
     pub amendment_id: String,
@@ -204,7 +206,7 @@ where
     let mut reviewer_records = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
-        let reviewer_payload = invoke_final_review_member(
+        let reviewer_result = invoke_final_review_member(
             agent_service,
             project_root,
             backend_working_dir,
@@ -222,8 +224,8 @@ where
         )
         .await;
 
-        let reviewer_payload = match reviewer_payload {
-            Ok(payload) => payload,
+        let (reviewer_payload, producer) = match reviewer_result {
+            Ok(result) => result,
             Err(error) if !member.required => {
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < min_reviewers
@@ -243,10 +245,6 @@ where
                 details: format!("final-review proposal schema validation failed: {e}"),
             })?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: member.target.backend.family.to_string(),
-            model_id: member.target.model.model_id.clone(),
-        };
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         persist_supporting_record(
             artifact_write,
@@ -312,7 +310,7 @@ where
         });
     }
 
-    let planner_vote_payload = invoke_final_review_member(
+    let (planner_vote_payload, planner_producer) = invoke_final_review_member(
         agent_service,
         project_root,
         backend_working_dir,
@@ -355,10 +353,6 @@ where
             }
         })?;
     validate_vote_payload(&planner_votes, &amendments, &panel.planner)?;
-    let planner_producer = RecordProducer::Agent {
-        backend_family: panel.planner.backend.family.to_string(),
-        model_id: panel.planner.model.model_id.clone(),
-    };
     let planner_artifact = renderers::render_final_review_vote(
         "Final Review Planner Positions",
         &planner_votes,
@@ -386,7 +380,7 @@ where
 
     let mut reviewer_votes = Vec::new();
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
-        let vote_payload = invoke_final_review_member(
+        let vote_result = invoke_final_review_member(
             agent_service,
             project_root,
             backend_working_dir,
@@ -423,8 +417,8 @@ where
         )
         .await;
 
-        let vote_payload = match vote_payload {
-            Ok(payload) => payload,
+        let (vote_payload, producer) = match vote_result {
+            Ok(result) => result,
             Err(error) if !reviewer.required => {
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < min_reviewers
@@ -447,10 +441,6 @@ where
             })?;
         validate_vote_payload(&votes, &amendments, &reviewer.target)?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: reviewer.target.backend.family.to_string(),
-            model_id: reviewer.target.model.model_id.clone(),
-        };
         let artifact = renderers::render_final_review_vote(
             "Final Review Votes",
             &votes,
@@ -517,7 +507,7 @@ where
             .map(|amendment| (amendment.amendment_id.clone(), amendment))
             .collect();
 
-        let arbiter_payload = invoke_final_review_member(
+        let (arbiter_payload, producer) = invoke_final_review_member(
             agent_service,
             project_root,
             backend_working_dir,
@@ -559,10 +549,6 @@ where
                 details: format!("final-review arbiter schema validation failed: {e}"),
             })?;
         validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter)?;
-        let producer = RecordProducer::Agent {
-            backend_family: panel.arbiter.backend.family.to_string(),
-            model_id: panel.arbiter.model.model_id.clone(),
-        };
         let artifact = renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
         persist_supporting_record(
             artifact_write,
@@ -844,7 +830,7 @@ async fn invoke_final_review_member<A, R, S>(
     context: Value,
     timeout: Duration,
     cancellation_token: CancellationToken,
-) -> AppResult<Value>
+) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
@@ -872,7 +858,7 @@ where
     };
 
     let envelope = agent_service.invoke(request).await?;
-    Ok(envelope.parsed_payload)
+    Ok((envelope.parsed_payload, agent_record_producer(&envelope.metadata)))
 }
 
 fn final_review_invocation_id(

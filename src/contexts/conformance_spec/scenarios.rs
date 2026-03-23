@@ -10634,6 +10634,18 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         if producer_json["type"] != "agent" {
             return Err("expected producer type 'agent'".to_owned());
         }
+        if producer_json["backend_family"] != "claude" {
+            return Err(format!(
+                "expected backend_family 'claude', got {}",
+                producer_json["backend_family"]
+            ));
+        }
+        if producer_json["model_id"] != "claude-opus-4-6" {
+            return Err(format!(
+                "expected model_id 'claude-opus-4-6', got {}",
+                producer_json["model_id"]
+            ));
+        }
 
         // ── Behavioral: exercise actual prompt-review accept via CLI ──
         let ws = TempWorkspace::new()?;

@@ -51,6 +51,7 @@ use super::completion;
 use super::contracts::{self, ValidatedBundle};
 use super::drift::{self, PromptChangeResumeDecision};
 use super::final_review;
+use super::agent_record_producer;
 use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
 use super::prompt_review;
 use super::retry_policy::RetryPolicy;
@@ -4645,10 +4646,7 @@ where
     };
 
     agent_service.invoke(request).await.and_then(|envelope| {
-        let producer = RecordProducer::Agent {
-            backend_family: envelope.metadata.backend_used.family.to_string(),
-            model_id: envelope.metadata.model_used.model_id.clone(),
-        };
+        let producer = agent_record_producer(&envelope.metadata);
         stage_entry
             .contract
             .evaluate_permissive(&envelope.parsed_payload)

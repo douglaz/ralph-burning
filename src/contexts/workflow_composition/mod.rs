@@ -11,6 +11,8 @@ pub mod renderers;
 pub mod retry_policy;
 pub mod validation;
 
+use crate::contexts::agent_execution::model::InvocationMetadata;
+use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
 use crate::shared::domain::{FlowPreset, StageId};
 use crate::shared::error::AppResult;
 
@@ -190,4 +192,43 @@ pub fn stage_plan_for_flow(preset: FlowPreset, prompt_review_enabled: bool) -> V
             prompt_review_enabled || Some(*stage_id) != semantics.prompt_review_stage
         })
         .collect()
+}
+
+pub(crate) fn agent_record_producer(metadata: &InvocationMetadata) -> RecordProducer {
+    RecordProducer::Agent {
+        backend_family: metadata.backend_used.family.to_string(),
+        model_id: metadata.model_used.model_id.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::agent_record_producer;
+    use crate::contexts::agent_execution::model::{InvocationMetadata, TokenCounts};
+    use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
+    use crate::shared::domain::{BackendSpec, ModelSpec};
+
+    #[test]
+    fn agent_record_producer_uses_invocation_metadata_fields() {
+        let metadata = InvocationMetadata {
+            invocation_id: "invoke-1".to_owned(),
+            duration: Duration::from_millis(1),
+            token_counts: TokenCounts::default(),
+            backend_used: BackendSpec::from_family(crate::shared::domain::BackendFamily::Codex),
+            model_used: ModelSpec::new(crate::shared::domain::BackendFamily::Codex, "gpt-5.5"),
+            attempt_number: 1,
+            session_id: None,
+            session_reused: false,
+        };
+
+        assert_eq!(
+            agent_record_producer(&metadata),
+            RecordProducer::Agent {
+                backend_family: "codex".to_owned(),
+                model_id: "gpt-5.5".to_owned(),
+            }
+        );
+    }
 }

@@ -40,6 +40,8 @@ use crate::shared::domain::{
 };
 use crate::shared::error::{AppError, AppResult};
 
+use super::agent_record_producer;
+
 /// Result of a completion panel execution.
 pub struct CompletionResult {
     /// The aggregate payload for journal persistence.
@@ -117,7 +119,7 @@ where
     for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let vote_payload = invoke_completer(
+        let (vote_payload, producer) = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -144,10 +146,6 @@ where
                 }
             })?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: completer_target.backend.family.to_string(),
-            model_id: completer_target.model.model_id.clone(),
-        };
         let voter_id = format!(
             "{}:{}",
             completer_target.backend.family, completer_target.model.model_id
@@ -231,7 +229,7 @@ async fn invoke_completer<A, R, S>(
     timeout: Duration,
     cancellation_token: CancellationToken,
     project_id: Option<&ProjectId>,
-) -> AppResult<Value>
+) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
@@ -278,7 +276,7 @@ where
     };
 
     let envelope = agent_service.invoke(request).await?;
-    Ok(envelope.parsed_payload)
+    Ok((envelope.parsed_payload, agent_record_producer(&envelope.metadata)))
 }
 
 /// Persist a completion supporting record.
