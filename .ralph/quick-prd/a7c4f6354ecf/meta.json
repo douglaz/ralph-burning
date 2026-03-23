@@ -1,0 +1,17 @@
+{
+  "idea": "Fix enforce_strict_mode_schema (#22): wrap optional fields in anyOf with null, add anyOf/oneOf/allOf recursion. See .ralph/projects/ for the plan. The function is in src/adapters/process_backend.rs around line 1051. Before adding properties to required, detect which were NOT originally required (i.e. Option<T> with serde(default)) and wrap their schema in {anyOf: [{type: null}, <original>]}. Also recurse into anyOf/oneOf/allOf arrays. Add tests in tests/unit/process_backend_test.rs. This fixes claude CLI crashes at final_review where structured output validation fails because optional fields like FinalReviewProposal.rationale are forced required without null allowance.",
+  "idea_hash": "a7c4f6354ecf",
+  "writer_backend": "claude",
+  "reviewer_backend": "codex",
+  "started_at": "2026-03-23T17:29:51Z",
+  "completed_at": "2026-03-23T17:56:56Z",
+  "revision_count": 1,
+  "approved": false,
+  "draft_time_secs": 343.27110472,
+  "review_times_secs": [
+    516.465594746
+  ],
+  "revision_times_secs": [
+    764.577984498
+  ]
+}

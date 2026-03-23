@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323045611-review-c2-a1-cr1-artifact",
+  "payload_id": "run-20260323045611-review-c2-a1-cr1",
+  "stage_id": "review",
+  "created_at": "2026-03-23T05:20:23.142546840Z",
+  "content": "# Review\n\n## Outcome\n\n**Request Changes**\n\n## Evidence\n\n- `src/contexts/workflow_composition/completion.rs:138-140`, `src/contexts/workflow_composition/prompt_review.rs:111-113` and `170-172`, and `src/contexts/workflow_composition/final_review.rs:239-241`, `351-353`, `443-445`, `559-561` now construct `RecordProducer::Agent` from `envelope.metadata.backend_used.family` and `envelope.metadata.model_used.model_id`.\n- `src/contexts/workflow_composition/final_review.rs:1512-1605` adds a regression test that expects persisted artifact records to keep adapter-supplied envelope metadata (`codex` / `actual-model-from-envelope`) even when the configured target is Claude.\n- `src/contexts/agent_execution/service.rs:220-223` currently overwrites every returned envelope with `request.resolved_target.backend` and `request.resolved_target.model`, and `tests/unit/agent_execution_test.rs:223-224` asserts that behavior today.\n\n## Findings and Gaps\n\n- Blocking: the new regression test is incompatible with the current service contract. Because `AgentExecutionService::invoke` rewrites `envelope.metadata.backend_used` and `envelope.metadata.model_used` before persistence, the updated panel code will still serialize the resolved target values, not the divergent values returned by `DivergentMetadataAdapter`. As written, `src/contexts/workflow_composition/final_review.rs:1512-1605` should fail once tests are run, and the change does not actually preserve adapter-reported backend/model metadata.\n- Validation gap: `cargo` is not installed in this environment, so I could not run `cargo check` or `cargo test`; the blocker above is from static inspection.\n\n## Follow-up and Amendments\n\n- Reconcile the metadata source of truth. If artifacts are supposed to reflect adapter-reported invocation metadata, stop overwriting `envelope.metadata.backend_used` / `model_used` in `src/contexts/agent_execution/service.rs` (or only backfill them when missing), then keep the new persistence call sites.\n- If the resolved target is intentionally authoritative, update or remove the divergent-metadata regression test in `src/contexts/workflow_composition/final_review.rs` so it matches the actual service behavior.\n- Run `cargo check` and the relevant test suite after the metadata contract is corrected.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

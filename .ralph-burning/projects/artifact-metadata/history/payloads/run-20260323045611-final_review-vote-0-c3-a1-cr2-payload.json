@@ -1,0 +1,44 @@
+{
+  "payload_id": "run-20260323045611-final_review-vote-0-c3-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 3,
+  "attempt": 1,
+  "created_at": "2026-03-23T06:05:37.710189092Z",
+  "payload": {
+    "summary": "The branch fixes a real bug where artifact metadata was populated from the pre-configured resolved target rather than the actual backend/model reported by the InvocationEnvelope. The fix is clean: invoke_final_review_member (and analogous helpers) now returns the full InvocationEnvelope, and callers extract producer metadata from envelope.metadata rather than from the configured target. The three cleanup amendments (eprintln, debug-file, result symlink) are clear hygiene wins. The two structural amendments proposing a new invocation_metadata field are unnecessary — RecordProducer::Agent already carries backend_family and model_id, and the fix ensures these now reflect the actual invocation metadata.",
+    "votes": [
+      {
+        "amendment_id": "fr-2-eb89fbc8",
+        "decision": "accept",
+        "rationale": "The two eprintln! blocks are unconditional debug scaffolding that dump stdout/stderr content on every parse failure to raw stderr. They bypass the project's tracing infrastructure, are unrelated to the artifact-metadata fix, and would produce noisy unstructured output in production. Removing them is straightforward cleanup; if parse diagnostics are needed later, they should go through structured tracing at an appropriate level."
+      },
+      {
+        "amendment_id": "fr-2-ba2225e1",
+        "decision": "accept",
+        "rationale": "The --debug-file argument is unconditionally added to every Claude invocation, writing a debug log to runtime/temp/{invocation_id}.claude-debug.log with no feature gate, config flag, or log-level check. This would create unbounded disk usage in production and is clearly leftover debugging infrastructure unrelated to the metadata fix. It should be removed."
+      },
+      {
+        "amendment_id": "fr-2-46891a05",
+        "decision": "accept",
+        "rationale": "The result symlink is a Nix build artifact pointing to a machine-local /nix/store path. It is non-reproducible across environments and should not be version-controlled. The diff shows it changing between two store paths — this is pure noise in the branch. It should be excluded (and ideally added to .gitignore, since it is not currently listed there)."
+      },
+      {
+        "amendment_id": "fr-2-748d0beb",
+        "decision": "reject",
+        "rationale": "RecordProducer::Agent already carries backend_family and model_id, and after this fix these fields correctly reflect the envelope metadata (the actual backend/model that handled the invocation). Adding a separate invocation_metadata struct would duplicate this information, increasing serialization surface and creating a maintenance burden to keep both representations in sync. The producer field is semantically correct for 'what produced this artifact' — adding a parallel field provides no additional information."
+      },
+      {
+        "amendment_id": "fr-2-7a33d2c1",
+        "decision": "reject",
+        "rationale": "This amendment depends on the invocation_metadata field proposed in fr-2-748d0beb, which I am rejecting. Without that field, there is nothing new to assert. The existing test persisted_artifacts_use_envelope_metadata_not_resolved_target in final_review.rs verifies that 4+ agent-produced artifacts carry the correct producer.backend_family and producer.model_id from the envelope rather than the configured target. The service.rs test additionally validates that InvocationEnvelope metadata is preserved through the invoke path. Together these provide adequate regression coverage for the fix."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

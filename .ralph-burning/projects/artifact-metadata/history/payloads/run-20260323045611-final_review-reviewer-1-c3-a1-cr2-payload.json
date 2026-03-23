@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260323045611-final_review-reviewer-1-c3-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 3,
+  "attempt": 1,
+  "created_at": "2026-03-23T06:02:47.678588978Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "Persist the requested invocation metadata on artifact records instead of only enriching `producer`: add a serde-defaulted `invocation_metadata` field with `backend_family` and `model_id`, thread `InvocationEnvelope.metadata.backend_used.family` and `InvocationEnvelope.metadata.model_used.model_id` through the artifact persistence helpers, and let `FsPayloadArtifactWriteStore` serialize it into `history/artifacts/*.json`.",
+        "rationale": "`src/contexts/project_run_record/model.rs` currently has no `invocation_metadata` field on `ArtifactRecord`, and `src/contexts/workflow_composition/engine.rs` only maps the envelope values into `RecordProducer`. Since `src/adapters/fs.rs` just serializes the record as-is, the persisted artifact JSON still cannot expose the fields requested in the prompt."
+      },
+      {
+        "body": "Replace or extend the regression coverage so it asserts `invocation_metadata.backend_family` and `invocation_metadata.model_id` on a persisted artifact produced by the stage artifact path, rather than asserting only `producer.backend_family` / `producer.model_id` on final-review panel artifacts.",
+        "rationale": "The current test in `src/contexts/workflow_composition/final_review.rs` exercises final-review supporting-record persistence, not the `engine.rs` stage persistence path called out in the prompt, and it only checks `producer`. That test would not catch the requested contract gap."
+      }
+    ],
+    "summary": "Found two blocking issues: artifact JSON still lacks `invocation_metadata.backend_family` / `model_id`, and the added regression only checks pre-existing `producer` metadata on a final-review panel path instead of the stage artifact persistence path."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

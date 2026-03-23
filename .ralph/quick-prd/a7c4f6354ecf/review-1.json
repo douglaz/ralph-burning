@@ -1,0 +1,17 @@
+{
+  "approved": false,
+  "issues": [
+    {
+      "area": "Feasibility / schema semantics",
+      "feedback": "The proposed detection rule is incorrect: \"not originally required\" is not equivalent to `Option<T>`. In current invocation contracts, several omitted-from-`required` fields are defaulted but non-nullable, e.g. `RequirementsReviewPayload.follow_ups` (`src/contexts/requirements_drafting/model.rs:434`), `ProjectSeedPayload.follow_ups` (`src/contexts/requirements_drafting/model.rs:585`), and `ProjectSeedPayload.version` (`src/contexts/requirements_drafting/model.rs:578`). Wrapping every newly-required field in `anyOf[..., {\"type\":\"null\"}]` would make the schema accept `null` values that serde rejects (`follow_ups: null` already fails deserialization). The spec needs an acceptance criterion and tests proving non-`Option` defaulted fields remain non-nullable, or a different way to identify true optionals."
+    },
+    {
+      "area": "Root cause / acceptance criteria",
+      "feedback": "The cited failing example does not line up with the current schema. `panel_json_schema(StageId::FinalReview, \"reviewer\")` already emits `FinalReviewProposal.rationale` as `\"type\": [\"string\", \"null\"]` (`src/contexts/workflow_composition/panel_contracts.rs:126-132`). Under the proposed AC #2, that field would be explicitly skipped and not changed. So either `rationale` is not the real failing case, or the spec is wrong to treat `type: [\"string\", \"null\"]` as already acceptable. The spec should include the exact failing schema snapshot / validator error and align the acceptance criteria to that behavior."
+    },
+    {
+      "area": "Testing / infrastructure reuse",
+      "feedback": "The test plan is inconsistent with the codebase. The feature idea says to add tests in `tests/unit/process_backend_test.rs`, but the spec later says to add them to the existing in-module `#[cfg(test)]` block in `src/adapters/process_backend.rs`; only the latter can call `pub(crate) fn enforce_strict_mode_schema(...)` without changing visibility. The tests also should reuse real contract schemas already present in the repo: `requirements:project_seed` is the live `anyOf` case and `requirements:validation` is the live `oneOf` case. `RecordProducer` is not part of current invocation schemas, and `StepStatus` is not a `oneOf` schema at all, so those examples are misleading."
+    }
+  ]
+}

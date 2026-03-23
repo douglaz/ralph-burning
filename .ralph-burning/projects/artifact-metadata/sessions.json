@@ -1,0 +1,31 @@
+{
+  "sessions": [
+    {
+      "role": "implementer",
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6",
+      "session_id": "8e6d832e-73b2-44df-ba3a-c7eec7bd11ae",
+      "created_at": "2026-03-23T05:12:46.710140265Z",
+      "last_used_at": "2026-03-23T05:12:46.710140265Z",
+      "invocation_count": 1
+    },
+    {
+      "role": "qa_validator",
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6",
+      "session_id": "53fe18b8-dc1c-40ed-942b-035695209b78",
+      "created_at": "2026-03-23T05:16:12.725098327Z",
+      "last_used_at": "2026-03-23T05:16:12.725098327Z",
+      "invocation_count": 1
+    },
+    {
+      "role": "reviewer",
+      "backend_family": "claude",
+      "model_id": "claude-opus-4-6",
+      "session_id": "3aaa3aee-6324-4da7-8aaf-83876b642a09",
+      "created_at": "2026-03-23T05:30:24.869361073Z",
+      "last_used_at": "2026-03-23T06:05:37.689512752Z",
+      "invocation_count": 4
+    }
+  ]
+}

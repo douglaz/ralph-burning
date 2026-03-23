@@ -1,0 +1,931 @@
+2026-03-23T04:56:12.456Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.json
+2026-03-23T04:56:12.457Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T04:56:12.457Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.459Z [DEBUG] MDM settings load completed in 0ms
+2026-03-23T04:56:12.461Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.462Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-03-23T04:56:12.463Z [DEBUG] [init] configureGlobalMTLS starting
+2026-03-23T04:56:12.463Z [DEBUG] [init] configureGlobalMTLS complete
+2026-03-23T04:56:12.463Z [DEBUG] [init] configureGlobalAgents starting
+2026-03-23T04:56:12.464Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T04:56:12.464Z [DEBUG] [init] configureGlobalAgents complete
+2026-03-23T04:56:12.465Z [DEBUG] Error log sink initialized
+2026-03-23T04:56:12.471Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.472Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.json
+2026-03-23T04:56:12.472Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T04:56:12.472Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.474Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-03-23T04:56:12.474Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.477Z [DEBUG] [claudeai-mcp] Fetching from https://api.anthropic.com/v1/mcp_servers?limit=1000
+2026-03-23T04:56:12.507Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-03-23T04:56:12.549Z [DEBUG] [STARTUP] Running setup()...
+2026-03-23T04:56:12.552Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.552Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.554Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/root/.claude/skills, project=[]
+2026-03-23T04:56:12.554Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.555Z [DEBUG] Error log sink initialized
+2026-03-23T04:56:12.556Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-03-23T04:56:12.576Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.576Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.584Z [DEBUG] [STARTUP] setup() completed in 35ms
+2026-03-23T04:56:12.584Z [DEBUG] Cleared CA certificates cache
+2026-03-23T04:56:12.584Z [DEBUG] Cleared mTLS configuration cache
+2026-03-23T04:56:12.585Z [DEBUG] Cleared proxy agent cache
+2026-03-23T04:56:12.585Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T04:56:12.585Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-03-23T04:56:12.586Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.586Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.621Z [DEBUG] Git remote URL: git@github.com:douglaz/ralph-burning.git
+2026-03-23T04:56:12.621Z [DEBUG] Parsed repository: github.com/douglaz/ralph-burning from URL: git@github.com:douglaz/ralph-burning.git
+2026-03-23T04:56:12.631Z [DEBUG] Loaded 1 installed plugins from /root/.claude/plugins/installed_plugins.json
+2026-03-23T04:56:12.631Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.631Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.632Z [DEBUG] Loading plugin rust-analyzer-lsp from source: "./plugins/rust-analyzer-lsp"
+2026-03-23T04:56:12.633Z [DEBUG] Using provided version for rust-analyzer-lsp@claude-plugins-official: 1.0.0
+2026-03-23T04:56:12.633Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.633Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T04:56:12.634Z [DEBUG] Plugin rust-analyzer-lsp@claude-plugins-official version 1.0.0 already cached at /root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-23T04:56:12.634Z [DEBUG] Resolved local plugin rust-analyzer-lsp to versioned cache: /root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-23T04:56:12.636Z [DEBUG] Plugin rust-analyzer-lsp has no entry.skills defined
+2026-03-23T04:56:12.636Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.636Z [DEBUG] Found 1 plugins (1 enabled, 0 disabled)
+2026-03-23T04:56:12.636Z [DEBUG] getPluginSkills: Processing 1 enabled plugins
+2026-03-23T04:56:12.637Z [DEBUG] Checking plugin rust-analyzer-lsp: skillsPath=none, skillsPaths=0 paths
+2026-03-23T04:56:12.637Z [DEBUG] Registered 0 hooks from 1 plugins
+2026-03-23T04:56:12.637Z [DEBUG] Total plugin skills loaded: 0
+2026-03-23T04:56:12.637Z [DEBUG] Total plugin commands loaded: 0
+2026-03-23T04:56:12.637Z [DEBUG] Total plugin agents loaded: 0
+2026-03-23T04:56:12.637Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 8 bundled skills, 0 builtin plugin skills
+2026-03-23T04:56:12.638Z [DEBUG] [STARTUP] Commands and agents loaded in 53ms
+2026-03-23T04:56:12.639Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-03-23T04:56:12.639Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-03-23T04:56:12.639Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-03-23T04:56:12.639Z [DEBUG] Starting background startup prefetches
+2026-03-23T04:56:12.639Z [DEBUG] Passes: Using fresh cached eligibility data
+2026-03-23T04:56:12.641Z [DEBUG] [clientData] fetching (attempt 1/2)
+2026-03-23T04:56:12.643Z [DEBUG] [STARTUP] MCP configs resolved in 169ms (awaited at +169ms)
+2026-03-23T04:56:12.644Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.644Z [DEBUG] All plugins already exist, skipping migration
+2026-03-23T04:56:12.644Z [DEBUG] Initialized versioned plugins system with 1 plugins
+2026-03-23T04:56:12.645Z [DEBUG] Cleared CA certificates cache
+2026-03-23T04:56:12.645Z [DEBUG] Cleared mTLS configuration cache
+2026-03-23T04:56:12.645Z [DEBUG] Cleared proxy agent cache
+2026-03-23T04:56:12.645Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T04:56:12.646Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.646Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.669Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.669Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:12.669Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-03-23T04:56:12.669Z [DEBUG] Found 0 hook matchers in settings
+2026-03-23T04:56:12.669Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-03-23T04:56:12.670Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:12.671Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-03-23T04:56:12.671Z [DEBUG] [3P telemetry] isTelemetryEnabled=false (CLAUDE_CODE_ENABLE_TELEMETRY=undefined)
+2026-03-23T04:56:12.677Z [DEBUG] Grove: Using fresh cached config
+2026-03-23T04:56:12.682Z [DEBUG] Loaded 1 LSP server(s) from plugin: rust-analyzer-lsp
+2026-03-23T04:56:12.682Z [DEBUG] Total LSP servers loaded: 1
+2026-03-23T04:56:12.682Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 1 server(s)
+2026-03-23T04:56:12.682Z [DEBUG] Queued request handler for plugin:rust-analyzer-lsp:rust-analyzer.workspace/configuration (connection not ready)
+2026-03-23T04:56:12.682Z [DEBUG] LSP manager initialized with 1 servers
+2026-03-23T04:56:12.682Z [DEBUG] LSP server manager initialized successfully
+2026-03-23T04:56:12.682Z [DEBUG] Queued notification handler for plugin:rust-analyzer-lsp:rust-analyzer.textDocument/publishDiagnostics (connection not ready)
+2026-03-23T04:56:12.682Z [DEBUG] Registered diagnostics handler for plugin:rust-analyzer-lsp:rust-analyzer
+2026-03-23T04:56:12.682Z [DEBUG] LSP notification handlers registered successfully for all 1 server(s)
+2026-03-23T04:56:12.691Z [DEBUG] Watching for changes in setting files /root/.claude/settings.json...
+2026-03-23T04:56:12.719Z [DEBUG] Ripgrep first use test: PASSED (mode=builtin, path=/root/.npm-global/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg)
+2026-03-23T04:56:12.754Z [WARN] auto mode disabled: tengu_auto_mode_config.enabled === "disabled" (circuit breaker)
+2026-03-23T04:56:12.774Z [DEBUG] [claudeai-mcp] Fetched 2 servers
+2026-03-23T04:56:12.776Z [DEBUG] MCP server "claude.ai Google Calendar": Skipping connection (cached needs-auth)
+2026-03-23T04:56:12.776Z [DEBUG] MCP server "claude.ai Gmail": Skipping connection (cached needs-auth)
+2026-03-23T04:56:12.918Z [DEBUG] Org fast mode: enabled
+2026-03-23T04:56:12.951Z [DEBUG] [clientData] fetch ok (0 fields)
+2026-03-23T04:56:12.951Z [DEBUG] [clientData] cache unchanged, skipping write
+2026-03-23T04:56:13.055Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=false
+2026-03-23T04:56:13.055Z [DEBUG] installPluginsForHeadless: starting
+2026-03-23T04:56:13.060Z [DEBUG] Total plugin output styles loaded: 0
+2026-03-23T04:56:13.065Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:56:13.065Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:56:13.065Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:56:13.066Z [DEBUG] Sending 5 skills via attachment (initial, 5 total sent)
+2026-03-23T04:56:13.066Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:56:13.067Z [WARN] [3P telemetry] Event dropped (no event logger initialized): user_prompt
+2026-03-23T04:56:13.070Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:13.072Z [DEBUG] autocompact: tokens=1522 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:13.075Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:56:13.076Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:13.077Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:13.078Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:13.078Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:13.078Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:13.079Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:13.080Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:13.085Z [DEBUG] Security messages are fresh (<1h old), skipping fetch
+2026-03-23T04:56:13.852Z [DEBUG] SSH config check: code=1 configured=true
+2026-03-23T04:56:13.858Z [DEBUG] git pull: cwd=/root/.claude/plugins/marketplaces/claude-plugins-official ref=default
+2026-03-23T04:56:14.196Z [DEBUG] Successfully refreshed marketplace: claude-plugins-official
+2026-03-23T04:56:14.196Z [DEBUG] Plugin autoupdate: checking installed plugins
+2026-03-23T04:56:14.200Z [DEBUG] Using provided version for rust-analyzer-lsp@claude-plugins-official: 1.0.0
+2026-03-23T04:56:15.392Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:22.939Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:22.939Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:22.939Z [DEBUG] Getting matching hook commands for SubagentStart with query: Explore
+2026-03-23T04:56:22.939Z [DEBUG] Found 0 hook matchers in settings
+2026-03-23T04:56:22.939Z [DEBUG] Matched 0 unique hooks for query "Explore" (0 before deduplication)
+2026-03-23T04:56:22.940Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:22.946Z [DEBUG] autocompact: tokens=232 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:22.946Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:22.952Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:22.952Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:22.952Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:22.952Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:22.952Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:22.954Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:22.954Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:24.021Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:24.512Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:24.513Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:24.513Z [DEBUG] Getting matching hook commands for PostToolUse with query: Glob
+2026-03-23T04:56:24.513Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:24.513Z [DEBUG] Matched 1 unique hooks for query "Glob" (1 before deduplication)
+2026-03-23T04:56:24.954Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:24.957Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:24.961Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:24.976Z [DEBUG] Creating shell snapshot for bash (/run/current-system/sw/bin/bash)
+2026-03-23T04:56:24.976Z [DEBUG] Looking for shell config file: /root/.bashrc
+2026-03-23T04:56:24.978Z [DEBUG] Snapshots directory: /root/.claude/shell-snapshots
+2026-03-23T04:56:24.978Z [DEBUG] Creating snapshot at: /root/.claude/shell-snapshots/snapshot-bash-1774241784978-uens57.sh
+2026-03-23T04:56:24.978Z [DEBUG] Execution timeout: 10000ms
+2026-03-23T04:56:24.995Z [DEBUG] Shell snapshot created successfully (1918 bytes)
+2026-03-23T04:56:24.996Z [DEBUG] No session environment scripts found
+2026-03-23T04:56:24.996Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:56:25.009Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:25.010Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:25.010Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:56:25.010Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:25.010Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:56:25.012Z [DEBUG] autocompact: tokens=15451 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:25.012Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:25.014Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:25.015Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:25.015Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:25.015Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:25.015Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:25.015Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:25.016Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:25.968Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:27.335Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:27.336Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.336Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.336Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:27.336Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:27.336Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:27.789Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:27.790Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.790Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.790Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:27.790Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:27.790Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:27.950Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:27.951Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.951Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:27.951Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:27.951Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:27.951Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:27.968Z [DEBUG] autocompact: tokens=16304 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:27.968Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:27.969Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:27.970Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:27.970Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:27.970Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:27.970Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:27.971Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:27.971Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:29.003Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:29.844Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:29.844Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:29.844Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:29.844Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:29.844Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:29.844Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:30.027Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:30.027Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:30.027Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:30.027Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:30.027Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:30.099Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:30.099Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:30.099Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:30.099Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:30.099Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:30.113Z [DEBUG] autocompact: tokens=19073 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:30.113Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:30.114Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:30.114Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:30.114Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:30.114Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:30.114Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:30.116Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:30.116Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:31.161Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:32.144Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:32.144Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:32.144Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:32.280Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:32.280Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:32.280Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:32.386Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:32.386Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:32.386Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:32.386Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:32.386Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:32.565Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:32.565Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:32.565Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:32.565Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:32.565Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:32.570Z [DEBUG] autocompact: tokens=31019 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:32.570Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:32.571Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:32.571Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:32.571Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:32.571Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:32.571Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:32.572Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:32.572Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:33.856Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:34.739Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:34.740Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:34.740Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:34.740Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:34.740Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:34.740Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:35.292Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:35.293Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:35.294Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:35.295Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:35.298Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:56:35.314Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:35.314Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:35.314Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:56:35.314Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:35.314Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:56:35.316Z [DEBUG] autocompact: tokens=34546 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:35.316Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:35.317Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:35.317Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:35.317Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:35.317Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:35.317Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:35.318Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:35.318Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:36.371Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:36.890Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:36.890Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:36.890Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:37.138Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:37.138Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:37.138Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:37.138Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:37.138Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:37.141Z [DEBUG] autocompact: tokens=39175 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:37.142Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:37.142Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:37.143Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:37.143Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:37.143Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:37.143Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:37.143Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:37.143Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:38.245Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:39.560Z [DEBUG] "rg error (signal=null, code=2, stderr: rg: unrecognized file type: rs\n), 0 results"
+2026-03-23T04:56:39.561Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:39.561Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:39.561Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:56:39.561Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:39.561Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:56:40.050Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:40.050Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:40.050Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:40.050Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:40.050Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:40.066Z [DEBUG] autocompact: tokens=43163 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:40.066Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:40.067Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:40.068Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:40.068Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:40.068Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:40.068Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:40.068Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:40.068Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:41.356Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:42.527Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:42.527Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:42.527Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:42.527Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:42.527Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:42.530Z [DEBUG] autocompact: tokens=45320 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:42.530Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:42.531Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:42.532Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:42.532Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:42.532Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:42.532Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:42.532Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:42.532Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:43.779Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:45.063Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:45.064Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:45.066Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:45.068Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:56:45.080Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:45.080Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:45.080Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:56:45.080Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:45.080Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:56:45.352Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:45.352Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:45.352Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:45.605Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:45.605Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:45.605Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:45.605Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:45.605Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:45.608Z [DEBUG] autocompact: tokens=49551 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:45.608Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:45.609Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:45.610Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:45.610Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:45.610Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:45.610Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:45.610Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:45.610Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:46.715Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:47.630Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:47.630Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:47.630Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:47.630Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:47.630Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:47.682Z [DEBUG] autocompact: tokens=52301 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:47.683Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:47.684Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:47.684Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:47.684Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:47.684Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:47.684Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:47.685Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:47.685Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:48.855Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:50.015Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:50.015Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:50.015Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:50.256Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:50.256Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:50.256Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:50.256Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:50.256Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:50.259Z [DEBUG] autocompact: tokens=56379 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:50.259Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:50.260Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:50.260Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:50.260Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:50.260Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:50.260Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:50.261Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:50.261Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:51.712Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:53.140Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:53.141Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:53.143Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:53.144Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:56:53.156Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:53.156Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:53.156Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:56:53.156Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:53.156Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:56:53.261Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:53.261Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:53.261Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:53.455Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:53.456Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:53.456Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:53.456Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:53.456Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:53.459Z [DEBUG] autocompact: tokens=61081 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:53.459Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:53.460Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:53.460Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:53.460Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:53.460Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:53.460Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:53.460Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:53.461Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:55.266Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:56.456Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:56.456Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:56.456Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:56:56.456Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:56.456Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:56:56.476Z [DEBUG] autocompact: tokens=63127 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:56.476Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:56.478Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:56.478Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:56.478Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:56.478Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:56.478Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:56.479Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:56.479Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:58.123Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:56:59.112Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:59.113Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:59.116Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:56:59.117Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:56:59.159Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:59.159Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:56:59.159Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:56:59.159Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:56:59.159Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:56:59.161Z [DEBUG] autocompact: tokens=63928 threshold=167000 effectiveWindow=180000
+2026-03-23T04:56:59.161Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:56:59.162Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:56:59.162Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:59.162Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:56:59.162Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:56:59.162Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:56:59.163Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:56:59.163Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:00.239Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:01.189Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:01.189Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:01.189Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:01.189Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:01.189Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:01.253Z [DEBUG] autocompact: tokens=65359 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:01.254Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:01.255Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:01.255Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:01.255Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:01.255Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:01.255Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:01.256Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:01.256Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:02.790Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:04.706Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:04.706Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:04.706Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:04.706Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:04.706Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:04.723Z [DEBUG] autocompact: tokens=66156 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:04.723Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:04.724Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:04.724Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:04.724Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:04.724Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:04.724Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:04.725Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:04.725Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:06.601Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:07.187Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:07.187Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:07.187Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:07.187Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:07.187Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:07.224Z [DEBUG] autocompact: tokens=66800 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:07.224Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:07.226Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:07.226Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:07.226Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:07.226Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:07.226Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:07.226Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:07.227Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:08.880Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:10.043Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:10.044Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:10.046Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:10.049Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:10.061Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:10.061Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:10.061Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:10.061Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:10.061Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:10.063Z [DEBUG] autocompact: tokens=67263 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:10.063Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:10.064Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:10.065Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:10.065Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:10.065Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:10.065Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:10.065Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:10.065Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:11.599Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:12.518Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:12.518Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:12.518Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:12.519Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:12.519Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:12.586Z [DEBUG] autocompact: tokens=68158 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:12.586Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:12.588Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:12.588Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:12.588Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:12.588Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:12.588Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:12.588Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:12.588Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:13.941Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:15.083Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:15.083Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:15.083Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:15.083Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:15.083Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:15.105Z [DEBUG] autocompact: tokens=69503 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:15.105Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:15.107Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:15.107Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:15.107Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:15.107Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:15.107Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:15.108Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:15.108Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:16.583Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:18.078Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:18.079Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:18.081Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:18.082Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:18.084Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:18.099Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:18.099Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:18.099Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:18.099Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:18.099Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:18.100Z [DEBUG] autocompact: tokens=70116 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:18.101Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:18.102Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:18.102Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:18.102Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:18.102Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:18.103Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:18.103Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:18.103Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:19.587Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:20.163Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:20.163Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:20.165Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:20.166Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:20.178Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:20.178Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:20.178Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:20.178Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:20.178Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:20.181Z [DEBUG] autocompact: tokens=70404 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:20.181Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:20.182Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:20.182Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:20.182Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:20.182Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:20.182Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:20.183Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:20.183Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:21.475Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:22.006Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:22.006Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:22.006Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:22.006Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:22.006Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:22.023Z [DEBUG] autocompact: tokens=71165 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:22.023Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:22.024Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:22.024Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:22.025Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:22.025Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:22.025Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:22.025Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:22.025Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:24.461Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:25.643Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:25.644Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:25.646Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:25.648Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:25.662Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:25.662Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:25.662Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:25.662Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:25.662Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:25.664Z [DEBUG] autocompact: tokens=71676 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:25.665Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:25.667Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:25.667Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:25.667Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:25.667Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:25.667Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:25.669Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:25.670Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:27.033Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:27.782Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:27.782Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:27.782Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:27.783Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:27.783Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:27.785Z [DEBUG] autocompact: tokens=72058 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:27.785Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:27.786Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:27.787Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:27.787Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:27.787Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:27.787Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:27.787Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:27.787Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:29.167Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:29.700Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:29.704Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:29.715Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:29.715Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:29.715Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:29.715Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:29.715Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:29.717Z [DEBUG] autocompact: tokens=72346 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:29.717Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:29.718Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:29.718Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:29.718Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:29.718Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:29.718Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:29.719Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:29.719Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:31.366Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:31.856Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:31.857Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:31.871Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:31.871Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:31.871Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:31.871Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:31.871Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:31.872Z [DEBUG] autocompact: tokens=72655 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:31.872Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:31.874Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:31.874Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:31.874Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:31.874Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:31.874Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:31.874Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:31.874Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:33.320Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:33.899Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:33.899Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:33.899Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:33.899Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:33.899Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:33.909Z [DEBUG] autocompact: tokens=73719 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:33.910Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:33.911Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:33.911Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:33.911Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:33.911Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:33.911Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:33.911Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:33.911Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:35.102Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:36.438Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:36.439Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:36.441Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T04:57:36.443Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T04:57:36.455Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:36.455Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:36.455Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T04:57:36.455Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:36.455Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T04:57:36.456Z [DEBUG] autocompact: tokens=74298 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:36.456Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:36.458Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:36.458Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:36.458Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:36.458Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:36.459Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:36.459Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:36.459Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:38.441Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:38.850Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:38.850Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:38.850Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:57:38.850Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:38.850Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:57:38.902Z [DEBUG] autocompact: tokens=75360 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:38.902Z [DEBUG] Tool search disabled for model 'claude-haiku-4-5-20251001': model does not support tool_reference blocks. This feature is only available on Claude Sonnet 4+, Opus 4+, and newer models.
+2026-03-23T04:57:38.904Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.b68; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:38.904Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:38.904Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:38.904Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:38.904Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:38.906Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:38.906Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:40.393Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:57:59.540Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:59.540Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:57:59.540Z [DEBUG] Getting matching hook commands for PostToolUse with query: Agent
+2026-03-23T04:57:59.540Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:57:59.540Z [DEBUG] Matched 0 unique hooks for query "Agent" (0 before deduplication)
+2026-03-23T04:57:59.541Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:57:59.541Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:57:59.541Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:57:59.542Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:57:59.542Z [DEBUG] autocompact: tokens=20163 threshold=167000 effectiveWindow=180000
+2026-03-23T04:57:59.543Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:57:59.544Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:57:59.544Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:59.544Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:57:59.544Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:57:59.544Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:57:59.545Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:57:59.545Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:02.165Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:58:20.975Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:20.976Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:20.976Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:20.976Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:20.976Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:21.903Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:21.903Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:21.903Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:21.903Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:21.903Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:22.622Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:22.622Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:22.622Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:22.622Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:22.622Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:22.759Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:58:22.759Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:58:22.759Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:58:22.759Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:58:22.760Z [DEBUG] autocompact: tokens=24263 threshold=167000 effectiveWindow=180000
+2026-03-23T04:58:22.761Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:58:22.761Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:58:22.761Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:22.761Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:58:22.761Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:58:22.761Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:22.762Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:58:22.762Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:34.426Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:58:42.991Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:42.991Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:42.991Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:42.991Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:42.991Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:44.335Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:44.335Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:44.335Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:44.335Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:44.335Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:45.384Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:45.384Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:58:45.384Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:58:45.384Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:58:45.385Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:58:45.396Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:58:45.396Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:58:45.396Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:58:45.396Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:58:45.397Z [DEBUG] autocompact: tokens=26305 threshold=167000 effectiveWindow=180000
+2026-03-23T04:58:45.397Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:58:45.398Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:58:45.398Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:45.398Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:58:45.398Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:58:45.398Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:45.399Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:58:45.399Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:58:49.564Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:59:05.428Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:05.428Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:05.428Z [DEBUG] Getting matching hook commands for PostToolUse with query: Glob
+2026-03-23T04:59:05.428Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:05.428Z [DEBUG] Matched 1 unique hooks for query "Glob" (1 before deduplication)
+2026-03-23T04:59:05.464Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:05.464Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:05.464Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:59:05.464Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:05.464Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:59:05.468Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:59:05.469Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:59:05.469Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:59:05.469Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:59:05.469Z [DEBUG] autocompact: tokens=27449 threshold=167000 effectiveWindow=180000
+2026-03-23T04:59:05.470Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:59:05.470Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:59:05.470Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:05.470Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:59:05.470Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:59:05.470Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:05.471Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:59:05.471Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:07.279Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:59:10.047Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:10.047Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:10.047Z [DEBUG] Getting matching hook commands for PostToolUse with query: Glob
+2026-03-23T04:59:10.047Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:10.047Z [DEBUG] Matched 1 unique hooks for query "Glob" (1 before deduplication)
+2026-03-23T04:59:11.086Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:11.086Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:11.086Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:59:11.086Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:11.086Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:59:11.087Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:59:11.087Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:59:11.087Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:59:11.087Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:59:11.088Z [DEBUG] autocompact: tokens=30590 threshold=167000 effectiveWindow=180000
+2026-03-23T04:59:11.088Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:59:11.089Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:59:11.089Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:11.089Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:59:11.089Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:59:11.089Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:11.089Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:59:11.090Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:13.487Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:59:19.002Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:19.002Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:19.002Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:59:19.002Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:19.002Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:59:19.436Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:19.436Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:19.436Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T04:59:19.436Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:19.436Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T04:59:19.587Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:59:19.587Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:59:19.588Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:59:19.588Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:59:19.592Z [DEBUG] autocompact: tokens=33135 threshold=167000 effectiveWindow=180000
+2026-03-23T04:59:19.593Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:59:19.593Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:59:19.593Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:19.593Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:59:19.593Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:59:19.594Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:19.594Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:59:19.594Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:21.280Z [DEBUG] Stream started - received first chunk
+2026-03-23T04:59:49.897Z [DEBUG] Persisted tool result to /root/.claude/projects/-root-new-ralph-burning/f466c4b3-c46a-495a-8ee4-14e78c45066a/tool-results/toolu_01FJ3AteUbcnCF9NRFsJvTMv.txt (23.1KB)
+2026-03-23T04:59:49.898Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:49.898Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:49.898Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:59:49.898Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:49.898Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:59:50.668Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:50.669Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T04:59:50.669Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T04:59:50.669Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T04:59:50.669Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T04:59:50.671Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T04:59:50.671Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T04:59:50.671Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T04:59:50.671Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T04:59:50.671Z [DEBUG] autocompact: tokens=35514 threshold=167000 effectiveWindow=180000
+2026-03-23T04:59:50.672Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T04:59:50.672Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T04:59:50.673Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:50.673Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T04:59:50.673Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T04:59:50.673Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:50.674Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T04:59:50.674Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T04:59:52.179Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:00:00.181Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:00:00.183Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:00:00.195Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:00.195Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:00.195Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:00:00.195Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:00:00.195Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:00:00.705Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:00:00.710Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:00:00.743Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:00.743Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:00.743Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:00:00.743Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:00:00.743Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:00:00.744Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:00:00.744Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:00:00.744Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:00:00.744Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:00:00.744Z [DEBUG] autocompact: tokens=36605 threshold=167000 effectiveWindow=180000
+2026-03-23T05:00:00.745Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:00:00.745Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:00:00.746Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:00:00.746Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:00:00.746Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:00:00.746Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:00:00.747Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:00:00.747Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:00:03.493Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:00:42.476Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:00:42.478Z [DEBUG] LSP server manager shut down successfully
+2026-03-23T05:00:42.478Z [DEBUG] Cleaned up session snapshot: /root/.claude/shell-snapshots/snapshot-bash-1774241784978-uens57.sh
+2026-03-23T05:00:42.479Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:42.479Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:00:42.479Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-03-23T05:00:42.479Z [DEBUG] Found 0 hook matchers in settings
+2026-03-23T05:00:42.479Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)
