@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323045611-final_review-reviewer-0-c3-a1-cr2-artifact",
+  "payload_id": "run-20260323045611-final_review-reviewer-0-c3-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-23T05:59:01.320457287Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the artifact-metadata fix across 7 changed files. The core fix (service.rs: stop overwriting envelope metadata with resolved-target values) is correct and well-tested. The consumer-side changes in final_review.rs, completion.rs, and prompt_review.rs consistently propagate envelope metadata into RecordProducer::Agent. All 86 tests pass including the two new tests that verify envelope metadata preservation. However, the branch includes unrelated debugging scaffolding in process_backend.rs (eprintln! dumps, unconditional --debug-file flag) and a Nix build artifact symlink change that should be cleaned up.\n\n## Amendments\n\n1. Remove the two `eprintln!` debug-logging blocks added in `src/adapters/process_backend.rs` (lines ~69-75 and ~89-95 in the diff). These unconditionally dump stdout/stderr content and result payloads to stderr on every parse failure. They are unrelated to the artifact-metadata fix and appear to be leftover debugging scaffolding. If parse-failure diagnostics are needed, they should use the project's structured logging (tracing) rather than raw eprintln.\n   Rationale: eprintln! bypasses structured logging, can leak potentially sensitive prompt/response content to stderr in production, and is unrelated to the stated fix. Mixing debugging aids into an unrelated feature branch makes review harder and risks accidental shipment.\n2. Remove the unconditional `--debug-file` argument addition in `src/adapters/process_backend.rs` (lines ~429-445 in the diff) that writes a debug log for every Claude invocation to `runtime/temp/{invocation_id}.claude-debug.log`. This is unrelated to the artifact-metadata fix and would generate debug files for every invocation in production.\n   Rationale: Unconditionally creating debug log files for every invocation is a disk-space and information-disclosure concern. If debug logging is needed, it should be opt-in (e.g., behind a CLI flag or config setting). This change is also outside the scope of the artifact-metadata fix.\n3. Exclude the `result` symlink change from the branch. The diff shows the Nix store path in the `result` symlink changing — this is a local build artifact that should not be version-controlled.\n   Rationale: The `result` symlink points to a Nix store path that is machine-specific. Committing it creates noise in diffs and can cause confusion for other developers with different Nix store paths.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

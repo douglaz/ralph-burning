@@ -58,44 +58,71 @@ impl PreparedCommand {
         }
     }
 
+    pub(crate) async fn preserve_failure_artifacts(
+        &self,
+        request: &InvocationRequest,
+        output: &ChildOutput,
+    ) {
+        let failed_dir = request.project_root.join("runtime/failed");
+        let _ = tokio::fs::create_dir_all(&failed_dir).await;
+
+        match &self.response_decoder {
+            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => {
+                let failed_schema_path =
+                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                let failed_message_path =
+                    failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+                best_effort_move_file(schema_path, &failed_schema_path).await;
+                best_effort_move_file(message_path, &failed_message_path).await;
+            }
+        }
+
+        let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+        let _ = tokio::fs::write(
+            failed_raw_path,
+            format_failed_raw_output(&output.stdout, &output.stderr),
+        )
+        .await;
+    }
+
     pub(crate) async fn finish(
         self,
         request: &InvocationRequest,
         output: ChildOutput,
     ) -> AppResult<InvocationEnvelope> {
-        match self.response_decoder {
-            ResponseDecoder::Claude { session_resuming } => {
+        match &self.response_decoder {
+            ResponseDecoder::Claude { session_resuming, .. } => {
+                let session_resuming = *session_resuming;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
 
-                let envelope: ClaudeEnvelope =
-                    serde_json::from_str(&stdout_text).map_err(|error| {
-                        eprintln!(
-                            "claude envelope parse failed: stdout_len={} stderr_len={} stdout_head={}",
-                            output.stdout.len(),
-                            output.stderr.len(),
-                            truncate_utf8(&stdout_text, 500)
-                        );
-                        ProcessBackendAdapter::invocation_failed(
+                let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
+                    Ok(val) => val,
+                    Err(error) => {
+                        self.preserve_failure_artifacts(request, &output).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
                             format!("invalid Claude envelope JSON: {error}"),
-                        )
-                    })?;
+                        ));
+                    }
+                };
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     structured
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
-                    serde_json::from_str(&envelope.result)
+                    match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
-                        .map_err(|error| {
-                            eprintln!(
-                                "claude result JSON parse failed: contract={} result_len={} result_head={}",
-                                request.contract.label(),
-                                envelope.result.len(),
-                                truncate_utf8(&envelope.result, 500)
-                            );
-                            ProcessBackendAdapter::invocation_failed(
+                    {
+                        Ok(val) => val,
+                        Err(error) => {
+                            self.preserve_failure_artifacts(request, &output).await;
+                            return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
@@ -104,19 +131,23 @@ impl PreparedCommand {
                                     request.contract.label(),
                                     envelope.result.len(),
                                 ),
-                            )
-                        })?
+                            ));
+                        }
+                    }
                 } else {
                     // Both structured_output and result are empty.
                     // Last resort: try to find JSON in the raw stdout beyond the envelope.
                     // Guard: reject if the extracted object is just the Claude envelope
                     // itself (has `result` + `session_id` keys), which would happen when
                     // stdout contains only the envelope and no separate payload.
-                    extract_json_from_text(&stdout_text)
+                    match extract_json_from_text(&stdout_text)
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
-                        .ok_or_else(|| {
-                            ProcessBackendAdapter::invocation_failed(
+                    {
+                        Some(val) => val,
+                        None => {
+                            self.preserve_failure_artifacts(request, &output).await;
+                            return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
@@ -126,8 +157,9 @@ impl PreparedCommand {
                                     output.stdout.len(),
                                     request.session_policy,
                                 ),
-                            )
-                        })?
+                            ));
+                        }
+                    }
                 };
 
                 let session_id = envelope.session_id.or_else(|| {
@@ -159,10 +191,11 @@ impl PreparedCommand {
                 message_path,
                 session_resuming,
             } => {
-                let last_message_text = match tokio::fs::read_to_string(&message_path).await {
+                let session_resuming = *session_resuming;
+                let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -174,7 +207,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -183,7 +216,7 @@ impl PreparedCommand {
                     }
                 };
 
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
+                best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
 
                 let session_id = if session_resuming {
                     request.prior_session.as_ref().map(|s| s.session_id.clone())
@@ -429,10 +462,6 @@ impl ProcessBackendAdapter {
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
                     && request.prior_session.is_some();
 
-                let debug_log = request
-                    .project_root
-                    .join("runtime/temp")
-                    .join(format!("{}.claude-debug.log", request.invocation_id));
                 let mut args = vec![
                     "-p".to_owned(),
                     "--output-format".to_owned(),
@@ -445,8 +474,6 @@ impl ProcessBackendAdapter {
                     "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
                     "--json-schema".to_owned(),
                     schema_json,
-                    "--debug-file".to_owned(),
-                    debug_log.to_string_lossy().into_owned(),
                 ];
 
                 if session_resuming {
@@ -816,6 +843,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 if request.prior_session.is_some()
                     && stderr.contains("No conversation found with session ID")
                 {
+                    // Do NOT preserve failure artifacts here — this is an internal
+                    // retry, not a terminal failure. If the retry succeeds, we don't
+                    // want stale artifacts left in runtime/failed. Cleanup deletes the
+                    // original attempt's temp files normally.
                     prepared.cleanup().await;
                     let mut fresh_request = request.clone();
                     fresh_request.prior_session = None;
@@ -842,6 +873,9 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
+                        fresh_prepared
+                            .preserve_failure_artifacts(&fresh_request, &fresh_output)
+                            .await;
                         fresh_prepared.cleanup().await;
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
                             (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
@@ -863,6 +897,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                prepared.preserve_failure_artifacts(&request, &output).await;
                 prepared.cleanup().await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -927,18 +962,6 @@ pub(crate) struct ChildOutput {
     pub(crate) stderr: Vec<u8>,
 }
 
-/// Truncate a string to at most `max_bytes` without splitting a UTF-8 character.
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 /// Try to extract an error message from Claude's stdout JSON envelope.
 /// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
 fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
@@ -968,16 +991,111 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
     let _ = tokio::fs::remove_file(message_path).await;
 }
 
+async fn best_effort_move_file(source: &Path, destination: &Path) {
+    match tokio::fs::rename(source, destination).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            if tokio::fs::copy(source, destination).await.is_ok() {
+                let _ = tokio::fs::remove_file(source).await;
+            }
+        }
+    }
+}
+
+fn format_failed_raw_output(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
+    let mut combined = Vec::with_capacity(stdout.len() + stderr.len() + 32);
+    combined.extend_from_slice(b"=== stdout ===\n");
+    combined.extend_from_slice(stdout);
+    if !combined.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined.extend_from_slice(b"=== stderr ===\n");
+    combined.extend_from_slice(stderr);
+    if !combined.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined
+}
+
+/// Rewrite `{"type": ["T", "null"], ...props}` → `{"anyOf": [{"type": "T", ...props}, {"type": "null"}]}`.
+/// Leaves schemas with single-string `type` (e.g., `"array"`, `"integer"`) unchanged.
+fn normalize_nullable_type_array(map: &mut serde_json::Map<String, serde_json::Value>) {
+    let has_null_in_type_array = match map.get("type") {
+        Some(serde_json::Value::Array(arr)) => arr.iter().any(|v| v.as_str() == Some("null")),
+        _ => return,
+    };
+    if !has_null_in_type_array {
+        return;
+    }
+
+    // Extract type array
+    let types = match map.remove("type") {
+        Some(serde_json::Value::Array(arr)) => arr,
+        _ => return,
+    };
+    let non_null_types: Vec<serde_json::Value> = types
+        .into_iter()
+        .filter(|v| v.as_str() != Some("null"))
+        .collect();
+
+    // Build non-null variant: carry over remaining schema properties (format, minimum, etc.)
+    let mut non_null_variant = std::mem::take(map);
+
+    // Strip schema-wide annotations that don't belong on the non-null variant.
+    // schemars 0.8 emits `"default": null` for defaulted `Option<T>` fields — placing
+    // that on the non-null arm would produce `{"type":"string","default":null}` which
+    // is not the intended strict-mode shape.
+    if non_null_variant.get("default") == Some(&serde_json::Value::Null) {
+        non_null_variant.remove("default");
+    }
+
+    if non_null_types.len() == 1 {
+        non_null_variant.insert(
+            "type".to_owned(),
+            non_null_types.into_iter().next().unwrap(),
+        );
+        map.insert(
+            "anyOf".to_owned(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Object(non_null_variant),
+                serde_json::json!({"type": "null"}),
+            ]),
+        );
+    } else {
+        // Multiple non-null types: create a separate anyOf arm per type to
+        // avoid producing `{"type": ["string", "integer"]}` which violates
+        // strict mode's scalar-type requirement.
+        let mut arms: Vec<serde_json::Value> = non_null_types
+            .into_iter()
+            .map(|t| {
+                let mut arm = non_null_variant.clone();
+                arm.insert("type".to_owned(), t);
+                serde_json::Value::Object(arm)
+            })
+            .collect();
+        arms.push(serde_json::json!({"type": "null"}));
+        map.insert("anyOf".to_owned(), serde_json::Value::Array(arms));
+    }
+}
+
 /// Recursively enforce OpenAI strict-mode schema requirements:
-/// 1. Inject `"additionalProperties": false` on every object schema.
-/// 2. Ensure `"required"` includes every key from `"properties"` — strict mode
+/// 1. Normalize schemars nullable type arrays (`["T", "null"]`) into `anyOf` format.
+/// 2. Inject `"additionalProperties": false` on every object schema.
+/// 3. Ensure `"required"` includes every key from `"properties"` — strict mode
 ///    rejects schemas where a property key is missing from the required array.
+/// 4. Recurse into `anyOf`/`oneOf`/`allOf` composition arrays.
 ///
 /// This is needed because `schemars` honours `#[serde(default)]` by omitting
 /// the field from `required`, which is correct for general JSON Schema but
-/// violates OpenAI's strict-mode contract.
+/// violates OpenAI's strict-mode contract. Additionally, `schemars` 0.8
+/// represents `Option<T>` as `{"type": ["T", "null"]}` which is incompatible
+/// with OpenAI strict mode's requirement for single-string `type` values.
 pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value {
+        // Convert type arrays like ["string", "null"] to anyOf format
+        normalize_nullable_type_array(map);
+
         let is_object = map.get("type").and_then(|t| t.as_str()) == Some("object");
         if is_object {
             // 1. additionalProperties: false
@@ -1023,6 +1141,14 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
         // Recurse into items (for array types)
         if let Some(items) = map.get_mut("items") {
             enforce_strict_mode_schema(items);
+        }
+        // Recurse into anyOf/oneOf/allOf composition arrays
+        for keyword in ["anyOf", "oneOf", "allOf"] {
+            if let Some(serde_json::Value::Array(variants)) = map.get_mut(keyword) {
+                for variant in variants.iter_mut() {
+                    enforce_strict_mode_schema(variant);
+                }
+            }
         }
     }
 }
@@ -1188,6 +1314,257 @@ mod tests {
             "quick_revisions should be added to nested required; got: {nested_strings:?}"
         );
         assert_eq!(nested["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn enforce_strict_mode_normalizes_nullable_type_array() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "rationale": { "type": ["string", "null"] }
+            },
+            "required": ["name"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"rationale"));
+        assert!(required_strings.contains(&"name"));
+
+        // rationale should be rewritten to anyOf format
+        let rationale = &schema["properties"]["rationale"];
+        assert!(rationale.get("type").is_none(), "type key should be removed");
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_preserves_format_on_nullable_integer() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "count": { "type": ["integer", "null"], "format": "uint32", "minimum": 0 }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let count = &schema["properties"]["count"];
+        let any_of = count["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        assert_eq!(any_of[0]["type"], "integer");
+        assert_eq!(any_of[0]["format"], "uint32");
+        assert_eq!(any_of[0]["minimum"], 0);
+        assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_normalizes_nullable_multi_type_array() {
+        // Regression: a type array with multiple non-null types like
+        // ["string", "integer", "null"] must NOT produce {"type": ["string", "integer"]}
+        // in the non-null arm — that still violates strict mode's scalar-type rule.
+        // Instead, each non-null type gets its own anyOf arm.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": ["string", "integer", "null"], "format": "custom" }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let value = &schema["properties"]["value"];
+        assert!(value.get("type").is_none(), "type key should be removed");
+        let any_of = value["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 3, "should have one arm per non-null type plus null");
+        assert_eq!(any_of[0]["type"], "string");
+        assert_eq!(any_of[0]["format"], "custom");
+        assert_eq!(any_of[1]["type"], "integer");
+        assert_eq!(any_of[1]["format"], "custom");
+        assert_eq!(any_of[2], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_leaves_non_nullable_defaults_unchanged() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outcome": { "type": "string" },
+                "follow_ups": { "type": "array", "items": { "type": "string" } },
+                "version": { "type": "integer" }
+            },
+            "required": ["outcome"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let required = schema["required"].as_array().unwrap();
+        let required_strings: Vec<&str> = required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(required_strings.contains(&"follow_ups"));
+        assert!(required_strings.contains(&"version"));
+
+        // follow_ups schema unchanged — no anyOf, no null
+        assert_eq!(schema["properties"]["follow_ups"]["type"], "array");
+        assert!(schema["properties"]["follow_ups"].get("anyOf").is_none());
+
+        // version schema unchanged
+        assert_eq!(schema["properties"]["version"]["type"], "integer");
+        assert!(schema["properties"]["version"].get("anyOf").is_none());
+    }
+
+    #[test]
+    fn enforce_strict_mode_recurses_into_one_of() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "producer": {
+                    "oneOf": [
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "model": { "type": "string" }
+                            },
+                            "required": ["type"]
+                        },
+                        {
+                            "type": "object",
+                            "properties": {
+                                "type": { "type": "string" },
+                                "path": { "type": "string" }
+                            },
+                            "required": ["type"]
+                        }
+                    ]
+                }
+            },
+            "required": ["producer"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let one_of = schema["properties"]["producer"]["oneOf"].as_array().unwrap();
+        for (i, variant) in one_of.iter().enumerate() {
+            assert_eq!(
+                variant["additionalProperties"],
+                json!(false),
+                "variant {i} should have additionalProperties: false"
+            );
+            let req = variant["required"].as_array().unwrap();
+            assert!(
+                req.len() == 2,
+                "variant {i} should have all properties in required, got {req:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn enforce_strict_mode_final_review_proposal_round_trip() {
+        // Simulates the schemars output for FinalReviewProposalPayload
+        let mut schema = json!({
+            "type": "object",
+            "definitions": {
+                "FinalReviewProposal": {
+                    "type": "object",
+                    "properties": {
+                        "body": { "type": "string" },
+                        "rationale": { "default": null, "type": ["string", "null"] }
+                    },
+                    "required": ["body"]
+                }
+            },
+            "properties": {
+                "amendments": {
+                    "type": "array",
+                    "items": { "$ref": "#/definitions/FinalReviewProposal" }
+                }
+            },
+            "required": ["amendments"]
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        // Definition should be enforced
+        let def = &schema["definitions"]["FinalReviewProposal"];
+        assert_eq!(def["additionalProperties"], json!(false));
+
+        let def_required = def["required"].as_array().unwrap();
+        let def_req_strings: Vec<&str> =
+            def_required.iter().map(|v| v.as_str().unwrap()).collect();
+        assert!(def_req_strings.contains(&"body"));
+        assert!(def_req_strings.contains(&"rationale"));
+
+        // rationale should be anyOf, not type array
+        let rationale = &def["properties"]["rationale"];
+        assert!(rationale.get("type").is_none());
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_strips_default_null_from_non_null_variant() {
+        // Regression: schemars 0.8 emits `"default": null` alongside type arrays
+        // for defaulted `Option<T>` fields. The non-null variant must NOT carry
+        // `"default": null` — that would produce `{"type":"string","default":null}`.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "rationale": {
+                    "default": null,
+                    "type": ["string", "null"]
+                }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let rationale = &schema["properties"]["rationale"];
+        let any_of = rationale["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 2);
+        // Non-null variant must NOT have "default": null
+        assert!(
+            any_of[0].get("default").is_none(),
+            "non-null variant should not carry 'default: null'; got: {}",
+            any_of[0]
+        );
+        assert_eq!(any_of[0], json!({"type": "string"}));
+        assert_eq!(any_of[1], json!({"type": "null"}));
+        // "default" should not appear at wrapper level either
+        assert!(rationale.get("default").is_none());
+    }
+
+    #[test]
+    fn enforce_strict_mode_preserves_non_null_default() {
+        // A non-null default (e.g., "default": 0 on a nullable integer) should
+        // be preserved on the non-null variant since it's meaningful.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "count": {
+                    "default": 0,
+                    "type": ["integer", "null"],
+                    "format": "uint32"
+                }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let count = &schema["properties"]["count"];
+        let any_of = count["anyOf"].as_array().unwrap();
+        assert_eq!(any_of[0]["type"], "integer");
+        assert_eq!(any_of[0]["default"], 0);
+        assert_eq!(any_of[0]["format"], "uint32");
     }
 
     #[test]
@@ -1413,4 +1790,5 @@ mod tests {
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
     }
+
 }

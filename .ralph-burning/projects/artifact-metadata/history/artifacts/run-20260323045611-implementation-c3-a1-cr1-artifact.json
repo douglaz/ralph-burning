@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323045611-implementation-c3-a1-cr1-artifact",
+  "payload_id": "run-20260323045611-implementation-c3-a1-cr1",
+  "stage_id": "implementation",
+  "created_at": "2026-03-23T05:24:33.720913777Z",
+  "content": "# Implementation\n\n## Change Summary\n\nRemoved the `AgentExecutionService::invoke` overwrite of `envelope.metadata.backend_used` and `model_used`, so artifact persistence continues to serialize the adapter-reported backend/model metadata already consumed by the workflow persistence call sites. Added a focused async regression test in `src/contexts/agent_execution/service.rs` that uses a divergent adapter to assert the service preserves adapter-reported backend/model values through invocation completion.\n\n## Steps\n\n0. [Completed] Confirmed the source-of-truth mismatch: workflow artifact producers already read `InvocationEnvelope.metadata`, but `AgentExecutionService::invoke` was rewriting `backend_used` and `model_used` to the resolved target before persistence.\n1. [Completed] Removed the metadata overwrite in `src/contexts/agent_execution/service.rs` so adapter-reported backend/model metadata survives to artifact persistence.\n2. [Completed] Added a service-level regression test covering divergent adapter metadata and verified the resulting diff is isolated to `src/contexts/agent_execution/service.rs`.\n\n## Validation Evidence\n\n- Static inspection of workflow persistence call sites (`src/contexts/workflow_composition/engine.rs`, `prompt_review.rs`, `completion.rs`, `final_review.rs`) shows they already serialize `envelope.metadata.backend_used.family` and `envelope.metadata.model_used.model_id`, so removing the service overwrite makes persisted artifact metadata follow the adapter-reported values.\n- `git diff -- src/contexts/agent_execution/service.rs` shows the functional change is limited to removing the two overwrite lines and adding a regression test for divergent adapter metadata.\n- `command -v cargo`, `command -v rustc`, and `command -v rustfmt` all returned no path, so executable validation could not be performed in this environment.\n\n## Outstanding Risks\n\n- Rust tooling is unavailable in this environment (`cargo`, `rustc`, and `rustfmt` were not installed), so I could not run `cargo test`, `cargo check`, or formatting; validation is limited to static inspection.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

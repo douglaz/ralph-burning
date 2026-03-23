@@ -1,0 +1,364 @@
+2026-03-23T05:28:28.396Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.json
+2026-03-23T05:28:28.397Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T05:28:28.397Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.399Z [DEBUG] MDM settings load completed in 0ms
+2026-03-23T05:28:28.401Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.402Z [DEBUG] CA certs: Config fallback - globalEnv keys: , settingsEnv keys: none
+2026-03-23T05:28:28.403Z [DEBUG] [init] configureGlobalMTLS starting
+2026-03-23T05:28:28.403Z [DEBUG] [init] configureGlobalMTLS complete
+2026-03-23T05:28:28.403Z [DEBUG] [init] configureGlobalAgents starting
+2026-03-23T05:28:28.403Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T05:28:28.403Z [DEBUG] [init] configureGlobalAgents complete
+2026-03-23T05:28:28.404Z [DEBUG] Error log sink initialized
+2026-03-23T05:28:28.410Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.410Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.json
+2026-03-23T05:28:28.410Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T05:28:28.410Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.412Z [DEBUG] [STARTUP] Loading MCP configs...
+2026-03-23T05:28:28.413Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.415Z [DEBUG] [claudeai-mcp] Fetching from https://api.anthropic.com/v1/mcp_servers?limit=1000
+2026-03-23T05:28:28.445Z [DEBUG] [ToolSearch:optimistic] mode=tst, ENABLE_TOOL_SEARCH=undefined, result=true
+2026-03-23T05:28:28.487Z [DEBUG] [STARTUP] Running setup()...
+2026-03-23T05:28:28.489Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.489Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.491Z [DEBUG] Loading skills from: managed=/etc/claude-code/.claude/skills, user=/root/.claude/skills, project=[]
+2026-03-23T05:28:28.491Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.492Z [DEBUG] Error log sink initialized
+2026-03-23T05:28:28.494Z [DEBUG] Loaded 0 unique skills (0 unconditional, 0 conditional, managed: 0, user: 0, project: 0, additional: 0, legacy commands: 0)
+2026-03-23T05:28:28.518Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.518Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.526Z [DEBUG] [STARTUP] setup() completed in 39ms
+2026-03-23T05:28:28.526Z [DEBUG] Cleared CA certificates cache
+2026-03-23T05:28:28.526Z [DEBUG] Cleared mTLS configuration cache
+2026-03-23T05:28:28.526Z [DEBUG] Cleared proxy agent cache
+2026-03-23T05:28:28.526Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T05:28:28.527Z [DEBUG] [STARTUP] Loading commands and agents...
+2026-03-23T05:28:28.527Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.527Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.564Z [DEBUG] Git remote URL: git@github.com:douglaz/ralph-burning.git
+2026-03-23T05:28:28.564Z [DEBUG] Parsed repository: github.com/douglaz/ralph-burning from URL: git@github.com:douglaz/ralph-burning.git
+2026-03-23T05:28:28.573Z [DEBUG] Loaded 1 installed plugins from /root/.claude/plugins/installed_plugins.json
+2026-03-23T05:28:28.573Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.573Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.574Z [DEBUG] Loading plugin rust-analyzer-lsp from source: "./plugins/rust-analyzer-lsp"
+2026-03-23T05:28:28.574Z [DEBUG] Using provided version for rust-analyzer-lsp@claude-plugins-official: 1.0.0
+2026-03-23T05:28:28.575Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.575Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /root/new-ralph-burning/.claude/settings.local.json
+2026-03-23T05:28:28.576Z [DEBUG] Plugin rust-analyzer-lsp@claude-plugins-official version 1.0.0 already cached at /root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-23T05:28:28.576Z [DEBUG] Resolved local plugin rust-analyzer-lsp to versioned cache: /root/.claude/plugins/cache/claude-plugins-official/rust-analyzer-lsp/1.0.0
+2026-03-23T05:28:28.577Z [DEBUG] Plugin rust-analyzer-lsp has no entry.skills defined
+2026-03-23T05:28:28.577Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.578Z [DEBUG] Found 1 plugins (1 enabled, 0 disabled)
+2026-03-23T05:28:28.578Z [DEBUG] getPluginSkills: Processing 1 enabled plugins
+2026-03-23T05:28:28.578Z [DEBUG] Checking plugin rust-analyzer-lsp: skillsPath=none, skillsPaths=0 paths
+2026-03-23T05:28:28.578Z [DEBUG] Registered 0 hooks from 1 plugins
+2026-03-23T05:28:28.579Z [DEBUG] Total plugin skills loaded: 0
+2026-03-23T05:28:28.579Z [DEBUG] Total plugin commands loaded: 0
+2026-03-23T05:28:28.579Z [DEBUG] Total plugin agents loaded: 0
+2026-03-23T05:28:28.579Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills, 8 bundled skills, 0 builtin plugin skills
+2026-03-23T05:28:28.580Z [DEBUG] [STARTUP] Commands and agents loaded in 53ms
+2026-03-23T05:28:28.580Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-03-23T05:28:28.580Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-03-23T05:28:28.580Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-03-23T05:28:28.580Z [DEBUG] Starting background startup prefetches
+2026-03-23T05:28:28.580Z [DEBUG] Passes: Using fresh cached eligibility data
+2026-03-23T05:28:28.582Z [DEBUG] [clientData] fetching (attempt 1/2)
+2026-03-23T05:28:28.584Z [DEBUG] [STARTUP] MCP configs resolved in 172ms (awaited at +172ms)
+2026-03-23T05:28:28.585Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.585Z [DEBUG] All plugins already exist, skipping migration
+2026-03-23T05:28:28.585Z [DEBUG] Initialized versioned plugins system with 1 plugins
+2026-03-23T05:28:28.586Z [DEBUG] Cleared CA certificates cache
+2026-03-23T05:28:28.586Z [DEBUG] Cleared mTLS configuration cache
+2026-03-23T05:28:28.586Z [DEBUG] Cleared proxy agent cache
+2026-03-23T05:28:28.586Z [DEBUG] CA certs: useSystemCA=false, extraCertsPath=undefined
+2026-03-23T05:28:28.586Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.587Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.607Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.607Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:28.607Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-03-23T05:28:28.607Z [DEBUG] Found 0 hook matchers in settings
+2026-03-23T05:28:28.607Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-03-23T05:28:28.608Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:28.609Z [DEBUG] [Perfetto] initializePerfettoTracing called, env value: undefined
+2026-03-23T05:28:28.609Z [DEBUG] [3P telemetry] isTelemetryEnabled=false (CLAUDE_CODE_ENABLE_TELEMETRY=undefined)
+2026-03-23T05:28:28.614Z [DEBUG] Grove: Using fresh cached config
+2026-03-23T05:28:28.618Z [DEBUG] Loaded 1 LSP server(s) from plugin: rust-analyzer-lsp
+2026-03-23T05:28:28.618Z [DEBUG] Total LSP servers loaded: 1
+2026-03-23T05:28:28.618Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 1 server(s)
+2026-03-23T05:28:28.618Z [DEBUG] Queued request handler for plugin:rust-analyzer-lsp:rust-analyzer.workspace/configuration (connection not ready)
+2026-03-23T05:28:28.618Z [DEBUG] LSP manager initialized with 1 servers
+2026-03-23T05:28:28.618Z [DEBUG] LSP server manager initialized successfully
+2026-03-23T05:28:28.618Z [DEBUG] Queued notification handler for plugin:rust-analyzer-lsp:rust-analyzer.textDocument/publishDiagnostics (connection not ready)
+2026-03-23T05:28:28.618Z [DEBUG] Registered diagnostics handler for plugin:rust-analyzer-lsp:rust-analyzer
+2026-03-23T05:28:28.618Z [DEBUG] LSP notification handlers registered successfully for all 1 server(s)
+2026-03-23T05:28:28.628Z [DEBUG] Watching for changes in setting files /root/.claude/settings.json...
+2026-03-23T05:28:28.655Z [DEBUG] Ripgrep first use test: PASSED (mode=builtin, path=/root/.npm-global/lib/node_modules/@anthropic-ai/claude-code/vendor/ripgrep/x64-linux/rg)
+2026-03-23T05:28:28.714Z [WARN] auto mode disabled: tengu_auto_mode_config.enabled === "disabled" (circuit breaker)
+2026-03-23T05:28:28.719Z [DEBUG] [claudeai-mcp] Fetched 2 servers
+2026-03-23T05:28:28.721Z [DEBUG] CLAUDE_CODE_WEBSOCKET_AUTH_FILE_DESCRIPTOR not set, no file descriptor token available
+2026-03-23T05:28:28.721Z [DEBUG] MCP server "claude.ai Google Calendar": Initializing claude.ai proxy transport for server mcpsrv_01TkDwx4J8gwxUyUzP8fyrTU
+2026-03-23T05:28:28.721Z [DEBUG] MCP server "claude.ai Google Calendar": Using claude.ai proxy at https://mcp-proxy.anthropic.com/v1/mcp/mcpsrv_01TkDwx4J8gwxUyUzP8fyrTU
+2026-03-23T05:28:28.721Z [DEBUG] MCP server "claude.ai Google Calendar": claude.ai proxy transport created successfully
+2026-03-23T05:28:28.722Z [DEBUG] MCP server "claude.ai Google Calendar": Starting connection with timeout of 30000ms
+2026-03-23T05:28:28.723Z [DEBUG] MCP server "claude.ai Gmail": Initializing claude.ai proxy transport for server mcpsrv_01Rzo849jfdnKMTrD1519pg6
+2026-03-23T05:28:28.723Z [DEBUG] MCP server "claude.ai Gmail": Using claude.ai proxy at https://mcp-proxy.anthropic.com/v1/mcp/mcpsrv_01Rzo849jfdnKMTrD1519pg6
+2026-03-23T05:28:28.723Z [DEBUG] MCP server "claude.ai Gmail": claude.ai proxy transport created successfully
+2026-03-23T05:28:28.723Z [DEBUG] MCP server "claude.ai Gmail": Starting connection with timeout of 30000ms
+2026-03-23T05:28:28.859Z [DEBUG] Org fast mode: enabled
+2026-03-23T05:28:28.870Z [DEBUG] [clientData] fetch ok (0 fields)
+2026-03-23T05:28:28.870Z [DEBUG] [clientData] cache unchanged, skipping write
+2026-03-23T05:28:28.964Z [DEBUG] [ScheduledTasks] scheduler start() — enabled=false, hasTasks=false
+2026-03-23T05:28:28.965Z [DEBUG] installPluginsForHeadless: starting
+2026-03-23T05:28:28.969Z [DEBUG] Total plugin output styles loaded: 0
+2026-03-23T05:28:28.971Z [DEBUG] Added session hook for event Stop in session c43dff2c-d65a-4d92-9124-28d26d972125
+2026-03-23T05:28:28.973Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:28:28.973Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:28:28.974Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:28:28.974Z [DEBUG] Sending 5 skills via attachment (initial, 5 total sent)
+2026-03-23T05:28:28.974Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:28:28.975Z [WARN] [3P telemetry] Event dropped (no event logger initialized): user_prompt
+2026-03-23T05:28:28.978Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:28.981Z [DEBUG] autocompact: tokens=2380 threshold=167000 effectiveWindow=180000
+2026-03-23T05:28:28.985Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:28:28.986Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:28:28.987Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:28.988Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:28:28.988Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:28:28.988Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:28.989Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:28:28.990Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:28.994Z [DEBUG] Security messages are fresh (<1h old), skipping fetch
+2026-03-23T05:28:29.011Z [DEBUG] MCP server "claude.ai Google Calendar": claude.ai proxy connection failed after 290ms: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CZKTd9FzFA4ThSjkLah7y"}
+2026-03-23T05:28:29.011Z [ERROR] MCP server "claude.ai Google Calendar" Error: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CZKTd9FzFA4ThSjkLah7y"}
+2026-03-23T05:28:29.022Z [DEBUG] MCP server "claude.ai Google Calendar": Authentication required for claude.ai proxy server
+2026-03-23T05:28:29.029Z [DEBUG] MCP server "claude.ai Gmail": claude.ai proxy connection failed after 306ms: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CZKTd9GV2dQ177fcYYy8a"}
+2026-03-23T05:28:29.029Z [ERROR] MCP server "claude.ai Gmail" Error: Streamable HTTP error: Error POSTing to endpoint: {"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured."},"request_id":"req_011CZKTd9GV2dQ177fcYYy8a"}
+2026-03-23T05:28:29.029Z [DEBUG] MCP server "claude.ai Gmail": Authentication required for claude.ai proxy server
+2026-03-23T05:28:29.811Z [DEBUG] SSH config check: code=1 configured=true
+2026-03-23T05:28:29.819Z [DEBUG] git pull: cwd=/root/.claude/plugins/marketplaces/claude-plugins-official ref=default
+2026-03-23T05:28:30.156Z [DEBUG] Successfully refreshed marketplace: claude-plugins-official
+2026-03-23T05:28:30.156Z [DEBUG] Plugin autoupdate: checking installed plugins
+2026-03-23T05:28:30.161Z [DEBUG] Using provided version for rust-analyzer-lsp@claude-plugins-official: 1.0.0
+2026-03-23T05:28:31.211Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:28:33.084Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:33.084Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:33.084Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T05:28:33.084Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:33.084Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T05:28:33.966Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:33.966Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:33.966Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T05:28:33.966Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:33.967Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T05:28:34.694Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:34.694Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:34.694Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T05:28:34.694Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:34.694Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T05:28:34.730Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:28:34.730Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:28:34.730Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:28:34.730Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:28:34.734Z [DEBUG] autocompact: tokens=20447 threshold=167000 effectiveWindow=180000
+2026-03-23T05:28:34.735Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:28:34.735Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:28:34.736Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:34.736Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:28:34.736Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:28:34.736Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:34.736Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:28:34.737Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:45.715Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:28:46.893Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:28:46.911Z [DEBUG] Creating shell snapshot for bash (/run/current-system/sw/bin/bash)
+2026-03-23T05:28:46.912Z [DEBUG] Looking for shell config file: /root/.bashrc
+2026-03-23T05:28:46.912Z [DEBUG] Snapshots directory: /root/.claude/shell-snapshots
+2026-03-23T05:28:46.913Z [DEBUG] Creating snapshot at: /root/.claude/shell-snapshots/snapshot-bash-1774243726912-vkf2wy.sh
+2026-03-23T05:28:46.913Z [DEBUG] Execution timeout: 10000ms
+2026-03-23T05:28:46.928Z [DEBUG] Shell snapshot created successfully (1918 bytes)
+2026-03-23T05:28:46.929Z [DEBUG] No session environment scripts found
+2026-03-23T05:28:46.929Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:28:46.944Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:46.944Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:46.944Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:28:46.944Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:46.944Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:28:48.279Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:48.279Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:48.279Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T05:28:48.279Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:48.279Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T05:28:49.138Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:49.138Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:49.138Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T05:28:49.138Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:49.139Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T05:28:49.196Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:28:49.196Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:28:49.196Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:28:49.196Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:28:49.197Z [DEBUG] autocompact: tokens=23538 threshold=167000 effectiveWindow=180000
+2026-03-23T05:28:49.197Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:28:49.198Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:28:49.198Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:49.198Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:28:49.198Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:28:49.198Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:49.200Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:28:49.200Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:50.431Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:28:53.793Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:28:53.796Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:28:53.808Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:53.809Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:53.809Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:28:53.809Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:53.809Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:28:55.649Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:55.649Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:28:55.649Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T05:28:55.649Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:28:55.650Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T05:28:55.671Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:28:55.671Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:28:55.671Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:28:55.671Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:28:55.672Z [DEBUG] autocompact: tokens=24462 threshold=167000 effectiveWindow=180000
+2026-03-23T05:28:55.672Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:28:55.673Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:28:55.673Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:55.673Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:28:55.673Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:28:55.673Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:55.673Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:28:55.674Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:28:57.097Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:29:00.171Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:29:00.173Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:29:00.185Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:00.185Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:00.185Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:29:00.185Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:00.185Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:29:01.442Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:29:01.444Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:29:01.455Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:01.455Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:01.455Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:29:01.455Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:01.455Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:29:01.620Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:29:01.623Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:29:01.636Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:01.636Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:01.636Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:29:01.636Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:01.636Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:29:02.468Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:29:02.470Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:29:02.481Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:02.481Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:02.481Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:29:02.481Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:02.481Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:29:02.604Z [DEBUG] bashToolHasPermission: tree-sitter unavailable, using legacy shell-quote path
+2026-03-23T05:29:02.605Z [DEBUG] Spawning shell without login (-l flag skipped)
+2026-03-23T05:29:02.616Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:02.616Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:02.616Z [DEBUG] Getting matching hook commands for PostToolUse with query: Bash
+2026-03-23T05:29:02.616Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:02.616Z [DEBUG] Matched 0 unique hooks for query "Bash" (0 before deduplication)
+2026-03-23T05:29:02.739Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:29:02.739Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:29:02.739Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:29:02.739Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:29:02.739Z [DEBUG] autocompact: tokens=32274 threshold=167000 effectiveWindow=180000
+2026-03-23T05:29:02.740Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:29:02.741Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:29:02.742Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:02.742Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:29:02.742Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:29:02.742Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:02.743Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:29:02.743Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:04.238Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:29:30.362Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:30.362Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:30.362Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T05:29:30.362Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:30.362Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T05:29:31.407Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:31.407Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:31.407Z [DEBUG] Getting matching hook commands for PostToolUse with query: Grep
+2026-03-23T05:29:31.407Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:31.407Z [DEBUG] Matched 1 unique hooks for query "Grep" (1 before deduplication)
+2026-03-23T05:29:31.411Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:29:31.411Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:29:31.411Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:29:31.411Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:29:31.412Z [DEBUG] autocompact: tokens=37414 threshold=167000 effectiveWindow=180000
+2026-03-23T05:29:31.413Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:29:31.413Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:29:31.413Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:31.413Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:29:31.413Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:29:31.413Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:31.414Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:29:31.414Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:32.747Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:29:35.529Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:35.529Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:35.529Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T05:29:35.529Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:35.529Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T05:29:35.945Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:35.945Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:29:35.945Z [DEBUG] Getting matching hook commands for PostToolUse with query: Read
+2026-03-23T05:29:35.945Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:29:35.945Z [DEBUG] Matched 1 unique hooks for query "Read" (1 before deduplication)
+2026-03-23T05:29:35.957Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:29:35.957Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:29:35.957Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:29:35.957Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:29:35.960Z [DEBUG] autocompact: tokens=38514 threshold=167000 effectiveWindow=180000
+2026-03-23T05:29:35.961Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:29:35.961Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:29:35.961Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:35.961Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:29:35.961Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:29:35.961Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:35.962Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:29:35.962Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:29:40.065Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:30:21.272Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:21.272Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:21.272Z [DEBUG] Getting matching hook commands for PostToolUse with query: StructuredOutput
+2026-03-23T05:30:21.272Z [DEBUG] Found 5 hook matchers in settings
+2026-03-23T05:30:21.272Z [DEBUG] Matched 0 unique hooks for query "StructuredOutput" (0 before deduplication)
+2026-03-23T05:30:21.284Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-03-23T05:30:21.284Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-03-23T05:30:21.284Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-03-23T05:30:21.284Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-03-23T05:30:21.285Z [DEBUG] autocompact: tokens=41348 threshold=167000 effectiveWindow=180000
+2026-03-23T05:30:21.285Z [DEBUG] Dynamic tool loading: 0/15 deferred tools included
+2026-03-23T05:30:21.286Z [DEBUG] attribution header x-anthropic-billing-header: cc_version=2.1.81.df2; cc_entrypoint=cli; cch=00000;
+2026-03-23T05:30:21.286Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:30:21.286Z [DEBUG] [API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: false, has Authorization header: false
+2026-03-23T05:30:21.286Z [DEBUG] [API:auth] OAuth token check starting
+2026-03-23T05:30:21.286Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:30:21.287Z [DEBUG] [API:auth] OAuth token check complete
+2026-03-23T05:30:21.287Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:30:24.313Z [DEBUG] Stream started - received first chunk
+2026-03-23T05:30:24.341Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:24.341Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:24.341Z [DEBUG] Getting matching hook commands for Stop with query: undefined
+2026-03-23T05:30:24.341Z [DEBUG] Found 2 hook matchers in settings
+2026-03-23T05:30:24.341Z [DEBUG] Matched 1 unique hooks for query "no match query" (1 before deduplication)
+2026-03-23T05:30:24.342Z [DEBUG] Fast mode unavailable: Fast mode is not available in the Agent SDK
+2026-03-23T05:30:24.344Z [DEBUG] LSP server manager shut down successfully
+2026-03-23T05:30:24.345Z [DEBUG] Cleaned up session snapshot: /root/.claude/shell-snapshots/snapshot-bash-1774243726912-vkf2wy.sh
+2026-03-23T05:30:24.345Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:24.345Z [DEBUG] Broken symlink or missing file encountered for settings.json at path: /etc/claude-code/managed-settings.json
+2026-03-23T05:30:24.345Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-03-23T05:30:24.345Z [DEBUG] Found 0 hook matchers in settings
+2026-03-23T05:30:24.345Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)

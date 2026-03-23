@@ -1,0 +1,63 @@
+{
+  "rollback_id": "7bf78aa5-353c-4ca5-9261-1f6db9365d5b",
+  "created_at": "2026-03-23T05:37:05.721791107Z",
+  "stage_id": "completion_panel",
+  "cycle": 3,
+  "git_sha": "d8a0b8b9f8bd88aa86faa123e282c83fc5556c11",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260323045611",
+      "stage_cursor": {
+        "stage": "acceptance_qa",
+        "cycle": 3,
+        "attempt": 1,
+        "completion_round": 1
+      },
+      "started_at": "2026-03-23T04:56:11.881396805Z",
+      "prompt_hash_at_cycle_start": "9687ada01e367b09",
+      "prompt_hash_at_stage_start": "9687ada01e367b09",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 0
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "implementation",
+        "started_at": "2026-03-23T05:05:07.028727134Z",
+        "completed_at": null
+      },
+      {
+        "cycle": 3,
+        "stage_id": "implementation",
+        "started_at": "2026-03-23T05:20:23.182003212Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 1,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [],
+      "processed_count": 0
+    },
+    "status_summary": "running: completed Completion Panel, next Acceptance QA",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "completion_panel",
+      "resolved_at": "2026-03-23T05:30:25.179825159Z",
+      "completion_completers": [
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ]
+    }
+  }
+}

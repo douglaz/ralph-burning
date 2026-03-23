@@ -1,0 +1,86 @@
+{
+  "rollback_id": "80b7a889-32ca-4ebc-a0ca-d82e84cb0c81",
+  "created_at": "2026-03-23T05:40:42.214231443Z",
+  "stage_id": "acceptance_qa",
+  "cycle": 3,
+  "git_sha": "a4c6a07f426d37259fe84970e622f014faf4b108",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260323045611",
+      "stage_cursor": {
+        "stage": "planning",
+        "cycle": 3,
+        "attempt": 1,
+        "completion_round": 2
+      },
+      "started_at": "2026-03-23T04:56:11.881396805Z",
+      "prompt_hash_at_cycle_start": "9687ada01e367b09",
+      "prompt_hash_at_stage_start": "9687ada01e367b09",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 0
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "implementation",
+        "started_at": "2026-03-23T05:05:07.028727134Z",
+        "completed_at": null
+      },
+      {
+        "cycle": 3,
+        "stage_id": "implementation",
+        "started_at": "2026-03-23T05:20:23.182003212Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 2,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "run-20260323045611-acceptance_qa-cr1-amd1",
+          "source_stage": "acceptance_qa",
+          "source_cycle": 3,
+          "source_completion_round": 1,
+          "body": "Run `cargo test invoke_preserves_adapter_reported_backend_and_model_metadata persisted_artifacts_use_envelope_metadata_not_resolved_target` and `cargo check` once the Rust toolchain is available.",
+          "created_at": "2026-03-23T05:40:42.146903551Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "d9a26074e1dbdd28a1d3c5a0e539881bb282357a3cebc7db402be40b22f9a61e"
+        },
+        {
+          "amendment_id": "run-20260323045611-acceptance_qa-cr1-amd2",
+          "source_stage": "acceptance_qa",
+          "source_cycle": 3,
+          "source_completion_round": 1,
+          "body": "If broader acceptance coverage is desired, add executed artifact-persistence regressions for the completion and prompt-review panel paths as well.",
+          "created_at": "2026-03-23T05:40:42.146903551Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "fcaada32a8340b4b25559c13bb0a40db681e51a26011097faf8815b373357c3c"
+        }
+      ],
+      "processed_count": 0
+    },
+    "status_summary": "running: completion round 1 -> Planning",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "completion_panel",
+      "resolved_at": "2026-03-23T05:30:25.179825159Z",
+      "completion_completers": [
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ]
+    }
+  }
+}

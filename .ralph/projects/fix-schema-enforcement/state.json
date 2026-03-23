@@ -1,0 +1,23 @@
+{
+  "project_id": "fix-schema-enforcement",
+  "project_name": "Fix enforce_strict_mode_schema (#22): wrap optional fields i",
+  "created_at": "2026-03-23T17:56:56.268391259Z",
+  "prompt_file": "prompt.md",
+  "prompt_hash": "ae324f794b62d98b0a2e90e274b403323ca06d743235cdac39dad8d555a9c64c",
+  "prompt_hash_at_loop_start": "ae324f794b62d98b0a2e90e274b403323ca06d743235cdac39dad8d555a9c64c",
+  "prompt_review_completed": false,
+  "parent_project": null,
+  "current_loop": 1,
+  "current_phase": "reviewing",
+  "quick_dev_phase": "codex_review",
+  "phase_iteration": 1,
+  "status": "in_progress",
+  "loops": [],
+  "completion_attempts": [],
+  "session_store": {
+    "records": []
+  },
+  "pr_url": null,
+  "quick_dev_review_iteration": 0,
+  "quick_dev_final_review_attempts": 3
+}
