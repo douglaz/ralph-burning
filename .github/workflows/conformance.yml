@@ -40,3 +40,6 @@ jobs:
 
       - name: Run conformance gate
         run: cargo run --locked --features test-stub -- conformance run
+
+      - name: Verify stub rejected without test-stub feature
+        run: cargo test --locked --no-default-features --lib build_backend_adapter_rejects_stub_when_test_stub_feature_disabled
