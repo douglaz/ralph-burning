@@ -273,13 +273,13 @@ fn run_daemon_iteration_with_process_backend(
     use crate::adapters::BackendAdapter;
 
     // Temporarily prepend the extra path for process backend binary resolution.
-    // PATH mutation is still needed because ProcessBackendAdapter::ensure_binary_available
-    // reads the system PATH. The RALPH_BURNING_BACKEND env var is no longer needed
-    // because we pass an explicit requirements builder.
+    // PATH mutation is still needed because Command::new("claude") resolves
+    // from the system PATH. Use ScenarioEnvGuard to serialize with other
+    // PATH-mutating scenarios.
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{extra_path}:{original_path}");
-    std::env::set_var("PATH", &new_path);
-    let result = run_daemon_iteration_with_backend(
+    let _env_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+    run_daemon_iteration_with_backend(
         ws_path,
         Some(BackendAdapter::Process(ProcessBackendAdapter::new())),
         Some(Box::new(|config| {
@@ -288,9 +288,7 @@ fn run_daemon_iteration_with_process_backend(
             )
         })),
         None,
-    );
-    std::env::set_var("PATH", &original_path);
-    result
+    )
 }
 
 fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, String> {
@@ -7747,7 +7745,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .join(".ralph-burning/requirements")
             .join(&run_id)
             .join("answers.toml");
-        std::env::set_var("EDITOR", "true");
+        let _editor_guard = ScenarioEnvGuard::set(&[("EDITOR", "true")]);
         std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
             .map_err(|e| format!("write answers: {e}"))?;
 
@@ -18527,11 +18525,12 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // Use the deterministic failpoint to make the second remove call fail.
         // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
         // remove succeeds and the second fails.
-        std::env::set_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1");
+        let _failpoint_guard =
+            ScenarioEnvGuard::set(&[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")]);
 
         let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
 
-        std::env::remove_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER");
+        drop(_failpoint_guard);
 
         // The clear must have partially failed.
         assert_failure(&clear)?;
@@ -19379,8 +19378,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let empty_path = std::env::temp_dir().join(format!("ralph-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&empty_path).map_err(|e| format!("create empty path: {e}"))?;
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", empty_path.as_os_str());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &empty_path.to_string_lossy())]);
 
         let effective =
             crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
@@ -19390,7 +19388,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         );
         let result = service.check_backends(crate::shared::domain::FlowPreset::Standard);
 
-        std::env::set_var("PATH", &original_path);
+        drop(_path_guard);
         let _ = std::fs::remove_dir_all(&empty_path);
 
         if !result.failures.iter().any(|failure| {
@@ -19449,11 +19447,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             let direct = ProcessBackendAdapter::new()
                 .invoke(direct_request)
                 .await
@@ -19470,9 +19466,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("raw output references should be identical".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-007", || {
         // Requires real tmux binary for process spawning. Skip in nix sandbox.
@@ -19494,11 +19488,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let invocation_id = request.invocation_id.clone();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             let join = tokio::spawn({
                 let adapter = adapter.clone();
                 let request = request.clone();
@@ -19524,9 +19516,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("session should be cleaned up after cancel".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-008", || {
         // Requires real tmux binary for process spawning. Skip in nix sandbox.
@@ -19552,11 +19542,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         );
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             match service.invoke(request.clone()).await {
                 Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
                 Err(other) => return Err(format!("expected timeout, got {other}")),
@@ -19570,9 +19558,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("session should be cleaned up after timeout".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-009", || {
         let ws = TempWorkspace::new()?;
