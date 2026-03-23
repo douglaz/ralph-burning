@@ -518,18 +518,24 @@ impl ProcessBackendAdapter {
         }
     }
 
-    pub(crate) fn ensure_binary_available(binary_name: &str, backend: &str) -> AppResult<()> {
-        let path_entries = std::env::var_os("PATH")
-            .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-            .unwrap_or_default();
+    /// Return the directories from the system `PATH` environment variable.
+    pub(crate) fn system_path_entries() -> Vec<std::path::PathBuf> {
+        std::env::var_os("PATH")
+            .map(|path| std::env::split_paths(&path).collect())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn ensure_binary_available(
+        binary_name: &str,
+        backend: &str,
+        search_paths: &[std::path::PathBuf],
+    ) -> AppResult<()> {
+        let path_entries = search_paths;
 
         #[cfg(unix)]
         let mut non_executable_candidate = None;
 
-        for candidate in path_entries
-            .into_iter()
-            .map(|entry| entry.join(binary_name))
-        {
+        for candidate in path_entries.iter().map(|entry| entry.join(binary_name)) {
             let Ok(metadata) = std::fs::metadata(&candidate) else {
                 continue;
             };
@@ -756,7 +762,11 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 details: "ProcessBackendAdapter availability checks are only supported for claude and codex".to_owned(),
             });
         };
-        Self::ensure_binary_available(binary_name, backend.backend.family.as_str())
+        Self::ensure_binary_available(
+            binary_name,
+            backend.backend.family.as_str(),
+            &Self::system_path_entries(),
+        )
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {

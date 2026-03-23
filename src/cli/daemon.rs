@@ -246,6 +246,9 @@ async fn handle_start_multi_repo(
         &agent_service,
     )
     .with_configured_agent_service_builder(build_agent_execution_service_for_config)
+    .with_configured_requirements_service_builder(Box::new(
+        crate::composition::agent_execution_builder::build_requirements_service,
+    ))
     .with_requirements_store(&requirements_store)
     .with_registrations(registrations)
     .with_data_dir(data_dir_path.to_owned());

@@ -21,6 +21,7 @@ const AVAILABILITY_TIMEOUT: Duration = Duration::from_secs(5);
 #[derive(Debug, Clone)]
 pub struct OpenRouterBackendAdapter {
     base_url: String,
+    api_key_override: Option<String>,
 }
 
 impl Default for OpenRouterBackendAdapter {
@@ -36,14 +37,20 @@ impl OpenRouterBackendAdapter {
                 std::env::var("OPENROUTER_BASE_URL")
                     .unwrap_or_else(|_| DEFAULT_OPENROUTER_BASE_URL.to_owned()),
             ),
+            api_key_override: None,
         }
     }
 
-    #[cfg(test)]
-    fn with_base_url(base_url: impl Into<String>) -> Self {
+    pub fn with_base_url(base_url: impl Into<String>) -> Self {
         Self {
             base_url: normalize_base_url(base_url.into()),
+            api_key_override: None,
         }
+    }
+
+    pub fn with_api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.api_key_override = Some(api_key.into());
+        self
     }
 
     fn models_url(&self) -> String {
@@ -54,7 +61,10 @@ impl OpenRouterBackendAdapter {
         format!("{}{}", self.base_url, CHAT_COMPLETIONS_PATH)
     }
 
-    fn api_key() -> AppResult<String> {
+    fn api_key(&self) -> AppResult<String> {
+        if let Some(ref key) = self.api_key_override {
+            return Ok(key.clone());
+        }
         match std::env::var("OPENROUTER_API_KEY") {
             Ok(value) if !value.trim().is_empty() => Ok(value),
             _ => Err(AppError::BackendUnavailable {
@@ -344,7 +354,7 @@ impl AgentExecutionPort for OpenRouterBackendAdapter {
             });
         }
 
-        let api_key = Self::api_key()?;
+        let api_key = self.api_key()?;
         self.send_probe(&api_key).await
     }
 
@@ -352,7 +362,7 @@ impl AgentExecutionPort for OpenRouterBackendAdapter {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
 
-        let api_key = Self::api_key()?;
+        let api_key = self.api_key()?;
         let (status, response_body) = self.send_completion(&request, &api_key).await?;
         if !status.is_success() {
             return Err(Self::map_http_error(&request, status, &response_body));

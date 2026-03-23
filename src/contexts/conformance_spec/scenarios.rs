@@ -130,16 +130,67 @@ where
 /// file-based issue watcher. This is the test-only replacement for the
 /// former `daemon start --single-iteration` legacy CLI path.
 fn run_daemon_iteration_in_process(ws_path: &Path) -> Result<(), String> {
-    run_daemon_iteration_with_backend(ws_path, None)
+    run_daemon_iteration_with_label_overrides(ws_path, None)
 }
 
-/// Run a single daemon iteration in-process with an explicit `BackendAdapter`.
-/// When `backend_override` is `None`, the default stub backend is used.
-/// When the stub is used, `RALPH_BURNING_TEST_LABEL_OVERRIDES` from the current
-/// environment is honoured (matching the old CLI behavior).
+fn run_daemon_iteration_with_label_overrides(
+    ws_path: &Path,
+    label_overrides: Option<std::collections::HashMap<String, serde_json::Value>>,
+) -> Result<(), String> {
+    let overrides_for_req = label_overrides.clone();
+    run_daemon_iteration_with_backend(
+        ws_path,
+        None,
+        Some(Box::new(move |config| {
+            let mut adapter =
+                crate::composition::agent_execution_builder::build_backend_adapter_for_selector(
+                    "stub",
+                    Some(config),
+                )?;
+            if let Some(ref overrides) = overrides_for_req {
+                if let crate::adapters::BackendAdapter::Stub(ref mut stub) = adapter {
+                    *stub =
+                        crate::composition::agent_execution_builder::apply_label_overrides_from_map(
+                            stub.clone(),
+                            overrides,
+                        );
+                }
+            }
+            let workspace_defaults =
+                crate::contexts::agent_execution::service::BackendSelectionConfig::from_effective_config(config)?;
+            let agent_service =
+                crate::contexts::agent_execution::service::AgentExecutionService::new(
+                    adapter,
+                    crate::adapters::fs::FsRawOutputStore,
+                    crate::adapters::fs::FsSessionStore,
+                );
+            Ok(
+                crate::contexts::requirements_drafting::service::RequirementsService::new(
+                    agent_service,
+                    crate::adapters::fs::FsRequirementsStore,
+                )
+                .with_workspace_defaults(workspace_defaults),
+            )
+        })),
+        label_overrides,
+    )
+}
+
+/// Requirements service builder type used by conformance tests.
+type TestRequirementsServiceBuilder = Box<
+    dyn Fn(
+            &crate::contexts::workspace_governance::config::EffectiveConfig,
+        ) -> crate::shared::error::AppResult<
+            crate::composition::agent_execution_builder::ProductionRequirementsService,
+        > + Send
+        + Sync,
+>;
+
 fn run_daemon_iteration_with_backend(
     ws_path: &Path,
     backend_override: Option<crate::adapters::BackendAdapter>,
+    requirements_builder: Option<TestRequirementsServiceBuilder>,
+    label_overrides: Option<std::collections::HashMap<String, serde_json::Value>>,
 ) -> Result<(), String> {
     use crate::adapters::fs::{
         FsAmendmentQueueStore, FsArtifactStore, FsDaemonStore, FsJournalStore,
@@ -154,24 +205,19 @@ fn run_daemon_iteration_with_backend(
     use crate::contexts::agent_execution::service::AgentExecutionService;
     use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
 
-    // The daemon loop internally builds a RequirementsService via
-    // `build_requirements_service_default` which reads RALPH_BURNING_BACKEND.
-    // Ensure this env var matches the injected adapter so the requirements
-    // path uses the same backend family.
-    let prev_backend_env = std::env::var("RALPH_BURNING_BACKEND").ok();
-
     let adapter = match backend_override {
-        Some(a) => {
-            // Caller-provided adapter — don't override RALPH_BURNING_BACKEND
-            // (caller is responsible, e.g. run_daemon_iteration_with_process_backend)
-            a
-        }
+        Some(a) => a,
         None => {
-            std::env::set_var("RALPH_BURNING_BACKEND", "stub");
-            let stub = StubBackendAdapter::default();
-            BackendAdapter::Stub(
-                crate::composition::agent_execution_builder::apply_test_label_overrides(stub),
-            )
+            let mut stub = StubBackendAdapter::default();
+            if let Some(ref overrides) = label_overrides {
+                stub = crate::composition::agent_execution_builder::apply_label_overrides_from_map(
+                    stub, overrides,
+                );
+            } else {
+                stub =
+                    crate::composition::agent_execution_builder::apply_test_label_overrides(stub);
+            }
+            BackendAdapter::Stub(stub)
         }
     };
     let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
@@ -189,7 +235,7 @@ fn run_daemon_iteration_with_backend(
     let requirements_store = FsRequirementsStore;
     let issue_watcher = FileIssueWatcher;
 
-    let daemon_loop = DaemonLoop::new(
+    let mut daemon_loop = DaemonLoop::new(
         &daemon_store,
         &worktree,
         &project_store,
@@ -205,20 +251,16 @@ fn run_daemon_iteration_with_backend(
     .with_watcher(&issue_watcher)
     .with_requirements_store(&requirements_store);
 
+    if let Some(builder) = requirements_builder {
+        daemon_loop = daemon_loop.with_configured_requirements_service_builder(builder);
+    }
+
     let loop_config = DaemonLoopConfig {
         single_iteration: true,
         ..DaemonLoopConfig::default()
     };
 
-    let result = block_on_app_result(daemon_loop.run(ws_path, &loop_config));
-
-    // Restore RALPH_BURNING_BACKEND to its previous value
-    match prev_backend_env {
-        Some(val) => std::env::set_var("RALPH_BURNING_BACKEND", &val),
-        None => std::env::remove_var("RALPH_BURNING_BACKEND"),
-    }
-
-    result
+    block_on_app_result(daemon_loop.run(ws_path, &loop_config))
 }
 
 /// Run a single daemon iteration using the process backend with a custom PATH.
@@ -230,21 +272,23 @@ fn run_daemon_iteration_with_process_backend(
     use crate::adapters::process_backend::ProcessBackendAdapter;
     use crate::adapters::BackendAdapter;
 
-    // Temporarily prepend the extra path for process backend binary resolution
-    // and set RALPH_BURNING_BACKEND=process so the daemon's internal
-    // RequirementsService also uses the process backend.
+    // Temporarily prepend the extra path for process backend binary resolution.
+    // PATH mutation is still needed because Command::new("claude") resolves
+    // from the system PATH. Use ScenarioEnvGuard to serialize with other
+    // PATH-mutating scenarios.
     let original_path = std::env::var("PATH").unwrap_or_default();
     let new_path = format!("{extra_path}:{original_path}");
-    // SAFETY: this is test-only code; conformance scenarios run sequentially
-    std::env::set_var("PATH", &new_path);
-    std::env::set_var("RALPH_BURNING_BACKEND", "process");
-    let result = run_daemon_iteration_with_backend(
+    let _env_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+    run_daemon_iteration_with_backend(
         ws_path,
         Some(BackendAdapter::Process(ProcessBackendAdapter::new())),
-    );
-    std::env::set_var("PATH", &original_path);
-    std::env::remove_var("RALPH_BURNING_BACKEND");
-    result
+        Some(Box::new(|config| {
+            crate::composition::agent_execution_builder::build_requirements_service_for_selector(
+                "process", config,
+            )
+        })),
+        None,
+    )
 }
 
 fn read_runtime_logs(ws: &TempWorkspace, project_id: &str) -> Result<String, String> {
@@ -7701,7 +7745,7 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .join(".ralph-burning/requirements")
             .join(&run_id)
             .join("answers.toml");
-        std::env::set_var("EDITOR", "true");
+        let _editor_guard = ScenarioEnvGuard::set(&[("EDITOR", "true")]);
         std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
             .map_err(|e| format!("write answers: {e}"))?;
 
@@ -8899,16 +8943,23 @@ impl Drop for ScenarioHttpServer {
 
 struct ScenarioEnvGuard {
     saved: Vec<(String, Option<String>)>,
+    _lock: std::sync::MutexGuard<'static, ()>,
 }
+
+/// Global mutex that serializes all scenarios using ScenarioEnvGuard.
+/// Environment variables are process-global, so env-mutating scenarios
+/// must not run concurrently with each other.
+static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl ScenarioEnvGuard {
     fn set(pairs: &[(&str, &str)]) -> Self {
+        let lock = ENV_MUTEX.lock().unwrap_or_else(|e| e.into_inner());
         let mut saved = Vec::with_capacity(pairs.len());
         for (key, value) in pairs {
             saved.push(((*key).to_owned(), std::env::var(key).ok()));
             std::env::set_var(key, value);
         }
-        Self { saved }
+        Self { saved, _lock: lock }
     }
 }
 
@@ -8930,10 +8981,12 @@ fn invoke_openrouter_contract(
     model_id: &str,
     response_payload: serde_json::Value,
 ) -> Result<(serde_json::Value, Vec<ScenarioRecordedRequest>), String> {
-    use crate::composition::agent_execution_builder::build_agent_execution_service;
+    use crate::adapters::openrouter_backend::OpenRouterBackendAdapter;
+    use crate::adapters::BackendAdapter;
     use crate::contexts::agent_execution::model::{
         CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
     };
+    use crate::contexts::agent_execution::service::AgentExecutionService;
     use crate::shared::domain::{BackendRole, ResolvedBackendTarget, SessionPolicy};
 
     let server = ScenarioHttpServer::start(vec![
@@ -8956,15 +9009,16 @@ fn invoke_openrouter_contract(
         ),
     ])?;
 
-    let _env_guard = ScenarioEnvGuard::set(&[
-        ("RALPH_BURNING_BACKEND", "process"),
-        ("OPENROUTER_API_KEY", "scenario-openrouter-key"),
-        ("OPENROUTER_BASE_URL", &server.base_url),
-    ]);
-
+    let adapter = BackendAdapter::OpenRouter(
+        OpenRouterBackendAdapter::with_base_url(&server.base_url)
+            .with_api_key("scenario-openrouter-key"),
+    );
     let project_root = prepare_scenario_project_root(workspace_root)?;
-    let service = build_agent_execution_service()
-        .map_err(|e| format!("build agent execution service: {e}"))?;
+    let service = AgentExecutionService::new(
+        adapter,
+        crate::adapters::fs::FsRawOutputStore,
+        crate::adapters::fs::FsSessionStore,
+    );
     let request = InvocationRequest {
         invocation_id: format!("openrouter-{}", contract_label.replace(':', "-")),
         project_root: project_root.clone(),
@@ -9924,13 +9978,10 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
             }
         });
 
-        // Run one daemon cycle with the label override
-        std::env::set_var(
-            "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-            &label_overrides.to_string(),
-        );
-        run_daemon_iteration_in_process(ws.path())?;
-        std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
+        // Run one daemon cycle with explicit label overrides (no env var mutation)
+        let overrides_map: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_value(label_overrides).map_err(|e| format!("parse overrides: {e}"))?;
+        run_daemon_iteration_with_label_overrides(ws.path(), Some(overrides_map))?;
 
         // Verify the task was created and entered waiting_for_requirements
         let store = FsDaemonStore;
@@ -10305,12 +10356,9 @@ fn register_daemon_issue_intake(m: &mut HashMap<String, ScenarioExecutor>) {
         });
 
         // First daemon cycle: task enters waiting_for_requirements
-        std::env::set_var(
-            "RALPH_BURNING_TEST_LABEL_OVERRIDES",
-            &label_overrides.to_string(),
-        );
-        run_daemon_iteration_in_process(ws.path())?;
-        std::env::remove_var("RALPH_BURNING_TEST_LABEL_OVERRIDES");
+        let overrides_map: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_value(label_overrides).map_err(|e| format!("parse overrides: {e}"))?;
+        run_daemon_iteration_with_label_overrides(ws.path(), Some(overrides_map))?;
 
         // Verify the task is in waiting state
         let store = FsDaemonStore;
@@ -11846,16 +11894,11 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
         let binary_path = bin_dir.join("claude");
         write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o644)?;
-        let path_value = bin_dir.to_string_lossy().into_owned();
-        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
 
-        block_on_result(async {
-            let adapter = ProcessBackendAdapter::new();
-            let target = ResolvedBackendTarget::new(
-                BackendFamily::Claude,
-                BackendFamily::Claude.default_model_id(),
-            );
-            match adapter.check_availability(&target).await {
+        {
+            let search_paths = vec![bin_dir.clone()];
+            match ProcessBackendAdapter::ensure_binary_available("claude", "claude", &search_paths)
+            {
                 Err(AppError::BackendUnavailable { details, .. }) => {
                     if !details.contains(&binary_path.display().to_string()) {
                         return Err(format!(
@@ -11875,7 +11918,7 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                 )),
                 Ok(()) => Err("non-executable binary should not pass availability".to_owned()),
             }
-        })
+        }
     });
 
     reg!(m, "parity_slice0_permission_check_success", || {
@@ -11884,20 +11927,12 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
         std::fs::create_dir_all(&bin_dir).map_err(|e| format!("create bin dir: {e}"))?;
         let binary_path = bin_dir.join("claude");
         write_script_with_mode(&binary_path, "#!/bin/sh\nexit 0\n", 0o755)?;
-        let path_value = bin_dir.to_string_lossy().into_owned();
-        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
 
-        block_on_result(async {
-            let adapter = ProcessBackendAdapter::new();
-            let target = ResolvedBackendTarget::new(
-                BackendFamily::Claude,
-                BackendFamily::Claude.default_model_id(),
-            );
-            adapter
-                .check_availability(&target)
-                .await
+        {
+            let search_paths = vec![bin_dir.clone()];
+            ProcessBackendAdapter::ensure_binary_available("claude", "claude", &search_paths)
                 .map_err(|e| format!("expected executable binary to pass availability: {e}"))
-        })
+        }
     });
 
     reg!(m, "parity_slice0_cancel_no_orphans", || {
@@ -18490,11 +18525,12 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
         // Use the deterministic failpoint to make the second remove call fail.
         // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
         // remove succeeds and the second fails.
-        std::env::set_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1");
+        let _failpoint_guard =
+            ScenarioEnvGuard::set(&[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")]);
 
         let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
 
-        std::env::remove_var("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER");
+        drop(_failpoint_guard);
 
         // The clear must have partially failed.
         assert_failure(&clear)?;
@@ -19342,8 +19378,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let empty_path = std::env::temp_dir().join(format!("ralph-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&empty_path).map_err(|e| format!("create empty path: {e}"))?;
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var("PATH", empty_path.as_os_str());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &empty_path.to_string_lossy())]);
 
         let effective =
             crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
@@ -19353,7 +19388,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         );
         let result = service.check_backends(crate::shared::domain::FlowPreset::Standard);
 
-        std::env::set_var("PATH", &original_path);
+        drop(_path_guard);
         let _ = std::fs::remove_dir_all(&empty_path);
 
         if !result.failures.iter().any(|failure| {
@@ -19412,11 +19447,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             let direct = ProcessBackendAdapter::new()
                 .invoke(direct_request)
                 .await
@@ -19433,9 +19466,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("raw output references should be identical".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-007", || {
         // Requires real tmux binary for process spawning. Skip in nix sandbox.
@@ -19457,11 +19488,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let invocation_id = request.invocation_id.clone();
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             let join = tokio::spawn({
                 let adapter = adapter.clone();
                 let request = request.clone();
@@ -19487,9 +19516,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("session should be cleaned up after cancel".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-008", || {
         // Requires real tmux binary for process spawning. Skip in nix sandbox.
@@ -19515,11 +19542,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         );
 
         let original_path = std::env::var("PATH").unwrap_or_default();
-        std::env::set_var(
-            "PATH",
-            format!("{}:{original_path}", bin_dir.path().display()),
-        );
-        let result = block_on_result(async {
+        let new_path = format!("{}:{original_path}", bin_dir.path().display());
+        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        block_on_result(async {
             match service.invoke(request.clone()).await {
                 Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
                 Err(other) => return Err(format!("expected timeout, got {other}")),
@@ -19533,9 +19558,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err("session should be cleaned up after timeout".into());
             }
             Ok(())
-        });
-        std::env::set_var("PATH", &original_path);
-        result
+        })
     });
     reg!(m, "SC-TMUX-009", || {
         let ws = TempWorkspace::new()?;

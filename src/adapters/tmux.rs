@@ -80,7 +80,11 @@ impl TmuxAdapter {
     }
 
     pub fn check_tmux_available() -> AppResult<()> {
-        ProcessBackendAdapter::ensure_binary_available("tmux", "tmux")
+        ProcessBackendAdapter::ensure_binary_available(
+            "tmux",
+            "tmux",
+            &ProcessBackendAdapter::system_path_entries(),
+        )
     }
 
     fn ensure_supported_backend(
