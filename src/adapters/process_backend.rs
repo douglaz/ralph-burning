@@ -67,7 +67,7 @@ impl PreparedCommand {
                             "claude envelope parse failed: stdout_len={} stderr_len={} stdout_head={}",
                             output.stdout.len(),
                             output.stderr.len(),
-                            &stdout_text[..stdout_text.len().min(500)]
+                            truncate_utf8(&stdout_text, 500)
                         );
                         ProcessBackendAdapter::invocation_failed(
                             request,
@@ -87,7 +87,7 @@ impl PreparedCommand {
                                 "claude result JSON parse failed: contract={} result_len={} result_head={}",
                                 request.contract.label(),
                                 envelope.result.len(),
-                                &envelope.result[..envelope.result.len().min(500)]
+                                truncate_utf8(&envelope.result, 500)
                             );
                             ProcessBackendAdapter::invocation_failed(
                                 request,
@@ -925,6 +925,18 @@ pub(crate) struct ChildOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+}
+
+/// Truncate a string to at most `max_bytes` without splitting a UTF-8 character.
+fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
 }
 
 /// Try to extract an error message from Claude's stdout JSON envelope.
