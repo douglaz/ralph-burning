@@ -55,7 +55,9 @@ impl PreparedCommand {
         }
 
         match &self.response_decoder {
-            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Claude { debug_file, .. } => {
+                let _ = tokio::fs::remove_file(debug_file).await;
+            }
             ResponseDecoder::Codex {
                 schema_path,
                 message_path,
@@ -74,18 +76,24 @@ impl PreparedCommand {
         let failed_dir = request.project_root.join("runtime/failed");
         let _ = tokio::fs::create_dir_all(&failed_dir).await;
 
-        if let ResponseDecoder::Codex {
-            schema_path,
-            message_path,
-            ..
-        } = &self.response_decoder
-        {
-            let failed_schema_path =
-                failed_dir.join(format!("{}.schema.json", request.invocation_id));
-            let failed_message_path =
-                failed_dir.join(format!("{}.last-message.json", request.invocation_id));
-            best_effort_move_file(schema_path, &failed_schema_path).await;
-            best_effort_move_file(message_path, &failed_message_path).await;
+        match &self.response_decoder {
+            ResponseDecoder::Claude { debug_file, .. } => {
+                let failed_debug_path =
+                    failed_dir.join(format!("{}.claude-debug.log", request.invocation_id));
+                best_effort_move_file(debug_file, &failed_debug_path).await;
+            }
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => {
+                let failed_schema_path =
+                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                let failed_message_path =
+                    failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+                best_effort_move_file(schema_path, &failed_schema_path).await;
+                best_effort_move_file(message_path, &failed_message_path).await;
+            }
         }
 
         let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
@@ -101,39 +109,46 @@ impl PreparedCommand {
         request: &InvocationRequest,
         output: ChildOutput,
     ) -> AppResult<InvocationEnvelope> {
-        match self.response_decoder {
-            ResponseDecoder::Claude { session_resuming } => {
+        match &self.response_decoder {
+            ResponseDecoder::Claude { session_resuming, .. } => {
+                let session_resuming = *session_resuming;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
 
-                let envelope: ClaudeEnvelope =
-                    serde_json::from_str(&stdout_text).map_err(|error| {
+                let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
+                    Ok(val) => val,
+                    Err(error) => {
                         eprintln!(
                             "claude envelope parse failed: stdout_len={} stderr_len={} stdout_head={}",
                             output.stdout.len(),
                             output.stderr.len(),
                             truncate_utf8(&stdout_text, 500)
                         );
-                        ProcessBackendAdapter::invocation_failed(
+                        self.preserve_failure_artifacts(request, &output).await;
+                        return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
                             format!("invalid Claude envelope JSON: {error}"),
-                        )
-                    })?;
+                        ));
+                    }
+                };
 
                 let parsed_payload = if let Some(structured) = envelope.structured_output {
                     structured
                 } else if !envelope.result.trim().is_empty() {
                     // result is non-empty: try direct parse, then extract embedded JSON
-                    serde_json::from_str(&envelope.result)
+                    match serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
-                        .map_err(|error| {
+                    {
+                        Ok(val) => val,
+                        Err(error) => {
                             eprintln!(
                                 "claude result JSON parse failed: contract={} result_len={} result_head={}",
                                 request.contract.label(),
                                 envelope.result.len(),
                                 truncate_utf8(&envelope.result, 500)
                             );
-                            ProcessBackendAdapter::invocation_failed(
+                            self.preserve_failure_artifacts(request, &output).await;
+                            return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
@@ -142,19 +157,23 @@ impl PreparedCommand {
                                     request.contract.label(),
                                     envelope.result.len(),
                                 ),
-                            )
-                        })?
+                            ));
+                        }
+                    }
                 } else {
                     // Both structured_output and result are empty.
                     // Last resort: try to find JSON in the raw stdout beyond the envelope.
                     // Guard: reject if the extracted object is just the Claude envelope
                     // itself (has `result` + `session_id` keys), which would happen when
                     // stdout contains only the envelope and no separate payload.
-                    extract_json_from_text(&stdout_text)
+                    match extract_json_from_text(&stdout_text)
                         .ok()
                         .filter(|val| !looks_like_claude_envelope(val))
-                        .ok_or_else(|| {
-                            ProcessBackendAdapter::invocation_failed(
+                    {
+                        Some(val) => val,
+                        None => {
+                            self.preserve_failure_artifacts(request, &output).await;
+                            return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
                                 format!(
@@ -164,8 +183,9 @@ impl PreparedCommand {
                                     output.stdout.len(),
                                     request.session_policy,
                                 ),
-                            )
-                        })?
+                            ));
+                        }
+                    }
                 };
 
                 let session_id = envelope.session_id.or_else(|| {
@@ -197,10 +217,11 @@ impl PreparedCommand {
                 message_path,
                 session_resuming,
             } => {
-                let last_message_text = match tokio::fs::read_to_string(&message_path).await {
+                let session_resuming = *session_resuming;
+                let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -212,7 +233,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        best_effort_cleanup(Some(&schema_path), &message_path).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -221,7 +242,7 @@ impl PreparedCommand {
                     }
                 };
 
-                best_effort_cleanup(Some(&schema_path), &message_path).await;
+                best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
 
                 let session_id = if session_resuming {
                     request.prior_session.as_ref().map(|s| s.session_id.clone())
@@ -252,6 +273,7 @@ impl PreparedCommand {
 enum ResponseDecoder {
     Claude {
         session_resuming: bool,
+        debug_file: std::path::PathBuf,
     },
     Codex {
         schema_path: std::path::PathBuf,
@@ -498,7 +520,7 @@ impl ProcessBackendAdapter {
                     binary: "claude".to_owned(),
                     args,
                     stdin_payload: Self::assemble_stdin(request),
-                    response_decoder: ResponseDecoder::Claude { session_resuming },
+                    response_decoder: ResponseDecoder::Claude { session_resuming, debug_file: debug_log },
                     invocation_failed: Arc::new(AtomicBool::new(false)),
                 })
             }
@@ -856,7 +878,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 if request.prior_session.is_some()
                     && stderr.contains("No conversation found with session ID")
                 {
-                    prepared.preserve_failure_artifacts(&request, &output).await;
+                    // Do NOT preserve failure artifacts here — this is an internal
+                    // retry, not a terminal failure. If the retry succeeds, we don't
+                    // want stale artifacts left in runtime/failed. Cleanup deletes the
+                    // original attempt's temp files normally.
                     prepared.cleanup().await;
                     let mut fresh_request = request.clone();
                     fresh_request.prior_session = None;
@@ -1611,6 +1636,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
+                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
             invocation_failed: Arc::new(AtomicBool::new(false)),
         };
@@ -1638,6 +1664,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
+                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
             invocation_failed: Arc::new(AtomicBool::new(false)),
         };
@@ -1677,6 +1704,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
+                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
             invocation_failed: Arc::new(AtomicBool::new(false)),
         };
@@ -1704,6 +1732,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
+                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
             invocation_failed: Arc::new(AtomicBool::new(false)),
         };
@@ -1711,5 +1740,157 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn cleanup_claude_removes_debug_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let debug_file = tmp.path().join("test.claude-debug.log");
+        tokio::fs::write(&debug_file, "debug content").await.unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+                debug_file: debug_file.clone(),
+            },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
+        };
+
+        prepared.cleanup().await;
+        assert!(
+            !debug_file.exists(),
+            "debug file should be deleted on cleanup"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_claude_skipped_when_invocation_failed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let debug_file = tmp.path().join("test.claude-debug.log");
+        tokio::fs::write(&debug_file, "debug content").await.unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+                debug_file: debug_file.clone(),
+            },
+            invocation_failed: Arc::new(AtomicBool::new(true)),
+        };
+
+        prepared.cleanup().await;
+        assert!(
+            debug_file.exists(),
+            "debug file should NOT be deleted when invocation_failed is set"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_claude_parse_failure_writes_failure_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let debug_file = tmp.path().join("runtime/temp/test.claude-debug.log");
+        tokio::fs::create_dir_all(debug_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&debug_file, "debug content")
+            .await
+            .unwrap();
+
+        let mut request = make_test_request();
+        request.project_root = tmp.path().to_path_buf();
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+                debug_file: debug_file.clone(),
+            },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
+        };
+
+        // Invalid JSON triggers envelope parse failure
+        let output = make_child_output("not-json");
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_err());
+
+        let failed_dir = tmp.path().join("runtime/failed");
+        let failed_raw = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+        assert!(
+            failed_raw.is_file(),
+            "failed.raw should be written on Claude parse failure"
+        );
+
+        let failed_debug =
+            failed_dir.join(format!("{}.claude-debug.log", request.invocation_id));
+        assert!(
+            failed_debug.is_file(),
+            "debug file should be preserved in failed dir"
+        );
+        assert!(
+            !debug_file.exists(),
+            "original debug file should be moved"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_codex_parse_failure_preserves_artifacts() {
+        let tmp = tempfile::tempdir().unwrap();
+        let temp_dir = tmp.path().join("runtime/temp");
+        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
+
+        let schema_path = temp_dir.join("test.schema.json");
+        let message_path = temp_dir.join("test.last-message.json");
+        tokio::fs::write(&schema_path, r#"{"type":"object"}"#)
+            .await
+            .unwrap();
+        tokio::fs::write(&message_path, "not-valid-json")
+            .await
+            .unwrap();
+
+        let mut request = make_test_request();
+        request.project_root = tmp.path().to_path_buf();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
+        };
+
+        let output = make_child_output("");
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_err());
+
+        let failed_dir = tmp.path().join("runtime/failed");
+        assert!(
+            failed_dir
+                .join(format!("{}.schema.json", request.invocation_id))
+                .is_file(),
+            "schema should be preserved under runtime/failed"
+        );
+        assert!(
+            failed_dir
+                .join(format!("{}.last-message.json", request.invocation_id))
+                .is_file(),
+            "last-message should be preserved under runtime/failed"
+        );
+        assert!(
+            failed_dir
+                .join(format!("{}.failed.raw", request.invocation_id))
+                .is_file(),
+            "raw output should be written under runtime/failed"
+        );
     }
 }
