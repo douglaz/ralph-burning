@@ -63,6 +63,12 @@ impl PreparedCommand {
 
                 let envelope: ClaudeEnvelope =
                     serde_json::from_str(&stdout_text).map_err(|error| {
+                        eprintln!(
+                            "claude envelope parse failed: stdout_len={} stderr_len={} stdout_head={}",
+                            output.stdout.len(),
+                            output.stderr.len(),
+                            &stdout_text[..stdout_text.len().min(500)]
+                        );
                         ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -77,6 +83,12 @@ impl PreparedCommand {
                     serde_json::from_str(&envelope.result)
                         .or_else(|_| extract_json_from_text(&envelope.result))
                         .map_err(|error| {
+                            eprintln!(
+                                "claude result JSON parse failed: contract={} result_len={} result_head={}",
+                                request.contract.label(),
+                                envelope.result.len(),
+                                &envelope.result[..envelope.result.len().min(500)]
+                            );
                             ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -417,6 +429,10 @@ impl ProcessBackendAdapter {
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
                     && request.prior_session.is_some();
 
+                let debug_log = request
+                    .project_root
+                    .join("runtime/temp")
+                    .join(format!("{}.claude-debug.log", request.invocation_id));
                 let mut args = vec![
                     "-p".to_owned(),
                     "--output-format".to_owned(),
@@ -429,6 +445,8 @@ impl ProcessBackendAdapter {
                     "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
                     "--json-schema".to_owned(),
                     schema_json,
+                    "--debug-file".to_owned(),
+                    debug_log.to_string_lossy().into_owned(),
                 ];
 
                 if session_resuming {
