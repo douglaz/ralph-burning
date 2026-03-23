@@ -103,6 +103,7 @@ impl PreparedCommand {
                 let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
                     Ok(val) => val,
                     Err(error) => {
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -120,6 +121,7 @@ impl PreparedCommand {
                     {
                         Ok(val) => val,
                         Err(error) => {
+                            self.preserve_failure_artifacts(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -144,6 +146,7 @@ impl PreparedCommand {
                     {
                         Some(val) => val,
                         None => {
+                            self.preserve_failure_artifacts(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -192,7 +195,7 @@ impl PreparedCommand {
                 let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -204,7 +207,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
+                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,

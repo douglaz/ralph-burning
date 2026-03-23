@@ -1750,3 +1750,144 @@ async fn invalid_stdout_json_falls_back_to_stderr() {
         other => panic!("expected TransportFailure, got: {other:?}"),
     }
 }
+
+// ── Failure artifact preservation for finish()-path errors ───────────────────
+
+#[tokio::test(flavor = "current_thread")]
+async fn claude_invalid_envelope_preserves_failure_artifacts() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let envelope_file = request.working_dir.join("claude-envelope.json");
+    fs::write(&envelope_file, "not json at all").expect("write invalid envelope");
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    let _ = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("invalid envelope should fail");
+
+    let failed_dir = request.project_root.join("runtime/failed");
+    let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+    assert!(
+        failed_raw_path.is_file(),
+        "raw failure output should be preserved for Claude invalid envelope"
+    );
+    let raw = fs::read_to_string(&failed_raw_path).expect("read failed raw");
+    assert!(
+        raw.contains("not json at all"),
+        "preserved raw should contain the invalid stdout: {raw}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn claude_invalid_result_preserves_failure_artifacts() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let envelope_file = request.working_dir.join("claude-envelope.json");
+    let envelope = serde_json::json!({
+        "type": "result",
+        "result": "this is not json",
+        "session_id": "ses-bad"
+    });
+    fs::write(&envelope_file, serde_json::to_string(&envelope).unwrap())
+        .expect("write bad-result envelope");
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    let _ = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("invalid result JSON should fail");
+
+    let failed_dir = request.project_root.join("runtime/failed");
+    let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+    assert!(
+        failed_raw_path.is_file(),
+        "raw failure output should be preserved for Claude invalid result"
+    );
+    let raw = fs::read_to_string(&failed_raw_path).expect("read failed raw");
+    assert!(
+        raw.contains("this is not json"),
+        "preserved raw should contain the invalid result in stdout: {raw}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_missing_last_message_preserves_failure_artifacts() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+    write_fake_codex_without_last_message(bin_dir.path());
+
+    let adapter = ProcessBackendAdapter::new();
+    let _ = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("missing last-message should fail");
+
+    let failed_dir = request.project_root.join("runtime/failed");
+    let failed_schema_path = failed_dir.join(format!("{}.schema.json", request.invocation_id));
+    let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+    assert!(
+        failed_schema_path.is_file(),
+        "schema file should be preserved under runtime/failed for missing last-message"
+    );
+    assert!(
+        failed_raw_path.is_file(),
+        "raw failure output should be preserved for missing last-message"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_invalid_last_message_preserves_failure_artifacts() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, request) = request_fixture(BackendFamily::Codex);
+
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(&payload_file, "not valid json").expect("write invalid payload");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    let _ = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("invalid last-message should fail");
+
+    let failed_dir = request.project_root.join("runtime/failed");
+    let failed_schema_path = failed_dir.join(format!("{}.schema.json", request.invocation_id));
+    let failed_message_path =
+        failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+    let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+    assert!(
+        failed_schema_path.is_file(),
+        "schema file should be preserved under runtime/failed for invalid last-message"
+    );
+    assert!(
+        failed_message_path.is_file(),
+        "last-message file should be preserved under runtime/failed for invalid last-message"
+    );
+    assert!(
+        failed_raw_path.is_file(),
+        "raw failure output should be preserved for invalid last-message"
+    );
+    let failed_message =
+        fs::read_to_string(&failed_message_path).expect("read failed last-message");
+    assert!(
+        failed_message.contains("not valid json"),
+        "preserved last-message should contain the invalid payload: {failed_message}"
+    );
+}
