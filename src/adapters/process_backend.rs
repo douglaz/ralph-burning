@@ -196,6 +196,8 @@ impl PreparedCommand {
                     }
                 });
 
+                self.cleanup().await;
+
                 Ok(InvocationEnvelope {
                     raw_output_reference: RawOutputReference::Inline(stdout_text),
                     parsed_payload,
@@ -1740,6 +1742,47 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn finish_claude_success_removes_debug_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let debug_file = tmp.path().join("runtime/temp/test.claude-debug.log");
+        tokio::fs::create_dir_all(debug_file.parent().unwrap())
+            .await
+            .unwrap();
+        tokio::fs::write(&debug_file, "debug content")
+            .await
+            .unwrap();
+
+        let envelope = json!({
+            "result": "{\"outcome\": \"approved\"}",
+            "session_id": "sess-cleanup",
+            "structured_output": null
+        });
+        let stdout = envelope.to_string();
+        let output = make_child_output(&stdout);
+
+        let mut request = make_test_request();
+        request.project_root = tmp.path().to_path_buf();
+
+        let prepared = PreparedCommand {
+            binary: "claude".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Claude {
+                session_resuming: false,
+                debug_file: debug_file.clone(),
+            },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
+        };
+
+        let result = prepared.finish(&request, output).await;
+        assert!(result.is_ok(), "finish should succeed");
+        assert!(
+            !debug_file.exists(),
+            "debug file should be deleted after successful finish"
+        );
     }
 
     #[tokio::test]
