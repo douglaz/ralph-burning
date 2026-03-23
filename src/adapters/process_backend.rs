@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -32,6 +33,7 @@ pub(crate) struct PreparedCommand {
     args: Vec<String>,
     stdin_payload: String,
     response_decoder: ResponseDecoder,
+    invocation_failed: Arc<AtomicBool>,
 }
 
 impl PreparedCommand {
@@ -48,6 +50,10 @@ impl PreparedCommand {
     }
 
     pub(crate) async fn cleanup(&self) {
+        if self.invocation_failed.load(Ordering::Relaxed) {
+            return;
+        }
+
         match &self.response_decoder {
             ResponseDecoder::Claude { .. } => {}
             ResponseDecoder::Codex {
@@ -56,6 +62,38 @@ impl PreparedCommand {
                 ..
             } => best_effort_cleanup(Some(schema_path), message_path).await,
         }
+    }
+
+    pub(crate) async fn preserve_failure_artifacts(
+        &self,
+        request: &InvocationRequest,
+        output: &ChildOutput,
+    ) {
+        self.invocation_failed.store(true, Ordering::Relaxed);
+
+        let failed_dir = request.project_root.join("runtime/failed");
+        let _ = tokio::fs::create_dir_all(&failed_dir).await;
+
+        if let ResponseDecoder::Codex {
+            schema_path,
+            message_path,
+            ..
+        } = &self.response_decoder
+        {
+            let failed_schema_path =
+                failed_dir.join(format!("{}.schema.json", request.invocation_id));
+            let failed_message_path =
+                failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+            best_effort_move_file(schema_path, &failed_schema_path).await;
+            best_effort_move_file(message_path, &failed_message_path).await;
+        }
+
+        let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+        let _ = tokio::fs::write(
+            failed_raw_path,
+            format_failed_raw_output(&output.stdout, &output.stderr),
+        )
+        .await;
     }
 
     pub(crate) async fn finish(
@@ -461,6 +499,7 @@ impl ProcessBackendAdapter {
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
+                    invocation_failed: Arc::new(AtomicBool::new(false)),
                 })
             }
             BackendFamily::Codex => {
@@ -513,6 +552,7 @@ impl ProcessBackendAdapter {
                         message_path,
                         session_resuming,
                     },
+                    invocation_failed: Arc::new(AtomicBool::new(false)),
                 })
             }
             _ => Err(Self::capability_mismatch(
@@ -816,6 +856,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 if request.prior_session.is_some()
                     && stderr.contains("No conversation found with session ID")
                 {
+                    prepared.preserve_failure_artifacts(&request, &output).await;
                     prepared.cleanup().await;
                     let mut fresh_request = request.clone();
                     fresh_request.prior_session = None;
@@ -842,6 +883,9 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
+                        fresh_prepared
+                            .preserve_failure_artifacts(&fresh_request, &fresh_output)
+                            .await;
                         fresh_prepared.cleanup().await;
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
                             (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
@@ -863,6 +907,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                prepared.preserve_failure_artifacts(&request, &output).await;
                 prepared.cleanup().await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -966,6 +1011,33 @@ async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
         let _ = tokio::fs::remove_file(schema_path).await;
     }
     let _ = tokio::fs::remove_file(message_path).await;
+}
+
+async fn best_effort_move_file(source: &Path, destination: &Path) {
+    match tokio::fs::rename(source, destination).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => {
+            if tokio::fs::copy(source, destination).await.is_ok() {
+                let _ = tokio::fs::remove_file(source).await;
+            }
+        }
+    }
+}
+
+fn format_failed_raw_output(stdout: &[u8], stderr: &[u8]) -> Vec<u8> {
+    let mut combined = Vec::with_capacity(stdout.len() + stderr.len() + 32);
+    combined.extend_from_slice(b"=== stdout ===\n");
+    combined.extend_from_slice(stdout);
+    if !combined.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined.extend_from_slice(b"=== stderr ===\n");
+    combined.extend_from_slice(stderr);
+    if !combined.ends_with(b"\n") {
+        combined.push(b'\n');
+    }
+    combined
 }
 
 /// Recursively enforce OpenAI strict-mode schema requirements:
@@ -1317,6 +1389,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1343,6 +1416,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1381,6 +1455,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1407,6 +1482,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
