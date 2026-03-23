@@ -158,7 +158,14 @@ pub fn build_requirements_service(
 ) -> AppResult<ProductionRequirementsService> {
     let selector = match std::env::var("RALPH_BURNING_BACKEND") {
         Ok(value) => value,
-        Err(_) => "process".to_owned(),
+        Err(std::env::VarError::NotPresent) => "process".to_owned(),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            return Err(AppError::InvalidConfigValue {
+                key: "RALPH_BURNING_BACKEND".to_owned(),
+                value: "<non-unicode>".to_owned(),
+                reason: backend_selector_reason().to_owned(),
+            });
+        }
     };
     build_requirements_service_for_selector(&selector, effective_config)
 }
