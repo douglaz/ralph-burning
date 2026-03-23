@@ -58,7 +58,8 @@ impl PreparedCommand {
         }
     }
 
-    pub(crate) async fn preserve_failure_artifacts(
+    // Failure cleanup preserves backend artifacts for operator inspection.
+    pub(crate) async fn cleanup_failed_invocation(
         &self,
         request: &InvocationRequest,
         output: &ChildOutput,
@@ -103,7 +104,7 @@ impl PreparedCommand {
                 let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
                     Ok(val) => val,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -121,7 +122,7 @@ impl PreparedCommand {
                     {
                         Ok(val) => val,
                         Err(error) => {
-                            self.preserve_failure_artifacts(request, &output).await;
+                            self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -146,7 +147,7 @@ impl PreparedCommand {
                     {
                         Some(val) => val,
                         None => {
-                            self.preserve_failure_artifacts(request, &output).await;
+                            self.cleanup_failed_invocation(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -195,7 +196,7 @@ impl PreparedCommand {
                 let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -207,7 +208,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        self.cleanup_failed_invocation(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -874,9 +875,8 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
                         fresh_prepared
-                            .preserve_failure_artifacts(&fresh_request, &fresh_output)
+                            .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
-                        fresh_prepared.cleanup().await;
                         let detail = match (fresh_stderr.is_empty(), fresh_stdout_error) {
                             (false, Some(out)) => format!(": {fresh_stderr}; stdout error: {out}"),
                             (false, None) => format!(": {fresh_stderr}"),
@@ -897,8 +897,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
-                prepared.preserve_failure_artifacts(&request, &output).await;
-                prepared.cleanup().await;
+                prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
                     (false, None) => format!(": {stderr}"),
@@ -1235,6 +1234,7 @@ fn extract_json_from_text(text: &str) -> Result<serde_json::Value, serde_json::E
 mod tests {
     use super::*;
     use serde_json::json;
+    use tempfile::tempdir;
 
     #[test]
     fn enforce_strict_mode_adds_missing_required_fields() {
@@ -1667,11 +1667,41 @@ mod tests {
         }
     }
 
+    fn make_codex_test_request(project_root: PathBuf) -> InvocationRequest {
+        InvocationRequest {
+            invocation_id: "test-inv-001".to_owned(),
+            working_dir: project_root.clone(),
+            project_root,
+            contract: InvocationContract::Requirements {
+                label: "requirements:project_seed".to_owned(),
+            },
+            role: BackendRole::Implementer,
+            resolved_target: ResolvedBackendTarget::new(BackendFamily::Codex, "codex-test"),
+            payload: InvocationPayload {
+                prompt: "test".to_owned(),
+                context: json!({}),
+            },
+            timeout: Duration::from_secs(60),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 1,
+        }
+    }
+
     fn make_child_output(stdout: &str) -> ChildOutput {
         ChildOutput {
             status: ExitStatus::from_raw(0),
             stdout: stdout.as_bytes().to_vec(),
             stderr: Vec::new(),
+        }
+    }
+
+    fn make_failed_child_output(stdout: &str, stderr: &str) -> ChildOutput {
+        ChildOutput {
+            status: ExitStatus::from_raw(1 << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
         }
     }
 
@@ -1789,6 +1819,112 @@ mod tests {
         let request = make_test_request();
         let result = prepared.finish(&request, output).await.unwrap();
         assert_eq!(result.parsed_payload["outcome"], "approved");
+    }
+
+    #[tokio::test]
+    async fn cleanup_failed_invocation_moves_codex_artifacts_and_writes_raw_output() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = make_failed_child_output("stdout-body", "stderr-body");
+        prepared.cleanup_failed_invocation(&request, &output).await;
+
+        let failed_dir = project_dir.path().join("runtime/failed");
+        assert!(!schema_path.exists());
+        assert!(!message_path.exists());
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.schema.json")).unwrap(),
+            "{\"type\":\"object\"}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.last-message.json")).unwrap(),
+            "{\"outcome\":\"failed\"}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(failed_dir.join("test-inv-001.failed.raw")).unwrap(),
+            "=== stdout ===\nstdout-body\n=== stderr ===\nstderr-body\n"
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_failed_invocation_keeps_codex_temp_files_if_move_fails() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        let failed_path = project_dir.path().join("runtime/failed");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+        std::fs::create_dir_all(failed_path.parent().unwrap()).unwrap();
+        std::fs::write(&failed_path, "not-a-directory").unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let output = make_failed_child_output("stdout-body", "stderr-body");
+        prepared.cleanup_failed_invocation(&request, &output).await;
+
+        assert!(schema_path.exists());
+        assert!(message_path.exists());
+        assert!(!failed_path.join("test-inv-001.failed.raw").exists());
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_codex_temp_files_on_success() {
+        let project_dir = tempdir().unwrap();
+        let runtime_temp = project_dir.path().join("runtime/temp");
+        std::fs::create_dir_all(&runtime_temp).unwrap();
+
+        let schema_path = runtime_temp.join("test-inv-001.schema.json");
+        let message_path = runtime_temp.join("test-inv-001.last-message.json");
+        std::fs::write(&schema_path, "{\"type\":\"object\"}").unwrap();
+        std::fs::write(&message_path, "{\"outcome\":\"ok\"}").unwrap();
+
+        let prepared = PreparedCommand {
+            binary: "codex".to_owned(),
+            args: vec![],
+            stdin_payload: String::new(),
+            response_decoder: ResponseDecoder::Codex {
+                schema_path: schema_path.clone(),
+                message_path: message_path.clone(),
+                session_resuming: false,
+            },
+        };
+
+        prepared.cleanup().await;
+
+        assert!(!schema_path.exists());
+        assert!(!message_path.exists());
+        assert!(!project_dir.path().join("runtime/failed").exists());
     }
 
 }

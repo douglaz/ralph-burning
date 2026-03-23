@@ -1,7 +1,0 @@
-id = "artifact-metadata"
-name = "Store backend metadata in artifacts"
-flow = "standard"
-prompt_reference = "prompt.md"
-prompt_hash = "9687ada01e367b09"
-created_at = "2026-03-23T04:56:11.857237061Z"
-status_summary = "created"
