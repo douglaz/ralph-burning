@@ -522,6 +522,7 @@ impl AgentExecutionPort for TmuxAdapter {
                 return Box::pin(self.invoke(retry_request)).await;
             }
 
+            prepared.preserve_failure_artifacts(&request, &output).await;
             prepared.cleanup().await;
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),

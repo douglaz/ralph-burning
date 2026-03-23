@@ -611,3 +611,64 @@ async fn tmux_mode_rejects_openrouter_without_falling_back_to_direct_execution()
         other => panic!("expected CapabilityMismatch, got {other:?}"),
     }
 }
+
+fn write_failing_claude(bin_dir: &std::path::Path) {
+    write_executable(
+        &bin_dir.join("claude"),
+        r#"#!/usr/bin/env bash
+echo "something went wrong" >&2
+exit 1
+"#,
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tmux_adapter_preserves_failure_artifacts_on_nonzero_exit() {
+    if ralph_burning::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        return;
+    }
+    let bin_dir = tempdir().expect("create bin dir");
+    let state_dir = tempdir().expect("create state dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+    std::env::set_var("FAKE_TMUX_STATE_DIR", state_dir.path());
+
+    write_failing_claude(bin_dir.path());
+    write_fake_tmux(bin_dir.path(), state_dir.path());
+
+    let (_dir, request) = request_fixture("tmux-fail-artifacts");
+    let failed_dir = request.project_root.join("runtime/failed");
+
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let error = adapter
+        .invoke(request.clone())
+        .await
+        .expect_err("failing claude should produce an error");
+
+    match &error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                ralph_burning::shared::domain::FailureClass::TransportFailure
+            );
+            assert!(details.contains("exited with code 1"), "details: {details}");
+        }
+        other => panic!("expected InvocationFailed, got {other:?}"),
+    }
+
+    // Verify failure artifacts were preserved under runtime/failed/
+    let raw_file = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+    assert!(
+        raw_file.exists(),
+        "failure artifacts should be preserved at {raw_file:?}"
+    );
+    let raw_contents = fs::read_to_string(&raw_file).expect("read raw file");
+    assert!(
+        raw_contents.contains("something went wrong"),
+        "raw file should contain stderr output"
+    );
+}
