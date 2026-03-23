@@ -458,6 +458,7 @@ impl ProcessBackendAdapter {
                 let model_id = &request.resolved_target.model.model_id;
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
+                inline_schema_refs(&mut schema_value);
                 let schema_json = serde_json::to_string(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
@@ -505,6 +506,7 @@ impl ProcessBackendAdapter {
 
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
+                inline_schema_refs(&mut schema_value);
                 let schema_json = serde_json::to_string_pretty(&schema_value)
                     .unwrap_or_else(|_| "{}".to_owned());
 
@@ -1152,6 +1154,53 @@ pub(crate) fn enforce_strict_mode_schema(value: &mut serde_json::Value) {
     }
 }
 
+/// Resolve all `{"$ref": "#/definitions/X"}` references in-place by substituting
+/// the referenced definition object, then remove the top-level `definitions` key.
+///
+/// This is called after `enforce_strict_mode_schema` so that inlined definitions
+/// are already strict-mode-compliant. The function handles nested refs transitively
+/// and leaves unresolvable refs (missing target) unchanged.
+pub(crate) fn inline_schema_refs(value: &mut serde_json::Value) {
+    let Some(map) = value.as_object_mut() else {
+        return;
+    };
+    let Some(definitions_val) = map.remove("definitions") else {
+        return;
+    };
+    let Some(definitions) = definitions_val.as_object().cloned() else {
+        // Non-object `definitions` (e.g. array, string, number) — no-op.
+        return;
+    };
+    resolve_refs(value, &definitions);
+}
+
+fn resolve_refs(node: &mut serde_json::Value, definitions: &serde_json::Map<String, serde_json::Value>) {
+    if let serde_json::Value::Object(map) = node {
+        // Check if this node is a `$ref` object: exactly one key `"$ref"` with a
+        // string value starting with `"#/definitions/"`.
+        if map.len() == 1 {
+            if let Some(serde_json::Value::String(ref_str)) = map.get("$ref") {
+                if let Some(name) = ref_str.strip_prefix("#/definitions/") {
+                    if let Some(def) = definitions.get(name) {
+                        let mut replacement = def.clone();
+                        resolve_refs(&mut replacement, definitions);
+                        *node = replacement;
+                        return;
+                    }
+                }
+            }
+        }
+        // Recurse into all values
+        for val in map.values_mut() {
+            resolve_refs(val, definitions);
+        }
+    } else if let serde_json::Value::Array(arr) = node {
+        for item in arr.iter_mut() {
+            resolve_refs(item, definitions);
+        }
+    }
+}
+
 /// Returns `true` if the given JSON value looks like a Claude CLI envelope
 /// (contains `result` and/or `session_id` top-level keys) rather than a
 /// contract payload. Used to guard the empty-result fallback from accidentally
@@ -1567,6 +1616,143 @@ mod tests {
         assert_eq!(any_of[0]["format"], "uint32");
     }
 
+    // ── inline_schema_refs tests ──────────────────────────────────────────────
+
+    #[test]
+    fn inline_schema_refs_resolves_simple_ref() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "action": { "$ref": "#/definitions/Action" }
+            },
+            "definitions": {
+                "Action": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["name"]
+                }
+            }
+        });
+
+        inline_schema_refs(&mut schema);
+
+        // $ref replaced with the definition body
+        assert_eq!(
+            schema["properties"]["action"],
+            json!({
+                "type": "object",
+                "properties": { "name": { "type": "string" } },
+                "additionalProperties": false,
+                "required": ["name"]
+            })
+        );
+        // definitions key removed
+        assert!(schema.get("definitions").is_none());
+    }
+
+    #[test]
+    fn inline_schema_refs_resolves_nested_refs() {
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "outer": { "$ref": "#/definitions/Outer" }
+            },
+            "definitions": {
+                "Outer": {
+                    "type": "object",
+                    "properties": {
+                        "inner": { "$ref": "#/definitions/Inner" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["inner"]
+                },
+                "Inner": {
+                    "type": "object",
+                    "properties": {
+                        "value": { "type": "integer" }
+                    },
+                    "additionalProperties": false,
+                    "required": ["value"]
+                }
+            }
+        });
+
+        inline_schema_refs(&mut schema);
+
+        // Both refs resolved transitively
+        assert_eq!(
+            schema["properties"]["outer"]["properties"]["inner"],
+            json!({
+                "type": "object",
+                "properties": { "value": { "type": "integer" } },
+                "additionalProperties": false,
+                "required": ["value"]
+            })
+        );
+        assert!(schema.get("definitions").is_none());
+    }
+
+    #[test]
+    fn inline_schema_refs_no_op_without_refs() {
+        let original = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "count": { "type": "integer" }
+            },
+            "required": ["name", "count"],
+            "additionalProperties": false
+        });
+        let mut schema = original.clone();
+
+        inline_schema_refs(&mut schema);
+
+        assert_eq!(schema, original);
+    }
+
+    #[test]
+    fn inline_schema_refs_handles_edge_cases() {
+        // Sub-case 1: $ref to missing definition — node left unchanged
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "item": { "$ref": "#/definitions/Missing" }
+            },
+            "definitions": {
+                "Other": { "type": "string" }
+            }
+        });
+        inline_schema_refs(&mut schema);
+        assert_eq!(schema["properties"]["item"], json!({ "$ref": "#/definitions/Missing" }));
+        assert!(schema.get("definitions").is_none());
+
+        // Sub-case 2: definitions is a non-object
+        let mut schema = json!({
+            "type": "object",
+            "properties": { "x": { "type": "string" } },
+            "definitions": 42
+        });
+        inline_schema_refs(&mut schema);
+        assert_eq!(schema["properties"]["x"], json!({ "type": "string" }));
+        // definitions key was consumed (removed) even though it was non-object
+        assert!(schema.get("definitions").is_none());
+
+        // Sub-case 3: definitions present but no $ref anywhere
+        let mut schema = json!({
+            "type": "object",
+            "properties": { "y": { "type": "boolean" } },
+            "definitions": {
+                "Unused": { "type": "string" }
+            }
+        });
+        inline_schema_refs(&mut schema);
+        assert!(schema.get("definitions").is_none());
+        assert_eq!(schema["properties"]["y"], json!({ "type": "boolean" }));
+    }
+
     #[test]
     fn extract_json_from_text_direct_parse() {
         let text = r#"{"project_id": "test-123", "flow": "standard"}"#;
@@ -1925,6 +2111,78 @@ mod tests {
         assert!(!schema_path.exists());
         assert!(!message_path.exists());
         assert!(!project_dir.path().join("runtime/failed").exists());
+    }
+
+    // ── Integration: build_command produces ref-free schemas ─────────────
+
+    /// Recursively assert that a JSON value contains no `$ref` keys.
+    fn assert_no_refs(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Object(map) => {
+                assert!(
+                    !map.contains_key("$ref"),
+                    "found $ref at {path}"
+                );
+                for (k, v) in map {
+                    assert_no_refs(v, &format!("{path}.{k}"));
+                }
+            }
+            serde_json::Value::Array(arr) => {
+                for (i, v) in arr.iter().enumerate() {
+                    assert_no_refs(v, &format!("{path}[{i}]"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[tokio::test]
+    async fn build_command_claude_schema_has_no_refs_or_definitions() {
+        let request = make_test_request();
+        let adapter = ProcessBackendAdapter::new();
+        let prepared = adapter.build_command(&request).await.unwrap();
+
+        // The --json-schema arg is the last arg in the args list
+        let schema_idx = prepared
+            .args
+            .iter()
+            .position(|a| a == "--json-schema")
+            .expect("--json-schema flag should be present");
+        let schema_json = &prepared.args[schema_idx + 1];
+        let schema: serde_json::Value =
+            serde_json::from_str(schema_json).expect("schema should be valid JSON");
+
+        assert!(
+            schema.get("definitions").is_none(),
+            "top-level definitions should be removed"
+        );
+        assert_no_refs(&schema, "root");
+    }
+
+    #[tokio::test]
+    async fn build_command_codex_schema_file_has_no_refs_or_definitions() {
+        let project_dir = tempdir().unwrap();
+        let request = make_codex_test_request(project_dir.path().to_path_buf());
+        let adapter = ProcessBackendAdapter::new();
+        let prepared = adapter.build_command(&request).await.unwrap();
+
+        // Extract schema file path from --output-schema arg
+        let schema_idx = prepared
+            .args
+            .iter()
+            .position(|a| a == "--output-schema")
+            .expect("--output-schema flag should be present");
+        let schema_path = &prepared.args[schema_idx + 1];
+        let schema_json =
+            std::fs::read_to_string(schema_path).expect("schema file should exist");
+        let schema: serde_json::Value =
+            serde_json::from_str(&schema_json).expect("schema should be valid JSON");
+
+        assert!(
+            schema.get("definitions").is_none(),
+            "top-level definitions should be removed"
+        );
+        assert_no_refs(&schema, "root");
     }
 
 }

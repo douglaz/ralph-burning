@@ -459,6 +459,15 @@ async fn claude_command_construction_and_double_parse() {
         args_text.contains("--json-schema"),
         "should have --json-schema"
     );
+    // The serialized --json-schema value should contain no $ref or definitions
+    assert!(
+        !args_text.contains("\"$ref\""),
+        "schema should not contain $ref after inline_schema_refs"
+    );
+    assert!(
+        !args_text.contains("\"definitions\""),
+        "schema should not contain definitions after inline_schema_refs"
+    );
     // Should NOT have --resume for new session
     assert!(
         !args_text.contains("--resume"),

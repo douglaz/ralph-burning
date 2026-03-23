@@ -143,6 +143,7 @@ impl OpenRouterBackendAdapter {
         // constraints as OpenAI strict mode: additionalProperties: false on
         // every object and all property keys present in the required array.
         super::process_backend::enforce_strict_mode_schema(&mut schema);
+        super::process_backend::inline_schema_refs(&mut schema);
 
         json!({
             "model": request.resolved_target.model.model_id,
@@ -738,13 +739,39 @@ mod tests {
         // max_tokens must be capped to avoid credit-limited key rejection.
         assert_eq!(body["max_tokens"], json!(16384));
         // The schema sent to OpenRouter has strict-mode enforcement applied
-        // (additionalProperties: false + all properties in required).
+        // (additionalProperties: false + all properties in required) and
+        // $ref inlining (definitions resolved in-place).
         let mut expected_schema = request.contract.json_schema_value();
         crate::adapters::process_backend::enforce_strict_mode_schema(&mut expected_schema);
+        crate::adapters::process_backend::inline_schema_refs(&mut expected_schema);
         assert_eq!(
             body["response_format"]["json_schema"]["schema"],
             expected_schema
         );
+
+        // Verify no $ref or definitions remain in the schema
+        let actual_schema = &body["response_format"]["json_schema"]["schema"];
+        assert!(
+            actual_schema.get("definitions").is_none(),
+            "top-level definitions should be removed from OpenRouter schema"
+        );
+        fn assert_no_refs(value: &serde_json::Value, path: &str) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    assert!(!map.contains_key("$ref"), "found $ref at {path}");
+                    for (k, v) in map {
+                        assert_no_refs(v, &format!("{path}.{k}"));
+                    }
+                }
+                serde_json::Value::Array(arr) => {
+                    for (i, v) in arr.iter().enumerate() {
+                        assert_no_refs(v, &format!("{path}[{i}]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        assert_no_refs(actual_schema, "schema");
         clear_openrouter_env();
     }
 
