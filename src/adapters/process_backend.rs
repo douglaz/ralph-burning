@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 use std::path::Path;
 use std::process::{ExitStatus, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -33,7 +32,6 @@ pub(crate) struct PreparedCommand {
     args: Vec<String>,
     stdin_payload: String,
     response_decoder: ResponseDecoder,
-    invocation_failed: Arc<AtomicBool>,
 }
 
 impl PreparedCommand {
@@ -50,14 +48,8 @@ impl PreparedCommand {
     }
 
     pub(crate) async fn cleanup(&self) {
-        if self.invocation_failed.load(Ordering::Relaxed) {
-            return;
-        }
-
         match &self.response_decoder {
-            ResponseDecoder::Claude { debug_file, .. } => {
-                let _ = tokio::fs::remove_file(debug_file).await;
-            }
+            ResponseDecoder::Claude { .. } => {}
             ResponseDecoder::Codex {
                 schema_path,
                 message_path,
@@ -71,17 +63,11 @@ impl PreparedCommand {
         request: &InvocationRequest,
         output: &ChildOutput,
     ) {
-        self.invocation_failed.store(true, Ordering::Relaxed);
-
         let failed_dir = request.project_root.join("runtime/failed");
         let _ = tokio::fs::create_dir_all(&failed_dir).await;
 
         match &self.response_decoder {
-            ResponseDecoder::Claude { debug_file, .. } => {
-                let failed_debug_path =
-                    failed_dir.join(format!("{}.claude-debug.log", request.invocation_id));
-                best_effort_move_file(debug_file, &failed_debug_path).await;
-            }
+            ResponseDecoder::Claude { .. } => {}
             ResponseDecoder::Codex {
                 schema_path,
                 message_path,
@@ -117,13 +103,6 @@ impl PreparedCommand {
                 let envelope: ClaudeEnvelope = match serde_json::from_str(&stdout_text) {
                     Ok(val) => val,
                     Err(error) => {
-                        eprintln!(
-                            "claude envelope parse failed: stdout_len={} stderr_len={} stdout_head={}",
-                            output.stdout.len(),
-                            output.stderr.len(),
-                            truncate_utf8(&stdout_text, 500)
-                        );
-                        self.preserve_failure_artifacts(request, &output).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -141,13 +120,6 @@ impl PreparedCommand {
                     {
                         Ok(val) => val,
                         Err(error) => {
-                            eprintln!(
-                                "claude result JSON parse failed: contract={} result_len={} result_head={}",
-                                request.contract.label(),
-                                envelope.result.len(),
-                                truncate_utf8(&envelope.result, 500)
-                            );
-                            self.preserve_failure_artifacts(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -172,7 +144,6 @@ impl PreparedCommand {
                     {
                         Some(val) => val,
                         None => {
-                            self.preserve_failure_artifacts(request, &output).await;
                             return Err(ProcessBackendAdapter::invocation_failed(
                                 request,
                                 FailureClass::SchemaValidationFailure,
@@ -195,8 +166,6 @@ impl PreparedCommand {
                         None
                     }
                 });
-
-                self.cleanup().await;
 
                 Ok(InvocationEnvelope {
                     raw_output_reference: RawOutputReference::Inline(stdout_text),
@@ -223,7 +192,7 @@ impl PreparedCommand {
                 let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::TransportFailure,
@@ -235,7 +204,7 @@ impl PreparedCommand {
                 let parsed_payload = match serde_json::from_str(&last_message_text) {
                     Ok(value) => value,
                     Err(error) => {
-                        self.preserve_failure_artifacts(request, &output).await;
+                        best_effort_cleanup(Some(schema_path.as_path()), message_path.as_path()).await;
                         return Err(ProcessBackendAdapter::invocation_failed(
                             request,
                             FailureClass::SchemaValidationFailure,
@@ -275,7 +244,6 @@ impl PreparedCommand {
 enum ResponseDecoder {
     Claude {
         session_resuming: bool,
-        debug_file: std::path::PathBuf,
     },
     Codex {
         schema_path: std::path::PathBuf,
@@ -491,10 +459,6 @@ impl ProcessBackendAdapter {
                 let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
                     && request.prior_session.is_some();
 
-                let debug_log = request
-                    .project_root
-                    .join("runtime/temp")
-                    .join(format!("{}.claude-debug.log", request.invocation_id));
                 let mut args = vec![
                     "-p".to_owned(),
                     "--output-format".to_owned(),
@@ -507,8 +471,6 @@ impl ProcessBackendAdapter {
                     "Bash,Edit,Write,Read,Glob,Grep".to_owned(),
                     "--json-schema".to_owned(),
                     schema_json,
-                    "--debug-file".to_owned(),
-                    debug_log.to_string_lossy().into_owned(),
                 ];
 
                 if session_resuming {
@@ -522,8 +484,7 @@ impl ProcessBackendAdapter {
                     binary: "claude".to_owned(),
                     args,
                     stdin_payload: Self::assemble_stdin(request),
-                    response_decoder: ResponseDecoder::Claude { session_resuming, debug_file: debug_log },
-                    invocation_failed: Arc::new(AtomicBool::new(false)),
+                    response_decoder: ResponseDecoder::Claude { session_resuming },
                 })
             }
             BackendFamily::Codex => {
@@ -576,7 +537,6 @@ impl ProcessBackendAdapter {
                         message_path,
                         session_resuming,
                     },
-                    invocation_failed: Arc::new(AtomicBool::new(false)),
                 })
             }
             _ => Err(Self::capability_mismatch(
@@ -999,18 +959,6 @@ pub(crate) struct ChildOutput {
     pub(crate) stderr: Vec<u8>,
 }
 
-/// Truncate a string to at most `max_bytes` without splitting a UTF-8 character.
-fn truncate_utf8(s: &str, max_bytes: usize) -> &str {
-    if s.len() <= max_bytes {
-        return s;
-    }
-    let mut end = max_bytes;
-    while end > 0 && !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
 /// Try to extract an error message from Claude's stdout JSON envelope.
 /// Returns `Some(detail)` if stdout contains JSON with `is_error: true`.
 fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
@@ -1104,18 +1052,28 @@ fn normalize_nullable_type_array(map: &mut serde_json::Map<String, serde_json::V
             "type".to_owned(),
             non_null_types.into_iter().next().unwrap(),
         );
+        map.insert(
+            "anyOf".to_owned(),
+            serde_json::Value::Array(vec![
+                serde_json::Value::Object(non_null_variant),
+                serde_json::json!({"type": "null"}),
+            ]),
+        );
     } else {
-        non_null_variant.insert("type".to_owned(), serde_json::Value::Array(non_null_types));
+        // Multiple non-null types: create a separate anyOf arm per type to
+        // avoid producing `{"type": ["string", "integer"]}` which violates
+        // strict mode's scalar-type requirement.
+        let mut arms: Vec<serde_json::Value> = non_null_types
+            .into_iter()
+            .map(|t| {
+                let mut arm = non_null_variant.clone();
+                arm.insert("type".to_owned(), t);
+                serde_json::Value::Object(arm)
+            })
+            .collect();
+        arms.push(serde_json::json!({"type": "null"}));
+        map.insert("anyOf".to_owned(), serde_json::Value::Array(arms));
     }
-
-    // Replace map contents with anyOf wrapper
-    map.insert(
-        "anyOf".to_owned(),
-        serde_json::Value::Array(vec![
-            serde_json::Value::Object(non_null_variant),
-            serde_json::json!({"type": "null"}),
-        ]),
-    );
 }
 
 /// Recursively enforce OpenAI strict-mode schema requirements:
@@ -1401,6 +1359,33 @@ mod tests {
         assert_eq!(any_of[0]["format"], "uint32");
         assert_eq!(any_of[0]["minimum"], 0);
         assert_eq!(any_of[1], json!({"type": "null"}));
+    }
+
+    #[test]
+    fn enforce_strict_mode_normalizes_nullable_multi_type_array() {
+        // Regression: a type array with multiple non-null types like
+        // ["string", "integer", "null"] must NOT produce {"type": ["string", "integer"]}
+        // in the non-null arm — that still violates strict mode's scalar-type rule.
+        // Instead, each non-null type gets its own anyOf arm.
+        let mut schema = json!({
+            "type": "object",
+            "properties": {
+                "value": { "type": ["string", "integer", "null"], "format": "custom" }
+            },
+            "required": []
+        });
+
+        enforce_strict_mode_schema(&mut schema);
+
+        let value = &schema["properties"]["value"];
+        assert!(value.get("type").is_none(), "type key should be removed");
+        let any_of = value["anyOf"].as_array().unwrap();
+        assert_eq!(any_of.len(), 3, "should have one arm per non-null type plus null");
+        assert_eq!(any_of[0]["type"], "string");
+        assert_eq!(any_of[0]["format"], "custom");
+        assert_eq!(any_of[1]["type"], "integer");
+        assert_eq!(any_of[1]["format"], "custom");
+        assert_eq!(any_of[2], json!({"type": "null"}));
     }
 
     #[test]
@@ -1705,9 +1690,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
-                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1733,9 +1716,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
-                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1773,9 +1754,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
-                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1801,9 +1780,7 @@ mod tests {
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
-                debug_file: PathBuf::from("/tmp/test/runtime/temp/test-inv-001.claude-debug.log"),
             },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
         };
 
         let request = make_test_request();
@@ -1811,196 +1788,4 @@ mod tests {
         assert_eq!(result.parsed_payload["outcome"], "approved");
     }
 
-    #[tokio::test]
-    async fn finish_claude_success_removes_debug_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let debug_file = tmp.path().join("runtime/temp/test.claude-debug.log");
-        tokio::fs::create_dir_all(debug_file.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&debug_file, "debug content")
-            .await
-            .unwrap();
-
-        let envelope = json!({
-            "result": "{\"outcome\": \"approved\"}",
-            "session_id": "sess-cleanup",
-            "structured_output": null
-        });
-        let stdout = envelope.to_string();
-        let output = make_child_output(&stdout);
-
-        let mut request = make_test_request();
-        request.project_root = tmp.path().to_path_buf();
-
-        let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
-            args: vec![],
-            stdin_payload: String::new(),
-            response_decoder: ResponseDecoder::Claude {
-                session_resuming: false,
-                debug_file: debug_file.clone(),
-            },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
-        };
-
-        let result = prepared.finish(&request, output).await;
-        assert!(result.is_ok(), "finish should succeed");
-        assert!(
-            !debug_file.exists(),
-            "debug file should be deleted after successful finish"
-        );
-    }
-
-    #[tokio::test]
-    async fn cleanup_claude_removes_debug_file() {
-        let tmp = tempfile::tempdir().unwrap();
-        let debug_file = tmp.path().join("test.claude-debug.log");
-        tokio::fs::write(&debug_file, "debug content").await.unwrap();
-
-        let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
-            args: vec![],
-            stdin_payload: String::new(),
-            response_decoder: ResponseDecoder::Claude {
-                session_resuming: false,
-                debug_file: debug_file.clone(),
-            },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
-        };
-
-        prepared.cleanup().await;
-        assert!(
-            !debug_file.exists(),
-            "debug file should be deleted on cleanup"
-        );
-    }
-
-    #[tokio::test]
-    async fn cleanup_claude_skipped_when_invocation_failed() {
-        let tmp = tempfile::tempdir().unwrap();
-        let debug_file = tmp.path().join("test.claude-debug.log");
-        tokio::fs::write(&debug_file, "debug content").await.unwrap();
-
-        let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
-            args: vec![],
-            stdin_payload: String::new(),
-            response_decoder: ResponseDecoder::Claude {
-                session_resuming: false,
-                debug_file: debug_file.clone(),
-            },
-            invocation_failed: Arc::new(AtomicBool::new(true)),
-        };
-
-        prepared.cleanup().await;
-        assert!(
-            debug_file.exists(),
-            "debug file should NOT be deleted when invocation_failed is set"
-        );
-    }
-
-    #[tokio::test]
-    async fn finish_claude_parse_failure_writes_failure_bundle() {
-        let tmp = tempfile::tempdir().unwrap();
-        let debug_file = tmp.path().join("runtime/temp/test.claude-debug.log");
-        tokio::fs::create_dir_all(debug_file.parent().unwrap())
-            .await
-            .unwrap();
-        tokio::fs::write(&debug_file, "debug content")
-            .await
-            .unwrap();
-
-        let mut request = make_test_request();
-        request.project_root = tmp.path().to_path_buf();
-
-        let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
-            args: vec![],
-            stdin_payload: String::new(),
-            response_decoder: ResponseDecoder::Claude {
-                session_resuming: false,
-                debug_file: debug_file.clone(),
-            },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
-        };
-
-        // Invalid JSON triggers envelope parse failure
-        let output = make_child_output("not-json");
-        let result = prepared.finish(&request, output).await;
-        assert!(result.is_err());
-
-        let failed_dir = tmp.path().join("runtime/failed");
-        let failed_raw = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
-        assert!(
-            failed_raw.is_file(),
-            "failed.raw should be written on Claude parse failure"
-        );
-
-        let failed_debug =
-            failed_dir.join(format!("{}.claude-debug.log", request.invocation_id));
-        assert!(
-            failed_debug.is_file(),
-            "debug file should be preserved in failed dir"
-        );
-        assert!(
-            !debug_file.exists(),
-            "original debug file should be moved"
-        );
-    }
-
-    #[tokio::test]
-    async fn finish_codex_parse_failure_preserves_artifacts() {
-        let tmp = tempfile::tempdir().unwrap();
-        let temp_dir = tmp.path().join("runtime/temp");
-        tokio::fs::create_dir_all(&temp_dir).await.unwrap();
-
-        let schema_path = temp_dir.join("test.schema.json");
-        let message_path = temp_dir.join("test.last-message.json");
-        tokio::fs::write(&schema_path, r#"{"type":"object"}"#)
-            .await
-            .unwrap();
-        tokio::fs::write(&message_path, "not-valid-json")
-            .await
-            .unwrap();
-
-        let mut request = make_test_request();
-        request.project_root = tmp.path().to_path_buf();
-
-        let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
-            args: vec![],
-            stdin_payload: String::new(),
-            response_decoder: ResponseDecoder::Codex {
-                schema_path: schema_path.clone(),
-                message_path: message_path.clone(),
-                session_resuming: false,
-            },
-            invocation_failed: Arc::new(AtomicBool::new(false)),
-        };
-
-        let output = make_child_output("");
-        let result = prepared.finish(&request, output).await;
-        assert!(result.is_err());
-
-        let failed_dir = tmp.path().join("runtime/failed");
-        assert!(
-            failed_dir
-                .join(format!("{}.schema.json", request.invocation_id))
-                .is_file(),
-            "schema should be preserved under runtime/failed"
-        );
-        assert!(
-            failed_dir
-                .join(format!("{}.last-message.json", request.invocation_id))
-                .is_file(),
-            "last-message should be preserved under runtime/failed"
-        );
-        assert!(
-            failed_dir
-                .join(format!("{}.failed.raw", request.invocation_id))
-                .is_file(),
-            "raw output should be written under runtime/failed"
-        );
-    }
 }
