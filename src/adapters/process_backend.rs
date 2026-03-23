@@ -5,6 +5,12 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
+#[cfg(unix)]
+use nix::errno::Errno;
+#[cfg(unix)]
+use nix::sys::signal::{self, Signal};
+#[cfg(unix)]
+use nix::unistd::Pid;
 use serde::Deserialize;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::{Child, Command};
@@ -233,31 +239,38 @@ impl ManagedChild {
         }
     }
 
-    async fn send_sigterm(&self) -> std::io::Result<()> {
+    #[cfg(unix)]
+    async fn send_signal(&self, signal: Signal) -> std::io::Result<()> {
         let Some(pid) = self.pid().await else {
             return Ok(());
         };
 
+        let pid = i32::try_from(pid).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("process id {pid} exceeds libc::pid_t range"),
+            )
+        })?;
+
+        match signal::kill(Pid::from_raw(pid), signal) {
+            Ok(()) => Ok(()),
+            Err(Errno::ESRCH) => Ok(()),
+            Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
+        }
+    }
+
+    async fn send_sigterm(&self) -> std::io::Result<()> {
         #[cfg(unix)]
         {
-            let pid = i32::try_from(pid).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("process id {pid} exceeds libc::pid_t range"),
-                )
-            })?;
-            match nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGTERM,
-            ) {
-                Ok(()) => Ok(()),
-                Err(nix::errno::Errno::ESRCH) => Ok(()),
-                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
-            }
+            self.send_signal(Signal::SIGTERM).await
         }
 
         #[cfg(not(unix))]
         {
+            if self.pid().await.is_none() {
+                return Ok(());
+            }
+
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "SIGTERM delivery requires unix",
@@ -266,30 +279,17 @@ impl ManagedChild {
     }
 
     async fn send_sigkill(&self) -> std::io::Result<()> {
-        let Some(pid) = self.pid().await else {
-            return Ok(());
-        };
-
         #[cfg(unix)]
         {
-            let pid = i32::try_from(pid).map_err(|_| {
-                std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("process id {pid} exceeds libc::pid_t range"),
-                )
-            })?;
-            match nix::sys::signal::kill(
-                nix::unistd::Pid::from_raw(pid),
-                nix::sys::signal::Signal::SIGKILL,
-            ) {
-                Ok(()) => Ok(()),
-                Err(nix::errno::Errno::ESRCH) => Ok(()),
-                Err(errno) => Err(std::io::Error::from_raw_os_error(errno as i32)),
-            }
+            self.send_signal(Signal::SIGKILL).await
         }
 
         #[cfg(not(unix))]
         {
+            if self.pid().await.is_none() {
+                return Ok(());
+            }
+
             Err(std::io::Error::new(
                 std::io::ErrorKind::Unsupported,
                 "SIGKILL delivery requires unix",
