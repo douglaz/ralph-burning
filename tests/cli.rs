@@ -193,6 +193,18 @@ fn write_supporting_artifact(project_root: &std::path::Path) {
     .expect("write supporting artifact");
 }
 
+fn write_follow_runtime_log(project_root: &std::path::Path, message: &str) {
+    let entry = format!(
+        r#"{{"timestamp":"2026-03-19T03:06:00Z","level":"info","source":"agent","message":{}}}"#,
+        serde_json::to_string(message).expect("serialize runtime log message")
+    );
+    fs::write(
+        project_root.join("runtime/logs/002.ndjson"),
+        format!("{entry}\n"),
+    )
+    .expect("write follow runtime log");
+}
+
 fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     fs::write(
@@ -3008,6 +3020,43 @@ fn run_tail_follow_logs_tolerates_startup_partial_supporting_pair() {
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
+fn run_tail_follow_logs_keeps_streaming_after_new_partial_supporting_pair() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+    set_workspace_stream_output(temp_dir.path(), true);
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow", "--logs"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow --logs");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    write_supporting_payload(&project_root);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    write_follow_runtime_log(&project_root, "follow log after partial pair");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    write_supporting_artifact(&project_root);
+
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child
+        .wait_with_output()
+        .expect("wait for follow --logs output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("follow log after partial pair"));
     assert!(stdout.contains("panel-p1"));
     assert!(stdout.contains("panel-a1"));
 }

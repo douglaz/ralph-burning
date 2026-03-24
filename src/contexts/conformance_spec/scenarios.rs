@@ -661,6 +661,18 @@ fn write_supporting_artifact(project_root: &Path) -> Result<(), String> {
     .map_err(|e| format!("write supporting artifact: {e}"))
 }
 
+fn write_follow_runtime_log(project_root: &Path, message: &str) -> Result<(), String> {
+    let entry = format!(
+        r#"{{"timestamp":"2026-03-19T03:06:00Z","level":"info","source":"agent","message":{}}}"#,
+        serde_json::to_string(message).map_err(|e| format!("serialize runtime log: {e}"))?,
+    );
+    std::fs::write(
+        project_root.join("runtime/logs/002.ndjson"),
+        format!("{entry}\n"),
+    )
+    .map_err(|e| format!("write runtime log: {e}"))
+}
+
 fn write_rollback_targets_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
     let project_root = conformance_project_root(ws, project_id);
     std::fs::write(
@@ -3191,6 +3203,54 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
             return Err(
                 "follow --logs output should include the completed supporting payload and artifact"
+                    .into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-049", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-partial-progress", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-partial-progress")?;
+        set_workspace_stream_output(&ws, true)?;
+        let project_root = conformance_project_root(&ws, "rq-follow-partial-progress");
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        write_supporting_payload(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write_follow_runtime_log(&project_root, "follow log after partial pair")?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write_supporting_artifact(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("follow log after partial pair") {
+            return Err(
+                "follow --logs output should keep streaming runtime logs after a partial pair"
+                    .into(),
+            );
+        }
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow --logs output should include the completed supporting payload and artifact after the partial pair"
                     .into(),
             );
         }
