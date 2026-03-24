@@ -913,17 +913,28 @@ pub fn add_manual_amendment(
     // this is a true duplicate. For completed projects, a matching file means
     // a prior reopen attempt failed after preserving the amendment on disk, so
     // the retry must reuse that file's ID instead of creating a new orphan.
-    let existing_on_disk = amendment_queue
+    let matching_on_disk = amendment_queue
         .list_pending_amendments(base_dir, project_id)?
         .into_iter()
-        .find(|a| a.dedup_key == dedup_key);
+        .filter(|a| a.dedup_key == dedup_key)
+        .collect::<Vec<_>>();
     if snapshot.status != RunStatus::Completed {
-        if let Some(existing) = existing_on_disk.as_ref() {
+        if let Some(existing) = matching_on_disk.first() {
             return Ok(AmendmentAddResult::Duplicate {
                 amendment_id: existing.amendment_id.clone(),
             });
         }
     }
+    let existing_on_disk = matching_on_disk.first().cloned();
+    let duplicate_disk_ids = if snapshot.status == RunStatus::Completed {
+        matching_on_disk
+            .iter()
+            .skip(1)
+            .map(|amendment| amendment.amendment_id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     let now = Utc::now();
     let amendment_id = existing_on_disk
@@ -967,6 +978,28 @@ pub fn add_manual_amendment(
         );
         journal::serialize_event(&journal_event)?
     };
+
+    if !duplicate_disk_ids.is_empty() {
+        let mut cleanup_failures: Vec<String> = Vec::new();
+        for duplicate_id in &duplicate_disk_ids {
+            if let Err(err) = amendment_queue.remove_amendment(base_dir, project_id, duplicate_id) {
+                cleanup_failures.push(format!("{duplicate_id}: {err}"));
+            }
+        }
+        if !cleanup_failures.is_empty() {
+            let retained_id = existing_on_disk
+                .as_ref()
+                .map(|amendment| amendment.amendment_id.as_str())
+                .unwrap_or("<new>");
+            return Err(AppError::AmendmentQueueError {
+                details: format!(
+                    "failed to collapse duplicate on-disk amendments for dedup_key '{dedup_key}' \
+                     while preserving '{retained_id}': {}",
+                    cleanup_failures.join("; ")
+                ),
+            });
+        }
+    }
 
     // Write durable amendment file.
     amendment_queue.write_amendment(base_dir, project_id, &amendment)?;

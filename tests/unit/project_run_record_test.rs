@@ -2430,6 +2430,36 @@ fn add_manual_amendment_retry_reuses_preserved_file_after_completed_reopen_failu
     let preserved = queue.list_pending_amendments(tmp.path(), &pid).unwrap();
     assert_eq!(preserved.len(), 1, "failed reopen should preserve one file");
     let preserved_id = preserved[0].amendment_id.clone();
+    let dedup_key = preserved[0].dedup_key.clone();
+    let orphan_ids = ["manual-prepatch-orphan-a", "manual-prepatch-orphan-b"];
+    for (index, orphan_id) in orphan_ids.iter().enumerate() {
+        queue
+            .write_amendment(
+                tmp.path(),
+                &pid,
+                &QueuedAmendment {
+                    amendment_id: (*orphan_id).to_owned(),
+                    source_stage: StageId::Planning,
+                    source_cycle: 1,
+                    source_completion_round: 1,
+                    body: "fix the bug".to_owned(),
+                    created_at: preserved[0].created_at
+                        + chrono::Duration::seconds((index + 1) as i64),
+                    batch_sequence: 0,
+                    source: AmendmentSource::Manual,
+                    dedup_key: dedup_key.clone(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        queue
+            .list_pending_amendments(tmp.path(), &pid)
+            .unwrap()
+            .len(),
+        3,
+        "historical failed retries should leave multiple matching files on disk"
+    );
 
     let second = service::add_manual_amendment(
         &queue,
@@ -2454,6 +2484,12 @@ fn add_manual_amendment_retry_reuses_preserved_file_after_completed_reopen_failu
     let pending = queue.list_pending_amendments(tmp.path(), &pid).unwrap();
     assert_eq!(pending.len(), 1, "retry should not leave an orphaned file");
     assert_eq!(pending[0].amendment_id, preserved_id);
+    assert!(
+        orphan_ids
+            .iter()
+            .all(|orphan_id| pending.iter().all(|a| a.amendment_id != *orphan_id)),
+        "retry should collapse all historical duplicate files before reopening"
+    );
 
     let reopened_snapshot = run_store.read_run_snapshot(tmp.path(), &pid).unwrap();
     assert_eq!(reopened_snapshot.status, RunStatus::Paused);
