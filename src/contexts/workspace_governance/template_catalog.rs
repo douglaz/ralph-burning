@@ -185,9 +185,10 @@ The Planner has suggested the project is complete. Your job is to:
 based on the context provided.
 3. Verify nothing is missing or only partially done.
 
-Do not simply agree with the planning output — independently verify each \
-requirement. If you have access to tools that can inspect the repository, \
-use them for grounded evidence.
+Approach this as an independent verification — do not simply confirm the \
+planning output. Scrutinize each requirement separately and look for gaps \
+or partial implementations. If you have access to tools that can inspect \
+the repository, use them for grounded evidence.
 
 If all requirements are satisfied, vote COMPLETE with evidence mapping each \
 requirement to the feature that satisfies it.
@@ -213,13 +214,12 @@ const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 You are a code reviewer. Review the changes in this project for correctness, \
 safety, and robustness.
 
-If you have access to tools, read the key implementation files end-to-end. \
-Otherwise, base your review on the context provided.
-
 ## Instructions
 
 1. Read the project prompt to understand what was requested.
-2. Examine the implementation for correctness, safety, and robustness issues.
+2. Start by inspecting the current diff to identify all changed files, then \
+read each changed file end-to-end before forming your assessment. If you do \
+not have tool access, base your review on the context provided.
 3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
 4. When issues exist, return `amendments` as an array where each entry's `body` \
 contains a labeled **Problem** (referencing affected file paths and describing the \
