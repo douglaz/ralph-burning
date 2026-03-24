@@ -205,6 +205,23 @@ fn write_follow_runtime_log(project_root: &std::path::Path, message: &str) {
     .expect("write follow runtime log");
 }
 
+fn wait_for_child_output(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::process::Output {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child.try_wait().expect("poll child exit").is_some() {
+            return child.wait_with_output().expect("wait for child output");
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+            panic!("child did not exit within {:?}", timeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     fs::write(
@@ -2988,6 +3005,32 @@ fn run_tail_follow_surfaces_new_supporting_records_without_journal_events() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("panel-p1"));
     assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
+fn run_tail_follow_fails_on_durable_orphan_supporting_payload() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    write_supporting_payload(&project_root);
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    let output = wait_for_child_output(child, std::time::Duration::from_millis(4500));
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("history/payloads/panel-p1"));
+    assert!(stderr.contains("payload has no matching artifact"));
 }
 
 #[test]

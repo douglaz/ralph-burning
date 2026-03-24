@@ -673,6 +673,32 @@ fn write_follow_runtime_log(project_root: &Path, message: &str) -> Result<(), St
     .map_err(|e| format!("write runtime log: {e}"))
 }
 
+fn wait_for_child_output(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child
+            .try_wait()
+            .map_err(|e| format!("poll child exit: {e}"))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|e| format!("wait child output: {e}"));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+            return Err(format!(
+                "child did not exit within {} ms",
+                timeout.as_millis()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn write_rollback_targets_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
     let project_root = conformance_project_root(ws, project_id);
     std::fs::write(
@@ -3253,6 +3279,35 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
                 "follow --logs output should include the completed supporting payload and artifact after the partial pair"
                     .into(),
             );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-050", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-durable-orphan", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-durable-orphan")?;
+        let project_root = conformance_project_root(&ws, "rq-follow-durable-orphan");
+        write_supporting_payload(&project_root)?;
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        let output = wait_for_child_output(child, std::time::Duration::from_millis(4500))?;
+        if output.status.success() {
+            return Err("follow should fail on durable orphaned supporting payload".into());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("history/payloads/panel-p1")
+            || !stderr.contains("payload has no matching artifact")
+        {
+            return Err(format!(
+                "follow stderr should report canonical orphan payload corruption, stderr={stderr}"
+            ));
         }
         Ok(())
     });
