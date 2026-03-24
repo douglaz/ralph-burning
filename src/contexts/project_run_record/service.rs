@@ -1059,16 +1059,22 @@ fn restore_completed_state_after_reopen_if_no_amendments(
     snapshot: &mut RunSnapshot,
     project_id: &ProjectId,
 ) -> bool {
-    let reopened_for_amendments = snapshot.status == RunStatus::Paused
-        && snapshot
-            .interrupted_run
-            .as_ref()
-            .is_some_and(|run| run.run_id == reopen_run_id(project_id));
+    let pre_reopen_completion_round = if snapshot.status == RunStatus::Paused {
+        snapshot.interrupted_run.as_ref().and_then(|run| {
+            (run.run_id == reopen_run_id(project_id))
+                .then_some(run.stage_cursor.completion_round.saturating_sub(1).max(1))
+        })
+    } else {
+        None
+    };
 
-    if reopened_for_amendments && snapshot.amendment_queue.pending.is_empty() {
+    if let Some(pre_reopen_completion_round) =
+        pre_reopen_completion_round.filter(|_| snapshot.amendment_queue.pending.is_empty())
+    {
         snapshot.active_run = None;
         snapshot.status = RunStatus::Completed;
         snapshot.interrupted_run = None;
+        snapshot.completion_rounds = pre_reopen_completion_round;
         snapshot.status_summary = "completed".to_owned();
         return true;
     }

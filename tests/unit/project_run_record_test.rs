@@ -334,7 +334,14 @@ fn make_manual_amendment(amendment_id: &str, body: &str) -> QueuedAmendment {
     }
 }
 
-fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
+fn reopened_completed_snapshot_with_round(
+    pre_reopen_completion_round: u32,
+    pending: Vec<QueuedAmendment>,
+) -> RunSnapshot {
+    let reopened_completion_round = pre_reopen_completion_round
+        .checked_add(1)
+        .expect("test completion round should not overflow");
+
     RunSnapshot {
         active_run: None,
         interrupted_run: Some(ActiveRun {
@@ -343,7 +350,7 @@ fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
                 StageId::Planning,
                 1,
                 1,
-                2,
+                reopened_completion_round,
             )
             .unwrap(),
             started_at: test_timestamp(),
@@ -361,7 +368,7 @@ fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
             started_at: test_timestamp(),
             completed_at: Some(test_timestamp()),
         }],
-        completion_rounds: 2,
+        completion_rounds: reopened_completion_round,
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState {
             pending,
@@ -370,6 +377,10 @@ fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
         status_summary: "paused: amendments staged".to_owned(),
         last_stage_resolution_snapshot: None,
     }
+}
+
+fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
+    reopened_completed_snapshot_with_round(1, pending)
 }
 
 fn paused_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
@@ -1982,9 +1993,13 @@ fn remove_amendment_succeeds_for_existing() {
 
 #[test]
 fn remove_amendment_restores_completed_status_when_reopen_queue_empties() {
+    let pre_reopen_completion_round = 3;
     let amendment = make_manual_amendment("manual-1", "fix bug");
     let queue = FakeAmendmentQueue::with(vec![amendment.clone()]);
-    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot(vec![amendment]));
+    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot_with_round(
+        pre_reopen_completion_round,
+        vec![amendment],
+    ));
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
@@ -2004,6 +2019,7 @@ fn remove_amendment_restores_completed_status_when_reopen_queue_empties() {
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert!(snapshot.amendment_queue.pending.is_empty());
     assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.completion_rounds, pre_reopen_completion_round);
     assert_eq!(snapshot.status_summary, "completed");
 }
 
@@ -2141,12 +2157,16 @@ fn clear_amendments_removes_all() {
 
 #[test]
 fn clear_amendments_restores_completed_status_when_reopen_queue_empties() {
+    let pre_reopen_completion_round = 4;
     let amendments = vec![
         make_manual_amendment("manual-1", "fix A"),
         make_manual_amendment("manual-2", "fix B"),
     ];
     let queue = FakeAmendmentQueue::with(amendments.clone());
-    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot(amendments));
+    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot_with_round(
+        pre_reopen_completion_round,
+        amendments,
+    ));
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
@@ -2160,13 +2180,18 @@ fn clear_amendments_restores_completed_status_when_reopen_queue_empties() {
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert!(snapshot.amendment_queue.pending.is_empty());
     assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.completion_rounds, pre_reopen_completion_round);
     assert_eq!(snapshot.status_summary, "completed");
 }
 
 #[test]
 fn clear_amendments_restores_completed_status_for_reopened_empty_queue_fast_path() {
+    let pre_reopen_completion_round = 2;
     let queue = FakeAmendmentQueue::empty();
-    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot(Vec::new()));
+    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot_with_round(
+        pre_reopen_completion_round,
+        Vec::new(),
+    ));
     let base = dummy_base_dir();
     let pid = ProjectId::new("alpha").unwrap();
 
@@ -2180,6 +2205,7 @@ fn clear_amendments_restores_completed_status_for_reopened_empty_queue_fast_path
     assert_eq!(snapshot.status, RunStatus::Completed);
     assert!(snapshot.amendment_queue.pending.is_empty());
     assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.completion_rounds, pre_reopen_completion_round);
     assert_eq!(snapshot.status_summary, "completed");
 }
 
