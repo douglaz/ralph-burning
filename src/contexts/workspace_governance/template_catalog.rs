@@ -238,12 +238,13 @@ The JSON schema below is authoritative. Return only JSON that conforms exactly t
 const FINAL_REVIEW_VOTER_DEFAULT: &str = "\
 # {{title}}
 
-You are a reviewer voting on proposed amendments after considering the \
-planner's positions.
+You are a reviewer evaluating proposed amendments. If planner positions are \
+provided below, consider them alongside each amendment.
 
 ## Instructions
 
-1. Consider each amendment and the planner's position on it.
+1. Consider each amendment carefully. If planner positions are provided, \
+weigh them as additional context.
 2. Vote ACCEPT or REJECT for each amendment with a clear rationale.
 3. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
 original spec\" — any real bug or safety issue is valid regardless of scope.
