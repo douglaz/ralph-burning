@@ -144,13 +144,12 @@ where
                 }
             })?;
 
-        let RecordProducer::Agent {
-            backend_family,
-            model_id,
-        } = &producer
-        else {
-            unreachable!("completion panel invocations must produce agent metadata")
-        };
+        let (backend_family, model_id) = super::require_agent_record_producer(
+            &producer,
+            completer_target.backend.family.as_str(),
+            "completion:completer",
+            "completion panel invocations must produce agent metadata",
+        )?;
         let voter_id = format!("{backend_family}:{model_id}");
         let vote_artifact =
             renderers::render_completion_vote(stage_id, &vote, &producer.to_string());

@@ -13,8 +13,8 @@ pub mod validation;
 
 use crate::contexts::agent_execution::model::InvocationMetadata;
 use crate::contexts::workflow_composition::panel_contracts::RecordProducer;
-use crate::shared::domain::{FlowPreset, StageId};
-use crate::shared::error::AppResult;
+use crate::shared::domain::{FailureClass, FlowPreset, StageId};
+use crate::shared::error::{AppError, AppResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ValidationProfile {
@@ -201,12 +201,33 @@ pub fn agent_record_producer(metadata: &InvocationMetadata) -> RecordProducer {
     }
 }
 
+pub fn require_agent_record_producer<'a>(
+    producer: &'a RecordProducer,
+    backend: &str,
+    contract_id: &str,
+    details: &str,
+) -> AppResult<(&'a str, &'a str)> {
+    match producer {
+        RecordProducer::Agent {
+            backend_family,
+            model_id,
+        } => Ok((backend_family.as_str(), model_id.as_str())),
+        _ => Err(AppError::InvocationFailed {
+            backend: backend.to_owned(),
+            contract_id: contract_id.to_owned(),
+            failure_class: FailureClass::DomainValidationFailure,
+            details: details.to_owned(),
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use crate::contexts::agent_execution::model::{InvocationMetadata, TokenCounts};
     use crate::shared::domain::{BackendFamily, BackendSpec, ModelSpec};
+    use crate::shared::error::AppError;
 
     use super::*;
 
@@ -230,5 +251,49 @@ mod tests {
                 model_id: "claude-opus-4-6".to_owned(),
             }
         );
+    }
+
+    #[test]
+    fn require_agent_record_producer_returns_backend_and_model() {
+        let producer = RecordProducer::Agent {
+            backend_family: "claude".to_owned(),
+            model_id: "claude-opus-4-6".to_owned(),
+        };
+
+        assert_eq!(
+            require_agent_record_producer(
+                &producer,
+                "claude",
+                "completion:completer",
+                "completion panel invocations must produce agent metadata",
+            )
+            .expect("agent producer"),
+            ("claude", "claude-opus-4-6")
+        );
+    }
+
+    #[test]
+    fn require_agent_record_producer_rejects_non_agent_producer() {
+        let error = require_agent_record_producer(
+            &RecordProducer::System {
+                component: "completion_aggregator".to_owned(),
+            },
+            "claude",
+            "completion:completer",
+            "completion panel invocations must produce agent metadata",
+        )
+        .expect_err("non-agent producers should be rejected");
+
+        assert!(matches!(
+            error,
+            AppError::InvocationFailed {
+                backend,
+                contract_id,
+                failure_class: FailureClass::DomainValidationFailure,
+                details,
+            } if backend == "claude"
+                && contract_id == "completion:completer"
+                && details == "completion panel invocations must produce agent metadata"
+        ));
     }
 }

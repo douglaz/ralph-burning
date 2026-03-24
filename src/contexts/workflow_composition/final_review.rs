@@ -243,12 +243,14 @@ where
                 details: format!("final-review proposal schema validation failed: {e}"),
             })?;
 
-        let (backend_family, model_id) = match &producer {
-            RecordProducer::Agent {
-                backend_family,
-                model_id,
-            } => (backend_family.clone(), model_id.clone()),
-            _ => unreachable!("final-review reviewer invocations must produce agent metadata"),
+        let (backend_family, model_id) = {
+            let (backend_family, model_id) = super::require_agent_record_producer(
+                &producer,
+                member.target.backend.family.as_str(),
+                "final_review:reviewer",
+                "final-review reviewer invocations must produce agent metadata",
+            )?;
+            (backend_family.to_owned(), model_id.to_owned())
         };
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         persist_supporting_record(
