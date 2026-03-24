@@ -1388,6 +1388,10 @@ where
             }
         };
 
+        let legacy_final_review_snapshot_needs_upgrade = current_stage == StageId::FinalReview
+            && old_snapshot.final_review_planner.is_none()
+            && new_snapshot.final_review_planner.is_some();
+
         if resolution_has_drifted(&old_snapshot, &new_snapshot) {
             // Fail early if requirements no longer met.
             drift_still_satisfies_requirements(&new_snapshot, current_stage, effective_config)?;
@@ -1405,6 +1409,11 @@ where
                 base_dir,
                 project_id,
             )?;
+        } else if legacy_final_review_snapshot_needs_upgrade {
+            // Old final-review snapshots created before planner tracking should
+            // silently adopt the re-resolved planner so later resumes have a
+            // durable baseline even though no drift warning is emitted.
+            snapshot.last_stage_resolution_snapshot = Some(new_snapshot.clone());
         }
     }
 
