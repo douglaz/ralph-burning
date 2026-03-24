@@ -198,6 +198,19 @@ pub fn agent_record_producer(metadata: &InvocationMetadata) -> RecordProducer {
     RecordProducer::Agent {
         backend_family: metadata.backend_used.family.to_string(),
         model_id: metadata.model_used.model_id.clone(),
+        adapter_reported_backend_family: metadata
+            .adapter_reported_backend
+            .as_ref()
+            .filter(|backend| backend.family != metadata.backend_used.family)
+            .map(|backend| backend.family.to_string()),
+        adapter_reported_model_id: metadata
+            .adapter_reported_model
+            .as_ref()
+            .filter(|model| {
+                model.backend_family != metadata.model_used.backend_family
+                    || model.model_id != metadata.model_used.model_id
+            })
+            .map(|model| model.model_id.clone()),
     }
 }
 
@@ -211,6 +224,7 @@ pub fn require_agent_record_producer<'a>(
         RecordProducer::Agent {
             backend_family,
             model_id,
+            ..
         } => Ok((backend_family.as_str(), model_id.as_str())),
         _ => Err(AppError::InvocationFailed {
             backend: backend.to_owned(),
@@ -239,6 +253,8 @@ mod tests {
             token_counts: TokenCounts::default(),
             backend_used: BackendSpec::from_family(BackendFamily::Claude),
             model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-6"),
+            adapter_reported_backend: None,
+            adapter_reported_model: None,
             attempt_number: 1,
             session_id: None,
             session_reused: false,
@@ -249,6 +265,37 @@ mod tests {
             RecordProducer::Agent {
                 backend_family: "claude".to_owned(),
                 model_id: "claude-opus-4-6".to_owned(),
+                adapter_reported_backend_family: None,
+                adapter_reported_model_id: None,
+            }
+        );
+    }
+
+    #[test]
+    fn agent_record_producer_includes_adapter_reported_values_when_they_differ() {
+        let metadata = InvocationMetadata {
+            invocation_id: "invocation-1".to_owned(),
+            duration: Duration::from_millis(1),
+            token_counts: TokenCounts::default(),
+            backend_used: BackendSpec::from_family(BackendFamily::Claude),
+            model_used: ModelSpec::new(BackendFamily::Claude, "claude-opus-4-6"),
+            adapter_reported_backend: Some(BackendSpec::from_family(BackendFamily::OpenRouter)),
+            adapter_reported_model: Some(ModelSpec::new(
+                BackendFamily::OpenRouter,
+                "openai/gpt-4.1",
+            )),
+            attempt_number: 1,
+            session_id: None,
+            session_reused: false,
+        };
+
+        assert_eq!(
+            agent_record_producer(&metadata),
+            RecordProducer::Agent {
+                backend_family: "claude".to_owned(),
+                model_id: "claude-opus-4-6".to_owned(),
+                adapter_reported_backend_family: Some("openrouter".to_owned()),
+                adapter_reported_model_id: Some("openai/gpt-4.1".to_owned()),
             }
         );
     }
@@ -258,6 +305,8 @@ mod tests {
         let producer = RecordProducer::Agent {
             backend_family: "claude".to_owned(),
             model_id: "claude-opus-4-6".to_owned(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
         };
 
         assert_eq!(

@@ -254,6 +254,10 @@ pub enum RecordProducer {
     Agent {
         backend_family: String,
         model_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter_reported_backend_family: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        adapter_reported_model_id: Option<String>,
     },
     /// Produced by local validation (e.g., pre-commit checks).
     LocalValidation { command: String },
@@ -267,6 +271,7 @@ impl std::fmt::Display for RecordProducer {
             Self::Agent {
                 backend_family,
                 model_id,
+                ..
             } => write!(f, "agent:{backend_family}/{model_id}"),
             Self::LocalValidation { command } => write!(f, "local:{command}"),
             Self::System { component } => write!(f, "system:{component}"),

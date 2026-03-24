@@ -453,6 +453,8 @@ impl AgentExecutionPort for StubBackendAdapter {
                 },
                 backend_used: request.resolved_target.backend,
                 model_used: request.resolved_target.model,
+                adapter_reported_backend: None,
+                adapter_reported_model: None,
                 attempt_number: request.attempt_number,
                 session_id,
                 session_reused,

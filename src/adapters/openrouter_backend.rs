@@ -294,6 +294,8 @@ impl OpenRouterBackendAdapter {
                 },
                 backend_used: request.resolved_target.backend.clone(),
                 model_used: request.resolved_target.model.clone(),
+                adapter_reported_backend: None,
+                adapter_reported_model: None,
                 attempt_number: request.attempt_number,
                 session_id: None,
                 session_reused: false,
