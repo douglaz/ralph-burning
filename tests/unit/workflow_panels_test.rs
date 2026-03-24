@@ -231,6 +231,8 @@ fn record_producer_serializes_with_tagged_union_format() {
     let agent = RecordProducer::Agent {
         backend_family: "claude".to_string(),
         model_id: "model-1".to_string(),
+        adapter_reported_backend_family: None,
+        adapter_reported_model_id: None,
     };
     let json = serde_json::to_value(&agent).unwrap();
     assert_eq!(json["type"], "agent");
@@ -258,6 +260,8 @@ fn record_producer_round_trips() {
         RecordProducer::Agent {
             backend_family: "claude".to_string(),
             model_id: "model-1".to_string(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
         },
         RecordProducer::System {
             component: "completion_aggregator".to_string(),
@@ -372,6 +376,8 @@ fn record_producer_display_agent() {
     let producer = RecordProducer::Agent {
         backend_family: "claude".to_string(),
         model_id: "model-1".to_string(),
+        adapter_reported_backend_family: None,
+        adapter_reported_model_id: None,
     };
     assert_eq!(producer.to_string(), "agent:claude/model-1");
 }
