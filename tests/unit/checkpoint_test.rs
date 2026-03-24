@@ -26,6 +26,14 @@ fn git_binary() -> &'static Path {
                 .into_iter()
                 .flatten()
                 .find(|path| path.is_file())
+                .or_else(|| {
+                    // Fall back to searching PATH (needed in nix build sandbox)
+                    std::env::var_os("PATH").and_then(|paths| {
+                        std::env::split_paths(&paths)
+                            .map(|dir| dir.join("git"))
+                            .find(|p| p.is_file())
+                    })
+                })
                 .unwrap_or_else(|| PathBuf::from("git"))
         })
         .as_path()
