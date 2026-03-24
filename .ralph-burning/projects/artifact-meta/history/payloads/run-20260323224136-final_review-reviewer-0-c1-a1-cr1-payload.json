@@ -1,0 +1,18 @@
+{
+  "payload_id": "run-20260323224136-final_review-reviewer-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-23T22:55:37.390220460Z",
+  "payload": {
+    "amendments": [],
+    "summary": "The implementation is well-structured and correct. The change extracts inline `RecordProducer::Agent` construction into a shared `agent_record_producer()` helper that derives `backend_family` and `model_id` from `InvocationEnvelope.metadata` (specifically `backend_used.family` and `model_used.model_id`). The helper is applied consistently across all four call-sites: `engine.rs` (main stage invocation), `completion.rs` (completer panel), `final_review.rs` (reviewer/voter/arbiter invocations), and `prompt_review.rs` (refiner/validator invocations). Each inner `invoke_*` function now returns `(Value, RecordProducer)` instead of just `Value`, capturing producer metadata at the point where the envelope is available rather than reconstructing it from the resolved target. The conformance test was tightened to assert specific `backend_family` and `model_id` values. A unit test covers the helper. No remaining inline `RecordProducer::Agent` construction exists in production code. No amendments needed."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

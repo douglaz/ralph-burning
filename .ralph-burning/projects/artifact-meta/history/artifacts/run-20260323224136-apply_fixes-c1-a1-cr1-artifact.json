@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260323224136-apply_fixes-c1-a1-cr1-artifact",
+  "payload_id": "run-20260323224136-apply_fixes-c1-a1-cr1",
+  "stage_id": "apply_fixes",
+  "created_at": "2026-03-23T22:53:06.964221267Z",
+  "content": "# Apply Fixes\n\n## Change Summary\n\nThe current tree already includes the requested producer metadata fix: workflow composition now derives `RecordProducer::Agent` from `InvocationEnvelope.metadata.backend_used` and `InvocationEnvelope.metadata.model_used`, and the prompt-review, completion, final-review, and single-stage persistence paths use that metadata-backed producer when writing payload/artifact history records. No additional `src/adapters/fs.rs` struct edit was required because `ArtifactRecord` already persists the populated `producer` field via serde serialization.\n\n## Steps\n\n1. [Completed] Inspect the current workflow artifact persistence paths and confirm whether producer metadata is sourced from invocation metadata.\n2. [Skipped] Apply any missing metadata-backed `RecordProducer` persistence changes in workflow composition and artifact record handling.\n3. [Completed] Run targeted Rust validation for the producer helper, final review flow, and compile health.\n\n## Validation Evidence\n\n- `nix develop -c cargo test --lib agent_record_producer_uses_invocation_metadata_fields --quiet` passed.\n- `nix develop -c cargo test --lib final_review_ --quiet` passed.\n- `nix develop -c cargo check --quiet` passed; it emitted pre-existing warnings in `src/contexts/conformance_spec/runner.rs` about the unused `spawned` variable/assignments.\n- Code inspection confirms `src/contexts/workflow_composition/mod.rs` builds `RecordProducer::Agent` from `InvocationMetadata.backend_used.family` and `InvocationMetadata.model_used.model_id`, and `src/contexts/workflow_composition/engine.rs` persists artifacts using that helper-derived producer.\n- Code inspection confirms `ArtifactRecord` already carries `producer: Option<RecordProducer>` in `src/contexts/project_run_record/model.rs`, and `src/adapters/fs.rs` writes artifact JSON via `serde_json::to_string_pretty(artifact)`, so the populated producer fields are serialized without further adapter changes.\n\n## Outstanding Risks\n\n- `AgentExecutionService` still normalizes `backend_used` and `model_used` to the resolved target before orchestration reads the envelope, so there is not yet an end-to-end test proving divergent adapter-reported metadata flows into persisted artifacts.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}
