@@ -198,6 +198,10 @@ pub fn agent_record_producer(metadata: &InvocationMetadata) -> RecordProducer {
     RecordProducer::Agent {
         backend_family: metadata.backend_used.family.to_string(),
         model_id: metadata.model_used.model_id.clone(),
+        // Defensive: service.rs already sets these to None when they match the
+        // resolved target, so the .filter() should be a no-op in practice.
+        // We re-check here to guard against callers that construct metadata
+        // directly (e.g. in tests) without enforcing that invariant.
         adapter_reported_backend_family: metadata
             .adapter_reported_backend
             .as_ref()
