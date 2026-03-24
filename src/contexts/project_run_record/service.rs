@@ -1055,6 +1055,25 @@ pub fn list_amendments(
     Ok(snapshot.amendment_queue.pending)
 }
 
+fn restore_completed_state_after_reopen_if_no_amendments(
+    snapshot: &mut RunSnapshot,
+    project_id: &ProjectId,
+) {
+    let reopened_run_id = format!("reopen-{}", project_id.as_str());
+    let reopened_for_amendments = snapshot.status == RunStatus::Paused
+        && snapshot
+            .interrupted_run
+            .as_ref()
+            .is_some_and(|run| run.run_id == reopened_run_id);
+
+    if reopened_for_amendments && snapshot.amendment_queue.pending.is_empty() {
+        snapshot.active_run = None;
+        snapshot.status = RunStatus::Completed;
+        snapshot.interrupted_run = None;
+        snapshot.status_summary = "completed".to_owned();
+    }
+}
+
 /// Remove a single pending amendment by ID. Updates both run.json and disk.
 ///
 /// Deletes the durable file first, then updates the canonical snapshot. If the
@@ -1103,6 +1122,7 @@ pub fn remove_amendment(
         .amendment_queue
         .pending
         .retain(|a| a.amendment_id != amendment_id);
+    restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id);
     if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
         // Restore the amendment file so disk and snapshot stay consistent.
         // If restore also fails, return a composite error so the caller knows
@@ -1168,6 +1188,7 @@ pub fn clear_amendments(
     if remaining.is_empty() {
         // All files deleted — clear the snapshot pending queue.
         // snapshot.amendment_queue.pending is already empty from std::mem::take.
+        restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id);
         if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
             // Restore all amendment files so disk and snapshot stay consistent.
             // If any restore fails, return a composite error so the caller knows
