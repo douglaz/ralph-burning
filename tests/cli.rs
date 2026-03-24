@@ -2902,6 +2902,62 @@ fn run_tail_follow_starts_and_interrupts_cleanly() {
 }
 
 #[test]
+fn run_tail_follow_surfaces_new_supporting_records_without_journal_events() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    fs::write(
+        project_root.join("history/payloads/panel-p1.json"),
+        r#"{
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:05:00Z",
+  "payload": { "summary": "completion panel payload" },
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write supporting payload");
+    fs::write(
+        project_root.join("history/artifacts/panel-a1.json"),
+        r##"{
+  "artifact_id": "panel-a1",
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-19T03:05:00Z",
+  "content": "# Completion Panel\nvisible follow artifact\n",
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"##,
+    )
+    .expect("write supporting artifact");
+
+    std::thread::sleep(std::time::Duration::from_millis(2500));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
 fn run_show_payload_prints_payload_json() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");

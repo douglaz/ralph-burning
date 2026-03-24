@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -467,6 +468,8 @@ async fn handle_tail_follow(
         .runtime_logs
         .as_ref()
         .map_or(0, std::vec::Vec::len);
+    let (mut seen_payload_files, mut seen_artifact_files) =
+        list_history_record_files(current_dir, project_id)?;
 
     println!(
         "Following project '{}' for new durable history{}; press Ctrl-C to stop.",
@@ -497,6 +500,8 @@ async fn handle_tail_follow(
                             include_logs,
                             &mut last_seen_sequence,
                             &mut last_runtime_log_count,
+                            &mut seen_payload_files,
+                            &mut seen_artifact_files,
                         )?;
                     }
                 }
@@ -518,6 +523,8 @@ async fn handle_tail_follow(
                     include_logs,
                     &mut last_seen_sequence,
                     &mut last_runtime_log_count,
+                    &mut seen_payload_files,
+                    &mut seen_artifact_files,
                 )?;
             }
         }
@@ -691,26 +698,70 @@ fn render_follow_delta(
     include_logs: bool,
     last_seen_sequence: &mut u64,
     last_runtime_log_count: &mut usize,
+    seen_payload_files: &mut HashSet<String>,
+    seen_artifact_files: &mut HashSet<String>,
 ) -> AppResult<()> {
-    let tail = service::run_tail(
+    let (payload_files, artifact_files) = list_history_record_files(current_dir, project_id)?;
+    let new_payload_files: HashSet<_> = payload_files
+        .difference(seen_payload_files)
+        .cloned()
+        .collect();
+    let new_artifact_files: HashSet<_> = artifact_files
+        .difference(seen_artifact_files)
+        .cloned()
+        .collect();
+
+    let tail = match service::run_tail(
         &FsJournalStore,
         &FsArtifactStore,
         &FsRuntimeLogStore,
         current_dir,
         project_id,
         include_logs,
-    )?;
+    ) {
+        Ok(tail) => tail,
+        Err(AppError::CorruptRecord { file, details })
+            if (!new_payload_files.is_empty() || !new_artifact_files.is_empty())
+                && is_partial_history_pair_error(&file, &details) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let new_event_count = tail
         .events
         .iter()
         .filter(|event| event.sequence > *last_seen_sequence)
         .count();
-    let (events, payloads, artifacts) = crate::contexts::project_run_record::queries::tail_last_n(
-        &tail.events,
-        &tail.payloads,
-        &tail.artifacts,
-        new_event_count,
-    );
+    let (events, event_payloads, event_artifacts) =
+        crate::contexts::project_run_record::queries::tail_last_n(
+            &tail.events,
+            &tail.payloads,
+            &tail.artifacts,
+            new_event_count,
+        );
+    let mut payload_ids: HashSet<_> = event_payloads
+        .iter()
+        .map(|payload| payload.payload_id.clone())
+        .collect();
+    payload_ids.extend(new_payload_files);
+    let mut artifact_ids: HashSet<_> = event_artifacts
+        .iter()
+        .map(|artifact| artifact.artifact_id.clone())
+        .collect();
+    artifact_ids.extend(new_artifact_files);
+    let payloads = tail
+        .payloads
+        .iter()
+        .filter(|payload| payload_ids.contains(payload.payload_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    let artifacts = tail
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact_ids.contains(artifact.artifact_id.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
     let new_logs = match tail.runtime_logs.as_ref() {
         Some(logs) if logs.len() >= *last_runtime_log_count => {
             logs[*last_runtime_log_count..].to_vec()
@@ -729,7 +780,47 @@ fn render_follow_delta(
         .map(|event| event.sequence)
         .unwrap_or(*last_seen_sequence);
     *last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
+    *seen_payload_files = payload_files;
+    *seen_artifact_files = artifact_files;
     Ok(())
+}
+
+fn list_history_record_files(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+) -> AppResult<(HashSet<String>, HashSet<String>)> {
+    let project_root = current_dir
+        .join(".ralph-burning/projects")
+        .join(project_id.as_str());
+    Ok((
+        list_json_file_stems(&project_root.join("history/payloads"))?,
+        list_json_file_stems(&project_root.join("history/artifacts"))?,
+    ))
+}
+
+fn list_json_file_stems(dir: &std::path::Path) -> AppResult<HashSet<String>> {
+    if !dir.is_dir() {
+        return Ok(HashSet::new());
+    }
+
+    let mut stems = HashSet::new();
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if path.extension().is_some_and(|ext| ext == "json") {
+            if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
+                stems.insert(stem.to_owned());
+            }
+        }
+    }
+
+    Ok(stems)
+}
+
+fn is_partial_history_pair_error(file: &str, details: &str) -> bool {
+    (file.starts_with("history/payloads/") || file.starts_with("history/artifacts/"))
+        && (details.contains("payload has no matching artifact")
+            || details.contains("artifact references payload"))
 }
 
 fn maybe_filter_history_by_stage(

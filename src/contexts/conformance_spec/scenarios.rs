@@ -3072,6 +3072,67 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         }
         Ok(())
     });
+
+    reg!(m, "SC-RUN-047", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-supporting", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-supporting")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let project_root = conformance_project_root(&ws, "rq-follow-supporting");
+        std::fs::write(
+            project_root.join("history/payloads/panel-p1.json"),
+            r#"{
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:05:00Z",
+  "payload": { "summary": "completion panel payload" },
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"#,
+        )
+        .map_err(|e| format!("write supporting payload: {e}"))?;
+        std::fs::write(
+            project_root.join("history/artifacts/panel-a1.json"),
+            r##"{
+  "artifact_id": "panel-a1",
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-19T03:05:00Z",
+  "content": "# Completion Panel\nvisible follow artifact\n",
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"##,
+        )
+        .map_err(|e| format!("write supporting artifact: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(2500));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow output should include the appended supporting payload and artifact".into(),
+            );
+        }
+        Ok(())
+    });
 }
 
 // ===========================================================================

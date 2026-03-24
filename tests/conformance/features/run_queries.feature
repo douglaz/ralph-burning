@@ -326,3 +326,10 @@ Feature: Run Queries
     Given an initialized workspace with project "alpha" selected as active
     When the user starts "run tail --follow --logs", appends a new runtime log entry, and interrupts it with Ctrl-C
     Then the follow output includes the appended runtime log entry
+
+  # SC-RUN-047
+  Scenario: Run tail --follow prints new supporting payload/artifact files without journal events
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user starts "run tail --follow", writes a new supporting payload/artifact pair, and interrupts it with Ctrl-C
+    Then the follow output includes the appended supporting payload and artifact
