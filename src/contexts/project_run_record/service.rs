@@ -1058,20 +1058,26 @@ pub fn list_amendments(
 fn restore_completed_state_after_reopen_if_no_amendments(
     snapshot: &mut RunSnapshot,
     project_id: &ProjectId,
-) {
-    let reopened_run_id = format!("reopen-{}", project_id.as_str());
+) -> bool {
     let reopened_for_amendments = snapshot.status == RunStatus::Paused
         && snapshot
             .interrupted_run
             .as_ref()
-            .is_some_and(|run| run.run_id == reopened_run_id);
+            .is_some_and(|run| run.run_id == reopen_run_id(project_id));
 
     if reopened_for_amendments && snapshot.amendment_queue.pending.is_empty() {
         snapshot.active_run = None;
         snapshot.status = RunStatus::Completed;
         snapshot.interrupted_run = None;
         snapshot.status_summary = "completed".to_owned();
+        return true;
     }
+
+    false
+}
+
+fn reopen_run_id(project_id: &ProjectId) -> String {
+    format!("reopen-{}", project_id.as_str())
 }
 
 /// Remove a single pending amendment by ID. Updates both run.json and disk.
@@ -1168,6 +1174,9 @@ pub fn clear_amendments(
 
     let pending: Vec<QueuedAmendment> = std::mem::take(&mut snapshot.amendment_queue.pending);
     if pending.is_empty() {
+        if restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id) {
+            run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+        }
         return Ok(Vec::new());
     }
 
@@ -1549,7 +1558,7 @@ pub fn reopen_completed_project_with_snapshot(
     snapshot.completion_rounds = next_completion_round;
 
     snapshot.interrupted_run = Some(ActiveRun {
-        run_id: format!("reopen-{}", project_id.as_str()),
+        run_id: reopen_run_id(project_id),
         stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, next_completion_round)?,
         started_at: Utc::now(),
         prompt_hash_at_cycle_start: prompt_hash.clone(),

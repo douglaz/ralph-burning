@@ -372,6 +372,28 @@ fn reopened_completed_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
     }
 }
 
+fn paused_snapshot(pending: Vec<QueuedAmendment>) -> RunSnapshot {
+    RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Paused,
+        cycle_history: vec![CycleHistoryEntry {
+            cycle: 1,
+            stage_id: StageId::Planning,
+            started_at: test_timestamp(),
+            completed_at: Some(test_timestamp()),
+        }],
+        completion_rounds: 1,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState {
+            pending,
+            ..AmendmentQueueState::default()
+        },
+        status_summary: "paused".to_owned(),
+        last_stage_resolution_snapshot: None,
+    }
+}
+
 fn make_project_created_event() -> JournalEvent {
     JournalEvent {
         sequence: 1,
@@ -1986,6 +2008,70 @@ fn remove_amendment_restores_completed_status_when_reopen_queue_empties() {
 }
 
 #[test]
+fn remove_amendment_keeps_reopened_project_paused_when_other_amendments_remain() {
+    let amendments = vec![
+        make_manual_amendment("manual-1", "fix A"),
+        make_manual_amendment("manual-2", "fix B"),
+    ];
+    let queue = FakeAmendmentQueue::with(amendments.clone());
+    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot(amendments));
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::remove_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &base,
+        &pid,
+        "manual-1",
+    )
+    .expect("remove amendment");
+
+    let snapshot = shared_store
+        .read_run_snapshot(&base, &pid)
+        .expect("read updated snapshot");
+    assert_eq!(snapshot.status, RunStatus::Paused);
+    assert_eq!(snapshot.amendment_queue.pending.len(), 1);
+    assert_eq!(
+        snapshot
+            .interrupted_run
+            .as_ref()
+            .expect("reopen marker retained")
+            .run_id,
+        "reopen-alpha"
+    );
+    assert_eq!(snapshot.status_summary, "paused: amendments staged");
+}
+
+#[test]
+fn remove_amendment_keeps_normally_paused_project_paused_when_queue_empties() {
+    let amendment = make_manual_amendment("manual-1", "fix bug");
+    let queue = FakeAmendmentQueue::with(vec![amendment.clone()]);
+    let shared_store = SharedRunSnapshotStore::new(paused_snapshot(vec![amendment]));
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    service::remove_amendment(
+        &queue,
+        &shared_store,
+        &shared_store,
+        &base,
+        &pid,
+        "manual-1",
+    )
+    .expect("remove amendment");
+
+    let snapshot = shared_store
+        .read_run_snapshot(&base, &pid)
+        .expect("read updated snapshot");
+    assert_eq!(snapshot.status, RunStatus::Paused);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+    assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.status_summary, "paused");
+}
+
+#[test]
 fn remove_amendment_fails_for_missing() {
     let queue = FakeAmendmentQueue::empty();
     let base = dummy_base_dir();
@@ -2075,6 +2161,50 @@ fn clear_amendments_restores_completed_status_when_reopen_queue_empties() {
     assert!(snapshot.amendment_queue.pending.is_empty());
     assert!(snapshot.interrupted_run.is_none());
     assert_eq!(snapshot.status_summary, "completed");
+}
+
+#[test]
+fn clear_amendments_restores_completed_status_for_reopened_empty_queue_fast_path() {
+    let queue = FakeAmendmentQueue::empty();
+    let shared_store = SharedRunSnapshotStore::new(reopened_completed_snapshot(Vec::new()));
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let removed =
+        service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
+
+    assert!(removed.is_empty());
+    let snapshot = shared_store
+        .read_run_snapshot(&base, &pid)
+        .expect("read updated snapshot");
+    assert_eq!(snapshot.status, RunStatus::Completed);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+    assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.status_summary, "completed");
+}
+
+#[test]
+fn clear_amendments_keeps_normally_paused_project_paused_when_queue_empties() {
+    let amendments = vec![
+        make_manual_amendment("manual-1", "fix A"),
+        make_manual_amendment("manual-2", "fix B"),
+    ];
+    let queue = FakeAmendmentQueue::with(amendments.clone());
+    let shared_store = SharedRunSnapshotStore::new(paused_snapshot(amendments));
+    let base = dummy_base_dir();
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let removed =
+        service::clear_amendments(&queue, &shared_store, &shared_store, &base, &pid).unwrap();
+
+    assert_eq!(removed.len(), 2);
+    let snapshot = shared_store
+        .read_run_snapshot(&base, &pid)
+        .expect("read updated snapshot");
+    assert_eq!(snapshot.status, RunStatus::Paused);
+    assert!(snapshot.amendment_queue.pending.is_empty());
+    assert!(snapshot.interrupted_run.is_none());
+    assert_eq!(snapshot.status_summary, "paused");
 }
 
 #[test]
