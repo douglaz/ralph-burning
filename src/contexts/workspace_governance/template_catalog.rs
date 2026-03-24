@@ -185,9 +185,9 @@ The Planner has suggested the project is complete. Your job is to:
 based on the context provided.
 3. Verify nothing is missing or only partially done.
 
-You MUST use a DIFFERENT perspective than the Planner. Do not simply agree — \
-independently verify each requirement. If you have access to tools that can \
-inspect the repository, use them for grounded evidence.
+Do not simply agree with the planning output — independently verify each \
+requirement. If you have access to tools that can inspect the repository, \
+use them for grounded evidence.
 
 If all requirements are satisfied, vote COMPLETE with evidence mapping each \
 requirement to the feature that satisfies it.
@@ -213,18 +213,17 @@ const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 You are a code reviewer. Review the changes in this project for correctness, \
 safety, and robustness.
 
-Read the key implementation files end-to-end. For each issue found, cite \
-specific files and line numbers.
+If you have access to tools, read the key implementation files end-to-end. \
+Otherwise, base your review on the context provided.
 
 ## Instructions
 
 1. Read the project prompt to understand what was requested.
-2. If you have access to tools, inspect the current diff and read each implicated \
-file end-to-end before forming your assessment. Otherwise, base your review on \
-the context provided.
+2. Examine the implementation for correctness, safety, and robustness issues.
 3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
 4. When issues exist, return `amendments` as an array where each entry's `body` \
-contains labeled **Problem** (citing specific files and line numbers), \
+contains a labeled **Problem** (referencing affected file paths and describing the \
+issue in enough detail that it remains actionable even if line numbers shift), \
 **Proposed Change**, and **Affected Files** sections.
 5. When no issues exist, return `amendments: []` and make `summary` a clear \
 NO AMENDMENTS rationale explaining why the implementation is correct and complete.
