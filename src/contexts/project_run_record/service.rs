@@ -1055,7 +1055,13 @@ pub fn add_manual_amendment(
     if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
         // Attempt to restore pre-mutation state.
         let snap_result = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
-        let file_result = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        // If we reused a preserved amendment file from a prior failed reopen,
+        // don't delete it during rollback — the operator's input must survive.
+        let file_result = if existing_on_disk.is_some() {
+            Ok(())
+        } else {
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
+        };
 
         // If rollback itself failed, return a composite error so the caller
         // knows canonical state may be inconsistent, matching the pattern
