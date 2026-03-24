@@ -1413,7 +1413,9 @@ where
             // Old final-review snapshots created before planner tracking should
             // silently adopt the re-resolved planner so later resumes have a
             // durable baseline even though no drift warning is emitted.
+            // Persist immediately so the upgrade survives a preflight failure.
             snapshot.last_stage_resolution_snapshot = Some(new_snapshot.clone());
+            run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
         }
     }
 
