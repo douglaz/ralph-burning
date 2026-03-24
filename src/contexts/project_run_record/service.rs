@@ -1055,6 +1055,37 @@ pub fn list_amendments(
     Ok(snapshot.amendment_queue.pending)
 }
 
+fn restore_completed_state_after_reopen_if_no_amendments(
+    snapshot: &mut RunSnapshot,
+    project_id: &ProjectId,
+) -> bool {
+    let pre_reopen_completion_round = if snapshot.status == RunStatus::Paused {
+        snapshot.interrupted_run.as_ref().and_then(|run| {
+            (run.run_id == reopen_run_id(project_id))
+                .then_some(run.stage_cursor.completion_round.saturating_sub(1).max(1))
+        })
+    } else {
+        None
+    };
+
+    if let Some(pre_reopen_completion_round) =
+        pre_reopen_completion_round.filter(|_| snapshot.amendment_queue.pending.is_empty())
+    {
+        snapshot.active_run = None;
+        snapshot.status = RunStatus::Completed;
+        snapshot.interrupted_run = None;
+        snapshot.completion_rounds = pre_reopen_completion_round;
+        snapshot.status_summary = "completed".to_owned();
+        return true;
+    }
+
+    false
+}
+
+fn reopen_run_id(project_id: &ProjectId) -> String {
+    format!("reopen-{}", project_id.as_str())
+}
+
 /// Remove a single pending amendment by ID. Updates both run.json and disk.
 ///
 /// Deletes the durable file first, then updates the canonical snapshot. If the
@@ -1103,6 +1134,7 @@ pub fn remove_amendment(
         .amendment_queue
         .pending
         .retain(|a| a.amendment_id != amendment_id);
+    restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id);
     if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
         // Restore the amendment file so disk and snapshot stay consistent.
         // If restore also fails, return a composite error so the caller knows
@@ -1148,6 +1180,9 @@ pub fn clear_amendments(
 
     let pending: Vec<QueuedAmendment> = std::mem::take(&mut snapshot.amendment_queue.pending);
     if pending.is_empty() {
+        if restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id) {
+            run_write_port.write_run_snapshot(base_dir, project_id, &snapshot)?;
+        }
         return Ok(Vec::new());
     }
 
@@ -1168,6 +1203,7 @@ pub fn clear_amendments(
     if remaining.is_empty() {
         // All files deleted — clear the snapshot pending queue.
         // snapshot.amendment_queue.pending is already empty from std::mem::take.
+        restore_completed_state_after_reopen_if_no_amendments(&mut snapshot, project_id);
         if let Err(snap_err) = run_write_port.write_run_snapshot(base_dir, project_id, &snapshot) {
             // Restore all amendment files so disk and snapshot stay consistent.
             // If any restore fails, return a composite error so the caller knows
@@ -1528,7 +1564,7 @@ pub fn reopen_completed_project_with_snapshot(
     snapshot.completion_rounds = next_completion_round;
 
     snapshot.interrupted_run = Some(ActiveRun {
-        run_id: format!("reopen-{}", project_id.as_str()),
+        run_id: reopen_run_id(project_id),
         stage_cursor: StageCursor::new(planning_stage, current_cycle, 1, next_completion_round)?,
         started_at: Utc::now(),
         prompt_hash_at_cycle_start: prompt_hash.clone(),
