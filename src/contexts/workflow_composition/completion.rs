@@ -117,7 +117,7 @@ where
     for (i, member) in completers.iter().enumerate() {
         let completer_target = &member.target;
         let completer_timeout = timeout_for_backend(completer_target.backend.family);
-        let vote_payload = invoke_completer(
+        let (vote_payload, producer) = invoke_completer(
             agent_service,
             base_dir,
             project_root,
@@ -144,14 +144,13 @@ where
                 }
             })?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: completer_target.backend.family.to_string(),
-            model_id: completer_target.model.model_id.clone(),
-        };
-        let voter_id = format!(
-            "{}:{}",
-            completer_target.backend.family, completer_target.model.model_id
-        );
+        let (backend_family, model_id) = super::require_agent_record_producer(
+            &producer,
+            completer_target.backend.family.as_str(),
+            "completion:completer",
+            "completion panel invocations must produce agent metadata",
+        )?;
+        let voter_id = format!("{backend_family}:{model_id}");
         let vote_artifact =
             renderers::render_completion_vote(stage_id, &vote, &producer.to_string());
 
@@ -215,7 +214,7 @@ where
     })
 }
 
-/// Invoke a single completer and return the raw parsed payload.
+/// Invoke a single completer and return the raw parsed payload plus producer.
 #[allow(clippy::too_many_arguments)]
 async fn invoke_completer<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
@@ -231,7 +230,7 @@ async fn invoke_completer<A, R, S>(
     timeout: Duration,
     cancellation_token: CancellationToken,
     project_id: Option<&ProjectId>,
-) -> AppResult<Value>
+) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
@@ -278,7 +277,8 @@ where
     };
 
     let envelope = agent_service.invoke(request).await?;
-    Ok(envelope.parsed_payload)
+    let producer = super::agent_record_producer(&envelope.metadata);
+    Ok((envelope.parsed_payload, producer))
 }
 
 /// Persist a completion supporting record.

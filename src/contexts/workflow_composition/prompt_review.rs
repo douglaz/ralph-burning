@@ -90,7 +90,7 @@ where
 
     // ── Step 1: Run the refiner ────────────────────────────────────────────
     let refiner_target = &panel.refiner;
-    let refinement_payload = invoke_panel_member(
+    let (refinement_payload, refiner_producer) = invoke_panel_member(
         agent_service,
         base_dir,
         project_root,
@@ -116,10 +116,6 @@ where
         })?;
 
     // ── Step 2: Persist refinement as StageSupporting ───────────────────────
-    let refiner_producer = RecordProducer::Agent {
-        backend_family: refiner_target.backend.family.to_string(),
-        model_id: refiner_target.model.model_id.clone(),
-    };
     let refiner_artifact =
         renderers::render_prompt_refinement(stage_id, &refinement, &refiner_producer.to_string());
     persist_supporting_record(
@@ -147,7 +143,7 @@ where
     for (i, member) in panel.validators.iter().enumerate() {
         let validator_target = &member.target;
         let validator_timeout = timeout_for_backend(validator_target.backend.family);
-        let validation_payload = invoke_panel_member(
+        let (validation_payload, validator_producer) = invoke_panel_member(
             agent_service,
             base_dir,
             project_root,
@@ -174,10 +170,6 @@ where
                 }
             })?;
 
-        let validator_producer = RecordProducer::Agent {
-            backend_family: validator_target.backend.family.to_string(),
-            model_id: validator_target.model.model_id.clone(),
-        };
         let validator_artifact = renderers::render_prompt_validation(
             stage_id,
             &validation,
@@ -266,7 +258,7 @@ async fn invoke_panel_member<A, R, S>(
     timeout: Duration,
     cancellation_token: CancellationToken,
     project_id: Option<&ProjectId>,
-) -> AppResult<Value>
+) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
@@ -323,7 +315,8 @@ where
     };
 
     let envelope = agent_service.invoke(request).await?;
-    Ok(envelope.parsed_payload)
+    let producer = super::agent_record_producer(&envelope.metadata);
+    Ok((envelope.parsed_payload, producer))
 }
 
 /// Persist a supporting record (refinement or validation result).

@@ -666,6 +666,57 @@ async fn happy_path_docs_change_run_completes() {
 }
 
 #[tokio::test]
+async fn primary_stage_artifacts_persist_agent_producer_metadata() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_project_with_flow(base_dir, "docs-producer", FlowPreset::DocsChange);
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        FlowPreset::DocsChange,
+        &config,
+    )
+    .await;
+
+    assert!(result.is_ok(), "{result:?}");
+
+    let artifacts = FsArtifactStore.list_artifacts(base_dir, &pid).unwrap();
+    let docs_plan_artifact = artifacts
+        .iter()
+        .find(|record| {
+            record.stage_id == StageId::DocsPlan && record.record_kind == RecordKind::StagePrimary
+        })
+        .expect("docs_plan primary artifact should exist");
+
+    assert!(
+        matches!(
+            &docs_plan_artifact.producer,
+            Some(
+                ralph_burning::contexts::workflow_composition::panel_contracts::RecordProducer::Agent {
+                    backend_family,
+                    model_id,
+                }
+            ) if backend_family == "claude" && model_id == "claude-opus-4-6"
+        ),
+        "docs_plan primary artifact should persist agent producer metadata: {:?}",
+        docs_plan_artifact.producer
+    );
+}
+
+#[tokio::test]
 async fn happy_path_ci_improvement_run_completes() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

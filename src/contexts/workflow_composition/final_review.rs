@@ -222,7 +222,7 @@ where
         )
         .await;
 
-        let reviewer_payload = match reviewer_payload {
+        let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
             Err(error) if !member.required => {
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
@@ -243,9 +243,14 @@ where
                 details: format!("final-review proposal schema validation failed: {e}"),
             })?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: member.target.backend.family.to_string(),
-            model_id: member.target.model.model_id.clone(),
+        let (backend_family, model_id) = {
+            let (backend_family, model_id) = super::require_agent_record_producer(
+                &producer,
+                member.target.backend.family.as_str(),
+                "final_review:reviewer",
+                "final-review reviewer invocations must produce agent metadata",
+            )?;
+            (backend_family.to_owned(), model_id.to_owned())
         };
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         persist_supporting_record(
@@ -266,8 +271,8 @@ where
             member_index: idx,
             reviewer_id,
             required: member.required,
-            backend_family: member.target.backend.family.to_string(),
-            model_id: member.target.model.model_id.clone(),
+            backend_family,
+            model_id,
             target: member.target.clone(),
             payload: proposal,
         });
@@ -312,7 +317,7 @@ where
         });
     }
 
-    let planner_vote_payload = invoke_final_review_member(
+    let (planner_vote_payload, planner_producer) = invoke_final_review_member(
         agent_service,
         project_root,
         backend_working_dir,
@@ -355,10 +360,6 @@ where
             }
         })?;
     validate_vote_payload(&planner_votes, &amendments, &panel.planner)?;
-    let planner_producer = RecordProducer::Agent {
-        backend_family: panel.planner.backend.family.to_string(),
-        model_id: panel.planner.model.model_id.clone(),
-    };
     let planner_artifact = renderers::render_final_review_vote(
         "Final Review Planner Positions",
         &planner_votes,
@@ -423,7 +424,7 @@ where
         )
         .await;
 
-        let vote_payload = match vote_payload {
+        let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             Err(error) if !reviewer.required => {
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
@@ -447,10 +448,6 @@ where
             })?;
         validate_vote_payload(&votes, &amendments, &reviewer.target)?;
 
-        let producer = RecordProducer::Agent {
-            backend_family: reviewer.target.backend.family.to_string(),
-            model_id: reviewer.target.model.model_id.clone(),
-        };
         let artifact = renderers::render_final_review_vote(
             "Final Review Votes",
             &votes,
@@ -517,7 +514,7 @@ where
             .map(|amendment| (amendment.amendment_id.clone(), amendment))
             .collect();
 
-        let arbiter_payload = invoke_final_review_member(
+        let (arbiter_payload, producer) = invoke_final_review_member(
             agent_service,
             project_root,
             backend_working_dir,
@@ -559,10 +556,6 @@ where
                 details: format!("final-review arbiter schema validation failed: {e}"),
             })?;
         validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter)?;
-        let producer = RecordProducer::Agent {
-            backend_family: panel.arbiter.backend.family.to_string(),
-            model_id: panel.arbiter.model.model_id.clone(),
-        };
         let artifact = renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
         persist_supporting_record(
             artifact_write,
@@ -844,7 +837,7 @@ async fn invoke_final_review_member<A, R, S>(
     context: Value,
     timeout: Duration,
     cancellation_token: CancellationToken,
-) -> AppResult<Value>
+) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
     R: crate::contexts::agent_execution::service::RawOutputPort,
@@ -872,7 +865,8 @@ where
     };
 
     let envelope = agent_service.invoke(request).await?;
-    Ok(envelope.parsed_payload)
+    let producer = super::agent_record_producer(&envelope.metadata);
+    Ok((envelope.parsed_payload, producer))
 }
 
 fn final_review_invocation_id(
@@ -966,8 +960,8 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::adapters::fs::{
-        FileSystem, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore, FsRawOutputStore,
-        FsSessionStore,
+        FileSystem, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore,
+        FsRawOutputStore, FsSessionStore,
     };
     use crate::contexts::agent_execution::model::{
         InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
@@ -975,7 +969,9 @@ mod tests {
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
     use crate::contexts::agent_execution::service::AgentExecutionPort;
     use crate::contexts::agent_execution::AgentExecutionService;
-    use crate::contexts::project_run_record::service::{self, CreateProjectInput};
+    use crate::contexts::project_run_record::service::{
+        self, ArtifactStorePort, CreateProjectInput,
+    };
     use crate::contexts::workspace_governance;
     use crate::shared::domain::{BackendFamily, FlowPreset};
 
@@ -1428,6 +1424,87 @@ mod tests {
             adapter.invocation_ids_for("final_review:voter").len(),
             4,
             "planner plus three reviewer vote attempts should be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn final_review_supporting_artifacts_persist_agent_producer_metadata() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-producer-metadata");
+        let agent_service = AgentExecutionService::new(
+            RecordingFinalReviewAdapter::default(),
+            FsRawOutputStore,
+            FsSessionStore,
+        );
+        let run_id = RunId::new("run-final-review-producer").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                    required: true,
+                    configured_index: 0,
+                },
+                ResolvedPanelMember {
+                    target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-2-model"),
+                    required: true,
+                    configured_index: 1,
+                },
+            ],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &crate::adapters::fs::FsRuntimeLogWriteStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &cursor,
+            &panel,
+            2,
+            0.5,
+            2,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        let artifacts = FsArtifactStore
+            .list_artifacts(base_dir, &project_id)
+            .unwrap();
+        let supporting_final_review_artifacts: Vec<_> = artifacts
+            .into_iter()
+            .filter(|record| {
+                record.stage_id == StageId::FinalReview
+                    && record.record_kind == RecordKind::StageSupporting
+            })
+            .collect();
+
+        assert!(
+            supporting_final_review_artifacts.len() >= 5,
+            "expected reviewer proposals, planner positions, and vote artifacts"
+        );
+        assert!(
+            supporting_final_review_artifacts.iter().all(|record| matches!(
+                &record.producer,
+                Some(RecordProducer::Agent {
+                    backend_family,
+                    model_id,
+                }) if !backend_family.is_empty() && !model_id.is_empty()
+            )),
+            "final-review supporting artifacts must persist agent producer metadata: {supporting_final_review_artifacts:?}"
         );
     }
 }
