@@ -2589,12 +2589,11 @@ mod service_integration {
             );
             // answers.json should be cleared so answers_already_durably_stored returns false
             let answers_json = FsRequirementsStore.read_answers_json(temp_dir.path(), &run_id);
-            match answers_json {
-                Ok(persisted) => assert!(
+            if let Ok(persisted) = answers_json {
+                assert!(
                     persisted.answers.is_empty(),
                     "answers.json should be empty after rollback"
-                ),
-                Err(_) => {} // File doesn't exist is also acceptable
+                );
             }
         }
 

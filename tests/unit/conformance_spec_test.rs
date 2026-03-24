@@ -193,7 +193,7 @@ fn registry_drift_detected_for_orphan_executor() {
 
 #[test]
 fn runner_fail_fast_stops_after_first_failure() {
-    let scenarios = vec![
+    let scenarios = [
         ScenarioMeta {
             id: "PASS-1".to_owned(),
             feature_title: "T".to_owned(),
@@ -244,7 +244,7 @@ fn runner_fail_fast_stops_after_first_failure() {
 
 #[test]
 fn runner_all_pass_reports_correctly() {
-    let scenarios = vec![ScenarioMeta {
+    let scenarios = [ScenarioMeta {
         id: "PASS-ONLY".to_owned(),
         feature_title: "T".to_owned(),
         scenario_title: "T".to_owned(),
@@ -272,7 +272,7 @@ fn runner_all_pass_reports_correctly() {
 
 #[test]
 fn runner_catches_panics_without_leaking() {
-    let scenarios = vec![
+    let scenarios = [
         ScenarioMeta {
             id: "PANIC-1".to_owned(),
             feature_title: "T".to_owned(),
@@ -409,7 +409,7 @@ fn runner_cleans_up_temp_workspace_after_failure() {
     let captured_path = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
     let captured_clone = captured_path.clone();
 
-    let scenarios = vec![ScenarioMeta {
+    let scenarios = [ScenarioMeta {
         id: "CLEANUP-TEST".to_owned(),
         feature_title: "T".to_owned(),
         scenario_title: "T".to_owned(),
@@ -457,7 +457,7 @@ fn runner_cleans_up_temp_workspace_after_panic() {
     let captured_path = std::sync::Arc::new(std::sync::Mutex::new(None::<std::path::PathBuf>));
     let captured_clone = captured_path.clone();
 
-    let scenarios = vec![ScenarioMeta {
+    let scenarios = [ScenarioMeta {
         id: "PANIC-CLEANUP".to_owned(),
         feature_title: "T".to_owned(),
         scenario_title: "T".to_owned(),

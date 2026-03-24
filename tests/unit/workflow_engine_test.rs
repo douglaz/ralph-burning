@@ -4764,6 +4764,184 @@ async fn resume_uses_interrupted_final_review_restart_count_when_journal_lags() 
 }
 
 #[tokio::test]
+async fn resume_upgrades_legacy_final_review_snapshot_before_next_planner_drift_check() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "fr-legacy-planner-resume");
+    let initial_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let initial_result = engine::execute_standard_run(
+        &build_agent_service_with_adapter(
+            StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
+        ),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &initial_config,
+    )
+    .await;
+    assert!(
+        initial_result.is_err(),
+        "initial run should fail in final_review so resume can exercise the legacy snapshot path"
+    );
+
+    let mut legacy_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    let legacy_resolution = legacy_snapshot
+        .last_stage_resolution_snapshot
+        .as_mut()
+        .expect("failed final_review run should preserve a resolution snapshot");
+    assert_eq!(legacy_resolution.stage_id, StageId::FinalReview);
+    assert!(
+        legacy_resolution.final_review_planner.is_some(),
+        "baseline failing run should capture the planner before legacy mutation"
+    );
+    legacy_resolution.final_review_planner = None;
+    legacy_snapshot
+        .interrupted_run
+        .as_mut()
+        .expect("failed run should preserve interrupted final_review metadata")
+        .stage_resolution_snapshot
+        .as_mut()
+        .expect("interrupted final_review metadata should carry a resolution snapshot")
+        .final_review_planner = None;
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &legacy_snapshot)
+        .unwrap();
+
+    let first_resume_result = engine::resume_standard_run(
+        &build_agent_service_with_adapter(
+            StubBackendAdapter::default().with_invoke_failure(StageId::FinalReview),
+        ),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &initial_config,
+    )
+    .await;
+    assert!(
+        first_resume_result.is_err(),
+        "first resume should re-interrupt final_review after upgrading the legacy snapshot"
+    );
+
+    let upgraded_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    let persisted_resolution = upgraded_snapshot
+        .last_stage_resolution_snapshot
+        .as_ref()
+        .expect("first resume should persist the upgraded final_review snapshot");
+    let persisted_planner = persisted_resolution
+        .final_review_planner
+        .clone()
+        .expect("first resume should persist the final_review planner baseline");
+    assert_eq!(persisted_resolution.stage_id, StageId::FinalReview);
+    assert_eq!(
+        persisted_planner.backend_family,
+        BackendFamily::Claude.as_str(),
+        "the upgraded snapshot should restore the original planner family"
+    );
+    assert!(
+        !persisted_planner.model_id.is_empty(),
+        "the upgraded snapshot should restore the planner model"
+    );
+    let interrupted_planner = upgraded_snapshot
+        .interrupted_run
+        .as_ref()
+        .expect("re-interrupted run should preserve interrupted metadata")
+        .stage_resolution_snapshot
+        .as_ref()
+        .expect("re-interrupted run should preserve the upgraded stage snapshot")
+        .final_review_planner
+        .as_ref()
+        .expect("re-interrupted run should carry the upgraded planner baseline");
+    assert_eq!(
+        interrupted_planner, &persisted_planner,
+        "the re-interrupted run should carry the upgraded planner baseline forward"
+    );
+
+    EffectiveConfig::set(base_dir, "workflow.planner_backend", "codex").unwrap();
+    let drift_config = EffectiveConfig::load(base_dir).unwrap();
+
+    let second_resume_result = engine::resume_standard_run(
+        &build_agent_service(),
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &drift_config,
+    )
+    .await;
+    assert!(
+        second_resume_result.is_ok(),
+        "second resume should complete after detecting planner drift: {second_resume_result:?}"
+    );
+
+    let completed_snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(completed_snapshot.status, RunStatus::Completed);
+
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let warning = events
+        .iter()
+        .find(|event| {
+            event.event_type == JournalEventType::DurableWarning
+                && event.details.get("warning_kind").and_then(Value::as_str) == Some("resume_drift")
+                && event.details.get("stage_id").and_then(Value::as_str)
+                    == Some(StageId::FinalReview.as_str())
+        })
+        .expect("second resume should emit a durable final_review drift warning");
+    let old_planner = warning
+        .details
+        .get("details")
+        .and_then(|details| details.get("old_resolution"))
+        .and_then(|resolution| resolution.get("final_review_planner"))
+        .expect("durable warning should include the persisted old planner");
+    let new_planner = warning
+        .details
+        .get("details")
+        .and_then(|details| details.get("new_resolution"))
+        .and_then(|resolution| resolution.get("final_review_planner"))
+        .expect("durable warning should include the re-resolved new planner");
+    assert_eq!(
+        old_planner.get("backend_family").and_then(Value::as_str),
+        Some(persisted_planner.backend_family.as_str())
+    );
+    assert_eq!(
+        old_planner.get("model_id").and_then(Value::as_str),
+        Some(persisted_planner.model_id.as_str())
+    );
+    assert_eq!(
+        new_planner.get("backend_family").and_then(Value::as_str),
+        Some(BackendFamily::Codex.as_str())
+    );
+    assert_ne!(
+        old_planner, new_planner,
+        "second resume should compare against the upgraded planner baseline"
+    );
+}
+
+#[tokio::test]
 async fn completion_round_restart_creates_distinct_round_aware_payload_artifact_files() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
