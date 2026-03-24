@@ -214,19 +214,11 @@ const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 You are a code reviewer. Review the changes in this project for correctness, \
 safety, and robustness.
 
-## Instructions
+Run `git diff` to see all changes, then read the key implementation files \
+end-to-end. For each issue found, cite specific files and line numbers.
 
-1. Read the project prompt to understand what was requested.
-2. Start by inspecting the current diff to identify all changed files, then \
-read each changed file end-to-end before forming your assessment. If you do \
-not have tool access, base your review on the context provided.
-3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
-4. When issues exist, return `amendments` as an array where each entry's `body` \
-contains a labeled **Problem** (referencing affected file paths and describing the \
-issue in enough detail that it remains actionable even if line numbers shift), \
-**Proposed Change**, and **Affected Files** sections.
-5. When no issues exist, return `amendments: []` and make `summary` a clear \
-NO AMENDMENTS rationale explaining why the implementation is correct and complete.
+Ignore style and cosmetics — only report real bugs, safety problems, and \
+correctness gaps.
 
 ## Project Prompt
 
