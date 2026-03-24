@@ -55,7 +55,7 @@ use super::panel_contracts::{CompletionVerdict, RecordKind, RecordProducer};
 use super::prompt_review;
 use super::retry_policy::RetryPolicy;
 use super::validation;
-use super::{flow_semantics, stage_plan_for_flow, FlowSemantics};
+use super::{agent_record_producer, flow_semantics, stage_plan_for_flow, FlowSemantics};
 use crate::adapters::validation_runner::ValidationGroupResult;
 
 /// Compatibility wrapper for the legacy standard-flow helper.
@@ -4645,10 +4645,7 @@ where
     };
 
     agent_service.invoke(request).await.and_then(|envelope| {
-        let producer = RecordProducer::Agent {
-            backend_family: envelope.metadata.backend_used.family.to_string(),
-            model_id: envelope.metadata.model_used.model_id.clone(),
-        };
+        let producer = agent_record_producer(&envelope.metadata);
         stage_entry
             .contract
             .evaluate_permissive(&envelope.parsed_payload)
