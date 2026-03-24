@@ -535,8 +535,8 @@ fn load_follow_baseline(
     include_logs: bool,
 ) -> AppResult<FollowState> {
     let mut transient_partial_history_files = HashMap::new();
-    let seen_payload_files = HashSet::new();
-    let seen_artifact_files = HashSet::new();
+    let (seen_payload_files, seen_artifact_files) =
+        list_history_record_files(current_dir, project_id)?;
     let FollowSnapshot {
         tail,
         visible_payload_files,

@@ -335,11 +335,12 @@ Feature: Run Queries
     Then the follow output includes the appended supporting payload and artifact
 
   # SC-RUN-048
-  Scenario: Run tail --follow --logs tolerates a supporting payload present before its artifact pair completes
+  Scenario: Run tail --follow still fails when a supporting payload already exists before follow starts
     Given an initialized workspace with project "alpha" selected as active
     And project "alpha" has journal events and payload/artifact records
-    When the user starts "run tail --follow --logs" with streaming enabled, completes a pre-existing supporting payload/artifact pair, and interrupts it with Ctrl-C
-    Then the follow output includes the completed supporting payload and artifact
+    And project "alpha" has a supporting payload with no matching artifact
+    When the user starts "run tail --follow", writes the matching artifact shortly afterward, and waits for it to exit
+    Then the command fails with error containing "payload has no matching artifact"
 
   # SC-RUN-049
   Scenario: Run tail --follow --logs keeps streaming after a new supporting payload appears before its artifact

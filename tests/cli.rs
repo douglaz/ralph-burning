@@ -3034,37 +3034,32 @@ fn run_tail_follow_fails_on_durable_orphan_supporting_payload() {
 }
 
 #[test]
-fn run_tail_follow_logs_tolerates_startup_partial_supporting_pair() {
+fn run_tail_follow_fails_on_preexisting_partial_supporting_pair_even_if_completed_later() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
     select_active_project_fixture(temp_dir.path(), "alpha");
     write_run_query_history_fixture(temp_dir.path(), "alpha");
-    set_workspace_stream_output(temp_dir.path(), true);
 
     let project_root = project_root(temp_dir.path(), "alpha");
     write_supporting_payload(&project_root);
 
     let child = Command::new(binary())
-        .args(["run", "tail", "--follow", "--logs"])
+        .args(["run", "tail", "--follow"])
         .current_dir(temp_dir.path())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .expect("spawn run tail --follow --logs");
+        .expect("spawn run tail --follow");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
     write_supporting_artifact(&project_root);
 
-    std::thread::sleep(std::time::Duration::from_millis(3200));
-    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
-    let output = child
-        .wait_with_output()
-        .expect("wait for follow --logs output");
+    let output = wait_for_child_output(child, std::time::Duration::from_millis(4500));
 
-    assert!(output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("panel-p1"));
-    assert!(stdout.contains("panel-a1"));
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("history/payloads/panel-p1"));
+    assert!(stderr.contains("payload has no matching artifact"));
 }
 
 #[test]

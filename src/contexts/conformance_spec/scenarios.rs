@@ -3198,39 +3198,33 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "SC-RUN-048", || {
         let ws = TempWorkspace::new()?;
-        setup_workspace_with_project(&ws, "rq-follow-startup-partial", "standard")?;
-        write_run_query_history_fixture(&ws, "rq-follow-startup-partial")?;
-        set_workspace_stream_output(&ws, true)?;
-        let project_root = conformance_project_root(&ws, "rq-follow-startup-partial");
+        setup_workspace_with_project(&ws, "rq-follow-preexisting-partial", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-preexisting-partial")?;
+        let project_root = conformance_project_root(&ws, "rq-follow-preexisting-partial");
         write_supporting_payload(&project_root)?;
 
         let child = Command::new(binary_path())
-            .args(["run", "tail", "--follow", "--logs"])
+            .args(["run", "tail", "--follow"])
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
-            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+            .map_err(|e| format!("spawn follow: {e}"))?;
         std::thread::sleep(std::time::Duration::from_millis(300));
         write_supporting_artifact(&project_root)?;
-        std::thread::sleep(std::time::Duration::from_millis(3200));
-        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
-            .map_err(|e| format!("send SIGINT: {e}"))?;
-        let output = child
-            .wait_with_output()
-            .map_err(|e| format!("wait follow --logs output: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "follow --logs should exit successfully, stderr={}",
-                String::from_utf8_lossy(&output.stderr)
-            ));
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+        let output = wait_for_child_output(child, std::time::Duration::from_millis(4500))?;
+        if output.status.success() {
             return Err(
-                "follow --logs output should include the completed supporting payload and artifact"
-                    .into(),
+                "follow should fail when a supporting payload already exists before follow starts, even if the artifact appears shortly afterward".into(),
             );
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("history/payloads/panel-p1")
+            || !stderr.contains("payload has no matching artifact")
+        {
+            return Err(format!(
+                "follow stderr should report the pre-existing orphan payload corruption, stderr={stderr}"
+            ));
         }
         Ok(())
     });
