@@ -607,17 +607,7 @@ fn translate_to_panel_payload(stage_id: StageId, role: &str, raw: Value, prompt:
                 return raw;
             }
             let amendment_ids = extract_final_review_amendment_ids(prompt);
-            let decision = raw
-                .get("outcome")
-                .and_then(|value| value.as_str())
-                .map(|outcome| {
-                    if outcome == "approved" {
-                        "accept"
-                    } else {
-                        "accept"
-                    }
-                })
-                .unwrap_or("accept");
+            let decision = "accept";
             json!({
                 "summary": "Stub final-review votes translated from validation payload.",
                 "votes": amendment_ids
