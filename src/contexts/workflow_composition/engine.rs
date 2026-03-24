@@ -6945,3 +6945,56 @@ pub fn emit_resume_drift_warning(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::Value;
+
+    use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::shared::domain::{BackendFamily, ResolvedBackendTarget, StageId};
+
+    use super::build_final_review_snapshot;
+
+    #[test]
+    fn final_review_snapshot_serialization_includes_planner_target() {
+        let reviewers = vec![
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-a"),
+                required: true,
+                configured_index: 0,
+            },
+            ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Codex, "reviewer-b"),
+                required: false,
+                configured_index: 1,
+            },
+        ];
+        let planner = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-model");
+        let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
+
+        let snapshot =
+            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
+        let serialized = serde_json::to_value(&snapshot).expect("snapshot should serialize");
+
+        assert_eq!(
+            serialized.get("final_review_planner"),
+            Some(&serde_json::json!({
+                "backend_family": "openrouter",
+                "model_id": "planner-model",
+            }))
+        );
+
+        let serialized_reviewers = serialized
+            .get("final_review_reviewers")
+            .and_then(Value::as_array)
+            .expect("reviewers should serialize as an array");
+        assert_eq!(serialized_reviewers.len(), 2);
+        assert_eq!(
+            serialized.get("final_review_arbiter"),
+            Some(&serde_json::json!({
+                "backend_family": "stub",
+                "model_id": "arbiter-model",
+            }))
+        );
+    }
+}

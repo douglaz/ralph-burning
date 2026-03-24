@@ -120,7 +120,8 @@ pub struct ActiveRun {
 /// Records the exact resolved backend/model targets at stage start.
 ///
 /// For single-target stages this contains one resolved target. For panel stages
-/// (prompt-review, completion) it records ordered panel members.
+/// it records the ordered members and any single-purpose panel targets used by
+/// prompt-review, completion, and final-review.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StageResolutionSnapshot {
     pub stage_id: StageId,
