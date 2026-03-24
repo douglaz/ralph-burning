@@ -909,14 +909,16 @@ pub fn add_manual_amendment(
         });
     }
 
-    // Also check staged amendment files on disk to catch duplicates from
-    // a prior failed attempt where the file was preserved but the snapshot
-    // update failed (the file survives reopen failures by design).
-    // Skip this check for completed projects — the retry needs to proceed
-    // through the reopen path even if the file already exists on disk.
+    // Also check staged amendment files on disk. For non-completed projects
+    // this is a true duplicate. For completed projects, a matching file means
+    // a prior reopen attempt failed after preserving the amendment on disk, so
+    // the retry must reuse that file's ID instead of creating a new orphan.
+    let existing_on_disk = amendment_queue
+        .list_pending_amendments(base_dir, project_id)?
+        .into_iter()
+        .find(|a| a.dedup_key == dedup_key);
     if snapshot.status != RunStatus::Completed {
-        let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-        if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
+        if let Some(existing) = existing_on_disk.as_ref() {
             return Ok(AmendmentAddResult::Duplicate {
                 amendment_id: existing.amendment_id.clone(),
             });
@@ -924,7 +926,10 @@ pub fn add_manual_amendment(
     }
 
     let now = Utc::now();
-    let amendment_id = format!("manual-{}", uuid::Uuid::new_v4());
+    let amendment_id = existing_on_disk
+        .as_ref()
+        .map(|existing| existing.amendment_id.clone())
+        .unwrap_or_else(|| format!("manual-{}", uuid::Uuid::new_v4()));
 
     let current_cycle = snapshot
         .cycle_history
