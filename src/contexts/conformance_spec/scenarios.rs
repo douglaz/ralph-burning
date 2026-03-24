@@ -3139,7 +3139,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
             r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"new follow log"}"#.to_owned() + "\n",
         )
         .map_err(|e| format!("write runtime log: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(3200));
+        std::thread::sleep(std::time::Duration::from_millis(3800));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3166,6 +3166,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
         write_run_query_history_fixture(&ws, "rq-follow-supporting")?;
         let child = Command::new(binary_path())
             .args(["run", "tail", "--follow"])
+            .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "1200")
             .current_dir(ws.path())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -3212,19 +3213,23 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
             .map_err(|e| format!("spawn follow: {e}"))?;
         std::thread::sleep(std::time::Duration::from_millis(300));
         write_supporting_artifact(&project_root)?;
-        let output = wait_for_child_output(child, std::time::Duration::from_millis(4500))?;
-        if output.status.success() {
-            return Err(
-                "follow should fail when a supporting payload already exists before follow starts, even if the artifact appears shortly afterward".into(),
-            );
-        }
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if !stderr.contains("history/payloads/panel-p1")
-            || !stderr.contains("payload has no matching artifact")
-        {
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
             return Err(format!(
-                "follow stderr should report the pre-existing orphan payload corruption, stderr={stderr}"
+                "follow should tolerate a startup partial supporting pair that completes within the grace window, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
             ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow output should include the completed supporting payload and artifact after the startup partial pair".into(),
+            );
         }
         Ok(())
     });

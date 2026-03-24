@@ -520,6 +520,8 @@ struct FollowState {
     last_runtime_log_count: usize,
     seen_payload_files: HashSet<String>,
     seen_artifact_files: HashSet<String>,
+    visible_payload_files: HashSet<String>,
+    visible_artifact_files: HashSet<String>,
     transient_partial_history_files: HashMap<String, Instant>,
 }
 
@@ -537,6 +539,9 @@ fn load_follow_baseline(
     let mut transient_partial_history_files = HashMap::new();
     let (seen_payload_files, seen_artifact_files) =
         list_history_record_files(current_dir, project_id)?;
+    maybe_sleep_before_follow_baseline_snapshot();
+    let previously_visible_payload_files = HashSet::new();
+    let previously_visible_artifact_files = HashSet::new();
     let FollowSnapshot {
         tail,
         visible_payload_files,
@@ -545,8 +550,8 @@ fn load_follow_baseline(
         current_dir,
         project_id,
         include_logs,
-        &seen_payload_files,
-        &seen_artifact_files,
+        &previously_visible_payload_files,
+        &previously_visible_artifact_files,
         &mut transient_partial_history_files,
     )?;
     let (payload_files, artifact_files) = list_history_record_files(current_dir, project_id)?;
@@ -561,8 +566,13 @@ fn load_follow_baseline(
     Ok(FollowState {
         last_seen_sequence: tail.events.last().map(|event| event.sequence).unwrap_or(0),
         last_runtime_log_count: tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len),
-        seen_payload_files: visible_payload_files,
-        seen_artifact_files: visible_artifact_files,
+        // Seed file diffs from the raw pre-follow directory snapshot so records
+        // that land between startup scanning and the first strict tail read are
+        // still surfaced on the first follow delta.
+        seen_payload_files,
+        seen_artifact_files,
+        visible_payload_files,
+        visible_artifact_files,
         transient_partial_history_files,
     })
 }
@@ -742,16 +752,25 @@ fn render_follow_delta(
         current_dir,
         project_id,
         include_logs,
-        &follow_state.seen_payload_files,
-        &follow_state.seen_artifact_files,
+        &follow_state.visible_payload_files,
+        &follow_state.visible_artifact_files,
         &mut follow_state.transient_partial_history_files,
     )?;
+    let (payload_files, artifact_files) = list_history_record_files(current_dir, project_id)?;
     let new_payload_files: HashSet<_> = visible_payload_files
         .difference(&follow_state.seen_payload_files)
         .cloned()
         .collect();
     let new_artifact_files: HashSet<_> = visible_artifact_files
         .difference(&follow_state.seen_artifact_files)
+        .cloned()
+        .collect();
+    let newly_visible_payload_files: HashSet<_> = visible_payload_files
+        .difference(&follow_state.visible_payload_files)
+        .cloned()
+        .collect();
+    let newly_visible_artifact_files: HashSet<_> = visible_artifact_files
+        .difference(&follow_state.visible_artifact_files)
         .cloned()
         .collect();
     let new_event_count = tail
@@ -771,6 +790,7 @@ fn render_follow_delta(
         .map(|artifact| artifact.artifact_id.clone())
         .collect();
     artifact_ids.extend(new_artifact_files.iter().cloned());
+    artifact_ids.extend(newly_visible_artifact_files.iter().cloned());
     let artifacts = tail
         .artifacts
         .iter()
@@ -782,6 +802,7 @@ fn render_follow_delta(
         .map(|payload| payload.payload_id.clone())
         .collect();
     payload_ids.extend(new_payload_files.iter().cloned());
+    payload_ids.extend(newly_visible_payload_files.iter().cloned());
     payload_ids.extend(artifacts.iter().map(|artifact| artifact.payload_id.clone()));
     let payloads = tail
         .payloads
@@ -807,15 +828,16 @@ fn render_follow_delta(
         .map(|event| event.sequence)
         .unwrap_or(follow_state.last_seen_sequence);
     follow_state.last_runtime_log_count = tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len);
-    follow_state.seen_payload_files = visible_payload_files;
-    follow_state.seen_artifact_files = visible_artifact_files;
-    let (payload_files, artifact_files) = list_history_record_files(current_dir, project_id)?;
+    follow_state.seen_payload_files = payload_files;
+    follow_state.seen_artifact_files = artifact_files;
+    follow_state.visible_payload_files = visible_payload_files;
+    follow_state.visible_artifact_files = visible_artifact_files;
     retain_pending_partial_history_files(
         &mut follow_state.transient_partial_history_files,
-        &payload_files,
-        &artifact_files,
         &follow_state.seen_payload_files,
         &follow_state.seen_artifact_files,
+        &follow_state.visible_payload_files,
+        &follow_state.visible_artifact_files,
     );
     Ok(())
 }
@@ -836,8 +858,8 @@ fn load_follow_snapshot_resilient(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
     include_logs: bool,
-    seen_payload_files: &HashSet<String>,
-    seen_artifact_files: &HashSet<String>,
+    visible_payload_files: &HashSet<String>,
+    visible_artifact_files: &HashSet<String>,
     transient_partial_history_files: &mut HashMap<String, Instant>,
 ) -> AppResult<FollowSnapshot> {
     match load_follow_snapshot_strict(current_dir, project_id, include_logs) {
@@ -846,8 +868,8 @@ fn load_follow_snapshot_resilient(
             current_dir,
             project_id,
             include_logs,
-            seen_payload_files,
-            seen_artifact_files,
+            visible_payload_files,
+            visible_artifact_files,
             transient_partial_history_files,
             error,
         ),
@@ -887,8 +909,8 @@ fn load_follow_snapshot_for_transient_partial_pair(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
     include_logs: bool,
-    seen_payload_files: &HashSet<String>,
-    seen_artifact_files: &HashSet<String>,
+    visible_payload_files: &HashSet<String>,
+    visible_artifact_files: &HashSet<String>,
     transient_partial_history_files: &mut HashMap<String, Instant>,
     error: AppError,
 ) -> AppResult<FollowSnapshot> {
@@ -913,8 +935,9 @@ fn load_follow_snapshot_for_transient_partial_pair(
             let transient_ids = collect_transient_partial_history_ids(
                 &history.payloads,
                 &history.artifacts,
-                seen_payload_files,
-                seen_artifact_files,
+                visible_payload_files,
+                visible_artifact_files,
+                transient_partial_history_files,
             );
             let transient_files = transient_partial_history_file_keys(&transient_ids);
             if !transient_files.contains(&error_file) {
@@ -938,8 +961,10 @@ fn load_follow_snapshot_for_transient_partial_pair(
             }
 
             // Follow-mode still validates against the canonical record set first.
-            // Only files that are both newly appeared and currently incomplete are
-            // filtered out for the bounded transient-write window.
+            // Only files that have never been visible in a successful snapshot,
+            // or are already inside the transient-write grace window, are
+            // filtered out. This covers pairs that straddle follow startup and
+            // pairs that are still mid-write after follow has already started.
             let payloads = history
                 .payloads
                 .into_iter()
@@ -1068,6 +1093,17 @@ fn list_json_file_stems(dir: &std::path::Path) -> AppResult<HashSet<String>> {
     Ok(stems)
 }
 
+fn maybe_sleep_before_follow_baseline_snapshot() {
+    // Test-only injection seam: pause between the startup file scan and the
+    // first strict tail snapshot so integration coverage can exercise records
+    // that land in that narrow window.
+    if let Ok(delay_ms) = std::env::var("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS") {
+        if let Ok(delay_ms) = delay_ms.parse::<u64>() {
+            std::thread::sleep(Duration::from_millis(delay_ms));
+        }
+    }
+}
+
 fn partial_history_pair_error_file(error: &AppError) -> Option<String> {
     match error {
         AppError::CorruptRecord { file, details } if is_partial_history_pair_details(details) => {
@@ -1094,16 +1130,18 @@ fn normalize_history_file_key(file: &str) -> Option<String> {
 fn collect_transient_partial_history_ids(
     payloads: &[crate::contexts::project_run_record::model::PayloadRecord],
     artifacts: &[crate::contexts::project_run_record::model::ArtifactRecord],
-    seen_payload_files: &HashSet<String>,
-    seen_artifact_files: &HashSet<String>,
+    visible_payload_files: &HashSet<String>,
+    visible_artifact_files: &HashSet<String>,
+    transient_partial_history_files: &HashMap<String, Instant>,
 ) -> TransientPartialHistoryIds {
-    // Classify transient partial pairs from the history snapshot we just loaded
-    // so follow-mode does not depend on an earlier directory scan.
+    // Classify transient partial pairs from the history snapshot we just loaded.
+    // A file stays transient while it has never been visible in a successful
+    // follow snapshot, or while it is already inside the bounded grace window.
     let payload_ids_with_artifacts: HashSet<_> = artifacts
         .iter()
         .map(|artifact| artifact.payload_id.as_str())
         .collect();
-    let visible_payload_ids: HashSet<_> = payloads
+    let snapshot_payload_ids: HashSet<_> = payloads
         .iter()
         .map(|payload| payload.payload_id.as_str())
         .collect();
@@ -1112,16 +1150,20 @@ fn collect_transient_partial_history_ids(
         payload_ids: payloads
             .iter()
             .filter(|payload| {
-                !seen_payload_files.contains(payload.payload_id.as_str())
-                    && !payload_ids_with_artifacts.contains(payload.payload_id.as_str())
+                !payload_ids_with_artifacts.contains(payload.payload_id.as_str())
+                    && (!visible_payload_files.contains(payload.payload_id.as_str())
+                        || transient_partial_history_files
+                            .contains_key(&format!("history/payloads/{}", payload.payload_id)))
             })
             .map(|payload| payload.payload_id.clone())
             .collect(),
         artifact_ids: artifacts
             .iter()
             .filter(|artifact| {
-                !seen_artifact_files.contains(artifact.artifact_id.as_str())
-                    && !visible_payload_ids.contains(artifact.payload_id.as_str())
+                !snapshot_payload_ids.contains(artifact.payload_id.as_str())
+                    && (!visible_artifact_files.contains(artifact.artifact_id.as_str())
+                        || transient_partial_history_files
+                            .contains_key(&format!("history/artifacts/{}", artifact.artifact_id)))
             })
             .map(|artifact| artifact.artifact_id.clone())
             .collect(),
@@ -1149,15 +1191,15 @@ fn retain_pending_partial_history_files(
     transient_partial_history_files: &mut HashMap<String, Instant>,
     payload_files: &HashSet<String>,
     artifact_files: &HashSet<String>,
-    seen_payload_files: &HashSet<String>,
-    seen_artifact_files: &HashSet<String>,
+    visible_payload_files: &HashSet<String>,
+    visible_artifact_files: &HashSet<String>,
 ) {
     transient_partial_history_files.retain(|file, _| {
         let normalized = file.strip_suffix(".json").unwrap_or(file.as_str());
         if let Some(payload_id) = normalized.strip_prefix("history/payloads/") {
-            payload_files.contains(payload_id) && !seen_payload_files.contains(payload_id)
+            payload_files.contains(payload_id) && !visible_payload_files.contains(payload_id)
         } else if let Some(artifact_id) = normalized.strip_prefix("history/artifacts/") {
-            artifact_files.contains(artifact_id) && !seen_artifact_files.contains(artifact_id)
+            artifact_files.contains(artifact_id) && !visible_artifact_files.contains(artifact_id)
         } else {
             false
         }
