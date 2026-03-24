@@ -2,6 +2,7 @@ use std::cell::RefCell;
 use std::path::Path;
 
 use chrono::{TimeZone, Utc};
+use tempfile::tempdir;
 
 use ralph_burning::contexts::project_run_record::model::*;
 use ralph_burning::contexts::project_run_record::service;
@@ -2306,6 +2307,50 @@ impl RunSnapshotWritePort for FailingRunSnapshotWriteStore {
     }
 }
 
+struct FailNTimesRunSnapshotStore {
+    snapshot: RefCell<RunSnapshot>,
+    remaining_failures: RefCell<u32>,
+}
+
+impl FailNTimesRunSnapshotStore {
+    fn new(snapshot: RunSnapshot, failures: u32) -> Self {
+        Self {
+            snapshot: RefCell::new(snapshot),
+            remaining_failures: RefCell::new(failures),
+        }
+    }
+}
+
+impl RunSnapshotPort for FailNTimesRunSnapshotStore {
+    fn read_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+    ) -> AppResult<RunSnapshot> {
+        Ok(self.snapshot.borrow().clone())
+    }
+}
+
+impl RunSnapshotWritePort for FailNTimesRunSnapshotStore {
+    fn write_run_snapshot(
+        &self,
+        _base_dir: &Path,
+        _project_id: &ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        let mut remaining_failures = self.remaining_failures.borrow_mut();
+        if *remaining_failures > 0 {
+            *remaining_failures -= 1;
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated snapshot write failure",
+            )));
+        }
+
+        self.snapshot.replace(snapshot.clone());
+        Ok(())
+    }
+}
+
 #[test]
 fn add_manual_amendment_rolls_back_file_on_snapshot_write_failure() {
     let queue = FakeAmendmentQueue::empty();
@@ -2335,6 +2380,145 @@ fn add_manual_amendment_rolls_back_file_on_snapshot_write_failure() {
         queue.amendments.borrow().is_empty(),
         "amendment file should be rolled back on snapshot write failure"
     );
+}
+
+#[test]
+fn add_manual_amendment_retry_reuses_preserved_file_after_completed_reopen_failure() {
+    let tmp = tempdir().unwrap();
+    let project_root = tmp.path().join(".ralph-burning/projects/alpha");
+    std::fs::create_dir_all(&project_root).unwrap();
+    std::fs::write(project_root.join("prompt.md"), "# Prompt\n").unwrap();
+
+    let completed_snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Completed,
+        cycle_history: vec![CycleHistoryEntry {
+            cycle: 1,
+            stage_id: StageId::FinalReview,
+            started_at: test_timestamp(),
+            completed_at: Some(test_timestamp()),
+        }],
+        completion_rounds: 1,
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "completed".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+
+    let queue = ralph_burning::adapters::fs::FsAmendmentQueueStore;
+    let run_store = FailNTimesRunSnapshotStore::new(completed_snapshot, 1);
+    let journal = FakeJournalStore;
+    let project_store = FakeProjectStore::with_existing(&["alpha"]);
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let first = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_store,
+        &journal,
+        &project_store,
+        tmp.path(),
+        &pid,
+        "fix the bug",
+    );
+    assert!(
+        first.is_err(),
+        "first completed-project add should fail reopen"
+    );
+
+    let preserved = queue.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(preserved.len(), 1, "failed reopen should preserve one file");
+    let preserved_id = preserved[0].amendment_id.clone();
+    let dedup_key = preserved[0].dedup_key.clone();
+    let orphan_ids = ["manual-prepatch-orphan-a", "manual-prepatch-orphan-b"];
+    for (index, orphan_id) in orphan_ids.iter().enumerate() {
+        queue
+            .write_amendment(
+                tmp.path(),
+                &pid,
+                &QueuedAmendment {
+                    amendment_id: (*orphan_id).to_owned(),
+                    source_stage: StageId::Planning,
+                    source_cycle: 1,
+                    source_completion_round: 1,
+                    body: "fix the bug".to_owned(),
+                    created_at: preserved[0].created_at
+                        + chrono::Duration::seconds((index + 1) as i64),
+                    batch_sequence: 0,
+                    source: AmendmentSource::Manual,
+                    dedup_key: dedup_key.clone(),
+                },
+            )
+            .unwrap();
+    }
+    assert_eq!(
+        queue
+            .list_pending_amendments(tmp.path(), &pid)
+            .unwrap()
+            .len(),
+        3,
+        "historical failed retries should leave multiple matching files on disk"
+    );
+
+    let second = service::add_manual_amendment(
+        &queue,
+        &run_store,
+        &run_store,
+        &journal,
+        &project_store,
+        tmp.path(),
+        &pid,
+        "fix the bug",
+    )
+    .unwrap();
+    let created_id = match second {
+        service::AmendmentAddResult::Created { amendment_id } => amendment_id,
+        service::AmendmentAddResult::Duplicate { .. } => panic!("expected Created on retry"),
+    };
+    assert_eq!(
+        created_id, preserved_id,
+        "retry should reuse the preserved amendment file instead of creating a new one"
+    );
+
+    let pending = queue.list_pending_amendments(tmp.path(), &pid).unwrap();
+    assert_eq!(pending.len(), 1, "retry should not leave an orphaned file");
+    assert_eq!(pending[0].amendment_id, preserved_id);
+    assert!(
+        orphan_ids
+            .iter()
+            .all(|orphan_id| pending.iter().all(|a| a.amendment_id != *orphan_id)),
+        "retry should collapse all historical duplicate files before reopening"
+    );
+
+    let reopened_snapshot = run_store.read_run_snapshot(tmp.path(), &pid).unwrap();
+    assert_eq!(reopened_snapshot.status, RunStatus::Paused);
+    assert_eq!(reopened_snapshot.amendment_queue.pending.len(), 1);
+    assert_eq!(
+        reopened_snapshot.amendment_queue.pending[0].amendment_id,
+        preserved_id
+    );
+
+    service::remove_amendment(
+        &queue,
+        &run_store,
+        &run_store,
+        tmp.path(),
+        &pid,
+        &preserved_id,
+    )
+    .unwrap();
+    assert!(
+        queue
+            .list_pending_amendments(tmp.path(), &pid)
+            .unwrap()
+            .is_empty(),
+        "removing the reused amendment should not leave an orphan behind"
+    );
+
+    let restored_snapshot = run_store.read_run_snapshot(tmp.path(), &pid).unwrap();
+    assert_eq!(restored_snapshot.status, RunStatus::Completed);
+    assert!(restored_snapshot.amendment_queue.pending.is_empty());
 }
 
 #[test]
