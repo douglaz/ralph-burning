@@ -132,7 +132,8 @@ untestable claims, implicit assumptions, and scope gaps.
 3. For each issue, explain why it matters for downstream implementation.
 4. Produce a refined prompt that resolves all identified issues.
 
-The `## Refined Prompt` section MUST be the final section in your output.
+Return only JSON. Put the rewritten prompt in `refined_prompt`, summarize \
+the changes in `refinement_summary`, and list the key improvements in `improvements`.
 
 ## Prompt to Review
 
@@ -154,9 +155,10 @@ for downstream implementation loops.
 
 ## Instructions
 
-1. Compare the refined prompt against the original intent.
-2. Verify the refinement preserves all original requirements.
-3. Check that the refined prompt is clear, complete, and actionable.
+1. Assess the prompt below for clarity, completeness, feasibility, and actionability.
+2. Verify it contains explicit acceptance criteria, has no vague or untestable \
+requirements, and could be handed to an implementation agent without further clarification.
+3. Check that no critical requirements appear to be missing or under-specified.
 4. If rejecting, your reason must be specific and actionable — explain exactly \
 what is wrong and how to fix it.
 
@@ -215,13 +217,14 @@ specific files and line numbers.
 ## Instructions
 
 1. Read the project prompt to understand what was requested.
-2. Examine the implementation for correctness, safety, and robustness issues.
+2. Use your tools to inspect the current diff, then read each implicated file \
+end-to-end before forming your assessment.
 3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
-4. For each issue, provide a clear Problem description citing files and lines, \
-a Proposed Change, and a list of Affected Files.
-
-If no issues are found, report NO AMENDMENTS with a summary of why the \
-implementation is correct.
+4. When issues exist, return `amendments` as an array where each entry's `body` \
+contains labeled **Problem** (citing specific files and line numbers), \
+**Proposed Change**, and **Affected Files** sections.
+5. When no issues exist, return `amendments: []` and make `summary` a clear \
+NO AMENDMENTS rationale explaining why the implementation is correct and complete.
 
 ## Project Prompt
 
