@@ -147,6 +147,52 @@ fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str)
     .expect("write artifact a2");
 }
 
+fn set_workspace_stream_output(base_dir: &std::path::Path, enabled: bool) {
+    let workspace_toml = base_dir.join(".ralph-burning/workspace.toml");
+    let mut workspace: ralph_burning::shared::domain::WorkspaceConfig =
+        toml::from_str(&fs::read_to_string(&workspace_toml).expect("read workspace.toml"))
+            .expect("parse workspace.toml");
+    workspace.execution.stream_output = Some(enabled);
+    fs::write(
+        &workspace_toml,
+        toml::to_string_pretty(&workspace).expect("serialize workspace.toml"),
+    )
+    .expect("write workspace.toml");
+}
+
+fn write_supporting_payload(project_root: &std::path::Path) {
+    fs::write(
+        project_root.join("history/payloads/panel-p1.json"),
+        r#"{
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:05:00Z",
+  "payload": { "summary": "completion panel payload" },
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write supporting payload");
+}
+
+fn write_supporting_artifact(project_root: &std::path::Path) {
+    fs::write(
+        project_root.join("history/artifacts/panel-a1.json"),
+        r##"{
+  "artifact_id": "panel-a1",
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-19T03:05:00Z",
+  "content": "# Completion Panel\nvisible follow artifact\n",
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"##,
+    )
+    .expect("write supporting artifact");
+}
+
 fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     fs::write(
@@ -2919,37 +2965,46 @@ fn run_tail_follow_surfaces_new_supporting_records_without_journal_events() {
     std::thread::sleep(std::time::Duration::from_millis(300));
 
     let project_root = project_root(temp_dir.path(), "alpha");
-    fs::write(
-        project_root.join("history/payloads/panel-p1.json"),
-        r#"{
-  "payload_id": "panel-p1",
-  "stage_id": "completion_panel",
-  "cycle": 1,
-  "attempt": 1,
-  "created_at": "2026-03-19T03:05:00Z",
-  "payload": { "summary": "completion panel payload" },
-  "record_kind": "stage_supporting",
-  "completion_round": 1
-}"#,
-    )
-    .expect("write supporting payload");
-    fs::write(
-        project_root.join("history/artifacts/panel-a1.json"),
-        r##"{
-  "artifact_id": "panel-a1",
-  "payload_id": "panel-p1",
-  "stage_id": "completion_panel",
-  "created_at": "2026-03-19T03:05:00Z",
-  "content": "# Completion Panel\nvisible follow artifact\n",
-  "record_kind": "stage_supporting",
-  "completion_round": 1
-}"##,
-    )
-    .expect("write supporting artifact");
+    write_supporting_payload(&project_root);
+    write_supporting_artifact(&project_root);
 
-    std::thread::sleep(std::time::Duration::from_millis(2500));
+    std::thread::sleep(std::time::Duration::from_millis(3200));
     kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
     let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
+fn run_tail_follow_logs_tolerates_startup_partial_supporting_pair() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+    set_workspace_stream_output(temp_dir.path(), true);
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    write_supporting_payload(&project_root);
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow", "--logs"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow --logs");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    write_supporting_artifact(&project_root);
+
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child
+        .wait_with_output()
+        .expect("wait for follow --logs output");
 
     assert!(output.status.success());
     let stdout = String::from_utf8_lossy(&output.stdout);

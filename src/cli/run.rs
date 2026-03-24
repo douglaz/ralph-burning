@@ -18,7 +18,10 @@ use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
 use crate::contexts::project_run_record::model::RunStatus;
-use crate::contexts::project_run_record::service::{self, ProjectStorePort, RunSnapshotPort};
+use crate::contexts::project_run_record::service::{
+    self, ArtifactStorePort, JournalStorePort, ProjectStorePort, RunSnapshotPort,
+    RuntimeLogStorePort,
+};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workspace_governance;
 use crate::contexts::workspace_governance::config::{CliBackendOverrides, EffectiveConfig};
@@ -126,6 +129,8 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
         RunSubcommand::ShowArtifact { artifact_id } => handle_show_artifact(artifact_id).await,
     }
 }
+
+const FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 async fn handle_start(overrides: RunBackendOverrideArgs) -> AppResult<()> {
     let current_dir = std::env::current_dir()?;
@@ -451,25 +456,12 @@ async fn handle_tail_follow(
     include_logs: bool,
     stream_output: bool,
 ) -> AppResult<()> {
-    let initial_tail = service::run_tail(
-        &FsJournalStore,
-        &FsArtifactStore,
-        &FsRuntimeLogStore,
-        current_dir,
-        project_id,
-        include_logs,
-    )?;
-    let mut last_seen_sequence = initial_tail
-        .events
-        .last()
-        .map(|event| event.sequence)
-        .unwrap_or(0);
-    let mut last_runtime_log_count = initial_tail
-        .runtime_logs
-        .as_ref()
-        .map_or(0, std::vec::Vec::len);
-    let (mut seen_payload_files, mut seen_artifact_files) =
-        list_history_record_files(current_dir, project_id)?;
+    let FollowBaseline {
+        mut last_seen_sequence,
+        mut last_runtime_log_count,
+        mut seen_payload_files,
+        mut seen_artifact_files,
+    } = load_follow_baseline(current_dir, project_id, include_logs)?;
 
     println!(
         "Following project '{}' for new durable history{}; press Ctrl-C to stop.",
@@ -481,32 +473,22 @@ async fn handle_tail_follow(
         }
     );
 
-    if include_logs && stream_output {
-        if let Some(mut watcher) = build_follow_watcher(current_dir, project_id)? {
-            loop {
-                tokio::select! {
-                    result = tokio::signal::ctrl_c() => {
-                        result?;
-                        println!("Stopped following.");
-                        return Ok(());
-                    }
-                    maybe_event = watcher.rx.recv() => {
-                        if maybe_event.is_none() {
-                            break;
-                        }
-                        render_follow_delta(
-                            current_dir,
-                            project_id,
-                            include_logs,
-                            &mut last_seen_sequence,
-                            &mut last_runtime_log_count,
-                            &mut seen_payload_files,
-                            &mut seen_artifact_files,
-                        )?;
-                    }
-                }
-            }
-        }
+    let mut watcher = if include_logs && stream_output {
+        build_follow_watcher(current_dir, project_id)?
+    } else {
+        None
+    };
+
+    if watcher.is_some() {
+        render_follow_delta(
+            current_dir,
+            project_id,
+            include_logs,
+            &mut last_seen_sequence,
+            &mut last_runtime_log_count,
+            &mut seen_payload_files,
+            &mut seen_artifact_files,
+        )?;
     }
 
     loop {
@@ -516,7 +498,27 @@ async fn handle_tail_follow(
                 println!("Stopped following.");
                 return Ok(());
             }
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {
+            maybe_event = async {
+                match &mut watcher {
+                    Some(watcher) => watcher.rx.recv().await,
+                    None => std::future::pending::<Option<notify::Event>>().await,
+                }
+            } => {
+                if maybe_event.is_none() {
+                    watcher = None;
+                    continue;
+                }
+                render_follow_delta(
+                    current_dir,
+                    project_id,
+                    include_logs,
+                    &mut last_seen_sequence,
+                    &mut last_runtime_log_count,
+                    &mut seen_payload_files,
+                    &mut seen_artifact_files,
+                )?;
+            }
+            _ = tokio::time::sleep(FOLLOW_POLL_INTERVAL) => {
                 render_follow_delta(
                     current_dir,
                     project_id,
@@ -528,6 +530,62 @@ async fn handle_tail_follow(
                 )?;
             }
         }
+    }
+}
+
+struct FollowBaseline {
+    last_seen_sequence: u64,
+    last_runtime_log_count: usize,
+    seen_payload_files: HashSet<String>,
+    seen_artifact_files: HashSet<String>,
+}
+
+fn load_follow_baseline(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+    include_logs: bool,
+) -> AppResult<FollowBaseline> {
+    let (seen_payload_files, seen_artifact_files) =
+        list_history_record_files(current_dir, project_id)?;
+
+    match service::run_tail(
+        &FsJournalStore,
+        &FsArtifactStore,
+        &FsRuntimeLogStore,
+        current_dir,
+        project_id,
+        include_logs,
+    ) {
+        Ok(tail) => Ok(FollowBaseline {
+            last_seen_sequence: tail.events.last().map(|event| event.sequence).unwrap_or(0),
+            last_runtime_log_count: tail.runtime_logs.as_ref().map_or(0, std::vec::Vec::len),
+            seen_payload_files,
+            seen_artifact_files,
+        }),
+        Err(AppError::CorruptRecord { file, details })
+            if is_partial_history_pair_error(&file, &details) =>
+        {
+            let events = crate::contexts::project_run_record::queries::visible_journal_events(
+                &FsJournalStore.read_journal(current_dir, project_id)?,
+            )?;
+            let (seen_payload_files, seen_artifact_files) =
+                list_complete_visible_history_file_ids(current_dir, project_id)?;
+            let last_runtime_log_count = if include_logs {
+                FsRuntimeLogStore
+                    .read_runtime_logs(current_dir, project_id)?
+                    .len()
+            } else {
+                0
+            };
+
+            Ok(FollowBaseline {
+                last_seen_sequence: events.last().map(|event| event.sequence).unwrap_or(0),
+                last_runtime_log_count,
+                seen_payload_files,
+                seen_artifact_files,
+            })
+        }
+        Err(error) => Err(error),
     }
 }
 
@@ -721,8 +779,12 @@ fn render_follow_delta(
     ) {
         Ok(tail) => tail,
         Err(AppError::CorruptRecord { file, details })
-            if (!new_payload_files.is_empty() || !new_artifact_files.is_empty())
-                && is_partial_history_pair_error(&file, &details) =>
+            if is_new_partial_history_pair_error(
+                &file,
+                &details,
+                &new_payload_files,
+                &new_artifact_files,
+            ) =>
         {
             return Ok(());
         }
@@ -744,6 +806,8 @@ fn render_follow_delta(
         .iter()
         .map(|payload| payload.payload_id.clone())
         .collect();
+    // Durable history files are canonically named `<record_id>.json`, so the
+    // file stems tracked for follow-mode diffs are the stable record IDs.
     payload_ids.extend(new_payload_files);
     let mut artifact_ids: HashSet<_> = event_artifacts
         .iter()
@@ -798,6 +862,37 @@ fn list_history_record_files(
     ))
 }
 
+fn list_complete_visible_history_file_ids(
+    current_dir: &std::path::Path,
+    project_id: &crate::shared::domain::ProjectId,
+) -> AppResult<(HashSet<String>, HashSet<String>)> {
+    let events = crate::contexts::project_run_record::queries::visible_journal_events(
+        &FsJournalStore.read_journal(current_dir, project_id)?,
+    )?;
+    let (payloads, artifacts) =
+        crate::contexts::project_run_record::queries::filter_history_records(
+            &events,
+            FsArtifactStore.list_payloads(current_dir, project_id)?,
+            FsArtifactStore.list_artifacts(current_dir, project_id)?,
+        )?;
+    let visible_payload_ids: HashSet<_> = payloads
+        .iter()
+        .map(|payload| payload.payload_id.clone())
+        .collect();
+    let complete_payload_ids: HashSet<_> = artifacts
+        .iter()
+        .filter(|artifact| visible_payload_ids.contains(artifact.payload_id.as_str()))
+        .map(|artifact| artifact.payload_id.clone())
+        .collect();
+    let complete_artifact_ids = artifacts
+        .iter()
+        .filter(|artifact| complete_payload_ids.contains(artifact.payload_id.as_str()))
+        .map(|artifact| artifact.artifact_id.clone())
+        .collect();
+
+    Ok((complete_payload_ids, complete_artifact_ids))
+}
+
 fn list_json_file_stems(dir: &std::path::Path) -> AppResult<HashSet<String>> {
     if !dir.is_dir() {
         return Ok(HashSet::new());
@@ -808,6 +903,8 @@ fn list_json_file_stems(dir: &std::path::Path) -> AppResult<HashSet<String>> {
         let entry = entry?;
         let path = entry.path();
         if path.extension().is_some_and(|ext| ext == "json") {
+            // History records are persisted as `<record_id>.json`, so the stem is
+            // the durable identifier used for follow-mode file diffs.
             if let Some(stem) = path.file_stem().and_then(|stem| stem.to_str()) {
                 stems.insert(stem.to_owned());
             }
@@ -821,6 +918,26 @@ fn is_partial_history_pair_error(file: &str, details: &str) -> bool {
     (file.starts_with("history/payloads/") || file.starts_with("history/artifacts/"))
         && (details.contains("payload has no matching artifact")
             || details.contains("artifact references payload"))
+}
+
+fn is_new_partial_history_pair_error(
+    file: &str,
+    details: &str,
+    new_payload_files: &HashSet<String>,
+    new_artifact_files: &HashSet<String>,
+) -> bool {
+    if !is_partial_history_pair_error(file, details) {
+        return false;
+    }
+
+    matches_history_file_stem(file, "history/payloads/", new_payload_files)
+        || matches_history_file_stem(file, "history/artifacts/", new_artifact_files)
+}
+
+fn matches_history_file_stem(file: &str, prefix: &str, stems: &HashSet<String>) -> bool {
+    file.strip_prefix(prefix)
+        .map(|name| name.strip_suffix(".json").unwrap_or(name))
+        .is_some_and(|stem| stems.contains(stem))
 }
 
 fn maybe_filter_history_by_stage(

@@ -333,3 +333,10 @@ Feature: Run Queries
     And project "alpha" has journal events and payload/artifact records
     When the user starts "run tail --follow", writes a new supporting payload/artifact pair, and interrupts it with Ctrl-C
     Then the follow output includes the appended supporting payload and artifact
+
+  # SC-RUN-048
+  Scenario: Run tail --follow --logs tolerates a supporting payload present before its artifact pair completes
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user starts "run tail --follow --logs" with streaming enabled, completes a pre-existing supporting payload/artifact pair, and interrupts it with Ctrl-C
+    Then the follow output includes the completed supporting payload and artifact
