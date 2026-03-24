@@ -22,6 +22,7 @@ use self::process_backend::ProcessBackendAdapter;
 use self::stub_backend::StubBackendAdapter;
 use self::tmux::TmuxAdapter;
 
+#[allow(clippy::large_enum_variant)]
 pub enum BackendAdapter {
     #[cfg(feature = "test-stub")]
     Stub(StubBackendAdapter),

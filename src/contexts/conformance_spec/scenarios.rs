@@ -373,7 +373,7 @@ fn count_payload_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, St
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read payloads dir: {e}"))?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     Ok(count)
 }
@@ -385,7 +385,7 @@ fn count_artifact_files(ws: &TempWorkspace, project_id: &str) -> Result<usize, S
     let count = std::fs::read_dir(&dir)
         .map_err(|e| format!("read artifacts dir: {e}"))?
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "json"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
         .count();
     Ok(count)
 }
@@ -4338,13 +4338,10 @@ fn register_run_resume_retry(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify the first resumed stage is "implementation" with attempt 1
-        let first_stage_after_resume = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
+        let first_stage_after_resume = post_events.iter().find(|e| {
+            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
         if let Some(evt) = first_stage_after_resume {
             let stage = evt
                 .get("details")
@@ -4691,13 +4688,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // Verify first resumed stage is docs_update
-        let first_stage = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
+        let first_stage = post_events.iter().find(|e| {
+            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
         if let Some(evt) = first_stage {
             let sid = evt
                 .get("details")
@@ -4768,13 +4762,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
             .get("sequence")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let first_stage = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
+        let first_stage = post_events.iter().find(|e| {
+            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
         if let Some(evt) = first_stage {
             let sid = evt
                 .get("details")
@@ -4939,13 +4930,10 @@ fn register_run_resume_non_standard(m: &mut HashMap<String, ScenarioExecutor>) {
         }
 
         // First resumed stage is review
-        let first_stage = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
+        let first_stage = post_events.iter().find(|e| {
+            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
         if let Some(evt) = first_stage {
             let sid = evt
                 .get("details")
@@ -5592,13 +5580,10 @@ fn register_run_rollback(m: &mut HashMap<String, ScenarioExecutor>) {
             .get("sequence")
             .and_then(|v| v.as_u64())
             .unwrap_or(0);
-        let first_stage_after_resume = post_events
-            .iter()
-            .filter(|e| {
-                e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
-                    && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
-            })
-            .next();
+        let first_stage_after_resume = post_events.iter().find(|e| {
+            e.get("sequence").and_then(|v| v.as_u64()).unwrap_or(0) > resume_seq
+                && e.get("event_type").and_then(|v| v.as_str()) == Some("stage_entered")
+        });
         if first_stage_after_resume.is_none() {
             return Err("no stage_entered events after resume".into());
         }
@@ -9499,9 +9484,9 @@ fn register_daemon_lifecycle(m: &mut HashMap<String, ScenarioExecutor>) {
             .and_then(|v| v.as_str())
             .unwrap_or("");
         if task2_status == "pending" {
-            return Err(format!(
-                "free-task should have been claimed/processed but is still 'pending'"
-            ));
+            return Err(
+                "free-task should have been claimed/processed but is still 'pending'".to_owned(),
+            );
         }
 
         Ok(())
@@ -10812,7 +10797,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
 
     reg!(m, "workflow.prompt_review.optional_validator_skip", || {
         // ── Helper assertions ──
-        let specs = vec![
+        let specs = [
             crate::shared::domain::PanelBackendSpec::required(
                 crate::shared::domain::BackendFamily::Claude,
             ),
@@ -19828,7 +19813,7 @@ fn register_template_overrides_slice7(m: &mut HashMap<String, ScenarioExecutor>)
             .map_err(|e| format!("create templates dir: {e}"))?;
         std::fs::write(
             templates_dir.join("requirements_ideation.md"),
-            &[0xFF, 0xFE, 0x00, 0x01],
+            [0xFF, 0xFE, 0x00, 0x01],
         )
         .map_err(|e| format!("write non-utf8: {e}"))?;
         match template_catalog::resolve("requirements_ideation", ws.path(), None) {
