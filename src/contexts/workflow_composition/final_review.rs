@@ -1106,6 +1106,8 @@ mod tests {
                     token_counts: TokenCounts::default(),
                     backend_used: request.resolved_target.backend.clone(),
                     model_used: request.resolved_target.model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
                     attempt_number: request.attempt_number,
                     session_id: None,
                     session_reused: false,
@@ -1502,6 +1504,7 @@ mod tests {
                 Some(RecordProducer::Agent {
                     backend_family,
                     model_id,
+                    ..
                 }) if !backend_family.is_empty() && !model_id.is_empty()
             )),
             "final-review supporting artifacts must persist agent producer metadata: {supporting_final_review_artifacts:?}"

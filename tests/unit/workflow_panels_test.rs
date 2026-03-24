@@ -231,6 +231,8 @@ fn record_producer_serializes_with_tagged_union_format() {
     let agent = RecordProducer::Agent {
         backend_family: "claude".to_string(),
         model_id: "model-1".to_string(),
+        adapter_reported_backend_family: None,
+        adapter_reported_model_id: None,
     };
     let json = serde_json::to_value(&agent).unwrap();
     assert_eq!(json["type"], "agent");
@@ -258,6 +260,8 @@ fn record_producer_round_trips() {
         RecordProducer::Agent {
             backend_family: "claude".to_string(),
             model_id: "model-1".to_string(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
         },
         RecordProducer::System {
             component: "completion_aggregator".to_string(),
@@ -272,6 +276,64 @@ fn record_producer_round_trips() {
         let restored: RecordProducer = serde_json::from_str(&json).expect("deserializes");
         assert_eq!(producer, restored);
     }
+}
+
+// ── Adapter-reported fields serialization ────────────────────────────────────
+
+#[test]
+fn record_producer_agent_with_adapter_reported_values_round_trips() {
+    let with_reported = RecordProducer::Agent {
+        backend_family: "claude".to_string(),
+        model_id: "claude-opus-4-6".to_string(),
+        adapter_reported_backend_family: Some("openrouter".to_string()),
+        adapter_reported_model_id: Some("openai/gpt-4.1".to_string()),
+    };
+
+    // Serialize and verify Some values are present
+    let json = serde_json::to_value(&with_reported).unwrap();
+    assert_eq!(json["adapter_reported_backend_family"], "openrouter");
+    assert_eq!(json["adapter_reported_model_id"], "openai/gpt-4.1");
+
+    // Round-trip
+    let json_str = serde_json::to_string(&with_reported).unwrap();
+    let restored: RecordProducer = serde_json::from_str(&json_str).unwrap();
+    assert_eq!(with_reported, restored);
+}
+
+#[test]
+fn record_producer_agent_none_fields_omitted_from_json() {
+    let without_reported = RecordProducer::Agent {
+        backend_family: "claude".to_string(),
+        model_id: "claude-opus-4-6".to_string(),
+        adapter_reported_backend_family: None,
+        adapter_reported_model_id: None,
+    };
+
+    let json = serde_json::to_value(&without_reported).unwrap();
+    assert!(
+        json.get("adapter_reported_backend_family").is_none(),
+        "None adapter_reported_backend_family should be omitted via skip_serializing_if"
+    );
+    assert!(
+        json.get("adapter_reported_model_id").is_none(),
+        "None adapter_reported_model_id should be omitted via skip_serializing_if"
+    );
+}
+
+#[test]
+fn record_producer_agent_deserializes_without_adapter_reported_fields() {
+    // Simulates old JSON that was serialized before the adapter_reported fields existed
+    let old_json = r#"{"type":"agent","backend_family":"claude","model_id":"claude-opus-4-6"}"#;
+    let restored: RecordProducer = serde_json::from_str(old_json).unwrap();
+    assert_eq!(
+        restored,
+        RecordProducer::Agent {
+            backend_family: "claude".to_string(),
+            model_id: "claude-opus-4-6".to_string(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
+        }
+    );
 }
 
 // ── Panel JSON schema generation ─────────────────────────────────────────────
@@ -372,6 +434,8 @@ fn record_producer_display_agent() {
     let producer = RecordProducer::Agent {
         backend_family: "claude".to_string(),
         model_id: "model-1".to_string(),
+        adapter_reported_backend_family: None,
+        adapter_reported_model_id: None,
     };
     assert_eq!(producer.to_string(), "agent:claude/model-1");
 }

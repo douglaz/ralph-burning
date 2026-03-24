@@ -10613,6 +10613,8 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         let producer = RecordProducer::Agent {
             backend_family: "claude".to_owned(),
             model_id: "claude-opus-4-6".to_owned(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
         };
         let producer_json =
             serde_json::to_value(&producer).map_err(|e| format!("producer serialize: {e}"))?;

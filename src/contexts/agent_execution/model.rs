@@ -251,6 +251,8 @@ pub struct InvocationMetadata {
     pub token_counts: TokenCounts,
     pub backend_used: BackendSpec,
     pub model_used: ModelSpec,
+    pub adapter_reported_backend: Option<BackendSpec>,
+    pub adapter_reported_model: Option<ModelSpec>,
     pub attempt_number: u32,
     pub session_id: Option<String>,
     pub session_reused: bool,

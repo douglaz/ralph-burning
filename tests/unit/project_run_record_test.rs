@@ -1426,6 +1426,8 @@ fn payload_record_with_record_kind_and_producer_round_trip() {
         producer: Some(RecordProducer::Agent {
             backend_family: "claude".to_owned(),
             model_id: "sonnet".to_owned(),
+            adapter_reported_backend_family: None,
+            adapter_reported_model_id: None,
         }),
         completion_round: 2,
     };

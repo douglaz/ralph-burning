@@ -10,7 +10,7 @@ use crate::contexts::agent_execution::model::{
     RawOutputReference, TokenCounts,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
-use crate::shared::domain::{BackendFamily, FailureClass, ResolvedBackendTarget};
+use crate::shared::domain::{BackendFamily, FailureClass, ModelSpec, ResolvedBackendTarget};
 use crate::shared::error::{AppError, AppResult};
 
 const DEFAULT_OPENROUTER_BASE_URL: &str = "https://openrouter.ai";
@@ -278,6 +278,18 @@ impl OpenRouterBackendAdapter {
                 Self::invocation_failed(request, FailureClass::SchemaValidationFailure, details)
             })?;
 
+        let model_used = match parsed.model {
+            Some(ref response_model)
+                if response_model != &request.resolved_target.model.model_id =>
+            {
+                ModelSpec::new(
+                    request.resolved_target.model.backend_family,
+                    response_model.clone(),
+                )
+            }
+            _ => request.resolved_target.model.clone(),
+        };
+
         Ok(InvocationEnvelope {
             raw_output_reference: RawOutputReference::Inline(response_body),
             parsed_payload,
@@ -293,7 +305,9 @@ impl OpenRouterBackendAdapter {
                     total_tokens: parsed.usage.as_ref().and_then(|usage| usage.total_tokens),
                 },
                 backend_used: request.resolved_target.backend.clone(),
-                model_used: request.resolved_target.model.clone(),
+                model_used,
+                adapter_reported_backend: None,
+                adapter_reported_model: None,
                 attempt_number: request.attempt_number,
                 session_id: None,
                 session_reused: false,
@@ -457,6 +471,7 @@ fn extract_error_message(body: Value) -> Option<String> {
 struct ChatCompletionResponse {
     choices: Vec<ChatChoice>,
     usage: Option<OpenRouterUsage>,
+    model: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -952,6 +967,79 @@ mod tests {
             .check_capability(&request.resolved_target, &request.contract)
             .await
             .expect("stage contract should be supported");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_captures_response_model_when_different_from_request() {
+        let _env_guard = ENV_MUTEX.lock().expect("env lock");
+        let server = MockHttpServer::start(vec![ResponsePlan::json(
+            200,
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"questions\":[{\"id\":\"q1\",\"prompt\":\"Q?\",\"rationale\":\"R\",\"required\":true}]}"
+                    }
+                }],
+                "model": "anthropic/claude-3.5-sonnet:beta",
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8
+                }
+            }),
+        )]);
+        set_openrouter_env(&server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(server.base_url.clone());
+        let (_dir, request) =
+            request_fixture(BackendFamily::OpenRouter, "anthropic/claude-3.5-sonnet");
+
+        let envelope = adapter
+            .invoke(request.clone())
+            .await
+            .expect("invoke succeeds");
+
+        // The adapter should report the actual model from the response, not the requested one
+        assert_eq!(
+            envelope.metadata.model_used.model_id, "anthropic/claude-3.5-sonnet:beta",
+            "model_used should reflect the response model, not the requested model"
+        );
+        clear_openrouter_env();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_keeps_request_model_when_response_model_matches() {
+        let _env_guard = ENV_MUTEX.lock().expect("env lock");
+        let server = MockHttpServer::start(vec![ResponsePlan::json(
+            200,
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"questions\":[{\"id\":\"q1\",\"prompt\":\"Q?\",\"rationale\":\"R\",\"required\":true}]}"
+                    }
+                }],
+                "model": "anthropic/claude-3.5-sonnet",
+                "usage": {
+                    "prompt_tokens": 5,
+                    "completion_tokens": 3,
+                    "total_tokens": 8
+                }
+            }),
+        )]);
+        set_openrouter_env(&server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(server.base_url.clone());
+        let (_dir, request) =
+            request_fixture(BackendFamily::OpenRouter, "anthropic/claude-3.5-sonnet");
+
+        let envelope = adapter
+            .invoke(request.clone())
+            .await
+            .expect("invoke succeeds");
+
+        assert_eq!(
+            envelope.metadata.model_used.model_id, "anthropic/claude-3.5-sonnet",
+            "model_used should stay as requested when response matches"
+        );
+        clear_openrouter_env();
     }
 
     fn read_http_request(stream: &mut TcpStream) -> std::io::Result<RecordedRequest> {

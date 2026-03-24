@@ -217,8 +217,22 @@ where
         };
 
         let duration = started.elapsed();
+        let adapter_reported_backend =
+            if backend_matches_target(&envelope.metadata.backend_used, &request.resolved_target) {
+                None
+            } else {
+                Some(envelope.metadata.backend_used.clone())
+            };
+        let adapter_reported_model =
+            if model_matches_target(&envelope.metadata.model_used, &request.resolved_target) {
+                None
+            } else {
+                Some(envelope.metadata.model_used.clone())
+            };
         envelope.metadata.duration = duration;
         envelope.metadata.attempt_number = request.attempt_number;
+        envelope.metadata.adapter_reported_backend = adapter_reported_backend;
+        envelope.metadata.adapter_reported_model = adapter_reported_model;
         envelope.metadata.backend_used = request.resolved_target.backend.clone();
         envelope.metadata.model_used = request.resolved_target.model.clone();
         envelope.timestamp = Utc::now();
@@ -269,6 +283,15 @@ fn parse_backend_family(key: &str, value: &str) -> AppResult<BackendFamily> {
             reason: "expected one of claude, codex, openrouter, stub".to_owned(),
         }),
     }
+}
+
+fn backend_matches_target(reported: &BackendSpec, target: &ResolvedBackendTarget) -> bool {
+    reported.family == target.backend.family
+}
+
+fn model_matches_target(reported: &ModelSpec, target: &ResolvedBackendTarget) -> bool {
+    reported.backend_family == target.model.backend_family
+        && reported.model_id == target.model.model_id
 }
 
 fn extract_raw_output(raw_output_reference: &RawOutputReference) -> AppResult<String> {
@@ -336,5 +359,188 @@ fn map_contract_error(error: ContractError, request: &InvocationRequest) -> AppE
         contract_id: request.contract.label(),
         failure_class: error.failure_class(),
         details: error.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+    use std::time::Duration;
+
+    use chrono::Utc;
+    use serde_json::json;
+    use tempfile::tempdir;
+
+    use super::*;
+    use crate::contexts::agent_execution::model::{
+        CancellationToken, InvocationContract, InvocationMetadata, InvocationPayload, TokenCounts,
+    };
+    use crate::contexts::agent_execution::session::PersistedSessions;
+    use crate::shared::domain::SessionPolicy;
+
+    #[derive(Clone)]
+    struct ReportingAdapter {
+        reported_backend: BackendSpec,
+        reported_model: ModelSpec,
+    }
+
+    impl ReportingAdapter {
+        fn new(reported_backend: BackendSpec, reported_model: ModelSpec) -> Self {
+            Self {
+                reported_backend,
+                reported_model,
+            }
+        }
+    }
+
+    impl AgentExecutionPort for ReportingAdapter {
+        async fn check_capability(
+            &self,
+            _backend: &ResolvedBackendTarget,
+            _contract: &InvocationContract,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn check_availability(&self, _backend: &ResolvedBackendTarget) -> AppResult<()> {
+            Ok(())
+        }
+
+        async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
+            Ok(InvocationEnvelope {
+                raw_output_reference: RawOutputReference::Inline(r#"{"status":"ok"}"#.to_owned()),
+                parsed_payload: json!({"status": "ok"}),
+                metadata: InvocationMetadata {
+                    invocation_id: request.invocation_id.clone(),
+                    duration: Duration::ZERO,
+                    token_counts: TokenCounts::default(),
+                    backend_used: self.reported_backend.clone(),
+                    model_used: self.reported_model.clone(),
+                    adapter_reported_backend: None,
+                    adapter_reported_model: None,
+                    attempt_number: 0,
+                    session_id: None,
+                    session_reused: false,
+                },
+                timestamp: Utc::now(),
+            })
+        }
+
+        async fn cancel(&self, _invocation_id: &str) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    struct InlineRawOutputStore;
+
+    impl RawOutputPort for InlineRawOutputStore {
+        fn persist_raw_output(
+            &self,
+            _project_root: &Path,
+            _invocation_id: &str,
+            contents: &str,
+        ) -> AppResult<RawOutputReference> {
+            Ok(RawOutputReference::Inline(contents.to_owned()))
+        }
+    }
+
+    struct NoopSessionStore;
+
+    impl SessionStorePort for NoopSessionStore {
+        fn load_sessions(&self, _project_root: &Path) -> AppResult<PersistedSessions> {
+            Ok(PersistedSessions::empty())
+        }
+
+        fn save_sessions(
+            &self,
+            _project_root: &Path,
+            _sessions: &PersistedSessions,
+        ) -> AppResult<()> {
+            Ok(())
+        }
+    }
+
+    fn request_fixture(
+        project_root: PathBuf,
+        resolved_target: ResolvedBackendTarget,
+    ) -> InvocationRequest {
+        InvocationRequest {
+            invocation_id: "service-invoke-1".to_owned(),
+            project_root: project_root.clone(),
+            working_dir: project_root,
+            contract: InvocationContract::Requirements {
+                label: "requirements:project_seed".to_owned(),
+            },
+            role: BackendRole::Planner,
+            resolved_target,
+            payload: InvocationPayload {
+                prompt: "Prompt".to_owned(),
+                context: json!({}),
+            },
+            timeout: Duration::from_secs(5),
+            cancellation_token: CancellationToken::new(),
+            session_policy: SessionPolicy::NewSession,
+            prior_session: None,
+            attempt_number: 3,
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_preserves_adapter_reported_values_before_normalizing_target() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6");
+        let request = request_fixture(temp_dir.path().to_path_buf(), resolved_target.clone());
+        let service = AgentExecutionService::new(
+            ReportingAdapter::new(
+                BackendSpec::from_family(BackendFamily::OpenRouter),
+                ModelSpec::new(BackendFamily::OpenRouter, "openai/gpt-4.1"),
+            ),
+            InlineRawOutputStore,
+            NoopSessionStore,
+        );
+
+        let envelope = service.invoke(request).await.expect("invoke succeeds");
+
+        assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
+        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
+        assert_eq!(
+            envelope
+                .metadata
+                .adapter_reported_backend
+                .as_ref()
+                .map(|backend| backend.family),
+            Some(BackendFamily::OpenRouter)
+        );
+        assert_eq!(
+            envelope
+                .metadata
+                .adapter_reported_model
+                .as_ref()
+                .map(|model| (model.backend_family, model.model_id.as_str())),
+            Some((BackendFamily::OpenRouter, "openai/gpt-4.1"))
+        );
+        assert_eq!(envelope.metadata.attempt_number, 3);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_omits_adapter_reported_values_when_adapter_matches_target() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let resolved_target = ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6");
+        let request = request_fixture(temp_dir.path().to_path_buf(), resolved_target.clone());
+        let service = AgentExecutionService::new(
+            ReportingAdapter::new(
+                resolved_target.backend.clone(),
+                resolved_target.model.clone(),
+            ),
+            InlineRawOutputStore,
+            NoopSessionStore,
+        );
+
+        let envelope = service.invoke(request).await.expect("invoke succeeds");
+
+        assert_eq!(envelope.metadata.adapter_reported_backend, None);
+        assert_eq!(envelope.metadata.adapter_reported_model, None);
+        assert_eq!(envelope.metadata.backend_used.family, BackendFamily::Claude);
+        assert_eq!(envelope.metadata.model_used.model_id, "claude-opus-4-6");
     }
 }
