@@ -507,8 +507,8 @@ async fn claude_command_construction_and_double_parse() {
     let schema_file = request.working_dir.join("claude-json-schema.json");
     let schema_text = fs::read_to_string(&schema_file)
         .expect("fake claude should have captured --json-schema value");
-    let schema: serde_json::Value = serde_json::from_str(&schema_text)
-        .expect("--json-schema value should be valid JSON");
+    let schema: serde_json::Value =
+        serde_json::from_str(&schema_text).expect("--json-schema value should be valid JSON");
     assert!(
         !schema
             .as_object()
@@ -653,8 +653,8 @@ async fn codex_command_construction_and_temp_files() {
     let captured_schema_file = request.working_dir.join("codex-schema-captured.json");
     let schema_text = fs::read_to_string(&captured_schema_file)
         .expect("fake codex should have captured --output-schema file");
-    let schema: serde_json::Value = serde_json::from_str(&schema_text)
-        .expect("schema file should be valid JSON");
+    let schema: serde_json::Value =
+        serde_json::from_str(&schema_text).expect("schema file should be valid JSON");
     assert!(
         !schema
             .as_object()

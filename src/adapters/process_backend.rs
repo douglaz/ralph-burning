@@ -97,7 +97,9 @@ impl PreparedCommand {
         output: ChildOutput,
     ) -> AppResult<InvocationEnvelope> {
         match &self.response_decoder {
-            ResponseDecoder::Claude { session_resuming, .. } => {
+            ResponseDecoder::Claude {
+                session_resuming, ..
+            } => {
                 let session_resuming = *session_resuming;
                 let stdout_text = String::from_utf8_lossy(&output.stdout).into_owned();
 
@@ -1402,7 +1404,10 @@ mod tests {
 
         // rationale should be rewritten to anyOf format
         let rationale = &schema["properties"]["rationale"];
-        assert!(rationale.get("type").is_none(), "type key should be removed");
+        assert!(
+            rationale.get("type").is_none(),
+            "type key should be removed"
+        );
         let any_of = rationale["anyOf"].as_array().unwrap();
         assert_eq!(any_of.len(), 2);
         assert_eq!(any_of[0], json!({"type": "string"}));
@@ -1449,7 +1454,11 @@ mod tests {
         let value = &schema["properties"]["value"];
         assert!(value.get("type").is_none(), "type key should be removed");
         let any_of = value["anyOf"].as_array().unwrap();
-        assert_eq!(any_of.len(), 3, "should have one arm per non-null type plus null");
+        assert_eq!(
+            any_of.len(),
+            3,
+            "should have one arm per non-null type plus null"
+        );
         assert_eq!(any_of[0]["type"], "string");
         assert_eq!(any_of[0]["format"], "custom");
         assert_eq!(any_of[1]["type"], "integer");
@@ -1516,7 +1525,9 @@ mod tests {
 
         enforce_strict_mode_schema(&mut schema);
 
-        let one_of = schema["properties"]["producer"]["oneOf"].as_array().unwrap();
+        let one_of = schema["properties"]["producer"]["oneOf"]
+            .as_array()
+            .unwrap();
         for (i, variant) in one_of.iter().enumerate() {
             assert_eq!(
                 variant["additionalProperties"],
@@ -1562,8 +1573,7 @@ mod tests {
         assert_eq!(def["additionalProperties"], json!(false));
 
         let def_required = def["required"].as_array().unwrap();
-        let def_req_strings: Vec<&str> =
-            def_required.iter().map(|v| v.as_str().unwrap()).collect();
+        let def_req_strings: Vec<&str> = def_required.iter().map(|v| v.as_str().unwrap()).collect();
         assert!(def_req_strings.contains(&"body"));
         assert!(def_req_strings.contains(&"rationale"));
 
@@ -1743,7 +1753,10 @@ mod tests {
             }
         });
         inline_schema_refs(&mut schema);
-        assert_eq!(schema["properties"]["item"], json!({ "$ref": "#/definitions/Missing" }));
+        assert_eq!(
+            schema["properties"]["item"],
+            json!({ "$ref": "#/definitions/Missing" })
+        );
         assert!(schema.get("definitions").is_none());
 
         // Sub-case 2: definitions is a non-object — schema must be completely unchanged
@@ -2210,10 +2223,7 @@ mod tests {
     fn assert_no_refs(value: &serde_json::Value, path: &str) {
         match value {
             serde_json::Value::Object(map) => {
-                assert!(
-                    !map.contains_key("$ref"),
-                    "found $ref at {path}"
-                );
+                assert!(!map.contains_key("$ref"), "found $ref at {path}");
                 for (k, v) in map {
                     assert_no_refs(v, &format!("{path}.{k}"));
                 }
@@ -2264,8 +2274,7 @@ mod tests {
             .position(|a| a == "--output-schema")
             .expect("--output-schema flag should be present");
         let schema_path = &prepared.args[schema_idx + 1];
-        let schema_json =
-            std::fs::read_to_string(schema_path).expect("schema file should exist");
+        let schema_json = std::fs::read_to_string(schema_path).expect("schema file should exist");
         let schema: serde_json::Value =
             serde_json::from_str(&schema_json).expect("schema should be valid JSON");
 
@@ -2275,5 +2284,4 @@ mod tests {
         );
         assert_no_refs(&schema, "root");
     }
-
 }

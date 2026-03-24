@@ -376,9 +376,17 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
         async move { adapter.invoke(request).await }
     });
 
-    tokio::time::sleep(Duration::from_millis(250)).await;
+    // Retry session-existence check to avoid flakiness under parallel test load.
+    let mut session_found = false;
+    for _ in 0..10 {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        if TmuxAdapter::session_exists(&session_name).expect("query session") {
+            session_found = true;
+            break;
+        }
+    }
     assert!(
-        TmuxAdapter::session_exists(&session_name).expect("query session"),
+        session_found,
         "session should exist while invocation is running"
     );
     let active_session = read_active_session(&request).expect("active session should be recorded");

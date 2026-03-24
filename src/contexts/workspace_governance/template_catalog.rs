@@ -241,17 +241,18 @@ The JSON schema below is authoritative. Return only JSON that conforms exactly t
 const FINAL_REVIEW_VOTER_DEFAULT: &str = "\
 # {{title}}
 
-You are a reviewer evaluating proposed amendments. If planner positions are \
-provided below, consider them alongside each amendment.
+You are evaluating proposed amendments to this project. Assess each amendment \
+on its technical merit — correctness, safety, and robustness.
 
 ## Instructions
 
-1. Consider each amendment carefully. If planner positions are provided, \
-weigh them as additional context.
-2. Vote ACCEPT or REJECT for each amendment with a clear rationale.
-3. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
+1. Consider each amendment carefully on its own merits.
+2. If planner positions are provided below, weigh them as additional context \
+when forming your decision.
+3. Vote ACCEPT or REJECT for each amendment with a clear rationale.
+4. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
 original spec\" — any real bug or safety issue is valid regardless of scope.
-4. Do NOT dismiss concurrency or isolation issues as \"theoretical\" just \
+5. Do NOT dismiss concurrency or isolation issues as \"theoretical\" just \
 because they don't currently cause failures — shared mutable state is a \
 defect even if current callers happen to be read-only.
 
@@ -1078,7 +1079,7 @@ mod tests {
         std::fs::create_dir_all(&ws_templates).unwrap();
         std::fs::write(
             ws_templates.join("requirements_ideation.md"),
-            &[0xFF, 0xFE, 0x00, 0x01],
+            [0xFF, 0xFE, 0x00, 0x01],
         )
         .unwrap();
 
