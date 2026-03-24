@@ -181,11 +181,13 @@ You are a project completion validator.
 
 The Planner has suggested the project is complete. Your job is to:
 1. Review all requirements in the project prompt below.
-2. Check that every required feature has been implemented.
+2. Assess whether every required feature appears to have been implemented \
+based on the context provided.
 3. Verify nothing is missing or only partially done.
 
 You MUST use a DIFFERENT perspective than the Planner. Do not simply agree — \
-independently verify each requirement against the actual implementation.
+independently verify each requirement. If you have access to tools that can \
+inspect the repository, use them for grounded evidence.
 
 If all requirements are satisfied, vote COMPLETE with evidence mapping each \
 requirement to the feature that satisfies it.
@@ -217,8 +219,9 @@ specific files and line numbers.
 ## Instructions
 
 1. Read the project prompt to understand what was requested.
-2. Use your tools to inspect the current diff, then read each implicated file \
-end-to-end before forming your assessment.
+2. If you have access to tools, inspect the current diff and read each implicated \
+file end-to-end before forming your assessment. Otherwise, base your review on \
+the context provided.
 3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
 4. When issues exist, return `amendments` as an array where each entry's `body` \
 contains labeled **Problem** (citing specific files and line numbers), \
