@@ -6788,6 +6788,8 @@ pub fn resolution_has_drifted(
         || match (&old.final_review_planner, &new.final_review_planner) {
             (Some(old_planner), Some(new_planner)) => old_planner != new_planner,
             (Some(_), None) => true,
+            // Old snapshots created before planner tracking will have `None`;
+            // don't flag drift for legacy resumes.
             (None, _) => false,
         }
         || old.final_review_arbiter != new.final_review_arbiter
@@ -6948,16 +6950,21 @@ pub fn emit_resume_drift_warning(
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use serde_json::Value;
+    use tempfile::tempdir;
 
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
     use crate::shared::domain::{BackendFamily, ResolvedBackendTarget, StageId};
+    use crate::shared::error::AppError;
 
-    use super::build_final_review_snapshot;
+    use super::{
+        build_final_review_snapshot, drift_still_satisfies_requirements, resolution_has_drifted,
+    };
 
-    #[test]
-    fn final_review_snapshot_serialization_includes_planner_target() {
-        let reviewers = vec![
+    fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
+        vec![
             ResolvedPanelMember {
                 target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-a"),
                 required: true,
@@ -6968,7 +6975,18 @@ mod tests {
                 required: false,
                 configured_index: 1,
             },
-        ];
+        ]
+    }
+
+    fn final_review_effective_config() -> EffectiveConfig {
+        let temp_dir = tempdir().expect("create temp dir");
+        initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
+        EffectiveConfig::load(temp_dir.path()).expect("load effective config")
+    }
+
+    #[test]
+    fn final_review_snapshot_serialization_includes_planner_target() {
+        let reviewers = final_review_reviewers();
         let planner = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-model");
         let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
 
@@ -6996,5 +7014,49 @@ mod tests {
                 "model_id": "arbiter-model",
             }))
         );
+    }
+
+    #[test]
+    fn final_review_planner_drift_detection_handles_new_and_legacy_snapshots() {
+        let reviewers = final_review_reviewers();
+        let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
+        let planner_a = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-a");
+        let planner_b = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-b");
+
+        let old =
+            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_a, &arbiter);
+        let changed =
+            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner_b, &arbiter);
+        assert!(resolution_has_drifted(&old, &changed));
+
+        let mut legacy_snapshot = old.clone();
+        legacy_snapshot.final_review_planner = None;
+        assert!(!resolution_has_drifted(&legacy_snapshot, &old));
+
+        let mut missing_planner = old.clone();
+        missing_planner.final_review_planner = None;
+        assert!(resolution_has_drifted(&old, &missing_planner));
+    }
+
+    #[test]
+    fn final_review_drift_requirements_fail_when_planner_is_missing() {
+        let reviewers = final_review_reviewers();
+        let planner = ResolvedBackendTarget::new(BackendFamily::OpenRouter, "planner-model");
+        let arbiter = ResolvedBackendTarget::new(BackendFamily::Stub, "arbiter-model");
+        let config = final_review_effective_config();
+
+        let mut snapshot =
+            build_final_review_snapshot(StageId::FinalReview, &reviewers, &planner, &arbiter);
+        snapshot.final_review_planner = None;
+
+        let error = drift_still_satisfies_requirements(&snapshot, StageId::FinalReview, &config)
+            .expect_err("missing planner should fail final-review requirements");
+        assert!(matches!(
+            error,
+            AppError::ResumeDriftFailure {
+                stage_id: StageId::FinalReview,
+                details,
+            } if details == "re-resolved final-review panel has no planner"
+        ));
     }
 }
