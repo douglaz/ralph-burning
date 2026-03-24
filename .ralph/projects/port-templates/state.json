@@ -1,0 +1,23 @@
+{
+  "project_id": "port-templates",
+  "project_name": "Port legacy ralph prompt templates (#49)",
+  "created_at": "2026-03-24T00:19:46.931390807Z",
+  "prompt_file": "prompt.md",
+  "prompt_hash": "dfbaf89fe85fa758fd6342c48d72badd4a01b29e083acdf97fe82739110e5a18",
+  "prompt_hash_at_loop_start": "dfbaf89fe85fa758fd6342c48d72badd4a01b29e083acdf97fe82739110e5a18",
+  "prompt_review_completed": false,
+  "parent_project": null,
+  "current_loop": 1,
+  "current_phase": "reviewing",
+  "quick_dev_phase": "codex_review",
+  "phase_iteration": 1,
+  "status": "in_progress",
+  "loops": [],
+  "completion_attempts": [],
+  "session_store": {
+    "records": []
+  },
+  "pr_url": null,
+  "quick_dev_review_iteration": 2,
+  "quick_dev_final_review_attempts": 0
+}

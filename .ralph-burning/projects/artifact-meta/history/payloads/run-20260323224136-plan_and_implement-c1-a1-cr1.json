@@ -1,0 +1,45 @@
+{
+  "payload_id": "run-20260323224136-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-23T22:49:56.664711315Z",
+  "payload": {
+    "data": {
+      "change_summary": "Centralized agent `RecordProducer` construction from `InvocationEnvelope.metadata` and updated prompt-review, completion, final-review, and single-stage workflow persistence paths to use it, so persisted record producer metadata now comes from `backend_used`/`model_used` instead of rebuilding from resolved targets at each call site. Added a focused helper regression test and strengthened the producer serialization conformance assertion; no `src/adapters/fs.rs` struct change was needed because `ArtifactRecord` already serializes the populated `producer` fields.",
+      "outstanding_risks": [
+        "`AgentExecutionService` currently normalizes `backend_used`/`model_used` to the resolved target before orchestration reads the envelope, so there is not yet an end-to-end test that demonstrates divergent adapter-reported metadata flowing into persisted artifacts."
+      ],
+      "steps": [
+        {
+          "description": "Add a shared workflow helper that builds an agent `RecordProducer` from invocation metadata.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Route prompt-review, completion, final-review, and generic stage persistence through the metadata-backed producer helper.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Add regression coverage for the helper, strengthen producer serialization assertions, and run targeted Rust tests in the Nix dev shell.",
+          "order": 3,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`nix develop -c cargo test agent_record_producer_uses_invocation_metadata_fields --quiet` passed.",
+        "`nix develop -c cargo test final_review_ --quiet` passed.",
+        "`rg -n \"RecordProducer::Agent \\{\" src/contexts/workflow_composition src -g'*.rs'` now shows production construction centralized in `src/contexts/workflow_composition/mod.rs`, with the remaining direct instantiation in the conformance test assertion only."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

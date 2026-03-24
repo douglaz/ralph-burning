@@ -1,3 +1,10 @@
+#![allow(
+    clippy::await_holding_lock,
+    clippy::io_other_error,
+    clippy::unnecessary_map_or,
+    clippy::needless_borrows_for_generic_args
+)]
+
 #[path = "unit/domain_test.rs"]
 mod domain_test;
 

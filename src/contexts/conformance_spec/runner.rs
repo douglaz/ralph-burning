@@ -105,7 +105,7 @@ pub fn run_scenarios(
 
     std::thread::scope(|scope| {
         let (tx, rx) = std::sync::mpsc::channel();
-        let mut spawned = 0;
+        let mut _spawned = 0;
 
         // Chunk work into batches to limit concurrency.
         for chunk in work.chunks(parallelism) {
@@ -121,7 +121,7 @@ pub fn run_scenarios(
                             duration: Duration::ZERO,
                         },
                     ));
-                    spawned += 1;
+                    _spawned += 1;
                     continue;
                 }
 
@@ -176,7 +176,7 @@ pub fn run_scenarios(
                     };
                     let _ = tx.send((idx, result));
                 }));
-                spawned += 1;
+                _spawned += 1;
             }
 
             // Wait for this batch to complete before starting the next.

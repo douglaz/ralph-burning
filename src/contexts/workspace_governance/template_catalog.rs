@@ -118,24 +118,57 @@ The JSON schema below is authoritative. Return only JSON that conforms exactly t
 const PROMPT_REVIEW_REFINER_DEFAULT: &str = "\
 # Prompt Review: {{role_label}}
 
+You are a prompt reviewer evaluating a project prompt for clarity, completeness, \
+feasibility, and testability.
+
+Your job is to identify gaps and then rewrite the prompt so downstream \
+implementation loops can execute with minimal ambiguity.
+
+## Instructions
+
+1. Read the prompt below carefully.
+2. Identify issues: vague requirements, missing acceptance criteria, \
+untestable claims, implicit assumptions, and scope gaps.
+3. For each issue, explain why it matters for downstream implementation.
+4. Produce a refined prompt that resolves all identified issues.
+
+Return only JSON. Put the rewritten prompt in `refined_prompt`, summarize \
+the changes in `refinement_summary`, and list the key improvements in `improvements`.
+
 ## Prompt to Review
 
 {{prompt_text}}
 
-## JSON Schema
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
 ```";
 
 const PROMPT_REVIEW_VALIDATOR_DEFAULT: &str = "\
-# Prompt Review: {{role_label}}
+# Prompt Review Validation: {{role_label}}
 
-## Prompt to Review
+You are a prompt review validator deciding whether a refined prompt is acceptable \
+for downstream implementation loops.
+
+## Instructions
+
+1. Assess the prompt below for clarity, completeness, feasibility, and actionability.
+2. Verify it contains explicit acceptance criteria, has no vague or untestable \
+requirements, and could be handed to an implementation agent without further clarification.
+3. Check that no critical requirements appear to be missing or under-specified.
+4. If rejecting, your reason must be specific and actionable — explain exactly \
+what is wrong and how to fix it.
+
+## Prompt to Validate
 
 {{prompt_text}}
 
-## JSON Schema
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
@@ -144,11 +177,32 @@ const PROMPT_REVIEW_VALIDATOR_DEFAULT: &str = "\
 const COMPLETION_PANEL_COMPLETER_DEFAULT: &str = "\
 # Completion Vote
 
+You are a project completion validator.
+
+The Planner has suggested the project is complete. Your job is to:
+1. Review all requirements in the project prompt below.
+2. Assess whether every required feature appears to have been implemented \
+based on the context provided.
+3. Verify nothing is missing or only partially done.
+
+Approach this as an independent verification — do not simply confirm the \
+planning output. Scrutinize each requirement separately and look for gaps \
+or partial implementations. If you have access to tools that can inspect \
+the repository, use them for grounded evidence.
+
+If all requirements are satisfied, vote COMPLETE with evidence mapping each \
+requirement to the feature that satisfies it.
+
+If requirements are missing or incomplete, vote CONTINUE and list what is \
+still needed.
+
 ## Project Prompt
 
 {{prompt_text}}
 
-## JSON Schema
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
@@ -157,11 +211,30 @@ const COMPLETION_PANEL_COMPLETER_DEFAULT: &str = "\
 const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 # Final Review Proposals
 
+You are a code reviewer. Review the changes in this project for correctness, \
+safety, and robustness.
+
+## Instructions
+
+1. Read the project prompt to understand what was requested.
+2. Start by inspecting the current diff to identify all changed files, then \
+read each changed file end-to-end before forming your assessment. If you do \
+not have tool access, base your review on the context provided.
+3. Focus on real bugs, safety problems, and correctness gaps — not style or cosmetics.
+4. When issues exist, return `amendments` as an array where each entry's `body` \
+contains a labeled **Problem** (referencing affected file paths and describing the \
+issue in enough detail that it remains actionable even if line numbers shift), \
+**Proposed Change**, and **Affected Files** sections.
+5. When no issues exist, return `amendments: []` and make `summary` a clear \
+NO AMENDMENTS rationale explaining why the implementation is correct and complete.
+
 ## Project Prompt
 
 {{project_prompt}}
 
-## JSON Schema
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
@@ -170,9 +243,29 @@ const FINAL_REVIEW_REVIEWER_DEFAULT: &str = "\
 const FINAL_REVIEW_VOTER_DEFAULT: &str = "\
 # {{title}}
 
-{{amendments}}{{planner_positions}}
+You are evaluating proposed amendments to this project. Assess each amendment \
+on its technical merit — correctness, safety, and robustness.
 
-## JSON Schema
+## Instructions
+
+1. Consider each amendment carefully on its own merits.
+2. If planner positions are provided below, weigh them as additional context \
+when forming your decision.
+3. Vote ACCEPT or REJECT for each amendment with a clear rationale.
+4. Do NOT reject amendments because they are \"out of scope\" or \"beyond the \
+original spec\" — any real bug or safety issue is valid regardless of scope.
+5. Do NOT dismiss concurrency or isolation issues as \"theoretical\" just \
+because they don't currently cause failures — shared mutable state is a \
+defect even if current callers happen to be read-only.
+
+## Proposed Amendments
+
+{{amendments}}\
+\n\n{{planner_positions}}
+
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
@@ -181,21 +274,32 @@ const FINAL_REVIEW_VOTER_DEFAULT: &str = "\
 const FINAL_REVIEW_ARBITER_DEFAULT: &str = "\
 # Final Review Arbiter
 
+You are the arbiter resolving disputed amendments where reviewers and \
+planner disagree.
+
+## Instructions
+
+1. Consider each disputed amendment carefully.
+2. Read the planner's position and the reviewer votes for context.
+3. Make a final ruling: ACCEPT or REJECT for each disputed amendment.
+4. Provide clear rationale for each ruling, citing the specific evidence \
+that tips the balance.
+
+## Disputed Amendments
+
 {{amendments}}
 
 ## Planner Positions
 
-```json
 {{planner_positions}}
-```
 
 ## Reviewer Votes
 
-```json
 {{reviewer_votes}}
-```
 
-## JSON Schema
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
 
 ```json
 {{json_schema}}
@@ -977,7 +1081,7 @@ mod tests {
         std::fs::create_dir_all(&ws_templates).unwrap();
         std::fs::write(
             ws_templates.join("requirements_ideation.md"),
-            &[0xFF, 0xFE, 0x00, 0x01],
+            [0xFF, 0xFE, 0x00, 0x01],
         )
         .unwrap();
 
