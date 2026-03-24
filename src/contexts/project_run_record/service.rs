@@ -909,22 +909,38 @@ pub fn add_manual_amendment(
         });
     }
 
-    // Also check staged amendment files on disk to catch duplicates from
-    // a prior failed attempt where the file was preserved but the snapshot
-    // update failed (the file survives reopen failures by design).
-    // Skip this check for completed projects — the retry needs to proceed
-    // through the reopen path even if the file already exists on disk.
+    // Also check staged amendment files on disk. For non-completed projects
+    // this is a true duplicate. For completed projects, a matching file means
+    // a prior reopen attempt failed after preserving the amendment on disk, so
+    // the retry must reuse that file's ID instead of creating a new orphan.
+    let matching_on_disk = amendment_queue
+        .list_pending_amendments(base_dir, project_id)?
+        .into_iter()
+        .filter(|a| a.dedup_key == dedup_key)
+        .collect::<Vec<_>>();
     if snapshot.status != RunStatus::Completed {
-        let on_disk = amendment_queue.list_pending_amendments(base_dir, project_id)?;
-        if let Some(existing) = on_disk.iter().find(|a| a.dedup_key == dedup_key) {
+        if let Some(existing) = matching_on_disk.first() {
             return Ok(AmendmentAddResult::Duplicate {
                 amendment_id: existing.amendment_id.clone(),
             });
         }
     }
+    let existing_on_disk = matching_on_disk.first().cloned();
+    let duplicate_disk_ids = if snapshot.status == RunStatus::Completed {
+        matching_on_disk
+            .iter()
+            .skip(1)
+            .map(|amendment| amendment.amendment_id.clone())
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
 
     let now = Utc::now();
-    let amendment_id = format!("manual-{}", uuid::Uuid::new_v4());
+    let amendment_id = existing_on_disk
+        .as_ref()
+        .map(|existing| existing.amendment_id.clone())
+        .unwrap_or_else(|| format!("manual-{}", uuid::Uuid::new_v4()));
 
     let current_cycle = snapshot
         .cycle_history
@@ -962,6 +978,28 @@ pub fn add_manual_amendment(
         );
         journal::serialize_event(&journal_event)?
     };
+
+    if !duplicate_disk_ids.is_empty() {
+        let mut cleanup_failures: Vec<String> = Vec::new();
+        for duplicate_id in &duplicate_disk_ids {
+            if let Err(err) = amendment_queue.remove_amendment(base_dir, project_id, duplicate_id) {
+                cleanup_failures.push(format!("{duplicate_id}: {err}"));
+            }
+        }
+        if !cleanup_failures.is_empty() {
+            let retained_id = existing_on_disk
+                .as_ref()
+                .map(|amendment| amendment.amendment_id.as_str())
+                .unwrap_or("<new>");
+            return Err(AppError::AmendmentQueueError {
+                details: format!(
+                    "failed to collapse duplicate on-disk amendments for dedup_key '{dedup_key}' \
+                     while preserving '{retained_id}': {}",
+                    cleanup_failures.join("; ")
+                ),
+            });
+        }
+    }
 
     // Write durable amendment file.
     amendment_queue.write_amendment(base_dir, project_id, &amendment)?;
@@ -1017,7 +1055,13 @@ pub fn add_manual_amendment(
     if let Err(journal_err) = journal_port.append_event(base_dir, project_id, &journal_line) {
         // Attempt to restore pre-mutation state.
         let snap_result = run_write_port.write_run_snapshot(base_dir, project_id, &old_snapshot);
-        let file_result = amendment_queue.remove_amendment(base_dir, project_id, &amendment_id);
+        // If we reused a preserved amendment file from a prior failed reopen,
+        // don't delete it during rollback — the operator's input must survive.
+        let file_result = if existing_on_disk.is_some() {
+            Ok(())
+        } else {
+            amendment_queue.remove_amendment(base_dir, project_id, &amendment_id)
+        };
 
         // If rollback itself failed, return a composite error so the caller
         // knows canonical state may be inconsistent, matching the pattern
