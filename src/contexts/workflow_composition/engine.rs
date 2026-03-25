@@ -421,6 +421,7 @@ async fn preflight_required_panel_target<A: AgentExecutionPort>(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn preflight_panel_members<A: AgentExecutionPort>(
     adapter: &A,
     stage_id: StageId,
