@@ -94,12 +94,17 @@ pub fn build_backend_adapter_for_selector(
         }),
         "process" | "openrouter" if tmux_enabled => {
             let process = ProcessBackendAdapter::new();
-            Ok(BackendAdapter::Tmux(TmuxAdapter::new(
+            let tmux = TmuxAdapter::new(
                 process,
                 effective_config
                     .map(|config| config.effective_stream_output())
                     .unwrap_or(false),
-            )))
+            )
+            .map_err(|details| AppError::BackendUnavailable {
+                backend: "tmux".to_owned(),
+                details,
+            })?;
+            Ok(BackendAdapter::Tmux(tmux))
         }
         "process" => {
             let process = ProcessBackendAdapter::new();

@@ -49,3 +49,21 @@ Feature: Slice 0 hardening and sign-off
     Given compare refs contain percent signs and slashes
     When the GitHub adapter checks whether the head is ahead
     Then the compare request path percent-encodes the refs safely
+
+  @parity_slice0_explicit_paths_reject_missing_binary
+  Scenario: Explicit search paths reject a missing binary instead of falling back to ambient PATH
+    Given a process backend adapter with explicit search paths pointing to an empty directory
+    When command preparation resolves the binary
+    Then it fails with BackendUnavailable instead of falling back to the bare binary name
+
+  @parity_slice0_explicit_tmux_paths_reject_missing_binary
+  Scenario: Explicit tmux search paths reject a missing tmux binary
+    Given a tmux adapter with explicit search paths pointing to an empty directory
+    When the adapter is constructed
+    Then construction fails instead of falling back to the ambient tmux binary
+
+  @parity_slice0_codex_missing_binary_no_temp_leak
+  Scenario: Codex branch does not leak temp files when binary is missing from explicit paths
+    Given a Codex-family invocation request and a process backend adapter with empty explicit search paths
+    When invoke is called
+    Then the invocation fails with BackendUnavailable and no temp schema files are left behind

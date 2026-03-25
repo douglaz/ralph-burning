@@ -930,9 +930,9 @@ mod tests {
         ]);
         set_openrouter_env(&server.base_url);
 
-        let adapter = BackendAdapter::OpenRouter(
-            OpenRouterBackendAdapter::with_base_url(server.base_url.clone()),
-        );
+        let adapter = BackendAdapter::OpenRouter(OpenRouterBackendAdapter::with_base_url(
+            server.base_url.clone(),
+        ));
         let (_dir, request) =
             request_fixture(BackendFamily::OpenRouter, "anthropic/claude-3.5-sonnet");
 

@@ -46,15 +46,61 @@ pub struct TmuxAdapter {
     process: ProcessBackendAdapter,
     active_sessions: Arc<Mutex<HashMap<String, Arc<ManagedTmuxSession>>>>,
     stream_output: bool,
+    /// Resolved path (or bare name) for the tmux binary used by instance
+    /// methods.  When explicit search paths are set, this is an absolute
+    /// [`PathBuf`]; otherwise it is the bare name `"tmux"` which relies on
+    /// ambient PATH lookup at spawn time.
+    tmux_binary: PathBuf,
 }
 
 impl TmuxAdapter {
-    pub fn new(process: ProcessBackendAdapter, stream_output: bool) -> Self {
-        Self {
+    pub fn new(process: ProcessBackendAdapter, stream_output: bool) -> Result<Self, String> {
+        let tmux_binary = Self::resolve_tmux_binary(&process)?;
+        Ok(Self {
             process,
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             stream_output,
+            tmux_binary,
+        })
+    }
+
+    /// Resolve the tmux binary by delegating to
+    /// [`ProcessBackendAdapter::resolve_binary`].
+    ///
+    /// When the adapter has explicit search paths, the resolved path is
+    /// absolute; when no explicit paths are set, the bare name `"tmux"` is
+    /// returned so the OS performs ambient PATH lookup at spawn time.
+    fn resolve_tmux_binary(process: &ProcessBackendAdapter) -> Result<PathBuf, String> {
+        process.resolve_binary("tmux").map_err(|e| e.to_string())
+    }
+
+    /// Check tmux availability using explicit search paths.
+    pub fn check_tmux_available_in(search_paths: &[std::path::PathBuf]) -> AppResult<()> {
+        ProcessBackendAdapter::ensure_binary_available("tmux", "tmux", search_paths)
+    }
+
+    /// Verify that the cached `tmux_binary` is still available.
+    ///
+    /// When the adapter was constructed with explicit search paths, the cached
+    /// binary is an absolute path — verify it is still an executable file.
+    /// When the adapter uses the default bare name (`"tmux"`), fall back to
+    /// scanning the system PATH via [`check_tmux_available_in`] so that the
+    /// same `ensure_binary_available` diagnostics (not-found vs
+    /// found-but-not-executable) are preserved.
+    fn verify_tmux_available(&self) -> AppResult<()> {
+        if self.process.has_explicit_search_paths() {
+            if ProcessBackendAdapter::is_executable_file(&self.tmux_binary) {
+                return Ok(());
+            }
+            return Err(AppError::BackendUnavailable {
+                backend: "tmux".to_owned(),
+                details: format!(
+                    "resolved tmux binary '{}' is no longer available or executable",
+                    self.tmux_binary.display()
+                ),
+            });
         }
+        Self::check_tmux_available_in(&self.process.effective_search_paths())
     }
 
     pub fn session_name(
@@ -208,8 +254,8 @@ impl TmuxAdapter {
         }
     }
 
-    async fn has_session(&self, session_name: &str) -> AppResult<bool> {
-        match Command::new("tmux")
+    pub(crate) async fn has_session(&self, session_name: &str) -> AppResult<bool> {
+        match Command::new(&self.tmux_binary)
             .args(["has-session", "-t", session_name])
             .status()
             .await
@@ -223,7 +269,7 @@ impl TmuxAdapter {
     }
 
     async fn kill_session(&self, session_name: &str) -> AppResult<()> {
-        let output = Command::new("tmux")
+        let output = Command::new(&self.tmux_binary)
             .args(["kill-session", "-t", session_name])
             .output()
             .await
@@ -336,7 +382,7 @@ impl TmuxAdapter {
             "exec {}",
             shell_escape(&session.wrapper_path.to_string_lossy())
         );
-        let output = Command::new("tmux")
+        let output = Command::new(&self.tmux_binary)
             .args([
                 "new-session",
                 "-d",
@@ -410,14 +456,14 @@ impl AgentExecutionPort for TmuxAdapter {
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
         Self::ensure_supported_backend(backend, None)?;
-        Self::check_tmux_available()?;
+        self.verify_tmux_available()?;
         self.process.check_availability(backend).await
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
-        Self::check_tmux_available()?;
+        self.verify_tmux_available()?;
 
         let prepared = self.process.build_command(&request).await?;
         let project_name = request
@@ -529,7 +575,7 @@ impl AgentExecutionPort for TmuxAdapter {
                 failure_class: FailureClass::TransportFailure,
                 details: format!(
                     "{} exited with code {}{}",
-                    prepared.binary(),
+                    prepared.binary().display(),
                     exit_code,
                     if stderr.is_empty() {
                         String::new()
@@ -630,7 +676,7 @@ impl ManagedTmuxSession {
         request: &InvocationRequest,
         session_name: String,
         args: &[String],
-        binary: &str,
+        binary: &Path,
         stdin_payload: &str,
     ) -> AppResult<Self> {
         let temp_dir = request.project_root.join("runtime/temp");
@@ -659,7 +705,7 @@ impl ManagedTmuxSession {
                 &stderr_pipe_path,
                 &exit_status_path,
                 &signal_pid_path,
-            ),
+            )?,
         )?;
         #[cfg(unix)]
         {
@@ -825,7 +871,7 @@ impl CaptureTail {
 #[allow(clippy::too_many_arguments)]
 fn build_wrapper_script(
     working_dir: &Path,
-    binary: &str,
+    binary: &Path,
     args: &[String],
     stdin_path: &Path,
     stdout_path: &Path,
@@ -834,12 +880,23 @@ fn build_wrapper_script(
     stderr_pipe_path: &Path,
     exit_status_path: &Path,
     signal_pid_path: &Path,
-) -> String {
-    let command = std::iter::once(shell_escape(binary))
+) -> AppResult<String> {
+    // Validate that the binary path is valid UTF-8 so that we produce a
+    // correct shell script.  `to_string_lossy()` would silently replace
+    // non-UTF-8 bytes with U+FFFD, yielding a broken command.
+    let binary_str = binary.to_str().ok_or_else(|| AppError::BackendUnavailable {
+        backend: "tmux".to_owned(),
+        details: format!(
+            "binary path '{}' contains non-UTF-8 bytes and cannot be embedded in a shell script",
+            binary.display()
+        ),
+    })?;
+
+    let command = std::iter::once(shell_escape(binary_str))
         .chain(args.iter().map(|arg| shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
+    Ok(format!(
         "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid} {stdout_pipe} {stderr_pipe}\nmkfifo {stdout_pipe} {stderr_pipe}\ntrap 'rm -f {signal_pid} {stdout_pipe} {stderr_pipe}' EXIT\ntee {stdout} < {stdout_pipe} &\nstdout_tee_pid=$!\ntee {stderr} < {stderr_pipe} >&2 &\nstderr_tee_pid=$!\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout_pipe} 2> {stderr_pipe}\n) &\nchild_pid=$!\nwait \"$child_pid\"\nstatus=$?\nwait \"$stdout_tee_pid\"\nwait \"$stderr_tee_pid\"\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
         cwd = shell_escape(&working_dir.to_string_lossy()),
         stdin = shell_escape(&stdin_path.to_string_lossy()),
@@ -849,7 +906,7 @@ fn build_wrapper_script(
         stderr_pipe = shell_escape(&stderr_pipe_path.to_string_lossy()),
         exit_status = shell_escape(&exit_status_path.to_string_lossy()),
         signal_pid = shell_escape(&signal_pid_path.to_string_lossy()),
-    )
+    ))
 }
 
 fn flush_capture_file(project_root: &Path, path: &Path, source: &str) -> AppResult<()> {

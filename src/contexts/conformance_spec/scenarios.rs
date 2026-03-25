@@ -263,8 +263,9 @@ fn run_daemon_iteration_with_backend(
     block_on_app_result(daemon_loop.run(ws_path, &loop_config))
 }
 
-/// Run a single daemon iteration using the process backend with a custom PATH.
-/// Used for scenarios that test real backend execution through the daemon.
+/// Run a single daemon iteration using the process backend with explicit
+/// binary search paths. Used for scenarios that test real backend execution
+/// through the daemon without mutating process-global PATH.
 fn run_daemon_iteration_with_process_backend(
     ws_path: &Path,
     extra_path: &str,
@@ -272,20 +273,35 @@ fn run_daemon_iteration_with_process_backend(
     use crate::adapters::process_backend::ProcessBackendAdapter;
     use crate::adapters::BackendAdapter;
 
-    // Temporarily prepend the extra path for process backend binary resolution.
-    // PATH mutation is still needed because Command::new("claude") resolves
-    // from the system PATH. Use ScenarioEnvGuard to serialize with other
-    // PATH-mutating scenarios.
-    let original_path = std::env::var("PATH").unwrap_or_default();
-    let new_path = format!("{extra_path}:{original_path}");
-    let _env_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+    let mut search_paths = vec![std::path::PathBuf::from(extra_path)];
+    search_paths.extend(ProcessBackendAdapter::system_path_entries());
+    let req_search_paths = search_paths.clone();
+
     run_daemon_iteration_with_backend(
         ws_path,
-        Some(BackendAdapter::Process(ProcessBackendAdapter::new())),
-        Some(Box::new(|config| {
-            crate::composition::agent_execution_builder::build_requirements_service_for_selector(
-                "process", config,
-            )
+        Some(BackendAdapter::Process(
+            ProcessBackendAdapter::with_search_paths(search_paths),
+        )),
+        Some(Box::new(move |_config| {
+            use crate::adapters::fs::{FsRawOutputStore, FsRequirementsStore, FsSessionStore};
+            use crate::contexts::agent_execution::service::{
+                AgentExecutionService, BackendSelectionConfig,
+            };
+            use crate::contexts::requirements_drafting::service::RequirementsService;
+
+            let adapter = crate::adapters::BackendAdapter::Process(
+                ProcessBackendAdapter::with_search_paths(req_search_paths.clone()),
+            );
+            let workspace_defaults = BackendSelectionConfig::from_effective_config(_config)
+                .map_err(|e| crate::shared::error::AppError::InvalidConfigValue {
+                    key: "backend_selection".to_owned(),
+                    value: String::new(),
+                    reason: e.to_string(),
+                })?;
+            let agent_service =
+                AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+            Ok(RequirementsService::new(agent_service, FsRequirementsStore)
+                .with_workspace_defaults(workspace_defaults))
         })),
         None,
     )
@@ -7982,6 +7998,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .join(".ralph-burning/requirements")
             .join(&run_id)
             .join("answers.toml");
+        // EDITOR is read in-process by FileSystem::open_editor — cannot use
+        // per-call subprocess injection.  Serialized by ENV_MUTEX.
         let _editor_guard = ScenarioEnvGuard::set(&[("EDITOR", "true")]);
         std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
             .map_err(|e| format!("write answers: {e}"))?;
@@ -9186,6 +9204,12 @@ struct ScenarioEnvGuard {
 /// Global mutex that serializes all scenarios using ScenarioEnvGuard.
 /// Environment variables are process-global, so env-mutating scenarios
 /// must not run concurrently with each other.
+///
+/// All PATH mutations have been eliminated (subprocess-spawning scenarios
+/// now use `ProcessBackendAdapter::with_search_paths`).  Failpoint env
+/// vars are passed per-call via `run_cli_with_env`.  The only remaining
+/// use is EDITOR, which is read in-process by `FileSystem::open_editor`
+/// and cannot be injected per-call without changing production code.
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl ScenarioEnvGuard {
@@ -12183,21 +12207,19 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
         write_script_with_mode(
             &bin_dir.join("claude"),
             &format!(
-                "#!/bin/sh\ntrap 'echo term > \"{}\"; exit 0' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                "#!/bin/sh\ntrap 'echo term > \"{}\"; exit 0' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 0.05; done\n",
                 term_file.display(),
                 pid_file.display()
             ),
             0o755,
         )?;
-        let path_value = bin_dir.to_string_lossy().into_owned();
-        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
 
         block_on_result(async {
             let project_root = prepare_scenario_project_root(ws.path())?;
             std::fs::create_dir_all(project_root.join("runtime/temp"))
                 .map_err(|e| format!("create runtime/temp: {e}"))?;
 
-            let adapter = ProcessBackendAdapter::new();
+            let adapter = ProcessBackendAdapter::with_search_paths(vec![bin_dir.clone()]);
             let request = build_process_backend_request(
                 &project_root,
                 "slice0-cancel-no-orphans",
@@ -12266,20 +12288,18 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
         write_script_with_mode(
             &bin_dir.join("claude"),
             &format!(
-                "#!/bin/sh\ntrap '' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 1; done\n",
+                "#!/bin/sh\ntrap '' TERM\necho \"$$\" > \"{}\"\ncat > /dev/null\nwhile :; do sleep 0.05; done\n",
                 pid_file.display()
             ),
             0o755,
         )?;
-        let path_value = bin_dir.to_string_lossy().into_owned();
-        let _env_guard = ScenarioEnvGuard::set(&[("PATH", path_value.as_str())]);
 
         block_on_result(async {
             let project_root = prepare_scenario_project_root(ws.path())?;
             std::fs::create_dir_all(project_root.join("runtime/temp"))
                 .map_err(|e| format!("create runtime/temp: {e}"))?;
 
-            let adapter = ProcessBackendAdapter::new();
+            let adapter = ProcessBackendAdapter::with_search_paths(vec![bin_dir.clone()]);
             let service =
                 AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
             let request = build_process_backend_request(
@@ -12582,6 +12602,157 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
                 return Err(format!(
                     "expected compare request path {expected_path}, got {}",
                     request.path
+                ));
+            }
+
+            Ok(())
+        })
+    });
+
+    reg!(
+        m,
+        "parity_slice0_explicit_paths_reject_missing_binary",
+        || {
+            let ws = TempWorkspace::new()?;
+            let empty_dir = ws.path().join("empty-bin");
+            std::fs::create_dir_all(&empty_dir).map_err(|e| format!("create empty dir: {e}"))?;
+
+            block_on_result(async {
+                let project_root = prepare_scenario_project_root(ws.path())?;
+                std::fs::create_dir_all(project_root.join("runtime/temp"))
+                    .map_err(|e| format!("create runtime/temp: {e}"))?;
+
+                let adapter = ProcessBackendAdapter::with_search_paths(vec![empty_dir]);
+                let request = build_process_backend_request(
+                    &project_root,
+                    "explicit-paths-reject-missing",
+                    std::time::Duration::from_secs(5),
+                );
+
+                match adapter.invoke(request).await {
+                    Err(AppError::BackendUnavailable { details, .. }) => {
+                        if !details.contains("not found") {
+                            return Err(format!(
+                                "expected 'not found' in error details, got: {details}"
+                            ));
+                        }
+                        Ok(())
+                    }
+                    Err(other) => Err(format!("expected BackendUnavailable, got: {other}")),
+                    Ok(_) => Err(
+                        "invoke should fail when binary is missing from explicit search paths"
+                            .to_owned(),
+                    ),
+                }
+            })
+        }
+    );
+
+    reg!(
+        m,
+        "parity_slice0_explicit_tmux_paths_reject_missing_binary",
+        || {
+            let ws = TempWorkspace::new()?;
+            let empty_dir = ws.path().join("empty-bin");
+            std::fs::create_dir_all(&empty_dir).map_err(|e| format!("create empty dir: {e}"))?;
+
+            let process = ProcessBackendAdapter::with_search_paths(vec![empty_dir]);
+            match crate::adapters::tmux::TmuxAdapter::new(process, true) {
+                Err(msg) => {
+                    if !msg.contains("not found") {
+                        return Err(format!("expected 'not found' in error message, got: {msg}"));
+                    }
+                    Ok(())
+                }
+                Ok(_) => Err(
+                    "TmuxAdapter::new should fail when tmux is missing from explicit search paths"
+                        .to_owned(),
+                ),
+            }
+        }
+    );
+
+    // Regression: Codex branch must not leak temp schema files when the
+    // binary is missing from explicit search paths.
+    reg!(m, "parity_slice0_codex_missing_binary_no_temp_leak", || {
+        let ws = TempWorkspace::new()?;
+        let empty_dir = ws.path().join("empty-bin");
+        std::fs::create_dir_all(&empty_dir).map_err(|e| format!("create empty dir: {e}"))?;
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            let temp_dir = project_root.join("runtime/temp");
+            std::fs::create_dir_all(&temp_dir).map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::with_search_paths(vec![empty_dir]);
+
+            // Build a Codex-family request (triggers the branch that writes
+            // schema temp files).
+            use crate::contexts::agent_execution::model::{
+                CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+            };
+            use crate::contexts::workflow_composition::contracts::contract_for_stage;
+            use crate::shared::domain::{
+                BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+            };
+
+            let request = InvocationRequest {
+                invocation_id: "codex-temp-leak-test".to_owned(),
+                project_root: project_root.clone(),
+                working_dir: project_root.clone(),
+                contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+                role: BackendRole::Planner,
+                resolved_target: ResolvedBackendTarget::new(
+                    BackendFamily::Codex,
+                    BackendFamily::Codex.default_model_id(),
+                ),
+                payload: InvocationPayload {
+                    prompt: "Conformance codex temp-leak prompt".to_owned(),
+                    context: serde_json::json!({"scenario": "codex-temp-leak"}),
+                },
+                timeout: std::time::Duration::from_secs(5),
+                cancellation_token: CancellationToken::new(),
+                session_policy: SessionPolicy::NewSession,
+                prior_session: None,
+                attempt_number: 1,
+            };
+
+            match adapter.invoke(request).await {
+                Err(AppError::BackendUnavailable { details, .. }) => {
+                    if !details.contains("not found") {
+                        return Err(format!(
+                            "expected 'not found' in error details, got: {details}"
+                        ));
+                    }
+                }
+                Err(other) => return Err(format!("expected BackendUnavailable, got: {other}")),
+                Ok(_) => {
+                    return Err(
+                        "invoke should fail when codex is missing from explicit search paths"
+                            .to_owned(),
+                    )
+                }
+            }
+
+            // Verify no temp files were leaked.
+            let leaked: Vec<_> = std::fs::read_dir(&temp_dir)
+                .map_err(|e| format!("read temp dir: {e}"))?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("codex-temp-leak-test")
+                })
+                .collect();
+
+            if !leaked.is_empty() {
+                let names: Vec<_> = leaked
+                    .iter()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                return Err(format!(
+                    "temp files leaked after binary-not-found failure: {names:?}"
                 ));
             }
 
@@ -18737,13 +18908,13 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         // Use the deterministic failpoint to make the second remove call fail.
         // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
-        // remove succeeds and the second fails.
-        let _failpoint_guard =
-            ScenarioEnvGuard::set(&[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")]);
-
-        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
-
-        drop(_failpoint_guard);
+        // remove succeeds and the second fails.  Passed via per-call env to
+        // avoid process-global env mutation.
+        let clear = run_cli_with_env(
+            &["project", "amend", "clear"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")],
+        )?;
 
         // The clear must have partially failed.
         assert_failure(&clear)?;
@@ -19591,17 +19762,17 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let empty_path = std::env::temp_dir().join(format!("ralph-empty-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&empty_path).map_err(|e| format!("create empty path: {e}"))?;
-        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &empty_path.to_string_lossy())]);
 
         let effective =
             crate::contexts::workspace_governance::config::EffectiveConfig::load(ws.path())
                 .map_err(|e| format!("load config: {e}"))?;
-        let service = crate::contexts::agent_execution::diagnostics::BackendDiagnosticsService::new(
-            &effective,
-        );
+        let service =
+            crate::contexts::agent_execution::diagnostics::BackendDiagnosticsService::new(
+                &effective,
+            )
+            .with_tmux_search_paths(vec![empty_path.clone()]);
         let result = service.check_backends(crate::shared::domain::FlowPreset::Standard);
 
-        drop(_path_guard);
         let _ = std::fs::remove_dir_all(&empty_path);
 
         if !result.failures.iter().any(|failure| {
@@ -19638,12 +19809,6 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-TMUX-006", || {
-        // This test spawns real processes via fake tmux/claude scripts and
-        // requires a real tmux binary. Skip in sandboxed builds (nix).
-        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-            return Ok(());
-        }
-
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
 
@@ -19659,18 +19824,21 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let tmux_envelope = tmux_request.working_dir.join("claude-envelope.json");
         write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
 
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{original_path}", bin_dir.path().display());
-        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
+        let mut search_paths = vec![bin_dir.path().to_path_buf()];
+        search_paths.extend(ProcessBackendAdapter::system_path_entries());
         block_on_result(async {
-            let direct = ProcessBackendAdapter::new()
+            let direct = ProcessBackendAdapter::with_search_paths(search_paths.clone())
                 .invoke(direct_request)
                 .await
                 .map_err(|e| format!("direct invoke: {e}"))?;
-            let tmux = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true)
-                .invoke(tmux_request)
-                .await
-                .map_err(|e| format!("tmux invoke: {e}"))?;
+            let tmux = crate::adapters::tmux::TmuxAdapter::new(
+                ProcessBackendAdapter::with_search_paths(search_paths),
+                true,
+            )
+            .map_err(|e| format!("tmux adapter init: {e}"))?
+            .invoke(tmux_request)
+            .await
+            .map_err(|e| format!("tmux invoke: {e}"))?;
 
             if direct.parsed_payload != tmux.parsed_payload {
                 return Err("parsed payloads should be identical".into());
@@ -19682,11 +19850,6 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         })
     });
     reg!(m, "SC-TMUX-007", || {
-        // Requires real tmux binary for process spawning. Skip in nix sandbox.
-        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-            return Ok(());
-        }
-
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
 
@@ -19697,12 +19860,15 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
 
         let (_dir, request) = tmux_request_fixture("tmux-cancel")?;
         let session_name = tmux_session_name_for_request(&request);
-        let adapter = crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+        let mut search_paths = vec![bin_dir.path().to_path_buf()];
+        search_paths.extend(ProcessBackendAdapter::system_path_entries());
+        let adapter = crate::adapters::tmux::TmuxAdapter::new(
+            ProcessBackendAdapter::with_search_paths(search_paths),
+            true,
+        )
+        .map_err(|e| format!("tmux adapter init: {e}"))?;
         let invocation_id = request.invocation_id.clone();
 
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{original_path}", bin_dir.path().display());
-        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
         block_on_result(async {
             let join = tokio::spawn({
                 let adapter = adapter.clone();
@@ -19711,7 +19877,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             });
 
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            if !crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+            if !adapter
+                .has_session(&session_name)
+                .await
                 .map_err(|e| format!("query session: {e}"))?
             {
                 return Err("session should exist while invocation is running".into());
@@ -19723,7 +19891,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
                 .map_err(|e| format!("cancel invocation: {e}"))?;
             let _ = join.await.map_err(|e| format!("join invoke task: {e}"))?;
 
-            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+            if adapter
+                .has_session(&session_name)
+                .await
                 .map_err(|e| format!("query session: {e}"))?
             {
                 return Err("session should be cleaned up after cancel".into());
@@ -19732,11 +19902,6 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         })
     });
     reg!(m, "SC-TMUX-008", || {
-        // Requires real tmux binary for process spawning. Skip in nix sandbox.
-        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-            return Ok(());
-        }
-
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionService;
 
@@ -19748,15 +19913,19 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         let (_dir, mut request) = tmux_request_fixture("tmux-timeout")?;
         request.timeout = std::time::Duration::from_millis(200);
         let session_name = tmux_session_name_for_request(&request);
+        let mut search_paths = vec![bin_dir.path().to_path_buf()];
+        search_paths.extend(ProcessBackendAdapter::system_path_entries());
+        let adapter = crate::adapters::tmux::TmuxAdapter::new(
+            ProcessBackendAdapter::with_search_paths(search_paths),
+            true,
+        )
+        .map_err(|e| format!("tmux adapter init: {e}"))?;
         let service = AgentExecutionService::new(
-            crate::adapters::tmux::TmuxAdapter::new(ProcessBackendAdapter::new(), true),
+            adapter.clone(),
             ConformanceInlineRawOutputStore,
             ConformanceNoopSessionStore,
         );
 
-        let original_path = std::env::var("PATH").unwrap_or_default();
-        let new_path = format!("{}:{original_path}", bin_dir.path().display());
-        let _path_guard = ScenarioEnvGuard::set(&[("PATH", &new_path)]);
         block_on_result(async {
             match service.invoke(request.clone()).await {
                 Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
@@ -19765,7 +19934,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             }
 
             tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if crate::adapters::tmux::TmuxAdapter::session_exists(&session_name)
+            if adapter
+                .has_session(&session_name)
+                .await
                 .map_err(|e| format!("query session: {e}"))?
             {
                 return Err("session should be cleaned up after timeout".into());

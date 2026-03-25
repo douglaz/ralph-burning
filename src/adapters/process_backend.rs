@@ -28,7 +28,7 @@ const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 
 pub(crate) struct PreparedCommand {
-    binary: String,
+    binary: std::path::PathBuf,
     args: Vec<String>,
     stdin_payload: String,
     response_decoder: ResponseDecoder,
@@ -36,7 +36,7 @@ pub(crate) struct PreparedCommand {
 }
 
 impl PreparedCommand {
-    pub(crate) fn binary(&self) -> &str {
+    pub(crate) fn binary(&self) -> &std::path::Path {
         &self.binary
     }
 
@@ -270,6 +270,7 @@ enum ResponseDecoder {
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
     pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
+    search_paths: Option<Vec<std::path::PathBuf>>,
 }
 
 pub struct ManagedChild {
@@ -385,6 +386,151 @@ impl ProcessBackendAdapter {
     pub fn new() -> Self {
         Self {
             active_children: Arc::new(Mutex::new(HashMap::new())),
+            search_paths: None,
+        }
+    }
+
+    /// Create an adapter that resolves binaries from the given explicit
+    /// search paths instead of the process-global `PATH`.  Relative paths
+    /// are resolved against the current working directory at construction
+    /// time so that later `current_dir` changes in child processes do not
+    /// alter binary lookup.  When explicit paths are set, [`resolve_binary`]
+    /// returns an error if no executable match is found — it never silently
+    /// falls back to ambient PATH.
+    pub fn with_search_paths(paths: Vec<std::path::PathBuf>) -> Self {
+        let absolute_paths = Self::absolutize_paths(paths);
+        Self {
+            active_children: Arc::new(Mutex::new(HashMap::new())),
+            search_paths: Some(absolute_paths),
+        }
+    }
+
+    /// Convert a list of paths to absolute paths.  Relative entries are
+    /// joined against `std::env::current_dir()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process working directory is inaccessible (deleted or
+    /// insufficient permissions).  This is unrecoverable — if `current_dir()`
+    /// fails, the entire process is in a broken state.
+    fn absolutize_paths(paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+        let has_relative = paths.iter().any(|p| !p.is_absolute());
+        let cwd = if has_relative {
+            Some(std::env::current_dir().expect(
+                "current_dir() failed — process working directory is inaccessible; \
+                 cannot absolutize relative search paths",
+            ))
+        } else {
+            None
+        };
+        paths
+            .into_iter()
+            .map(|p| {
+                if p.is_absolute() {
+                    p
+                } else {
+                    cwd.as_ref().expect("cwd resolved above").join(p)
+                }
+            })
+            .collect()
+    }
+
+    /// Whether this adapter was constructed with explicit search paths.
+    pub(crate) fn has_explicit_search_paths(&self) -> bool {
+        self.search_paths.is_some()
+    }
+
+    /// Return the search paths this adapter uses for binary resolution.
+    /// If explicit search paths were provided via `with_search_paths`, those
+    /// are returned; otherwise falls back to the process-global `PATH`.
+    pub(crate) fn effective_search_paths(&self) -> Vec<std::path::PathBuf> {
+        match &self.search_paths {
+            Some(paths) => paths.clone(),
+            None => Self::system_path_entries(),
+        }
+    }
+
+    /// Resolve a binary name to its absolute path using this adapter's search
+    /// paths.  When no explicit search paths are set, returns the bare binary
+    /// name (relying on OS PATH lookup at spawn time).
+    ///
+    /// When explicit search paths are configured, the returned [`PathBuf`] is
+    /// always absolute (because `with_search_paths` absolutizes its inputs).
+    /// Uses the same executable-semantics as [`ensure_binary_available`]: on
+    /// unix a candidate must be a regular file **and** have at least one
+    /// execute bit set (`mode & 0o111 != 0`).  On Windows, `PATHEXT`
+    /// extensions (`.exe`, `.cmd`, etc.) are probed when the bare name does
+    /// not match.  Returns [`AppError::BackendUnavailable`] if no executable
+    /// match is found — never silently falls back to ambient PATH resolution.
+    pub(crate) fn resolve_binary(&self, binary_name: &str) -> AppResult<std::path::PathBuf> {
+        if let Some(ref paths) = self.search_paths {
+            for dir in paths {
+                if let Some(found) = Self::probe_executable(dir, binary_name) {
+                    return Ok(found);
+                }
+            }
+            return Err(AppError::BackendUnavailable {
+                backend: binary_name.to_owned(),
+                details: format!(
+                    "required binary '{binary_name}' not found (or not executable) in explicit search paths"
+                ),
+            });
+        }
+        Ok(std::path::PathBuf::from(binary_name))
+    }
+
+    /// Probe a single directory for an executable named `binary_name`.
+    ///
+    /// Checks the exact name first, then (on Windows) tries each `PATHEXT`
+    /// extension so that e.g. `claude` finds `claude.exe`.
+    fn probe_executable(dir: &std::path::Path, binary_name: &str) -> Option<std::path::PathBuf> {
+        let candidate = dir.join(binary_name);
+        if Self::is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            for ext in Self::pathext_extensions() {
+                let with_ext = dir.join(format!("{binary_name}{ext}"));
+                if Self::is_executable_file(&with_ext) {
+                    return Some(with_ext);
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the list of executable extensions from the `PATHEXT` env var.
+    #[cfg(windows)]
+    fn pathext_extensions() -> Vec<String> {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+            .collect()
+    }
+
+    /// Check whether `path` is a regular file that is executable.
+    ///
+    /// On unix this mirrors the permission check in
+    /// [`ensure_binary_available`] (`mode & 0o111 != 0`).  On non-unix
+    /// platforms any regular file is considered executable.
+    pub(crate) fn is_executable_file(path: &std::path::Path) -> bool {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
         }
     }
 
@@ -470,10 +616,11 @@ impl ProcessBackendAdapter {
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
-                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-                    && request.prior_session.is_some();
+                let schema_json =
+                    serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
+                let session_resuming =
+                    matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                        && request.prior_session.is_some();
 
                 let mut args = vec![
                     "-p".to_owned(),
@@ -497,7 +644,7 @@ impl ProcessBackendAdapter {
                 }
 
                 Ok(PreparedCommand {
-                    binary: "claude".to_owned(),
+                    binary: self.resolve_binary("claude")?,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
@@ -505,9 +652,14 @@ impl ProcessBackendAdapter {
                 })
             }
             BackendFamily::Codex => {
+                // Resolve the binary before writing temp files so that a
+                // missing binary does not leave orphaned schema artifacts.
+                let binary = self.resolve_binary("codex")?;
+
                 let model_id = &request.resolved_target.model.model_id;
-                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-                    && request.prior_session.is_some();
+                let session_resuming =
+                    matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                        && request.prior_session.is_some();
 
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
@@ -519,8 +671,8 @@ impl ProcessBackendAdapter {
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string_pretty(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
+                let schema_json =
+                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
                 if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
                     best_effort_cleanup(Some(&schema_path), &message_path).await;
@@ -547,7 +699,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: "codex".to_owned(),
+                    binary,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {
@@ -559,7 +711,17 @@ impl ProcessBackendAdapter {
                 })
             }
             BackendFamily::OpenRouter => {
-                // Route through codex CLI with OpenRouter as the provider
+                // Route through codex CLI with OpenRouter as the provider.
+                // Resolve the binary before writing temp files so that a
+                // missing binary does not leave orphaned schema artifacts.
+                let binary = self.resolve_binary("codex").map_err(|e| match e {
+                    AppError::BackendUnavailable { details, .. } => AppError::BackendUnavailable {
+                        backend: "openrouter".to_owned(),
+                        details,
+                    },
+                    other => other,
+                })?;
+
                 let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     Self::invocation_failed(
                         request,
@@ -576,16 +738,15 @@ impl ProcessBackendAdapter {
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
 
-                let schema_path =
-                    temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string_pretty(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
+                let schema_json =
+                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
                 if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
                     best_effort_cleanup(Some(&schema_path), &message_path).await;
@@ -612,7 +773,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: "codex".to_owned(),
+                    binary,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {
@@ -662,36 +823,37 @@ impl ProcessBackendAdapter {
         backend: &str,
         search_paths: &[std::path::PathBuf],
     ) -> AppResult<()> {
-        let path_entries = search_paths;
-
         #[cfg(unix)]
         let mut non_executable_candidate = None;
 
-        for candidate in path_entries.iter().map(|entry| entry.join(binary_name)) {
-            let Ok(metadata) = std::fs::metadata(&candidate) else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
+        for dir in search_paths {
+            // Probe bare name first, then PATHEXT extensions on Windows.
+            for candidate in Self::candidate_names(dir, binary_name) {
+                let Ok(metadata) = std::fs::metadata(&candidate) else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
 
-                if metadata.permissions().mode() & 0o111 != 0 {
+                    if metadata.permissions().mode() & 0o111 != 0 {
+                        return Ok(());
+                    }
+
+                    if non_executable_candidate.is_none() {
+                        non_executable_candidate = Some(candidate);
+                    }
+                    continue;
+                }
+
+                #[cfg(not(unix))]
+                {
                     return Ok(());
                 }
-
-                if non_executable_candidate.is_none() {
-                    non_executable_candidate = Some(candidate);
-                }
-                continue;
-            }
-
-            #[cfg(not(unix))]
-            {
-                return Ok(());
             }
         }
 
@@ -712,12 +874,26 @@ impl ProcessBackendAdapter {
         })
     }
 
+    /// Generate candidate paths for a binary in a single directory: the bare
+    /// name, plus each `PATHEXT` extension on Windows.
+    fn candidate_names(dir: &std::path::Path, binary_name: &str) -> Vec<std::path::PathBuf> {
+        #[allow(unused_mut)]
+        let mut names = vec![dir.join(binary_name)];
+        #[cfg(windows)]
+        {
+            for ext in Self::pathext_extensions() {
+                names.push(dir.join(format!("{binary_name}{ext}")));
+            }
+        }
+        names
+    }
+
     /// Spawn a command, write stdin, register the child handle before I/O,
     /// read captured stdout/stderr, reap the child, and then deregister it.
     async fn spawn_and_wait(
         &self,
         request: &InvocationRequest,
-        binary: &str,
+        binary: &std::path::Path,
         args: &[String],
         stdin_payload: &str,
         env_overrides: &[(String, String)],
@@ -734,11 +910,12 @@ impl ProcessBackendAdapter {
             command.env(key, value);
         }
 
+        let binary_display = binary.display();
         let mut child = command.spawn().map_err(|error| {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to spawn {binary}: {error}"),
+                format!("failed to spawn {binary_display}: {error}"),
             )
         })?;
 
@@ -788,7 +965,7 @@ impl ProcessBackendAdapter {
                 request,
                 FailureClass::TransportFailure,
                 format!(
-                    "failed to write stdin to {binary}: {error}{}",
+                    "failed to write stdin to {binary_display}: {error}{}",
                     if stderr_text.is_empty() {
                         String::new()
                     } else {
@@ -802,7 +979,7 @@ impl ProcessBackendAdapter {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to read stdout from {binary}: {error}"),
+                format!("failed to read stdout from {binary_display}: {error}"),
             )
         })?;
 
@@ -810,7 +987,7 @@ impl ProcessBackendAdapter {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to read stderr from {binary}: {error}"),
+                format!("failed to read stderr from {binary_display}: {error}"),
             )
         })?;
 
@@ -823,7 +1000,7 @@ impl ProcessBackendAdapter {
             Err(error) => Err(Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to wait on {binary} process: {error}"),
+                format!("failed to wait on {binary_display} process: {error}"),
             )),
         }
     }
@@ -879,15 +1056,15 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         match (backend.backend.family, contract) {
             (
                 BackendFamily::Claude | BackendFamily::Codex | BackendFamily::OpenRouter,
-                InvocationContract::Stage(_) | InvocationContract::Requirements { .. } | InvocationContract::Panel { .. },
+                InvocationContract::Stage(_)
+                | InvocationContract::Requirements { .. }
+                | InvocationContract::Panel { .. },
             ) => Ok(()),
-            (BackendFamily::Stub, _) => {
-                Err(Self::capability_mismatch(
-                    backend,
-                    contract,
-                    "ProcessBackendAdapter does not support the stub backend",
-                ))
-            }
+            (BackendFamily::Stub, _) => Err(Self::capability_mismatch(
+                backend,
+                contract,
+                "ProcessBackendAdapter does not support the stub backend",
+            )),
         }
     }
 
@@ -901,7 +1078,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         Self::ensure_binary_available(
             binary_name,
             backend.backend.family.as_str(),
-            &Self::system_path_entries(),
+            &self.effective_search_paths(),
         )?;
         if backend.backend.family == BackendFamily::OpenRouter
             && std::env::var("OPENROUTER_API_KEY")
@@ -991,7 +1168,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             FailureClass::TransportFailure,
                             format!(
                                 "{} exited with code {code}{detail}",
-                                fresh_prepared.binary(),
+                                fresh_prepared.binary().display(),
                             ),
                         ));
                     }
@@ -1010,7 +1187,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
-                    format!("{} exited with code {code}{detail}", prepared.binary(),),
+                    format!(
+                        "{} exited with code {code}{detail}",
+                        prepared.binary().display(),
+                    ),
                 ))
             }
             _ => prepared.finish(&request, output).await,
@@ -2107,7 +2287,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2134,7 +2314,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2173,7 +2353,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2200,7 +2380,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2226,7 +2406,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
@@ -2273,7 +2453,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
@@ -2305,7 +2485,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"ok\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {

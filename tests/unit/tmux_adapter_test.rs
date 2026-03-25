@@ -335,6 +335,7 @@ async fn tmux_adapter_matches_direct_process_output() {
     write_claude_envelope(&envelope_file, &planning_payload());
 
     let tmux = TmuxAdapter::new(ProcessBackendAdapter::new(), true)
+        .expect("tmux adapter")
         .invoke(tmux_request.clone())
         .await
         .expect("tmux invoke");
@@ -367,7 +368,7 @@ async fn tmux_adapter_cancel_cleans_up_session_and_allows_attach_while_running()
 
     let (_dir, request) = request_fixture("tmux-cancel");
     let session_name = session_name_for_request(&request);
-    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true).expect("tmux adapter");
 
     let invocation_id = request.invocation_id.clone();
     let join = tokio::spawn({
@@ -428,7 +429,7 @@ async fn tmux_adapter_cancel_uses_sigterm_before_sigkill_when_backend_ignores_te
 
     let (_dir, request) = request_fixture("tmux-signal-cancel");
     let session_name = session_name_for_request(&request);
-    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true).expect("tmux adapter");
     let invocation_id = request.invocation_id.clone();
 
     let join = tokio::spawn({
@@ -492,7 +493,7 @@ async fn tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill() {
     let session_name = session_name_for_request(&request);
 
     let service = AgentExecutionService::new(
-        TmuxAdapter::new(ProcessBackendAdapter::new(), true),
+        TmuxAdapter::new(ProcessBackendAdapter::new(), true).expect("tmux adapter"),
         InlineRawOutputStore,
         NoopSessionStore,
     );
@@ -532,7 +533,7 @@ async fn tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_availability_check_fails_cleanly_when_binary_missing() {
-    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), false);
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), false).expect("tmux adapter");
     let (_dir, request) = request_fixture("tmux-missing");
     let empty_dir = tempdir().expect("create empty bin dir");
     let _env_lock = lock_path_mutex();
@@ -554,7 +555,7 @@ async fn tmux_availability_check_fails_cleanly_when_binary_missing() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn tmux_mode_rejects_openrouter_without_falling_back_to_direct_execution() {
-    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true);
+    let adapter = TmuxAdapter::new(ProcessBackendAdapter::new(), true).expect("tmux adapter");
     let (_dir, mut request) = request_fixture("tmux-openrouter");
     let empty_dir = tempdir().expect("create empty bin dir");
     let _env_lock = lock_path_mutex();
