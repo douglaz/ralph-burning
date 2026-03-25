@@ -69,6 +69,9 @@ pub enum RunSubcommand {
         /// Poll for new journal events every 2 seconds until interrupted.
         #[arg(long, conflicts_with = "last")]
         follow: bool,
+        /// Test-only: delay in ms before follow-mode baseline snapshot.
+        #[arg(long, hide = true, env = "RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS")]
+        follow_baseline_delay_ms: Option<u64>,
     },
     /// Show or perform run rollback operations.
     Rollback {
@@ -120,7 +123,12 @@ pub async fn handle(command: RunCommand) -> AppResult<()> {
             json,
             stage,
         } => handle_history(verbose, json, stage).await,
-        RunSubcommand::Tail { logs, last, follow } => handle_tail(logs, last, follow).await,
+        RunSubcommand::Tail {
+            logs,
+            last,
+            follow,
+            follow_baseline_delay_ms,
+        } => handle_tail(logs, last, follow, follow_baseline_delay_ms).await,
         RunSubcommand::Start(args) => handle_start(args).await,
         RunSubcommand::Resume(args) => handle_resume(args).await,
         RunSubcommand::Attach => handle_attach().await,
@@ -401,7 +409,12 @@ async fn handle_history(verbose: bool, as_json: bool, stage: Option<String>) -> 
     Ok(())
 }
 
-async fn handle_tail(include_logs: bool, last: Option<usize>, follow: bool) -> AppResult<()> {
+async fn handle_tail(
+    include_logs: bool,
+    last: Option<usize>,
+    follow: bool,
+    follow_baseline_delay_ms: Option<u64>,
+) -> AppResult<()> {
     let (current_dir, project_id) = load_active_project_context()?;
     let effective_config = EffectiveConfig::load_for_project(
         &current_dir,
@@ -415,6 +428,7 @@ async fn handle_tail(include_logs: bool, last: Option<usize>, follow: bool) -> A
             &project_id,
             include_logs,
             effective_config.effective_stream_output(),
+            follow_baseline_delay_ms,
         )
         .await;
     }
@@ -456,8 +470,14 @@ async fn handle_tail_follow(
     project_id: &crate::shared::domain::ProjectId,
     include_logs: bool,
     stream_output: bool,
+    follow_baseline_delay_ms: Option<u64>,
 ) -> AppResult<()> {
-    let mut follow_state = load_follow_baseline(current_dir, project_id, include_logs)?;
+    let mut follow_state = load_follow_baseline(
+        current_dir,
+        project_id,
+        include_logs,
+        follow_baseline_delay_ms,
+    )?;
 
     println!(
         "Following project '{}' for new durable history{}; press Ctrl-C to stop.",
@@ -535,11 +555,12 @@ fn load_follow_baseline(
     current_dir: &std::path::Path,
     project_id: &crate::shared::domain::ProjectId,
     include_logs: bool,
+    follow_baseline_delay_ms: Option<u64>,
 ) -> AppResult<FollowState> {
     let mut transient_partial_history_files = HashMap::new();
     let (seen_payload_files, seen_artifact_files) =
         list_history_record_files(current_dir, project_id)?;
-    maybe_sleep_before_follow_baseline_snapshot();
+    maybe_sleep_before_follow_baseline_snapshot(follow_baseline_delay_ms);
     let previously_visible_payload_files = HashSet::new();
     let previously_visible_artifact_files = HashSet::new();
     let FollowSnapshot {
@@ -1093,14 +1114,13 @@ fn list_json_file_stems(dir: &std::path::Path) -> AppResult<HashSet<String>> {
     Ok(stems)
 }
 
-fn maybe_sleep_before_follow_baseline_snapshot() {
+fn maybe_sleep_before_follow_baseline_snapshot(delay_ms: Option<u64>) {
     // Test-only injection seam: pause between the startup file scan and the
     // first strict tail snapshot so integration coverage can exercise records
-    // that land in that narrow window.
-    if let Ok(delay_ms) = std::env::var("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS") {
-        if let Ok(delay_ms) = delay_ms.parse::<u64>() {
-            std::thread::sleep(Duration::from_millis(delay_ms));
-        }
+    // that land in that narrow window.  The delay is provided via a hidden
+    // clap arg (with env fallback) at the CLI boundary.
+    if let Some(delay_ms) = delay_ms {
+        std::thread::sleep(Duration::from_millis(delay_ms));
     }
 }
 
