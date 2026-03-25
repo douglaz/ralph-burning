@@ -217,8 +217,8 @@ safety, and robustness.
 Run `git diff` to see all changes, then read the key implementation files \
 end-to-end. For each issue found, cite specific files and line numbers.
 
-Ignore style and cosmetics — only report real bugs, safety problems, and \
-correctness gaps.
+Ignore style and cosmetics — only report real bugs, safety problems, \
+correctness gaps, and significant maintainability risks.
 
 ## Project Prompt
 
@@ -236,7 +236,7 @@ const FINAL_REVIEW_VOTER_DEFAULT: &str = "\
 # {{title}}
 
 You are evaluating proposed amendments to this project. Assess each amendment \
-on its technical merit — correctness, safety, and robustness.
+on its technical merit — correctness, safety, robustness, and maintainability.
 
 ## Instructions
 
