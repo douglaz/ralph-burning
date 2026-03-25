@@ -909,7 +909,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn backend_adapter_process_variant_dispatches_openrouter_targets() {
+    async fn backend_adapter_openrouter_variant_dispatches_openrouter_targets() {
         let _env_guard = ENV_MUTEX.lock().expect("env lock");
         let server = MockHttpServer::start(vec![
             ResponsePlan::json(200, json!({"data": [{"id": "model-1"}]})),
@@ -931,18 +931,20 @@ mod tests {
         ]);
         set_openrouter_env(&server.base_url);
 
-        let adapter = BackendAdapter::Process(ProcessBackendAdapter::new());
+        let adapter = BackendAdapter::OpenRouter(
+            OpenRouterBackendAdapter::with_base_url(server.base_url.clone()),
+        );
         let (_dir, request) =
             request_fixture(BackendFamily::OpenRouter, "anthropic/claude-3.5-sonnet");
 
         adapter
             .check_availability(&request.resolved_target)
             .await
-            .expect("process variant should dispatch OpenRouter availability");
+            .expect("openrouter variant should check availability");
         let envelope = adapter
             .invoke(request)
             .await
-            .expect("invoke through process variant");
+            .expect("invoke through openrouter variant");
         assert_eq!(envelope.parsed_payload["questions"], json!([]));
 
         let requests = server.requests();
