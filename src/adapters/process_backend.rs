@@ -414,13 +414,24 @@ impl ProcessBackendAdapter {
     /// insufficient permissions).  This is unrecoverable — if `current_dir()`
     /// fails, the entire process is in a broken state.
     fn absolutize_paths(paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-        let cwd = std::env::current_dir().expect(
-            "current_dir() failed — process working directory is inaccessible; \
-             cannot absolutize relative search paths",
-        );
+        let has_relative = paths.iter().any(|p| !p.is_absolute());
+        let cwd = if has_relative {
+            Some(std::env::current_dir().expect(
+                "current_dir() failed — process working directory is inaccessible; \
+                 cannot absolutize relative search paths",
+            ))
+        } else {
+            None
+        };
         paths
             .into_iter()
-            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            .map(|p| {
+                if p.is_absolute() {
+                    p
+                } else {
+                    cwd.as_ref().expect("cwd resolved above").join(p)
+                }
+            })
             .collect()
     }
 
