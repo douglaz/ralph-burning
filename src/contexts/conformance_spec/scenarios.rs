@@ -612,6 +612,93 @@ fn write_run_query_history_fixture(ws: &TempWorkspace, project_id: &str) -> Resu
     Ok(())
 }
 
+fn set_workspace_stream_output(ws: &TempWorkspace, enabled: bool) -> Result<(), String> {
+    let workspace_toml = ws.path().join(".ralph-burning/workspace.toml");
+    let mut workspace: crate::shared::domain::WorkspaceConfig = toml::from_str(
+        &std::fs::read_to_string(&workspace_toml)
+            .map_err(|e| format!("read workspace.toml: {e}"))?,
+    )
+    .map_err(|e| format!("parse workspace.toml: {e}"))?;
+    workspace.execution.stream_output = Some(enabled);
+    std::fs::write(
+        &workspace_toml,
+        toml::to_string_pretty(&workspace).map_err(|e| format!("serialize workspace: {e}"))?,
+    )
+    .map_err(|e| format!("write workspace.toml: {e}"))?;
+    Ok(())
+}
+
+fn write_supporting_payload(project_root: &Path) -> Result<(), String> {
+    std::fs::write(
+        project_root.join("history/payloads/panel-p1.json"),
+        r#"{
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:05:00Z",
+  "payload": { "summary": "completion panel payload" },
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"#,
+    )
+    .map_err(|e| format!("write supporting payload: {e}"))
+}
+
+fn write_supporting_artifact(project_root: &Path) -> Result<(), String> {
+    std::fs::write(
+        project_root.join("history/artifacts/panel-a1.json"),
+        r##"{
+  "artifact_id": "panel-a1",
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-19T03:05:00Z",
+  "content": "# Completion Panel\nvisible follow artifact\n",
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"##,
+    )
+    .map_err(|e| format!("write supporting artifact: {e}"))
+}
+
+fn write_follow_runtime_log(project_root: &Path, message: &str) -> Result<(), String> {
+    let entry = format!(
+        r#"{{"timestamp":"2026-03-19T03:06:00Z","level":"info","source":"agent","message":{}}}"#,
+        serde_json::to_string(message).map_err(|e| format!("serialize runtime log: {e}"))?,
+    );
+    std::fs::write(
+        project_root.join("runtime/logs/002.ndjson"),
+        format!("{entry}\n"),
+    )
+    .map_err(|e| format!("write runtime log: {e}"))
+}
+
+fn wait_for_child_output(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child
+            .try_wait()
+            .map_err(|e| format!("poll child exit: {e}"))?
+            .is_some()
+        {
+            return child
+                .wait_with_output()
+                .map_err(|e| format!("wait child output: {e}"));
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+            return Err(format!(
+                "child did not exit within {} ms",
+                timeout.as_millis()
+            ));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn write_rollback_targets_fixture(ws: &TempWorkspace, project_id: &str) -> Result<(), String> {
     let project_root = conformance_project_root(ws, project_id);
     std::fs::write(
@@ -3052,7 +3139,7 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
             r#"{"timestamp":"2026-03-19T03:05:00Z","level":"info","source":"agent","message":"new follow log"}"#.to_owned() + "\n",
         )
         .map_err(|e| format!("write runtime log: {e}"))?;
-        std::thread::sleep(std::time::Duration::from_millis(2500));
+        std::thread::sleep(std::time::Duration::from_millis(3800));
         kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
             .map_err(|e| format!("send SIGINT: {e}"))?;
         let output = child
@@ -3069,6 +3156,157 @@ fn register_run_queries(m: &mut HashMap<String, ScenarioExecutor>) {
             return Err(
                 "follow --logs output should include the appended runtime log entry".into(),
             );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-047", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-supporting", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-supporting")?;
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "1200")
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let project_root = conformance_project_root(&ws, "rq-follow-supporting");
+        write_supporting_payload(&project_root)?;
+        write_supporting_artifact(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow output should include the appended supporting payload and artifact".into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-048", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-preexisting-partial", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-preexisting-partial")?;
+        let project_root = conformance_project_root(&ws, "rq-follow-preexisting-partial");
+        write_supporting_payload(&project_root)?;
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        write_supporting_artifact(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow should tolerate a startup partial supporting pair that completes within the grace window, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow output should include the completed supporting payload and artifact after the startup partial pair".into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-049", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-partial-progress", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-partial-progress")?;
+        set_workspace_stream_output(&ws, true)?;
+        let project_root = conformance_project_root(&ws, "rq-follow-partial-progress");
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow", "--logs"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow --logs: {e}"))?;
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        write_supporting_payload(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write_follow_runtime_log(&project_root, "follow log after partial pair")?;
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        write_supporting_artifact(&project_root)?;
+        std::thread::sleep(std::time::Duration::from_millis(3200));
+        kill(Pid::from_raw(child.id() as i32), Signal::SIGINT)
+            .map_err(|e| format!("send SIGINT: {e}"))?;
+        let output = child
+            .wait_with_output()
+            .map_err(|e| format!("wait follow --logs output: {e}"))?;
+        if !output.status.success() {
+            return Err(format!(
+                "follow --logs should exit successfully, stderr={}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        if !stdout.contains("follow log after partial pair") {
+            return Err(
+                "follow --logs output should keep streaming runtime logs after a partial pair"
+                    .into(),
+            );
+        }
+        if !stdout.contains("panel-p1") || !stdout.contains("panel-a1") {
+            return Err(
+                "follow --logs output should include the completed supporting payload and artifact after the partial pair"
+                    .into(),
+            );
+        }
+        Ok(())
+    });
+
+    reg!(m, "SC-RUN-050", || {
+        let ws = TempWorkspace::new()?;
+        setup_workspace_with_project(&ws, "rq-follow-durable-orphan", "standard")?;
+        write_run_query_history_fixture(&ws, "rq-follow-durable-orphan")?;
+        let project_root = conformance_project_root(&ws, "rq-follow-durable-orphan");
+        write_supporting_payload(&project_root)?;
+
+        let child = Command::new(binary_path())
+            .args(["run", "tail", "--follow"])
+            .current_dir(ws.path())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| format!("spawn follow: {e}"))?;
+        let output = wait_for_child_output(child, std::time::Duration::from_millis(4500))?;
+        if output.status.success() {
+            return Err("follow should fail on durable orphaned supporting payload".into());
+        }
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if !stderr.contains("history/payloads/panel-p1")
+            || !stderr.contains("payload has no matching artifact")
+        {
+            return Err(format!(
+                "follow stderr should report canonical orphan payload corruption, stderr={stderr}"
+            ));
         }
         Ok(())
     });

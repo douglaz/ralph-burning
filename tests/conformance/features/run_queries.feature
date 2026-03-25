@@ -326,3 +326,33 @@ Feature: Run Queries
     Given an initialized workspace with project "alpha" selected as active
     When the user starts "run tail --follow --logs", appends a new runtime log entry, and interrupts it with Ctrl-C
     Then the follow output includes the appended runtime log entry
+
+  # SC-RUN-047
+  Scenario: Run tail --follow prints new supporting payload/artifact files without journal events
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user starts "run tail --follow", writes a new supporting payload/artifact pair, and interrupts it with Ctrl-C
+    Then the follow output includes the appended supporting payload and artifact
+
+  # SC-RUN-048
+  Scenario: Run tail --follow tolerates a supporting payload/artifact pair that straddles startup
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    And project "alpha" has a supporting payload with no matching artifact
+    When the user starts "run tail --follow", writes the matching artifact shortly afterward, and interrupts it with Ctrl-C
+    Then the follow output includes the appended supporting payload and artifact
+
+  # SC-RUN-049
+  Scenario: Run tail --follow --logs keeps streaming after a new supporting payload appears before its artifact
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    When the user starts "run tail --follow --logs" with streaming enabled, writes a supporting payload, appends a runtime log, completes the artifact pair, and interrupts it with Ctrl-C
+    Then the follow output includes the runtime log entry and the completed supporting payload and artifact
+
+  # SC-RUN-050
+  Scenario: Run tail --follow still fails on durable orphaned supporting payloads
+    Given an initialized workspace with project "alpha" selected as active
+    And project "alpha" has journal events and payload/artifact records
+    And project "alpha" has a supporting payload with no matching artifact
+    When the user runs "run tail --follow"
+    Then the command fails with error containing "payload has no matching artifact"

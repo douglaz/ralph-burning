@@ -74,7 +74,7 @@ impl BackendFamily {
         match self {
             Self::Claude => "claude-opus-4-6",
             Self::Codex => "gpt-5.4",
-            Self::OpenRouter => "openai/gpt-5",
+            Self::OpenRouter => "openai/gpt-5.4",
             Self::Stub => "stub-default",
         }
     }
@@ -245,7 +245,7 @@ impl BackendRole {
             Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::QaValidator => {
-                ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
+                ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5.4")
             }
             Self::CompletionJudge => {
                 ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6")

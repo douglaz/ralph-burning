@@ -147,6 +147,81 @@ fn write_run_query_history_fixture(base_dir: &std::path::Path, project_id: &str)
     .expect("write artifact a2");
 }
 
+fn set_workspace_stream_output(base_dir: &std::path::Path, enabled: bool) {
+    let workspace_toml = base_dir.join(".ralph-burning/workspace.toml");
+    let mut workspace: ralph_burning::shared::domain::WorkspaceConfig =
+        toml::from_str(&fs::read_to_string(&workspace_toml).expect("read workspace.toml"))
+            .expect("parse workspace.toml");
+    workspace.execution.stream_output = Some(enabled);
+    fs::write(
+        &workspace_toml,
+        toml::to_string_pretty(&workspace).expect("serialize workspace.toml"),
+    )
+    .expect("write workspace.toml");
+}
+
+fn write_supporting_payload(project_root: &std::path::Path) {
+    fs::write(
+        project_root.join("history/payloads/panel-p1.json"),
+        r#"{
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-19T03:05:00Z",
+  "payload": { "summary": "completion panel payload" },
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"#,
+    )
+    .expect("write supporting payload");
+}
+
+fn write_supporting_artifact(project_root: &std::path::Path) {
+    fs::write(
+        project_root.join("history/artifacts/panel-a1.json"),
+        r##"{
+  "artifact_id": "panel-a1",
+  "payload_id": "panel-p1",
+  "stage_id": "completion_panel",
+  "created_at": "2026-03-19T03:05:00Z",
+  "content": "# Completion Panel\nvisible follow artifact\n",
+  "record_kind": "stage_supporting",
+  "completion_round": 1
+}"##,
+    )
+    .expect("write supporting artifact");
+}
+
+fn write_follow_runtime_log(project_root: &std::path::Path, message: &str) {
+    let entry = format!(
+        r#"{{"timestamp":"2026-03-19T03:06:00Z","level":"info","source":"agent","message":{}}}"#,
+        serde_json::to_string(message).expect("serialize runtime log message")
+    );
+    fs::write(
+        project_root.join("runtime/logs/002.ndjson"),
+        format!("{entry}\n"),
+    )
+    .expect("write follow runtime log");
+}
+
+fn wait_for_child_output(
+    mut child: std::process::Child,
+    timeout: std::time::Duration,
+) -> std::process::Output {
+    let deadline = std::time::Instant::now() + timeout;
+    loop {
+        if child.try_wait().expect("poll child exit").is_some() {
+            return child.wait_with_output().expect("wait for child output");
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = kill(Pid::from_raw(child.id() as i32), Signal::SIGKILL);
+            panic!("child did not exit within {:?}", timeout);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+}
+
 fn write_rollback_targets_fixture(base_dir: &std::path::Path, project_id: &str) {
     let project_root = project_root(base_dir, project_id);
     fs::write(
@@ -2899,6 +2974,132 @@ fn run_tail_follow_starts_and_interrupts_cleanly() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Following project 'alpha'"));
     assert!(stdout.contains("Stopped following."));
+}
+
+#[test]
+fn run_tail_follow_surfaces_new_supporting_records_without_journal_events() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .env("RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS", "1200")
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    write_supporting_payload(&project_root);
+    write_supporting_artifact(&project_root);
+
+    std::thread::sleep(std::time::Duration::from_millis(3800));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
+fn run_tail_follow_fails_on_durable_orphan_supporting_payload() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    write_supporting_payload(&project_root);
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    let output = wait_for_child_output(child, std::time::Duration::from_millis(4500));
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("history/payloads/panel-p1"));
+    assert!(stderr.contains("payload has no matching artifact"));
+}
+
+#[test]
+fn run_tail_follow_tolerates_startup_partial_supporting_pair() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    write_supporting_payload(&project_root);
+
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    write_supporting_artifact(&project_root);
+
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child.wait_with_output().expect("wait for follow output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
+}
+
+#[test]
+fn run_tail_follow_logs_keeps_streaming_after_new_partial_supporting_pair() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+    select_active_project_fixture(temp_dir.path(), "alpha");
+    write_run_query_history_fixture(temp_dir.path(), "alpha");
+    set_workspace_stream_output(temp_dir.path(), true);
+
+    let project_root = project_root(temp_dir.path(), "alpha");
+    let child = Command::new(binary())
+        .args(["run", "tail", "--follow", "--logs"])
+        .current_dir(temp_dir.path())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn run tail --follow --logs");
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    write_supporting_payload(&project_root);
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    write_follow_runtime_log(&project_root, "follow log after partial pair");
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    write_supporting_artifact(&project_root);
+
+    std::thread::sleep(std::time::Duration::from_millis(3200));
+    kill(Pid::from_raw(child.id() as i32), Signal::SIGINT).expect("send SIGINT");
+    let output = child
+        .wait_with_output()
+        .expect("wait for follow --logs output");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("follow log after partial pair"));
+    assert!(stdout.contains("panel-p1"));
+    assert!(stdout.contains("panel-a1"));
 }
 
 #[test]
