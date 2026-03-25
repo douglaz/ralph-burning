@@ -62,34 +62,44 @@ impl TmuxAdapter {
         })
     }
 
-    /// Resolve the tmux binary from the process adapter's effective search
-    /// paths.  Uses the same executable-permission semantics as
-    /// [`ProcessBackendAdapter::is_executable_file`].
+    /// Resolve the tmux binary by delegating to
+    /// [`ProcessBackendAdapter::resolve_binary`].
     ///
-    /// When the adapter has explicit search paths but no executable `tmux` is
-    /// found, returns `Err` so callers never silently fall through to ambient
-    /// PATH resolution.
+    /// When the adapter has explicit search paths, the resolved path is
+    /// absolute; when no explicit paths are set, the bare name `"tmux"` is
+    /// returned so the OS performs ambient PATH lookup at spawn time.
     fn resolve_tmux_binary(process: &ProcessBackendAdapter) -> Result<String, String> {
-        let has_explicit_paths = process.has_explicit_search_paths();
-        let paths = process.effective_search_paths();
-        for dir in &paths {
-            let candidate = dir.join("tmux");
-            if ProcessBackendAdapter::is_executable_file(&candidate) {
-                return Ok(candidate.to_string_lossy().into_owned());
-            }
-        }
-        if has_explicit_paths {
-            return Err(
-                "required binary 'tmux' not found (or not executable) in explicit search paths"
-                    .to_owned(),
-            );
-        }
-        Ok("tmux".to_owned())
+        process.resolve_binary("tmux").map_err(|e| e.to_string())
     }
 
     /// Check tmux availability using explicit search paths.
     pub fn check_tmux_available_in(search_paths: &[std::path::PathBuf]) -> AppResult<()> {
         ProcessBackendAdapter::ensure_binary_available("tmux", "tmux", search_paths)
+    }
+
+    /// Verify that the cached `tmux_binary` is still available.
+    ///
+    /// When the adapter was constructed with explicit search paths, the cached
+    /// binary is an absolute path — verify it is still an executable file.
+    /// When the adapter uses the default bare name (`"tmux"`), fall back to
+    /// scanning the system PATH via [`check_tmux_available_in`] so that the
+    /// same `ensure_binary_available` diagnostics (not-found vs
+    /// found-but-not-executable) are preserved.
+    fn verify_tmux_available(&self) -> AppResult<()> {
+        if self.process.has_explicit_search_paths() {
+            let path = std::path::Path::new(&self.tmux_binary);
+            if ProcessBackendAdapter::is_executable_file(path) {
+                return Ok(());
+            }
+            return Err(AppError::BackendUnavailable {
+                backend: "tmux".to_owned(),
+                details: format!(
+                    "resolved tmux binary '{}' is no longer available or executable",
+                    self.tmux_binary
+                ),
+            });
+        }
+        Self::check_tmux_available_in(&self.process.effective_search_paths())
     }
 
     pub fn session_name(
@@ -445,14 +455,14 @@ impl AgentExecutionPort for TmuxAdapter {
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
         Self::ensure_supported_backend(backend, None)?;
-        Self::check_tmux_available_in(&self.process.effective_search_paths())?;
+        self.verify_tmux_available()?;
         self.process.check_availability(backend).await
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
-        Self::check_tmux_available_in(&self.process.effective_search_paths())?;
+        self.verify_tmux_available()?;
 
         let prepared = self.process.build_command(&request).await?;
         let project_name = request

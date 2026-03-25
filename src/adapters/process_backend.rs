@@ -426,7 +426,7 @@ impl ProcessBackendAdapter {
     /// bit set (`mode & 0o111 != 0`).  Returns [`AppError::BackendUnavailable`]
     /// if no executable match is found — never silently falls back to ambient
     /// PATH resolution.
-    fn resolve_binary(&self, binary_name: &str) -> AppResult<String> {
+    pub(crate) fn resolve_binary(&self, binary_name: &str) -> AppResult<String> {
         if let Some(ref paths) = self.search_paths {
             for dir in paths {
                 let candidate = dir.join(binary_name);
