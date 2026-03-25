@@ -278,6 +278,36 @@ fn runner_all_pass_reports_correctly() {
     assert_eq!(report.not_run, 0);
 }
 
+#[test]
+fn runner_reports_skipped_executor_as_not_run() {
+    use ralph_burning::contexts::conformance_spec::model::ScenarioOutcome;
+
+    let scenarios = [ScenarioMeta {
+        id: "SKIP-ME".to_owned(),
+        feature_title: "T".to_owned(),
+        scenario_title: "T".to_owned(),
+        source_file: "t.feature".to_owned(),
+        source_line: 1,
+        kind: ScenarioKind::Scenario,
+        id_source: IdSource::Comment,
+    }];
+
+    let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
+    registry.insert(
+        "SKIP-ME".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Skipped("test skip reason".into()))),
+    );
+
+    let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
+    let report = runner::run_scenarios(&refs, &registry);
+
+    assert_eq!(report.selected, 1);
+    assert_eq!(report.passed, 0);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.not_run, 1);
+    assert!(matches!(report.results[0].outcome, ScenarioOutcome::NotRun));
+}
+
 // ===========================================================================
 // Temp workspace isolation
 // ===========================================================================

@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 
-use super::runner::ScenarioExecutor;
+use super::runner::{self, ScenarioExecutor};
 
 use crate::contexts::workflow_composition::contracts::{
     all_contracts, contract_for_stage, ContractFamily,

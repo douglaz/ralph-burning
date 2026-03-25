@@ -159,11 +159,14 @@ pub fn run_scenarios(
                             outcome: ScenarioOutcome::Passed,
                             duration,
                         },
-                        Ok(Ok(ExecOutcome::Skipped(_reason))) => ScenarioResult {
-                            id: scenario.id.clone(),
-                            outcome: ScenarioOutcome::NotRun,
-                            duration,
-                        },
+                        Ok(Ok(ExecOutcome::Skipped(reason))) => {
+                            eprintln!("    Reason: {reason}");
+                            ScenarioResult {
+                                id: scenario.id.clone(),
+                                outcome: ScenarioOutcome::NotRun,
+                                duration,
+                            }
+                        }
                         Ok(Err(reason)) => {
                             flag.store(true, Ordering::Relaxed);
                             ScenarioResult {
