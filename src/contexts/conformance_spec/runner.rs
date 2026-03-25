@@ -126,7 +126,7 @@ pub fn run_scenarios(
                         idx,
                         ScenarioResult {
                             id: scenario.id.clone(),
-                            outcome: ScenarioOutcome::NotRun,
+                            outcome: ScenarioOutcome::NotRun(None),
                             duration: Duration::ZERO,
                         },
                     ));
@@ -159,14 +159,11 @@ pub fn run_scenarios(
                             outcome: ScenarioOutcome::Passed,
                             duration,
                         },
-                        Ok(Ok(ExecOutcome::Skipped(reason))) => {
-                            eprintln!("    Reason: {reason}");
-                            ScenarioResult {
-                                id: scenario.id.clone(),
-                                outcome: ScenarioOutcome::NotRun,
-                                duration,
-                            }
-                        }
+                        Ok(Ok(ExecOutcome::Skipped(reason))) => ScenarioResult {
+                            id: scenario.id.clone(),
+                            outcome: ScenarioOutcome::NotRun(Some(reason)),
+                            duration,
+                        },
                         Ok(Err(reason)) => {
                             flag.store(true, Ordering::Relaxed);
                             ScenarioResult {
@@ -227,7 +224,12 @@ pub fn run_scenarios(
                 eprintln!("    Reason: {reason}");
                 "FAIL"
             }
-            ScenarioOutcome::NotRun => "SKIP",
+            ScenarioOutcome::NotRun(reason) => {
+                if let Some(reason) = reason {
+                    eprintln!("    Reason: {reason}");
+                }
+                "SKIP"
+            }
         };
         eprintln!(
             "  [{}/{}] {} ... {} ({:.2}s)",

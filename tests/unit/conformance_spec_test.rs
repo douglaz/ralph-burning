@@ -305,7 +305,10 @@ fn runner_reports_skipped_executor_as_not_run() {
     assert_eq!(report.passed, 0);
     assert_eq!(report.failed, 0);
     assert_eq!(report.not_run, 1);
-    assert!(matches!(report.results[0].outcome, ScenarioOutcome::NotRun));
+    assert!(matches!(
+        report.results[0].outcome,
+        ScenarioOutcome::NotRun(Some(_))
+    ));
 }
 
 // ===========================================================================
