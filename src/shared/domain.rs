@@ -74,7 +74,7 @@ impl BackendFamily {
         match self {
             Self::Claude => "claude-opus-4-6",
             Self::Codex => "gpt-5.4",
-            Self::OpenRouter => "openai/gpt-5",
+            Self::OpenRouter => "openai/gpt-5.4",
             Self::Stub => "stub-default",
         }
     }
