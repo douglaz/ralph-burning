@@ -237,12 +237,14 @@ pub async fn preflight_check<A: AgentExecutionPort>(
             StageId::PromptReview => {
                 let policy = BackendPolicyService::new(effective_config);
                 let panel = resolve_prompt_review_panel_for_preflight(&policy, cycle)?;
+                let mut probed = Vec::new();
                 preflight_required_panel_target(
                     adapter,
                     entry.stage_id,
                     "refiner",
                     &panel.refiner,
                     "prompt-review refiner",
+                    &mut probed,
                 )
                 .await?;
                 preflight_panel_members(
@@ -253,6 +255,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     "prompt-review validator",
                     &panel.validators,
                     effective_config.prompt_review_policy().min_reviewers,
+                    &mut probed,
                 )
                 .await?;
             }
@@ -264,6 +267,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                         details: format!("completion panel resolution failed: {error}"),
                     }
                 })?;
+                let mut probed = Vec::new();
                 preflight_panel_members(
                     adapter,
                     entry.stage_id,
@@ -272,18 +276,21 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     "completion completer",
                     &panel.completers,
                     effective_config.completion_policy().min_completers,
+                    &mut probed,
                 )
                 .await?;
             }
             StageId::FinalReview => {
                 let policy = BackendPolicyService::new(effective_config);
                 let panel = resolve_final_review_panel_for_preflight(&policy, cycle)?;
+                let mut probed = Vec::new();
                 preflight_required_panel_target(
                     adapter,
                     entry.stage_id,
                     "planner",
                     &panel.planner,
                     "final-review planner",
+                    &mut probed,
                 )
                 .await?;
                 preflight_required_panel_target(
@@ -292,6 +299,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     "arbiter",
                     &panel.arbiter,
                     "final-review arbiter",
+                    &mut probed,
                 )
                 .await?;
                 preflight_panel_members(
@@ -302,6 +310,7 @@ pub async fn preflight_check<A: AgentExecutionPort>(
                     "final-review reviewer",
                     &panel.reviewers,
                     effective_config.final_review_policy().min_reviewers,
+                    &mut probed,
                 )
                 .await?;
             }
@@ -381,6 +390,7 @@ async fn preflight_required_panel_target<A: AgentExecutionPort>(
     role: &'static str,
     target: &ResolvedBackendTarget,
     member_name: &str,
+    probed: &mut Vec<ResolvedBackendTarget>,
 ) -> AppResult<()> {
     let contract = InvocationContract::Panel {
         stage_id,
@@ -396,16 +406,22 @@ async fn preflight_required_panel_target<A: AgentExecutionPort>(
                 contract.label()
             ),
         })?;
-    adapter
-        .check_availability(target)
-        .await
-        .map_err(|error| AppError::PreflightFailed {
-            stage_id,
-            details: format!("required {member_name} failed availability preflight: {error}"),
-        })?;
+    if !probed.contains(target) {
+        adapter
+            .check_availability(target)
+            .await
+            .map_err(|error| AppError::PreflightFailed {
+                stage_id,
+                details: format!(
+                    "required {member_name} failed availability preflight: {error}"
+                ),
+            })?;
+        probed.push(target.clone());
+    }
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn preflight_panel_members<A: AgentExecutionPort>(
     adapter: &A,
     stage_id: StageId,
@@ -414,6 +430,7 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
     member_name: &str,
     members: &[ResolvedPanelMember],
     minimum: usize,
+    probed: &mut Vec<ResolvedBackendTarget>,
 ) -> AppResult<()> {
     let mut available_members = 0usize;
 
@@ -444,8 +461,16 @@ async fn preflight_panel_members<A: AgentExecutionPort>(
             }
         }
 
+        if probed.contains(&member.target) {
+            available_members += 1;
+            continue;
+        }
+
         match adapter.check_availability(&member.target).await {
-            Ok(()) => available_members += 1,
+            Ok(()) => {
+                probed.push(member.target.clone());
+                available_members += 1;
+            }
             Err(error) => {
                 if member.required {
                     return Err(AppError::PreflightFailed {
