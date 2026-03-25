@@ -295,31 +295,17 @@ async fn process_backend_accepts_stage_contracts_for_claude_and_codex() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn process_backend_rejects_unsupported_backend_families() {
+async fn process_backend_accepts_openrouter_capability() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, openrouter_request) = request_fixture(BackendFamily::OpenRouter);
 
-    let openrouter_error = adapter
+    adapter
         .check_capability(
             &openrouter_request.resolved_target,
             &openrouter_request.contract,
         )
         .await
-        .expect_err("openrouter should be rejected");
-    match &openrouter_error {
-        AppError::CapabilityMismatch { details, .. } => {
-            assert!(
-                details.contains("only claude and codex"),
-                "openrouter mismatch detail should mention claude and codex: {details}"
-            );
-            assert!(
-                details.contains("default_backend=claude")
-                    || details.contains("default_backend=codex"),
-                "openrouter mismatch detail should mention default_backend: {details}"
-            );
-        }
-        other => panic!("expected CapabilityMismatch, got: {other:?}"),
-    }
+        .expect("openrouter should be accepted for capability check");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -344,21 +330,20 @@ async fn process_backend_accepts_requirements_contracts_for_claude_and_codex() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn process_backend_rejects_requirements_for_unsupported_families() {
+async fn process_backend_accepts_requirements_for_openrouter() {
     let adapter = ProcessBackendAdapter::new();
 
     let (_dir, mut openrouter_request) = request_fixture(BackendFamily::OpenRouter);
     openrouter_request.contract = InvocationContract::Requirements {
         label: "requirements:question_set".to_owned(),
     };
-    let error = adapter
+    adapter
         .check_capability(
             &openrouter_request.resolved_target,
             &openrouter_request.contract,
         )
         .await
-        .expect_err("openrouter requirements should be rejected");
-    assert!(matches!(error, AppError::CapabilityMismatch { .. }));
+        .expect("openrouter requirements should be accepted");
 }
 
 // ── Availability checks ─────────────────────────────────────────────────────
@@ -795,36 +780,17 @@ async fn codex_large_stdout_before_reading_stdin_does_not_deadlock() {
     assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
 }
 
-// ── OpenRouter capability mismatch detail text ──────────────────────────────
+// ── OpenRouter capability is now accepted ────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn openrouter_capability_mismatch_detail_text() {
+async fn openrouter_capability_accepted_by_process_adapter() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
 
-    let error = adapter
+    adapter
         .check_capability(&request.resolved_target, &request.contract)
         .await
-        .expect_err("openrouter should fail");
-
-    match error {
-        AppError::CapabilityMismatch { details, .. } => {
-            assert!(
-                details.contains("ProcessBackendAdapter"),
-                "detail should mention ProcessBackendAdapter: {details}"
-            );
-            assert!(
-                details.contains("claude") && details.contains("codex"),
-                "detail should mention supported families: {details}"
-            );
-            assert!(
-                details.contains("default_backend=claude")
-                    || details.contains("default_backend=codex"),
-                "detail should mention default_backend config: {details}"
-            );
-        }
-        other => panic!("expected CapabilityMismatch, got: {other:?}"),
-    }
+        .expect("openrouter should be accepted by process adapter");
 }
 
 // ── Cancellation sends SIGTERM ──────────────────────────────────────────────
@@ -1422,31 +1388,35 @@ async fn invoke_requirements_contract_via_codex() {
     assert_eq!(result.parsed_payload, payload_json);
 }
 
-// ── invoke() rejects OpenRouter with CapabilityMismatch ─────────────────────
+// ── invoke() for OpenRouter fails gracefully without API key ─────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn invoke_rejects_openrouter_with_capability_mismatch() {
+async fn invoke_openrouter_without_api_key_returns_transport_failure() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    // Remove OPENROUTER_API_KEY to trigger the missing-key error path
+    let _guard = std::env::var("OPENROUTER_API_KEY").ok();
+    unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
 
     let error = adapter
         .invoke(request)
         .await
-        .expect_err("openrouter should be rejected at invoke");
+        .expect_err("openrouter invoke without API key should fail");
 
-    match error {
-        AppError::CapabilityMismatch { details, .. } => {
+    match &error {
+        AppError::InvocationFailed { details, .. } => {
             assert!(
-                details.contains("only claude and codex"),
-                "should mention supported families: {details}"
-            );
-            assert!(
-                details.contains("default_backend=claude")
-                    || details.contains("default_backend=codex"),
-                "should mention default_backend config: {details}"
+                details.contains("OPENROUTER_API_KEY"),
+                "should mention missing API key: {details}"
             );
         }
-        other => panic!("expected CapabilityMismatch, got: {other:?}"),
+        other => panic!("expected InvocationFailed, got: {other:?}"),
+    }
+
+    // Restore if it was set
+    if let Some(key) = _guard {
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
     }
 }
 

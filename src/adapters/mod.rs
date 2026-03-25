@@ -13,7 +13,7 @@ use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
 };
 use crate::contexts::agent_execution::service::AgentExecutionPort;
-use crate::shared::domain::{BackendFamily, ResolvedBackendTarget};
+use crate::shared::domain::ResolvedBackendTarget;
 use crate::shared::error::AppResult;
 
 use self::openrouter_backend::OpenRouterBackendAdapter;
@@ -40,15 +40,7 @@ impl AgentExecutionPort for BackendAdapter {
         match self {
             #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.check_capability(backend, contract).await,
-            Self::Process(adapter) => {
-                if backend.backend.family == BackendFamily::OpenRouter {
-                    OpenRouterBackendAdapter::new()
-                        .check_capability(backend, contract)
-                        .await
-                } else {
-                    adapter.check_capability(backend, contract).await
-                }
-            }
+            Self::Process(adapter) => adapter.check_capability(backend, contract).await,
             Self::Tmux(adapter) => adapter.check_capability(backend, contract).await,
             Self::OpenRouter(adapter) => adapter.check_capability(backend, contract).await,
         }
@@ -58,15 +50,7 @@ impl AgentExecutionPort for BackendAdapter {
         match self {
             #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.check_availability(backend).await,
-            Self::Process(adapter) => {
-                if backend.backend.family == BackendFamily::OpenRouter {
-                    OpenRouterBackendAdapter::new()
-                        .check_availability(backend)
-                        .await
-                } else {
-                    adapter.check_availability(backend).await
-                }
-            }
+            Self::Process(adapter) => adapter.check_availability(backend).await,
             Self::Tmux(adapter) => adapter.check_availability(backend).await,
             Self::OpenRouter(adapter) => adapter.check_availability(backend).await,
         }
@@ -76,13 +60,7 @@ impl AgentExecutionPort for BackendAdapter {
         match self {
             #[cfg(feature = "test-stub")]
             Self::Stub(adapter) => adapter.invoke(request).await,
-            Self::Process(adapter) => {
-                if request.resolved_target.backend.family == BackendFamily::OpenRouter {
-                    OpenRouterBackendAdapter::new().invoke(request).await
-                } else {
-                    adapter.invoke(request).await
-                }
-            }
+            Self::Process(adapter) => adapter.invoke(request).await,
             Self::Tmux(adapter) => adapter.invoke(request).await,
             Self::OpenRouter(adapter) => adapter.invoke(request).await,
         }

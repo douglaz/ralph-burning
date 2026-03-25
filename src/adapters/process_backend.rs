@@ -32,6 +32,7 @@ pub(crate) struct PreparedCommand {
     args: Vec<String>,
     stdin_payload: String,
     response_decoder: ResponseDecoder,
+    env_overrides: Vec<(String, String)>,
 }
 
 impl PreparedCommand {
@@ -45,6 +46,10 @@ impl PreparedCommand {
 
     pub(crate) fn stdin_payload(&self) -> &str {
         &self.stdin_payload
+    }
+
+    pub(crate) fn env_overrides(&self) -> &[(String, String)] {
+        &self.env_overrides
     }
 
     pub(crate) async fn cleanup(&self) {
@@ -406,8 +411,8 @@ impl ProcessBackendAdapter {
     fn binary_name(backend: BackendFamily) -> Option<&'static str> {
         match backend {
             BackendFamily::Claude => Some("claude"),
-            BackendFamily::Codex => Some("codex"),
-            BackendFamily::OpenRouter | BackendFamily::Stub => None,
+            BackendFamily::Codex | BackendFamily::OpenRouter => Some("codex"),
+            BackendFamily::Stub => None,
         }
     }
 
@@ -496,6 +501,7 @@ impl ProcessBackendAdapter {
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
+                    env_overrides: Vec::new(),
                 })
             }
             BackendFamily::Codex => {
@@ -549,12 +555,84 @@ impl ProcessBackendAdapter {
                         message_path,
                         session_resuming,
                     },
+                    env_overrides: Vec::new(),
+                })
+            }
+            BackendFamily::OpenRouter => {
+                // Route through codex CLI with OpenRouter as the provider
+                let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
+                    Self::invocation_failed(
+                        request,
+                        FailureClass::TransportFailure,
+                        "OPENROUTER_API_KEY is not set".to_owned(),
+                    )
+                })?;
+
+                let model_id = &request.resolved_target.model.model_id;
+                let session_resuming =
+                    matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                        && request.prior_session.is_some();
+
+                let temp_dir = request.project_root.join("runtime/temp");
+                let _ = tokio::fs::create_dir_all(&temp_dir).await;
+
+                let schema_path =
+                    temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let message_path =
+                    temp_dir.join(format!("{}.last-message.json", request.invocation_id));
+
+                let mut schema_value = request.contract.json_schema_value();
+                enforce_strict_mode_schema(&mut schema_value);
+                inline_schema_refs(&mut schema_value);
+                let schema_json = serde_json::to_string_pretty(&schema_value)
+                    .unwrap_or_else(|_| "{}".to_owned());
+
+                if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
+                    best_effort_cleanup(Some(&schema_path), &message_path).await;
+                    return Err(Self::invocation_failed(
+                        request,
+                        FailureClass::TransportFailure,
+                        format!("failed to write schema file: {error}"),
+                    ));
+                }
+
+                let args = if session_resuming {
+                    let session = request
+                        .prior_session
+                        .as_ref()
+                        .expect("session_resuming requires a prior session");
+                    Self::codex_resume_args(
+                        model_id,
+                        &schema_path,
+                        &message_path,
+                        &session.session_id,
+                    )
+                } else {
+                    Self::codex_new_session_args(model_id, &schema_path, &message_path)
+                };
+
+                Ok(PreparedCommand {
+                    binary: "codex".to_owned(),
+                    args,
+                    stdin_payload: Self::assemble_stdin(request),
+                    response_decoder: ResponseDecoder::Codex {
+                        schema_path,
+                        message_path,
+                        session_resuming,
+                    },
+                    env_overrides: vec![
+                        (
+                            "OPENAI_BASE_URL".to_owned(),
+                            "https://openrouter.ai/api/v1".to_owned(),
+                        ),
+                        ("OPENAI_API_KEY".to_owned(), api_key),
+                    ],
                 })
             }
             _ => Err(Self::capability_mismatch(
                 &request.resolved_target,
                 &request.contract,
-                "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
+                "ProcessBackendAdapter does not support this backend family",
             )),
         }
     }
@@ -642,6 +720,7 @@ impl ProcessBackendAdapter {
         binary: &str,
         args: &[String],
         stdin_payload: &str,
+        env_overrides: &[(String, String)],
     ) -> AppResult<ChildOutput> {
         let mut command = Command::new(binary);
         command
@@ -651,6 +730,9 @@ impl ProcessBackendAdapter {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        for (key, value) in env_overrides {
+            command.env(key, value);
+        }
 
         let mut child = command.spawn().map_err(|error| {
             Self::invocation_failed(
@@ -796,14 +878,14 @@ impl AgentExecutionPort for ProcessBackendAdapter {
     ) -> AppResult<()> {
         match (backend.backend.family, contract) {
             (
-                BackendFamily::Claude | BackendFamily::Codex,
+                BackendFamily::Claude | BackendFamily::Codex | BackendFamily::OpenRouter,
                 InvocationContract::Stage(_) | InvocationContract::Requirements { .. } | InvocationContract::Panel { .. },
             ) => Ok(()),
-            (BackendFamily::OpenRouter | BackendFamily::Stub, _) => {
+            (BackendFamily::Stub, _) => {
                 Err(Self::capability_mismatch(
                     backend,
                     contract,
-                    "ProcessBackendAdapter currently supports only claude and codex; self-hosted workflow runs require default_backend=claude or default_backend=codex",
+                    "ProcessBackendAdapter does not support the stub backend",
                 ))
             }
         }
@@ -813,14 +895,25 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         let Some(binary_name) = Self::binary_name(backend.backend.family) else {
             return Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
-                details: "ProcessBackendAdapter availability checks are only supported for claude and codex".to_owned(),
+                details: "ProcessBackendAdapter availability checks are only supported for claude, codex, and openrouter".to_owned(),
             });
         };
         Self::ensure_binary_available(
             binary_name,
             backend.backend.family.as_str(),
             &Self::system_path_entries(),
-        )
+        )?;
+        if backend.backend.family == BackendFamily::OpenRouter
+            && std::env::var("OPENROUTER_API_KEY")
+                .unwrap_or_default()
+                .is_empty()
+        {
+            return Err(AppError::BackendUnavailable {
+                backend: "openrouter".to_owned(),
+                details: "OPENROUTER_API_KEY is not set".to_owned(),
+            });
+        }
+        Ok(())
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
@@ -833,6 +926,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 prepared.binary(),
                 prepared.args(),
                 prepared.stdin_payload(),
+                prepared.env_overrides(),
             )
             .await
         {
@@ -866,6 +960,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             fresh_prepared.binary(),
                             fresh_prepared.args(),
                             fresh_prepared.stdin_payload(),
+                            fresh_prepared.env_overrides(),
                         )
                         .await
                     {
@@ -2018,6 +2113,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_test_request();
@@ -2044,6 +2140,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_test_request();
@@ -2082,6 +2179,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_test_request();
@@ -2108,6 +2206,7 @@ mod tests {
             response_decoder: ResponseDecoder::Claude {
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_test_request();
@@ -2135,6 +2234,7 @@ mod tests {
                 message_path: message_path.clone(),
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_codex_test_request(project_dir.path().to_path_buf());
@@ -2181,6 +2281,7 @@ mod tests {
                 message_path: message_path.clone(),
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         let request = make_codex_test_request(project_dir.path().to_path_buf());
@@ -2212,6 +2313,7 @@ mod tests {
                 message_path: message_path.clone(),
                 session_resuming: false,
             },
+            env_overrides: Vec::new(),
         };
 
         prepared.cleanup().await;
