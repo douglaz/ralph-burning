@@ -181,7 +181,10 @@ fn registry_drift_detected_for_missing_executor() {
 fn registry_drift_detected_for_orphan_executor() {
     let scenarios: Vec<ScenarioMeta> = vec![];
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("ORPHAN-001".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "ORPHAN-001".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
     let result = runner::validate_registry(&scenarios, &registry);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("drift"));
@@ -224,12 +227,18 @@ fn runner_fail_fast_stops_after_first_failure() {
     ];
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("PASS-1".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "PASS-1".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
     registry.insert(
         "FAIL-1".to_owned(),
         Box::new(|| Err("intentional failure".to_owned())),
     );
-    registry.insert("SKIP-1".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "SKIP-1".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);
@@ -255,7 +264,10 @@ fn runner_all_pass_reports_correctly() {
     }];
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("PASS-ONLY".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "PASS-ONLY".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);
@@ -295,7 +307,10 @@ fn runner_catches_panics_without_leaking() {
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
     registry.insert("PANIC-1".to_owned(), Box::new(|| panic!("test panic")));
-    registry.insert("AFTER-PANIC".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "AFTER-PANIC".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);

@@ -5,8 +5,17 @@ use crate::shared::error::{AppError, AppResult};
 
 use super::model::{ConformanceReport, ScenarioMeta, ScenarioOutcome, ScenarioResult};
 
+/// Outcome returned by a scenario executor.
+#[derive(Debug, Clone)]
+pub enum ExecOutcome {
+    /// The scenario executed and passed.
+    Passed,
+    /// The scenario was intentionally skipped (with reason).
+    Skipped(String),
+}
+
 /// Type alias for a scenario executor function.
-pub type ScenarioExecutor = Box<dyn Fn() -> Result<(), String> + Send + Sync>;
+pub type ScenarioExecutor = Box<dyn Fn() -> Result<ExecOutcome, String> + Send + Sync>;
 
 /// Validate that the registry and discovered scenarios are in one-to-one correspondence.
 pub fn validate_registry(
@@ -145,9 +154,14 @@ pub fn run_scenarios(
                     let duration = scenario_start.elapsed();
 
                     let result = match exec_result {
-                        Ok(Ok(())) => ScenarioResult {
+                        Ok(Ok(ExecOutcome::Passed)) => ScenarioResult {
                             id: scenario.id.clone(),
                             outcome: ScenarioOutcome::Passed,
+                            duration,
+                        },
+                        Ok(Ok(ExecOutcome::Skipped(_reason))) => ScenarioResult {
+                            id: scenario.id.clone(),
+                            outcome: ScenarioOutcome::NotRun,
                             duration,
                         },
                         Ok(Err(reason)) => {
