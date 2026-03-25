@@ -28,7 +28,7 @@ const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
 
 pub(crate) struct PreparedCommand {
-    binary: String,
+    binary: std::path::PathBuf,
     args: Vec<String>,
     stdin_payload: String,
     response_decoder: ResponseDecoder,
@@ -36,7 +36,7 @@ pub(crate) struct PreparedCommand {
 }
 
 impl PreparedCommand {
-    pub(crate) fn binary(&self) -> &str {
+    pub(crate) fn binary(&self) -> &std::path::Path {
         &self.binary
     }
 
@@ -391,14 +391,28 @@ impl ProcessBackendAdapter {
     }
 
     /// Create an adapter that resolves binaries from the given explicit
-    /// search paths instead of the process-global `PATH`.  When explicit
-    /// paths are set, [`resolve_binary`] returns an error if no executable
-    /// match is found — it never silently falls back to ambient PATH.
+    /// search paths instead of the process-global `PATH`.  Relative paths
+    /// are resolved against the current working directory at construction
+    /// time so that later `current_dir` changes in child processes do not
+    /// alter binary lookup.  When explicit paths are set, [`resolve_binary`]
+    /// returns an error if no executable match is found — it never silently
+    /// falls back to ambient PATH.
     pub fn with_search_paths(paths: Vec<std::path::PathBuf>) -> Self {
+        let absolute_paths = Self::absolutize_paths(paths);
         Self {
             active_children: Arc::new(Mutex::new(HashMap::new())),
-            search_paths: Some(paths),
+            search_paths: Some(absolute_paths),
         }
+    }
+
+    /// Convert a list of paths to absolute paths.  Relative entries are
+    /// joined against `std::env::current_dir()`.
+    fn absolutize_paths(paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
+        let cwd = std::env::current_dir().unwrap_or_default();
+        paths
+            .into_iter()
+            .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
+            .collect()
     }
 
     /// Whether this adapter was constructed with explicit search paths.
@@ -420,18 +434,19 @@ impl ProcessBackendAdapter {
     /// paths.  When no explicit search paths are set, returns the bare binary
     /// name (relying on OS PATH lookup at spawn time).
     ///
-    /// When explicit search paths are configured, uses the same
-    /// executable-semantics as [`ensure_binary_available`]: on unix a
-    /// candidate must be a regular file **and** have at least one execute
-    /// bit set (`mode & 0o111 != 0`).  Returns [`AppError::BackendUnavailable`]
-    /// if no executable match is found — never silently falls back to ambient
-    /// PATH resolution.
-    pub(crate) fn resolve_binary(&self, binary_name: &str) -> AppResult<String> {
+    /// When explicit search paths are configured, the returned [`PathBuf`] is
+    /// always absolute (because `with_search_paths` absolutizes its inputs).
+    /// Uses the same executable-semantics as [`ensure_binary_available`]: on
+    /// unix a candidate must be a regular file **and** have at least one
+    /// execute bit set (`mode & 0o111 != 0`).  On Windows, `PATHEXT`
+    /// extensions (`.exe`, `.cmd`, etc.) are probed when the bare name does
+    /// not match.  Returns [`AppError::BackendUnavailable`] if no executable
+    /// match is found — never silently falls back to ambient PATH resolution.
+    pub(crate) fn resolve_binary(&self, binary_name: &str) -> AppResult<std::path::PathBuf> {
         if let Some(ref paths) = self.search_paths {
             for dir in paths {
-                let candidate = dir.join(binary_name);
-                if Self::is_executable_file(&candidate) {
-                    return Ok(candidate.to_string_lossy().into_owned());
+                if let Some(found) = Self::probe_executable(dir, binary_name) {
+                    return Ok(found);
                 }
             }
             return Err(AppError::BackendUnavailable {
@@ -441,7 +456,39 @@ impl ProcessBackendAdapter {
                 ),
             });
         }
-        Ok(binary_name.to_owned())
+        Ok(std::path::PathBuf::from(binary_name))
+    }
+
+    /// Probe a single directory for an executable named `binary_name`.
+    ///
+    /// Checks the exact name first, then (on Windows) tries each `PATHEXT`
+    /// extension so that e.g. `claude` finds `claude.exe`.
+    fn probe_executable(dir: &std::path::Path, binary_name: &str) -> Option<std::path::PathBuf> {
+        let candidate = dir.join(binary_name);
+        if Self::is_executable_file(&candidate) {
+            return Some(candidate);
+        }
+        #[cfg(windows)]
+        {
+            for ext in Self::pathext_extensions() {
+                let with_ext = dir.join(format!("{binary_name}{ext}"));
+                if Self::is_executable_file(&with_ext) {
+                    return Some(with_ext);
+                }
+            }
+        }
+        None
+    }
+
+    /// Return the list of executable extensions from the `PATHEXT` env var.
+    #[cfg(windows)]
+    fn pathext_extensions() -> Vec<String> {
+        std::env::var("PATHEXT")
+            .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned())
+            .split(';')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_owned())
+            .collect()
     }
 
     /// Check whether `path` is a regular file that is executable.
@@ -742,36 +789,37 @@ impl ProcessBackendAdapter {
         backend: &str,
         search_paths: &[std::path::PathBuf],
     ) -> AppResult<()> {
-        let path_entries = search_paths;
-
         #[cfg(unix)]
         let mut non_executable_candidate = None;
 
-        for candidate in path_entries.iter().map(|entry| entry.join(binary_name)) {
-            let Ok(metadata) = std::fs::metadata(&candidate) else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
+        for dir in search_paths {
+            // Probe bare name first, then PATHEXT extensions on Windows.
+            for candidate in Self::candidate_names(dir, binary_name) {
+                let Ok(metadata) = std::fs::metadata(&candidate) else {
+                    continue;
+                };
+                if !metadata.is_file() {
+                    continue;
+                }
 
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
 
-                if metadata.permissions().mode() & 0o111 != 0 {
+                    if metadata.permissions().mode() & 0o111 != 0 {
+                        return Ok(());
+                    }
+
+                    if non_executable_candidate.is_none() {
+                        non_executable_candidate = Some(candidate);
+                    }
+                    continue;
+                }
+
+                #[cfg(not(unix))]
+                {
                     return Ok(());
                 }
-
-                if non_executable_candidate.is_none() {
-                    non_executable_candidate = Some(candidate);
-                }
-                continue;
-            }
-
-            #[cfg(not(unix))]
-            {
-                return Ok(());
             }
         }
 
@@ -792,12 +840,26 @@ impl ProcessBackendAdapter {
         })
     }
 
+    /// Generate candidate paths for a binary in a single directory: the bare
+    /// name, plus each `PATHEXT` extension on Windows.
+    fn candidate_names(dir: &std::path::Path, binary_name: &str) -> Vec<std::path::PathBuf> {
+        #[allow(unused_mut)]
+        let mut names = vec![dir.join(binary_name)];
+        #[cfg(windows)]
+        {
+            for ext in Self::pathext_extensions() {
+                names.push(dir.join(format!("{binary_name}{ext}")));
+            }
+        }
+        names
+    }
+
     /// Spawn a command, write stdin, register the child handle before I/O,
     /// read captured stdout/stderr, reap the child, and then deregister it.
     async fn spawn_and_wait(
         &self,
         request: &InvocationRequest,
-        binary: &str,
+        binary: &std::path::Path,
         args: &[String],
         stdin_payload: &str,
         env_overrides: &[(String, String)],
@@ -814,11 +876,12 @@ impl ProcessBackendAdapter {
             command.env(key, value);
         }
 
+        let binary_display = binary.display();
         let mut child = command.spawn().map_err(|error| {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to spawn {binary}: {error}"),
+                format!("failed to spawn {binary_display}: {error}"),
             )
         })?;
 
@@ -868,7 +931,7 @@ impl ProcessBackendAdapter {
                 request,
                 FailureClass::TransportFailure,
                 format!(
-                    "failed to write stdin to {binary}: {error}{}",
+                    "failed to write stdin to {binary_display}: {error}{}",
                     if stderr_text.is_empty() {
                         String::new()
                     } else {
@@ -882,7 +945,7 @@ impl ProcessBackendAdapter {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to read stdout from {binary}: {error}"),
+                format!("failed to read stdout from {binary_display}: {error}"),
             )
         })?;
 
@@ -890,7 +953,7 @@ impl ProcessBackendAdapter {
             Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to read stderr from {binary}: {error}"),
+                format!("failed to read stderr from {binary_display}: {error}"),
             )
         })?;
 
@@ -903,7 +966,7 @@ impl ProcessBackendAdapter {
             Err(error) => Err(Self::invocation_failed(
                 request,
                 FailureClass::TransportFailure,
-                format!("failed to wait on {binary} process: {error}"),
+                format!("failed to wait on {binary_display} process: {error}"),
             )),
         }
     }
@@ -1071,7 +1134,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             FailureClass::TransportFailure,
                             format!(
                                 "{} exited with code {code}{detail}",
-                                fresh_prepared.binary(),
+                                fresh_prepared.binary().display(),
                             ),
                         ));
                     }
@@ -1090,7 +1153,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 Err(Self::invocation_failed(
                     &request,
                     FailureClass::TransportFailure,
-                    format!("{} exited with code {code}{detail}", prepared.binary(),),
+                    format!(
+                        "{} exited with code {code}{detail}",
+                        prepared.binary().display(),
+                    ),
                 ))
             }
             _ => prepared.finish(&request, output).await,
@@ -2187,7 +2253,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2214,7 +2280,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2253,7 +2319,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2280,7 +2346,7 @@ mod tests {
         let output = make_child_output(&stdout);
 
         let prepared = PreparedCommand {
-            binary: "claude".to_owned(),
+            binary: "claude".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Claude {
@@ -2306,7 +2372,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
@@ -2353,7 +2419,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"failed\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {
@@ -2385,7 +2451,7 @@ mod tests {
         std::fs::write(&message_path, "{\"outcome\":\"ok\"}").unwrap();
 
         let prepared = PreparedCommand {
-            binary: "codex".to_owned(),
+            binary: "codex".into(),
             args: vec![],
             stdin_payload: String::new(),
             response_decoder: ResponseDecoder::Codex {

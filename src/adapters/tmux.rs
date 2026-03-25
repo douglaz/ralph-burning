@@ -47,8 +47,10 @@ pub struct TmuxAdapter {
     active_sessions: Arc<Mutex<HashMap<String, Arc<ManagedTmuxSession>>>>,
     stream_output: bool,
     /// Resolved path (or bare name) for the tmux binary used by instance
-    /// methods. Defaults to `"tmux"` which relies on ambient PATH lookup.
-    tmux_binary: String,
+    /// methods.  When explicit search paths are set, this is an absolute
+    /// [`PathBuf`]; otherwise it is the bare name `"tmux"` which relies on
+    /// ambient PATH lookup at spawn time.
+    tmux_binary: PathBuf,
 }
 
 impl TmuxAdapter {
@@ -68,7 +70,7 @@ impl TmuxAdapter {
     /// When the adapter has explicit search paths, the resolved path is
     /// absolute; when no explicit paths are set, the bare name `"tmux"` is
     /// returned so the OS performs ambient PATH lookup at spawn time.
-    fn resolve_tmux_binary(process: &ProcessBackendAdapter) -> Result<String, String> {
+    fn resolve_tmux_binary(process: &ProcessBackendAdapter) -> Result<PathBuf, String> {
         process.resolve_binary("tmux").map_err(|e| e.to_string())
     }
 
@@ -87,15 +89,14 @@ impl TmuxAdapter {
     /// found-but-not-executable) are preserved.
     fn verify_tmux_available(&self) -> AppResult<()> {
         if self.process.has_explicit_search_paths() {
-            let path = std::path::Path::new(&self.tmux_binary);
-            if ProcessBackendAdapter::is_executable_file(path) {
+            if ProcessBackendAdapter::is_executable_file(&self.tmux_binary) {
                 return Ok(());
             }
             return Err(AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details: format!(
                     "resolved tmux binary '{}' is no longer available or executable",
-                    self.tmux_binary
+                    self.tmux_binary.display()
                 ),
             });
         }
@@ -574,7 +575,7 @@ impl AgentExecutionPort for TmuxAdapter {
                 failure_class: FailureClass::TransportFailure,
                 details: format!(
                     "{} exited with code {}{}",
-                    prepared.binary(),
+                    prepared.binary().display(),
                     exit_code,
                     if stderr.is_empty() {
                         String::new()
@@ -675,7 +676,7 @@ impl ManagedTmuxSession {
         request: &InvocationRequest,
         session_name: String,
         args: &[String],
-        binary: &str,
+        binary: &Path,
         stdin_payload: &str,
     ) -> AppResult<Self> {
         let temp_dir = request.project_root.join("runtime/temp");
@@ -870,7 +871,7 @@ impl CaptureTail {
 #[allow(clippy::too_many_arguments)]
 fn build_wrapper_script(
     working_dir: &Path,
-    binary: &str,
+    binary: &Path,
     args: &[String],
     stdin_path: &Path,
     stdout_path: &Path,
@@ -880,7 +881,7 @@ fn build_wrapper_script(
     exit_status_path: &Path,
     signal_pid_path: &Path,
 ) -> String {
-    let command = std::iter::once(shell_escape(binary))
+    let command = std::iter::once(shell_escape(&binary.to_string_lossy()))
         .chain(args.iter().map(|arg| shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
