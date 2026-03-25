@@ -895,14 +895,25 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         let Some(binary_name) = Self::binary_name(backend.backend.family) else {
             return Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
-                details: "ProcessBackendAdapter availability checks are only supported for claude and codex".to_owned(),
+                details: "ProcessBackendAdapter availability checks are only supported for claude, codex, and openrouter".to_owned(),
             });
         };
         Self::ensure_binary_available(
             binary_name,
             backend.backend.family.as_str(),
             &Self::system_path_entries(),
-        )
+        )?;
+        if backend.backend.family == BackendFamily::OpenRouter
+            && std::env::var("OPENROUTER_API_KEY")
+                .unwrap_or_default()
+                .is_empty()
+        {
+            return Err(AppError::BackendUnavailable {
+                backend: "openrouter".to_owned(),
+                details: "OPENROUTER_API_KEY is not set".to_owned(),
+            });
+        }
+        Ok(())
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
