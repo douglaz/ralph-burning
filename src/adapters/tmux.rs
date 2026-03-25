@@ -46,15 +46,50 @@ pub struct TmuxAdapter {
     process: ProcessBackendAdapter,
     active_sessions: Arc<Mutex<HashMap<String, Arc<ManagedTmuxSession>>>>,
     stream_output: bool,
+    /// Resolved path (or bare name) for the tmux binary used by instance
+    /// methods. Defaults to `"tmux"` which relies on ambient PATH lookup.
+    tmux_binary: String,
 }
 
 impl TmuxAdapter {
-    pub fn new(process: ProcessBackendAdapter, stream_output: bool) -> Self {
-        Self {
+    pub fn new(process: ProcessBackendAdapter, stream_output: bool) -> Result<Self, String> {
+        let tmux_binary = Self::resolve_tmux_binary(&process)?;
+        Ok(Self {
             process,
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
             stream_output,
+            tmux_binary,
+        })
+    }
+
+    /// Resolve the tmux binary from the process adapter's effective search
+    /// paths.  Uses the same executable-permission semantics as
+    /// [`ProcessBackendAdapter::is_executable_file`].
+    ///
+    /// When the adapter has explicit search paths but no executable `tmux` is
+    /// found, returns `Err` so callers never silently fall through to ambient
+    /// PATH resolution.
+    fn resolve_tmux_binary(process: &ProcessBackendAdapter) -> Result<String, String> {
+        let has_explicit_paths = process.has_explicit_search_paths();
+        let paths = process.effective_search_paths();
+        for dir in &paths {
+            let candidate = dir.join("tmux");
+            if ProcessBackendAdapter::is_executable_file(&candidate) {
+                return Ok(candidate.to_string_lossy().into_owned());
+            }
         }
+        if has_explicit_paths {
+            return Err(
+                "required binary 'tmux' not found (or not executable) in explicit search paths"
+                    .to_owned(),
+            );
+        }
+        Ok("tmux".to_owned())
+    }
+
+    /// Check tmux availability using explicit search paths.
+    pub fn check_tmux_available_in(search_paths: &[std::path::PathBuf]) -> AppResult<()> {
+        ProcessBackendAdapter::ensure_binary_available("tmux", "tmux", search_paths)
     }
 
     pub fn session_name(
@@ -208,8 +243,8 @@ impl TmuxAdapter {
         }
     }
 
-    async fn has_session(&self, session_name: &str) -> AppResult<bool> {
-        match Command::new("tmux")
+    pub(crate) async fn has_session(&self, session_name: &str) -> AppResult<bool> {
+        match Command::new(&self.tmux_binary)
             .args(["has-session", "-t", session_name])
             .status()
             .await
@@ -223,7 +258,7 @@ impl TmuxAdapter {
     }
 
     async fn kill_session(&self, session_name: &str) -> AppResult<()> {
-        let output = Command::new("tmux")
+        let output = Command::new(&self.tmux_binary)
             .args(["kill-session", "-t", session_name])
             .output()
             .await
@@ -336,7 +371,7 @@ impl TmuxAdapter {
             "exec {}",
             shell_escape(&session.wrapper_path.to_string_lossy())
         );
-        let output = Command::new("tmux")
+        let output = Command::new(&self.tmux_binary)
             .args([
                 "new-session",
                 "-d",
@@ -410,14 +445,14 @@ impl AgentExecutionPort for TmuxAdapter {
 
     async fn check_availability(&self, backend: &ResolvedBackendTarget) -> AppResult<()> {
         Self::ensure_supported_backend(backend, None)?;
-        Self::check_tmux_available()?;
+        Self::check_tmux_available_in(&self.process.effective_search_paths())?;
         self.process.check_availability(backend).await
     }
 
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope> {
         self.check_capability(&request.resolved_target, &request.contract)
             .await?;
-        Self::check_tmux_available()?;
+        Self::check_tmux_available_in(&self.process.effective_search_paths())?;
 
         let prepared = self.process.build_command(&request).await?;
         let project_name = request

@@ -270,6 +270,7 @@ enum ResponseDecoder {
 #[derive(Clone, Default)]
 pub struct ProcessBackendAdapter {
     pub active_children: Arc<Mutex<HashMap<String, Arc<ManagedChild>>>>,
+    search_paths: Option<Vec<std::path::PathBuf>>,
 }
 
 pub struct ManagedChild {
@@ -385,6 +386,84 @@ impl ProcessBackendAdapter {
     pub fn new() -> Self {
         Self {
             active_children: Arc::new(Mutex::new(HashMap::new())),
+            search_paths: None,
+        }
+    }
+
+    /// Create an adapter that resolves binaries from the given explicit
+    /// search paths instead of the process-global `PATH`.  When explicit
+    /// paths are set, [`resolve_binary`] returns an error if no executable
+    /// match is found — it never silently falls back to ambient PATH.
+    pub fn with_search_paths(paths: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            active_children: Arc::new(Mutex::new(HashMap::new())),
+            search_paths: Some(paths),
+        }
+    }
+
+    /// Whether this adapter was constructed with explicit search paths.
+    pub(crate) fn has_explicit_search_paths(&self) -> bool {
+        self.search_paths.is_some()
+    }
+
+    /// Return the search paths this adapter uses for binary resolution.
+    /// If explicit search paths were provided via `with_search_paths`, those
+    /// are returned; otherwise falls back to the process-global `PATH`.
+    pub(crate) fn effective_search_paths(&self) -> Vec<std::path::PathBuf> {
+        match &self.search_paths {
+            Some(paths) => paths.clone(),
+            None => Self::system_path_entries(),
+        }
+    }
+
+    /// Resolve a binary name to its absolute path using this adapter's search
+    /// paths.  When no explicit search paths are set, returns the bare binary
+    /// name (relying on OS PATH lookup at spawn time).
+    ///
+    /// When explicit search paths are configured, uses the same
+    /// executable-semantics as [`ensure_binary_available`]: on unix a
+    /// candidate must be a regular file **and** have at least one execute
+    /// bit set (`mode & 0o111 != 0`).  Returns [`AppError::BackendUnavailable`]
+    /// if no executable match is found — never silently falls back to ambient
+    /// PATH resolution.
+    fn resolve_binary(&self, binary_name: &str) -> AppResult<String> {
+        if let Some(ref paths) = self.search_paths {
+            for dir in paths {
+                let candidate = dir.join(binary_name);
+                if Self::is_executable_file(&candidate) {
+                    return Ok(candidate.to_string_lossy().into_owned());
+                }
+            }
+            return Err(AppError::BackendUnavailable {
+                backend: binary_name.to_owned(),
+                details: format!(
+                    "required binary '{binary_name}' not found (or not executable) in explicit search paths"
+                ),
+            });
+        }
+        Ok(binary_name.to_owned())
+    }
+
+    /// Check whether `path` is a regular file that is executable.
+    ///
+    /// On unix this mirrors the permission check in
+    /// [`ensure_binary_available`] (`mode & 0o111 != 0`).  On non-unix
+    /// platforms any regular file is considered executable.
+    pub(crate) fn is_executable_file(path: &std::path::Path) -> bool {
+        let Ok(metadata) = std::fs::metadata(path) else {
+            return false;
+        };
+        if !metadata.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            metadata.permissions().mode() & 0o111 != 0
+        }
+        #[cfg(not(unix))]
+        {
+            true
         }
     }
 
@@ -470,10 +549,11 @@ impl ProcessBackendAdapter {
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
-                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-                    && request.prior_session.is_some();
+                let schema_json =
+                    serde_json::to_string(&schema_value).unwrap_or_else(|_| "{}".to_owned());
+                let session_resuming =
+                    matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                        && request.prior_session.is_some();
 
                 let mut args = vec![
                     "-p".to_owned(),
@@ -497,7 +577,7 @@ impl ProcessBackendAdapter {
                 }
 
                 Ok(PreparedCommand {
-                    binary: "claude".to_owned(),
+                    binary: self.resolve_binary("claude")?,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Claude { session_resuming },
@@ -506,8 +586,9 @@ impl ProcessBackendAdapter {
             }
             BackendFamily::Codex => {
                 let model_id = &request.resolved_target.model.model_id;
-                let session_resuming = matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
-                    && request.prior_session.is_some();
+                let session_resuming =
+                    matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
+                        && request.prior_session.is_some();
 
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
@@ -519,8 +600,8 @@ impl ProcessBackendAdapter {
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string_pretty(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
+                let schema_json =
+                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
                 if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
                     best_effort_cleanup(Some(&schema_path), &message_path).await;
@@ -547,7 +628,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: "codex".to_owned(),
+                    binary: self.resolve_binary("codex")?,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {
@@ -576,16 +657,15 @@ impl ProcessBackendAdapter {
                 let temp_dir = request.project_root.join("runtime/temp");
                 let _ = tokio::fs::create_dir_all(&temp_dir).await;
 
-                let schema_path =
-                    temp_dir.join(format!("{}.schema.json", request.invocation_id));
+                let schema_path = temp_dir.join(format!("{}.schema.json", request.invocation_id));
                 let message_path =
                     temp_dir.join(format!("{}.last-message.json", request.invocation_id));
 
                 let mut schema_value = request.contract.json_schema_value();
                 enforce_strict_mode_schema(&mut schema_value);
                 inline_schema_refs(&mut schema_value);
-                let schema_json = serde_json::to_string_pretty(&schema_value)
-                    .unwrap_or_else(|_| "{}".to_owned());
+                let schema_json =
+                    serde_json::to_string_pretty(&schema_value).unwrap_or_else(|_| "{}".to_owned());
 
                 if let Err(error) = tokio::fs::write(&schema_path, &schema_json).await {
                     best_effort_cleanup(Some(&schema_path), &message_path).await;
@@ -612,7 +692,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: "codex".to_owned(),
+                    binary: self.resolve_binary("codex")?,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {
@@ -879,15 +959,15 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         match (backend.backend.family, contract) {
             (
                 BackendFamily::Claude | BackendFamily::Codex | BackendFamily::OpenRouter,
-                InvocationContract::Stage(_) | InvocationContract::Requirements { .. } | InvocationContract::Panel { .. },
+                InvocationContract::Stage(_)
+                | InvocationContract::Requirements { .. }
+                | InvocationContract::Panel { .. },
             ) => Ok(()),
-            (BackendFamily::Stub, _) => {
-                Err(Self::capability_mismatch(
-                    backend,
-                    contract,
-                    "ProcessBackendAdapter does not support the stub backend",
-                ))
-            }
+            (BackendFamily::Stub, _) => Err(Self::capability_mismatch(
+                backend,
+                contract,
+                "ProcessBackendAdapter does not support the stub backend",
+            )),
         }
     }
 
@@ -901,7 +981,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         Self::ensure_binary_available(
             binary_name,
             backend.backend.family.as_str(),
-            &Self::system_path_entries(),
+            &self.effective_search_paths(),
         )?;
         if backend.backend.family == BackendFamily::OpenRouter
             && std::env::var("OPENROUTER_API_KEY")

@@ -165,6 +165,7 @@ pub struct PanelOmittedView {
 pub struct BackendDiagnosticsService<'a> {
     config: &'a EffectiveConfig,
     policy: BackendPolicyService<'a>,
+    tmux_search_paths: Option<Vec<std::path::PathBuf>>,
 }
 
 impl<'a> BackendDiagnosticsService<'a> {
@@ -172,7 +173,14 @@ impl<'a> BackendDiagnosticsService<'a> {
         Self {
             config,
             policy: BackendPolicyService::new(config),
+            tmux_search_paths: None,
         }
+    }
+
+    /// Override the search paths used for the tmux availability check.
+    pub fn with_tmux_search_paths(mut self, paths: Vec<std::path::PathBuf>) -> Self {
+        self.tmux_search_paths = Some(paths);
+        self
     }
 
     // ── list ────────────────────────────────────────────────────────────
@@ -223,7 +231,12 @@ impl<'a> BackendDiagnosticsService<'a> {
         let flow_def = flow_definition(flow);
 
         if self.config.effective_execution_mode() == ExecutionMode::Tmux {
-            if let Err(error) = TmuxAdapter::check_tmux_available() {
+            let tmux_result = if let Some(ref paths) = self.tmux_search_paths {
+                TmuxAdapter::check_tmux_available_in(paths)
+            } else {
+                TmuxAdapter::check_tmux_available()
+            };
+            if let Err(error) = tmux_result {
                 let source = self
                     .config
                     .get("execution.mode")
