@@ -41,7 +41,7 @@ pub struct ScenarioMeta {
 pub enum ScenarioOutcome {
     Passed,
     Failed(String),
-    NotRun,
+    NotRun(Option<String>),
 }
 
 impl fmt::Display for ScenarioOutcome {
@@ -49,7 +49,7 @@ impl fmt::Display for ScenarioOutcome {
         match self {
             Self::Passed => f.write_str("PASS"),
             Self::Failed(reason) => write!(f, "FAIL: {reason}"),
-            Self::NotRun => f.write_str("NOT RUN"),
+            Self::NotRun(_) => f.write_str("NOT RUN"),
         }
     }
 }

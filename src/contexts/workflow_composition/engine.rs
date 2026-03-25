@@ -412,9 +412,7 @@ async fn preflight_required_panel_target<A: AgentExecutionPort>(
             .await
             .map_err(|error| AppError::PreflightFailed {
                 stage_id,
-                details: format!(
-                    "required {member_name} failed availability preflight: {error}"
-                ),
+                details: format!("required {member_name} failed availability preflight: {error}"),
             })?;
         probed.push(target.clone());
     }

@@ -181,7 +181,10 @@ fn registry_drift_detected_for_missing_executor() {
 fn registry_drift_detected_for_orphan_executor() {
     let scenarios: Vec<ScenarioMeta> = vec![];
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("ORPHAN-001".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "ORPHAN-001".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
     let result = runner::validate_registry(&scenarios, &registry);
     assert!(result.is_err());
     assert!(result.unwrap_err().to_string().contains("drift"));
@@ -224,12 +227,18 @@ fn runner_fail_fast_stops_after_first_failure() {
     ];
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("PASS-1".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "PASS-1".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
     registry.insert(
         "FAIL-1".to_owned(),
         Box::new(|| Err("intentional failure".to_owned())),
     );
-    registry.insert("SKIP-1".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "SKIP-1".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);
@@ -255,7 +264,10 @@ fn runner_all_pass_reports_correctly() {
     }];
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
-    registry.insert("PASS-ONLY".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "PASS-ONLY".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);
@@ -264,6 +276,39 @@ fn runner_all_pass_reports_correctly() {
     assert_eq!(report.passed, 1);
     assert_eq!(report.failed, 0);
     assert_eq!(report.not_run, 0);
+}
+
+#[test]
+fn runner_reports_skipped_executor_as_not_run() {
+    use ralph_burning::contexts::conformance_spec::model::ScenarioOutcome;
+
+    let scenarios = [ScenarioMeta {
+        id: "SKIP-ME".to_owned(),
+        feature_title: "T".to_owned(),
+        scenario_title: "T".to_owned(),
+        source_file: "t.feature".to_owned(),
+        source_line: 1,
+        kind: ScenarioKind::Scenario,
+        id_source: IdSource::Comment,
+    }];
+
+    let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
+    registry.insert(
+        "SKIP-ME".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Skipped("test skip reason".into()))),
+    );
+
+    let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
+    let report = runner::run_scenarios(&refs, &registry);
+
+    assert_eq!(report.selected, 1);
+    assert_eq!(report.passed, 0);
+    assert_eq!(report.failed, 0);
+    assert_eq!(report.not_run, 1);
+    assert!(matches!(
+        report.results[0].outcome,
+        ScenarioOutcome::NotRun(Some(_))
+    ));
 }
 
 // ===========================================================================
@@ -295,7 +340,10 @@ fn runner_catches_panics_without_leaking() {
 
     let mut registry: HashMap<String, runner::ScenarioExecutor> = HashMap::new();
     registry.insert("PANIC-1".to_owned(), Box::new(|| panic!("test panic")));
-    registry.insert("AFTER-PANIC".to_owned(), Box::new(|| Ok(())));
+    registry.insert(
+        "AFTER-PANIC".to_owned(),
+        Box::new(|| Ok(runner::ExecOutcome::Passed)),
+    );
 
     let refs: Vec<&ScenarioMeta> = scenarios.iter().collect();
     let report = runner::run_scenarios(&refs, &registry);

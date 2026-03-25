@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use nix::sys::signal::{kill, Signal};
 use nix::unistd::Pid;
 
-use super::runner::ScenarioExecutor;
+use super::runner::{self, ScenarioExecutor};
 
 use crate::contexts::workflow_composition::contracts::{
     all_contracts, contract_for_stage, ContractFamily,
@@ -880,9 +880,23 @@ fn rollback_point_for_stage(
 // ---------------------------------------------------------------------------
 
 macro_rules! reg {
-    ($map:expr, $id:expr, $func:expr) => {
-        $map.insert($id.to_string(), Box::new($func) as ScenarioExecutor);
-    };
+    ($map:expr, $id:expr, $func:expr) => {{
+        let f: Box<dyn Fn() -> Result<(), String> + Send + Sync> = Box::new($func);
+        $map.insert(
+            $id.to_string(),
+            Box::new(move || f().map(|()| runner::ExecOutcome::Passed)) as ScenarioExecutor,
+        );
+    }};
+}
+
+macro_rules! reg_skip {
+    ($map:expr, $id:expr, $reason:expr) => {{
+        let reason: String = $reason.to_string();
+        $map.insert(
+            $id.to_string(),
+            Box::new(move || Ok(runner::ExecOutcome::Skipped(reason.clone()))) as ScenarioExecutor,
+        );
+    }};
 }
 
 /// Build the complete scenario registry mapping scenario IDs to executor functions.
@@ -12581,12 +12595,14 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
 // ===========================================================================
 
 fn register_backend_stub(m: &mut HashMap<String, ScenarioExecutor>) {
-    reg!(m, "backend.stub.production_rejects_stub_selector", || {
-        // This scenario spawns `cargo test --no-default-features` which
-        // recompiles the entire project (~40s). Moved to a dedicated CI
-        // step to avoid blocking the conformance runner.
-        Ok(())
-    });
+    // This scenario spawns `cargo test --no-default-features` which
+    // recompiles the entire project (~40s). Moved to a dedicated CI
+    // step to avoid blocking the conformance runner.
+    reg_skip!(
+        m,
+        "backend.stub.production_rejects_stub_selector",
+        "requires cargo build without test-stub feature"
+    );
 }
 
 fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
