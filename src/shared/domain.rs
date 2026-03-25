@@ -245,7 +245,7 @@ impl BackendRole {
             Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::QaValidator => {
-                ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5")
+                ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5.4")
             }
             Self::CompletionJudge => {
                 ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6")
