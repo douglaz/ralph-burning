@@ -7998,6 +7998,8 @@ fn register_requirements_drafting(m: &mut HashMap<String, ScenarioExecutor>) {
             .join(".ralph-burning/requirements")
             .join(&run_id)
             .join("answers.toml");
+        // EDITOR is read in-process by FileSystem::open_editor — cannot use
+        // per-call subprocess injection.  Serialized by ENV_MUTEX.
         let _editor_guard = ScenarioEnvGuard::set(&[("EDITOR", "true")]);
         std::fs::write(&answers_path, "q1 = \"AWS ECS\"\n")
             .map_err(|e| format!("write answers: {e}"))?;
@@ -9204,8 +9206,10 @@ struct ScenarioEnvGuard {
 /// must not run concurrently with each other.
 ///
 /// All PATH mutations have been eliminated (subprocess-spawning scenarios
-/// now use `ProcessBackendAdapter::with_search_paths`). Remaining uses
-/// are only non-PATH variables (EDITOR, failpoint flags).
+/// now use `ProcessBackendAdapter::with_search_paths`).  Failpoint env
+/// vars are passed per-call via `run_cli_with_env`.  The only remaining
+/// use is EDITOR, which is read in-process by `FileSystem::open_editor`
+/// and cannot be injected per-call without changing production code.
 static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl ScenarioEnvGuard {
@@ -18904,13 +18908,13 @@ fn register_manual_amendments_slice3(m: &mut HashMap<String, ScenarioExecutor>) 
 
         // Use the deterministic failpoint to make the second remove call fail.
         // RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER=1 means the first
-        // remove succeeds and the second fails.
-        let _failpoint_guard =
-            ScenarioEnvGuard::set(&[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")]);
-
-        let clear = run_cli(&["project", "amend", "clear"], ws.path())?;
-
-        drop(_failpoint_guard);
+        // remove succeeds and the second fails.  Passed via per-call env to
+        // avoid process-global env mutation.
+        let clear = run_cli_with_env(
+            &["project", "amend", "clear"],
+            ws.path(),
+            &[("RALPH_BURNING_TEST_AMENDMENT_REMOVE_FAIL_AFTER", "1")],
+        )?;
 
         // The clear must have partially failed.
         assert_failure(&clear)?;

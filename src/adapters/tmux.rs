@@ -705,7 +705,7 @@ impl ManagedTmuxSession {
                 &stderr_pipe_path,
                 &exit_status_path,
                 &signal_pid_path,
-            ),
+            )?,
         )?;
         #[cfg(unix)]
         {
@@ -880,12 +880,23 @@ fn build_wrapper_script(
     stderr_pipe_path: &Path,
     exit_status_path: &Path,
     signal_pid_path: &Path,
-) -> String {
-    let command = std::iter::once(shell_escape(&binary.to_string_lossy()))
+) -> AppResult<String> {
+    // Validate that the binary path is valid UTF-8 so that we produce a
+    // correct shell script.  `to_string_lossy()` would silently replace
+    // non-UTF-8 bytes with U+FFFD, yielding a broken command.
+    let binary_str = binary.to_str().ok_or_else(|| AppError::BackendUnavailable {
+        backend: "tmux".to_owned(),
+        details: format!(
+            "binary path '{}' contains non-UTF-8 bytes and cannot be embedded in a shell script",
+            binary.display()
+        ),
+    })?;
+
+    let command = std::iter::once(shell_escape(binary_str))
         .chain(args.iter().map(|arg| shell_escape(arg)))
         .collect::<Vec<_>>()
         .join(" ");
-    format!(
+    Ok(format!(
         "#!/usr/bin/env bash\nset +e\nset -m\ncd {cwd}\nrm -f {exit_status} {signal_pid} {stdout_pipe} {stderr_pipe}\nmkfifo {stdout_pipe} {stderr_pipe}\ntrap 'rm -f {signal_pid} {stdout_pipe} {stderr_pipe}' EXIT\ntee {stdout} < {stdout_pipe} &\nstdout_tee_pid=$!\ntee {stderr} < {stderr_pipe} >&2 &\nstderr_tee_pid=$!\n(\n  printf '%s' \"$BASHPID\" > {signal_pid}\n  exec {command} < {stdin} > {stdout_pipe} 2> {stderr_pipe}\n) &\nchild_pid=$!\nwait \"$child_pid\"\nstatus=$?\nwait \"$stdout_tee_pid\"\nwait \"$stderr_tee_pid\"\nprintf '%s' \"$status\" > {exit_status}\nexit \"$status\"\n",
         cwd = shell_escape(&working_dir.to_string_lossy()),
         stdin = shell_escape(&stdin_path.to_string_lossy()),
@@ -895,7 +906,7 @@ fn build_wrapper_script(
         stderr_pipe = shell_escape(&stderr_pipe_path.to_string_lossy()),
         exit_status = shell_escape(&exit_status_path.to_string_lossy()),
         signal_pid = shell_escape(&signal_pid_path.to_string_lossy()),
-    )
+    ))
 }
 
 fn flush_capture_file(project_root: &Path, path: &Path, source: &str) -> AppResult<()> {

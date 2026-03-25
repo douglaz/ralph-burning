@@ -407,8 +407,17 @@ impl ProcessBackendAdapter {
 
     /// Convert a list of paths to absolute paths.  Relative entries are
     /// joined against `std::env::current_dir()`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the process working directory is inaccessible (deleted or
+    /// insufficient permissions).  This is unrecoverable — if `current_dir()`
+    /// fails, the entire process is in a broken state.
     fn absolutize_paths(paths: Vec<std::path::PathBuf>) -> Vec<std::path::PathBuf> {
-        let cwd = std::env::current_dir().unwrap_or_default();
+        let cwd = std::env::current_dir().expect(
+            "current_dir() failed — process working directory is inaccessible; \
+             cannot absolutize relative search paths",
+        );
         paths
             .into_iter()
             .map(|p| if p.is_absolute() { p } else { cwd.join(p) })
@@ -694,7 +703,13 @@ impl ProcessBackendAdapter {
                 // Route through codex CLI with OpenRouter as the provider.
                 // Resolve the binary before writing temp files so that a
                 // missing binary does not leave orphaned schema artifacts.
-                let binary = self.resolve_binary("codex")?;
+                let binary = self.resolve_binary("codex").map_err(|e| match e {
+                    AppError::BackendUnavailable { details, .. } => AppError::BackendUnavailable {
+                        backend: "openrouter".to_owned(),
+                        details,
+                    },
+                    other => other,
+                })?;
 
                 let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     Self::invocation_failed(
