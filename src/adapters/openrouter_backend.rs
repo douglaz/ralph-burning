@@ -504,7 +504,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::adapters::process_backend::ProcessBackendAdapter;
     use crate::adapters::BackendAdapter;
     use crate::contexts::agent_execution::model::{
         CancellationToken, InvocationContract, InvocationPayload,
