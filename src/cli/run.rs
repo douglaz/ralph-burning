@@ -70,8 +70,10 @@ pub enum RunSubcommand {
         #[arg(long, conflicts_with = "last")]
         follow: bool,
         /// Test-only: delay in ms before follow-mode baseline snapshot.
+        /// Accepts a string so that empty or non-numeric env values are silently ignored
+        /// instead of causing a clap parse failure.
         #[arg(long, hide = true, env = "RALPH_BURNING_TEST_FOLLOW_BASELINE_DELAY_MS")]
-        follow_baseline_delay_ms: Option<u64>,
+        follow_baseline_delay_ms: Option<String>,
     },
     /// Show or perform run rollback operations.
     Rollback {
@@ -413,8 +415,10 @@ async fn handle_tail(
     include_logs: bool,
     last: Option<usize>,
     follow: bool,
-    follow_baseline_delay_ms: Option<u64>,
+    follow_baseline_delay_ms: Option<String>,
 ) -> AppResult<()> {
+    let follow_baseline_delay_ms: Option<u64> =
+        follow_baseline_delay_ms.and_then(|s| s.parse().ok());
     let (current_dir, project_id) = load_active_project_context()?;
     let effective_config = EffectiveConfig::load_for_project(
         &current_dir,
