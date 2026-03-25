@@ -12667,6 +12667,94 @@ fn register_p0_hardening(m: &mut HashMap<String, ScenarioExecutor>) {
             }
         }
     );
+
+    // Regression: Codex branch must not leak temp schema files when the
+    // binary is missing from explicit search paths.
+    reg!(m, "parity_slice0_codex_missing_binary_no_temp_leak", || {
+        let ws = TempWorkspace::new()?;
+        let empty_dir = ws.path().join("empty-bin");
+        std::fs::create_dir_all(&empty_dir).map_err(|e| format!("create empty dir: {e}"))?;
+
+        block_on_result(async {
+            let project_root = prepare_scenario_project_root(ws.path())?;
+            let temp_dir = project_root.join("runtime/temp");
+            std::fs::create_dir_all(&temp_dir).map_err(|e| format!("create runtime/temp: {e}"))?;
+
+            let adapter = ProcessBackendAdapter::with_search_paths(vec![empty_dir]);
+
+            // Build a Codex-family request (triggers the branch that writes
+            // schema temp files).
+            use crate::contexts::agent_execution::model::{
+                CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
+            };
+            use crate::contexts::workflow_composition::contracts::contract_for_stage;
+            use crate::shared::domain::{
+                BackendFamily, BackendRole, ResolvedBackendTarget, SessionPolicy, StageId,
+            };
+
+            let request = InvocationRequest {
+                invocation_id: "codex-temp-leak-test".to_owned(),
+                project_root: project_root.clone(),
+                working_dir: project_root.clone(),
+                contract: InvocationContract::Stage(contract_for_stage(StageId::Planning)),
+                role: BackendRole::Planner,
+                resolved_target: ResolvedBackendTarget::new(
+                    BackendFamily::Codex,
+                    BackendFamily::Codex.default_model_id(),
+                ),
+                payload: InvocationPayload {
+                    prompt: "Conformance codex temp-leak prompt".to_owned(),
+                    context: serde_json::json!({"scenario": "codex-temp-leak"}),
+                },
+                timeout: std::time::Duration::from_secs(5),
+                cancellation_token: CancellationToken::new(),
+                session_policy: SessionPolicy::NewSession,
+                prior_session: None,
+                attempt_number: 1,
+            };
+
+            match adapter.invoke(request).await {
+                Err(AppError::BackendUnavailable { details, .. }) => {
+                    if !details.contains("not found") {
+                        return Err(format!(
+                            "expected 'not found' in error details, got: {details}"
+                        ));
+                    }
+                }
+                Err(other) => return Err(format!("expected BackendUnavailable, got: {other}")),
+                Ok(_) => {
+                    return Err(
+                        "invoke should fail when codex is missing from explicit search paths"
+                            .to_owned(),
+                    )
+                }
+            }
+
+            // Verify no temp files were leaked.
+            let leaked: Vec<_> = std::fs::read_dir(&temp_dir)
+                .map_err(|e| format!("read temp dir: {e}"))?
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| {
+                    entry
+                        .file_name()
+                        .to_string_lossy()
+                        .contains("codex-temp-leak-test")
+                })
+                .collect();
+
+            if !leaked.is_empty() {
+                let names: Vec<_> = leaked
+                    .iter()
+                    .map(|e| e.file_name().to_string_lossy().into_owned())
+                    .collect();
+                return Err(format!(
+                    "temp files leaked after binary-not-found failure: {names:?}"
+                ));
+            }
+
+            Ok(())
+        })
+    });
 }
 
 // ===========================================================================

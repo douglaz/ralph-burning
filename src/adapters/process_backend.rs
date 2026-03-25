@@ -632,6 +632,10 @@ impl ProcessBackendAdapter {
                 })
             }
             BackendFamily::Codex => {
+                // Resolve the binary before writing temp files so that a
+                // missing binary does not leave orphaned schema artifacts.
+                let binary = self.resolve_binary("codex")?;
+
                 let model_id = &request.resolved_target.model.model_id;
                 let session_resuming =
                     matches!(request.session_policy, SessionPolicy::ReuseIfAllowed)
@@ -675,7 +679,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: self.resolve_binary("codex")?,
+                    binary,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {
@@ -687,7 +691,11 @@ impl ProcessBackendAdapter {
                 })
             }
             BackendFamily::OpenRouter => {
-                // Route through codex CLI with OpenRouter as the provider
+                // Route through codex CLI with OpenRouter as the provider.
+                // Resolve the binary before writing temp files so that a
+                // missing binary does not leave orphaned schema artifacts.
+                let binary = self.resolve_binary("codex")?;
+
                 let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
                     Self::invocation_failed(
                         request,
@@ -739,7 +747,7 @@ impl ProcessBackendAdapter {
                 };
 
                 Ok(PreparedCommand {
-                    binary: self.resolve_binary("codex")?,
+                    binary,
                     args,
                     stdin_payload: Self::assemble_stdin(request),
                     response_decoder: ResponseDecoder::Codex {

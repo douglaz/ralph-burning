@@ -61,3 +61,9 @@ Feature: Slice 0 hardening and sign-off
     Given a tmux adapter with explicit search paths pointing to an empty directory
     When the adapter is constructed
     Then construction fails instead of falling back to the ambient tmux binary
+
+  @parity_slice0_codex_missing_binary_no_temp_leak
+  Scenario: Codex branch does not leak temp files when binary is missing from explicit paths
+    Given a Codex-family invocation request and a process backend adapter with empty explicit search paths
+    When invoke is called
+    Then the invocation fails with BackendUnavailable and no temp schema files are left behind
