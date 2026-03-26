@@ -5605,7 +5605,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
 
     setup_workspace(base_dir);
     let pid = create_standard_project(base_dir, "resume-review-counter-reset");
-    EffectiveConfig::set(base_dir, "workflow.max_review_iterations", "1").unwrap();
+    EffectiveConfig::set(base_dir, "workflow.max_review_iterations", "3").unwrap();
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let run_id = RunId::new("run-review-counter-reset").unwrap();
