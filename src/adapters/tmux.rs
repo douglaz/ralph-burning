@@ -884,13 +884,15 @@ fn build_wrapper_script(
     // Validate that the binary path is valid UTF-8 so that we produce a
     // correct shell script.  `to_string_lossy()` would silently replace
     // non-UTF-8 bytes with U+FFFD, yielding a broken command.
-    let binary_str = binary.to_str().ok_or_else(|| AppError::BackendUnavailable {
-        backend: "tmux".to_owned(),
-        details: format!(
+    let binary_str = binary
+        .to_str()
+        .ok_or_else(|| AppError::BackendUnavailable {
+            backend: "tmux".to_owned(),
+            details: format!(
             "binary path '{}' contains non-UTF-8 bytes and cannot be embedded in a shell script",
             binary.display()
         ),
-    })?;
+        })?;
 
     let command = std::iter::once(shell_escape(binary_str))
         .chain(args.iter().map(|arg| shell_escape(arg)))

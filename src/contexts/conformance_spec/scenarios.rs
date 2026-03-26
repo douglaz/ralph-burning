@@ -19811,150 +19811,150 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
     if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
         reg_skip!(m, "SC-TMUX-006", "tmux is not available");
     } else {
-    reg!(m, "SC-TMUX-006", || {
-        use crate::adapters::process_backend::ProcessBackendAdapter;
-        use crate::contexts::agent_execution::service::AgentExecutionPort;
+        reg!(m, "SC-TMUX-006", || {
+            use crate::adapters::process_backend::ProcessBackendAdapter;
+            use crate::contexts::agent_execution::service::AgentExecutionPort;
 
-        let bin_dir = TempWorkspace::new()?;
-        let state_dir = TempWorkspace::new()?;
-        let (_direct_dir, direct_request) = tmux_request_fixture("direct-claude")?;
-        let direct_envelope = direct_request.working_dir.join("claude-envelope.json");
-        write_tmux_claude_envelope(&direct_envelope, &tmux_planning_payload())?;
-        write_tmux_fake_claude(bin_dir.path(), &direct_envelope)?;
-        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+            let bin_dir = TempWorkspace::new()?;
+            let state_dir = TempWorkspace::new()?;
+            let (_direct_dir, direct_request) = tmux_request_fixture("direct-claude")?;
+            let direct_envelope = direct_request.working_dir.join("claude-envelope.json");
+            write_tmux_claude_envelope(&direct_envelope, &tmux_planning_payload())?;
+            write_tmux_fake_claude(bin_dir.path(), &direct_envelope)?;
+            write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
 
-        let (_tmux_dir, tmux_request) = tmux_request_fixture("tmux-claude")?;
-        let tmux_envelope = tmux_request.working_dir.join("claude-envelope.json");
-        write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
+            let (_tmux_dir, tmux_request) = tmux_request_fixture("tmux-claude")?;
+            let tmux_envelope = tmux_request.working_dir.join("claude-envelope.json");
+            write_tmux_claude_envelope(&tmux_envelope, &tmux_planning_payload())?;
 
-        let mut search_paths = vec![bin_dir.path().to_path_buf()];
-        search_paths.extend(ProcessBackendAdapter::system_path_entries());
-        block_on_result(async {
-            let direct = ProcessBackendAdapter::with_search_paths(search_paths.clone())
-                .invoke(direct_request)
+            let mut search_paths = vec![bin_dir.path().to_path_buf()];
+            search_paths.extend(ProcessBackendAdapter::system_path_entries());
+            block_on_result(async {
+                let direct = ProcessBackendAdapter::with_search_paths(search_paths.clone())
+                    .invoke(direct_request)
+                    .await
+                    .map_err(|e| format!("direct invoke: {e}"))?;
+                let tmux = crate::adapters::tmux::TmuxAdapter::new(
+                    ProcessBackendAdapter::with_search_paths(search_paths),
+                    true,
+                )
+                .map_err(|e| format!("tmux adapter init: {e}"))?
+                .invoke(tmux_request)
                 .await
-                .map_err(|e| format!("direct invoke: {e}"))?;
-            let tmux = crate::adapters::tmux::TmuxAdapter::new(
-                ProcessBackendAdapter::with_search_paths(search_paths),
-                true,
-            )
-            .map_err(|e| format!("tmux adapter init: {e}"))?
-            .invoke(tmux_request)
-            .await
-            .map_err(|e| format!("tmux invoke: {e}"))?;
+                .map_err(|e| format!("tmux invoke: {e}"))?;
 
-            if direct.parsed_payload != tmux.parsed_payload {
-                return Err("parsed payloads should be identical".into());
-            }
-            if direct.raw_output_reference != tmux.raw_output_reference {
-                return Err("raw output references should be identical".into());
-            }
-            Ok(())
-        })
-    });
+                if direct.parsed_payload != tmux.parsed_payload {
+                    return Err("parsed payloads should be identical".into());
+                }
+                if direct.raw_output_reference != tmux.raw_output_reference {
+                    return Err("raw output references should be identical".into());
+                }
+                Ok(())
+            })
+        });
     }
     if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
         reg_skip!(m, "SC-TMUX-007", "tmux is not available");
     } else {
-    reg!(m, "SC-TMUX-007", || {
-        use crate::adapters::process_backend::ProcessBackendAdapter;
-        use crate::contexts::agent_execution::service::AgentExecutionPort;
+        reg!(m, "SC-TMUX-007", || {
+            use crate::adapters::process_backend::ProcessBackendAdapter;
+            use crate::contexts::agent_execution::service::AgentExecutionPort;
 
-        let bin_dir = TempWorkspace::new()?;
-        let state_dir = TempWorkspace::new()?;
-        write_tmux_sleeping_claude(bin_dir.path())?;
-        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+            let bin_dir = TempWorkspace::new()?;
+            let state_dir = TempWorkspace::new()?;
+            write_tmux_sleeping_claude(bin_dir.path())?;
+            write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
 
-        let (_dir, request) = tmux_request_fixture("tmux-cancel")?;
-        let session_name = tmux_session_name_for_request(&request);
-        let mut search_paths = vec![bin_dir.path().to_path_buf()];
-        search_paths.extend(ProcessBackendAdapter::system_path_entries());
-        let adapter = crate::adapters::tmux::TmuxAdapter::new(
-            ProcessBackendAdapter::with_search_paths(search_paths),
-            true,
-        )
-        .map_err(|e| format!("tmux adapter init: {e}"))?;
-        let invocation_id = request.invocation_id.clone();
+            let (_dir, request) = tmux_request_fixture("tmux-cancel")?;
+            let session_name = tmux_session_name_for_request(&request);
+            let mut search_paths = vec![bin_dir.path().to_path_buf()];
+            search_paths.extend(ProcessBackendAdapter::system_path_entries());
+            let adapter = crate::adapters::tmux::TmuxAdapter::new(
+                ProcessBackendAdapter::with_search_paths(search_paths),
+                true,
+            )
+            .map_err(|e| format!("tmux adapter init: {e}"))?;
+            let invocation_id = request.invocation_id.clone();
 
-        block_on_result(async {
-            let join = tokio::spawn({
-                let adapter = adapter.clone();
-                let request = request.clone();
-                async move { adapter.invoke(request).await }
-            });
+            block_on_result(async {
+                let join = tokio::spawn({
+                    let adapter = adapter.clone();
+                    let request = request.clone();
+                    async move { adapter.invoke(request).await }
+                });
 
-            tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-            if !adapter
-                .has_session(&session_name)
-                .await
-                .map_err(|e| format!("query session: {e}"))?
-            {
-                return Err("session should exist while invocation is running".into());
-            }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+                if !adapter
+                    .has_session(&session_name)
+                    .await
+                    .map_err(|e| format!("query session: {e}"))?
+                {
+                    return Err("session should exist while invocation is running".into());
+                }
 
-            adapter
-                .cancel(&invocation_id)
-                .await
-                .map_err(|e| format!("cancel invocation: {e}"))?;
-            let _ = join.await.map_err(|e| format!("join invoke task: {e}"))?;
+                adapter
+                    .cancel(&invocation_id)
+                    .await
+                    .map_err(|e| format!("cancel invocation: {e}"))?;
+                let _ = join.await.map_err(|e| format!("join invoke task: {e}"))?;
 
-            if adapter
-                .has_session(&session_name)
-                .await
-                .map_err(|e| format!("query session: {e}"))?
-            {
-                return Err("session should be cleaned up after cancel".into());
-            }
-            Ok(())
-        })
-    });
+                if adapter
+                    .has_session(&session_name)
+                    .await
+                    .map_err(|e| format!("query session: {e}"))?
+                {
+                    return Err("session should be cleaned up after cancel".into());
+                }
+                Ok(())
+            })
+        });
     }
     if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
         reg_skip!(m, "SC-TMUX-008", "tmux is not available");
     } else {
-    reg!(m, "SC-TMUX-008", || {
-        use crate::adapters::process_backend::ProcessBackendAdapter;
-        use crate::contexts::agent_execution::service::AgentExecutionService;
+        reg!(m, "SC-TMUX-008", || {
+            use crate::adapters::process_backend::ProcessBackendAdapter;
+            use crate::contexts::agent_execution::service::AgentExecutionService;
 
-        let bin_dir = TempWorkspace::new()?;
-        let state_dir = TempWorkspace::new()?;
-        write_tmux_sleeping_claude(bin_dir.path())?;
-        write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
+            let bin_dir = TempWorkspace::new()?;
+            let state_dir = TempWorkspace::new()?;
+            write_tmux_sleeping_claude(bin_dir.path())?;
+            write_tmux_fake_tmux(bin_dir.path(), state_dir.path())?;
 
-        let (_dir, mut request) = tmux_request_fixture("tmux-timeout")?;
-        request.timeout = std::time::Duration::from_millis(200);
-        let session_name = tmux_session_name_for_request(&request);
-        let mut search_paths = vec![bin_dir.path().to_path_buf()];
-        search_paths.extend(ProcessBackendAdapter::system_path_entries());
-        let adapter = crate::adapters::tmux::TmuxAdapter::new(
-            ProcessBackendAdapter::with_search_paths(search_paths),
-            true,
-        )
-        .map_err(|e| format!("tmux adapter init: {e}"))?;
-        let service = AgentExecutionService::new(
-            adapter.clone(),
-            ConformanceInlineRawOutputStore,
-            ConformanceNoopSessionStore,
-        );
+            let (_dir, mut request) = tmux_request_fixture("tmux-timeout")?;
+            request.timeout = std::time::Duration::from_millis(200);
+            let session_name = tmux_session_name_for_request(&request);
+            let mut search_paths = vec![bin_dir.path().to_path_buf()];
+            search_paths.extend(ProcessBackendAdapter::system_path_entries());
+            let adapter = crate::adapters::tmux::TmuxAdapter::new(
+                ProcessBackendAdapter::with_search_paths(search_paths),
+                true,
+            )
+            .map_err(|e| format!("tmux adapter init: {e}"))?;
+            let service = AgentExecutionService::new(
+                adapter.clone(),
+                ConformanceInlineRawOutputStore,
+                ConformanceNoopSessionStore,
+            );
 
-        block_on_result(async {
-            match service.invoke(request.clone()).await {
-                Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
-                Err(other) => return Err(format!("expected timeout, got {other}")),
-                Ok(_) => return Err("timeout should have failed the invocation".into()),
-            }
+            block_on_result(async {
+                match service.invoke(request.clone()).await {
+                    Err(crate::shared::error::AppError::InvocationTimeout { .. }) => {}
+                    Err(other) => return Err(format!("expected timeout, got {other}")),
+                    Ok(_) => return Err("timeout should have failed the invocation".into()),
+                }
 
-            tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-            if adapter
-                .has_session(&session_name)
-                .await
-                .map_err(|e| format!("query session: {e}"))?
-            {
-                return Err("session should be cleaned up after timeout".into());
-            }
-            Ok(())
-        })
-    });
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                if adapter
+                    .has_session(&session_name)
+                    .await
+                    .map_err(|e| format!("query session: {e}"))?
+                {
+                    return Err("session should be cleaned up after timeout".into());
+                }
+                Ok(())
+            })
+        });
     }
     reg!(m, "SC-TMUX-009", || {
         let ws = TempWorkspace::new()?;
