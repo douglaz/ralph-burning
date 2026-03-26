@@ -601,6 +601,31 @@ impl WorktreePort for WorktreeAdapter {
         )))
     }
 
+    fn force_push_branch(
+        &self,
+        _repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<()> {
+        let output = Self::git_in(
+            worktree_path,
+            &[
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                "origin",
+                branch_name,
+            ],
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::Io(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )))
+    }
+
     fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
         // Only preserve branches that reached the implementation stage or
         // later. Pre-implementation stages (prompt_review, planning, docs_plan,

@@ -14,6 +14,30 @@ use crate::contexts::automation_runtime::{
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
+/// Best-effort force-push of the worktree branch to preserve checkpoint
+/// commits from a failed task run. Only pushes when the worktree contains
+/// checkpoint commits from the implementation stage or later.
+///
+/// This function is the single entry point for branch preservation and
+/// should be called before any `LeaseService::release()` that disposes of
+/// a failed task's worktree.
+pub fn try_preserve_failed_branch(
+    worktree: &dyn WorktreePort,
+    repo_root: &Path,
+    lease: &WorktreeLease,
+) {
+    if !worktree.has_checkpoint_commits(&lease.worktree_path) {
+        return;
+    }
+    if let Err(e) = worktree.force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)
+    {
+        eprintln!(
+            "daemon: best-effort push of branch '{}' failed: {e}",
+            lease.branch_name
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
     pub stale_lease_ids: Vec<String>,
@@ -428,6 +452,14 @@ impl LeaseService {
                     ),
                 });
                 continue;
+            }
+
+            // Preserve checkpoint commits for failed tasks before cleanup.
+            // The task was either already Failed/Aborted or was just marked
+            // Failed above due to stale heartbeat.
+            let task = store.read_task(base_dir, &lease.task_id)?;
+            if task.status == TaskStatus::Failed {
+                try_preserve_failed_branch(worktree, repo_root, &lease);
             }
 
             // Release order: worktree removal → writer-lock release → lease-file

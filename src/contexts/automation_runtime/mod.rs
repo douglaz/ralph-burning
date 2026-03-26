@@ -170,6 +170,17 @@ pub trait WorktreePort {
     ) -> AppResult<()> {
         Ok(())
     }
+    /// Force-push a branch to the remote, using `--force-with-lease` to avoid
+    /// clobbering concurrent changes. Used for preserving checkpoint commits
+    /// from failed runs where a prior push may have diverged after rebase.
+    fn force_push_branch(
+        &self,
+        _repo_root: &Path,
+        _worktree_path: &Path,
+        _branch_name: &str,
+    ) -> AppResult<()> {
+        Ok(())
+    }
     /// Returns true if the worktree branch contains checkpoint commits from
     /// the implementation stage or later (excludes prompt_review, planning,
     /// docs_plan, ci_plan). Used to gate branch preservation on task failure.

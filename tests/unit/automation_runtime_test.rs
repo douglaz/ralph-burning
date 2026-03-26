@@ -3,7 +3,9 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::FsDaemonStore;
 use ralph_burning::adapters::worktree::WorktreeAdapter;
-use ralph_burning::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
+use ralph_burning::contexts::automation_runtime::lease_service::{
+    try_preserve_failed_branch, LeaseService, ReleaseMode,
+};
 use ralph_burning::contexts::automation_runtime::model::{
     CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, TaskStatus, WatchedIssueMeta,
     WorktreeLease,
@@ -5978,23 +5980,23 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
 // Worktree preservation: has_checkpoint_commits implementation-stage gating
 // ---------------------------------------------------------------------------
 
-/// A worktree adapter that tracks push_branch calls and allows configuring
+/// A worktree adapter that tracks force_push_branch calls and allows configuring
 /// has_checkpoint_commits return value. Used for preservation regression tests.
 struct TrackingWorktreeAdapter {
     checkpoint_result: bool,
-    push_calls: std::sync::Mutex<Vec<String>>,
+    force_push_calls: std::sync::Mutex<Vec<String>>,
 }
 
 impl TrackingWorktreeAdapter {
     fn new(checkpoint_result: bool) -> Self {
         Self {
             checkpoint_result,
-            push_calls: std::sync::Mutex::new(Vec::new()),
+            force_push_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 
-    fn push_call_count(&self) -> usize {
-        self.push_calls.lock().unwrap().len()
+    fn force_push_call_count(&self) -> usize {
+        self.force_push_calls.lock().unwrap().len()
     }
 }
 
@@ -6051,34 +6053,24 @@ impl WorktreePort for TrackingWorktreeAdapter {
         self.checkpoint_result
     }
 
-    fn push_branch(
+    fn force_push_branch(
         &self,
         _repo_root: &std::path::Path,
         _worktree_path: &std::path::Path,
         branch_name: &str,
     ) -> ralph_burning::shared::error::AppResult<()> {
-        self.push_calls.lock().unwrap().push(branch_name.to_owned());
+        self.force_push_calls
+            .lock()
+            .unwrap()
+            .push(branch_name.to_owned());
         Ok(())
     }
 }
 
 #[test]
-fn release_failed_task_with_checkpoints_pushes_branch_before_cleanup() {
-    let store = FsDaemonStore;
+fn try_preserve_failed_branch_force_pushes_when_checkpoints_present() {
     let tracking = TrackingWorktreeAdapter::new(true);
     let temp = tempdir().expect("tempdir");
-
-    let mut task = sample_task();
-    task.task_id = "push-preserve-test".to_owned();
-    task.status = TaskStatus::Failed;
-    task.failure_class = Some("test_failure".to_owned());
-    store.create_task(temp.path(), &task).expect("create task");
-
-    let project_id =
-        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
-    store
-        .acquire_writer_lock(temp.path(), &project_id, "lease-push-preserve-test")
-        .expect("lock");
 
     let worktree_path = temp.path().join("worktrees").join("push-preserve-test");
     std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
@@ -6093,33 +6085,19 @@ fn release_failed_task_with_checkpoints_pushes_branch_before_cleanup() {
         ttl_seconds: 3600,
         last_heartbeat: Utc::now(),
     };
-    store.write_lease(temp.path(), &lease).expect("write lease");
 
-    // Simulate the daemon push-before-release pattern: check for checkpoints
-    // and push if present, then release.
-    if tracking.has_checkpoint_commits(&lease.worktree_path) {
-        tracking
-            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
-            .expect("push");
-    }
-    let result = LeaseService::release(
-        &store,
-        &tracking,
-        temp.path(),
-        temp.path(),
-        &lease,
-        ReleaseMode::Idempotent,
-    );
-    assert!(result.is_ok());
+    // The centralized try_preserve_failed_branch should force_push when
+    // implementation-stage checkpoints exist.
+    try_preserve_failed_branch(&tracking, temp.path(), &lease);
     assert_eq!(
-        tracking.push_call_count(),
+        tracking.force_push_call_count(),
         1,
-        "push_branch should be called once for failed task with checkpoints"
+        "force_push_branch should be called once when implementation-stage checkpoints exist"
     );
 }
 
 #[test]
-fn release_failed_task_without_checkpoints_does_not_push() {
+fn try_preserve_failed_branch_skips_push_without_checkpoints() {
     let tracking = TrackingWorktreeAdapter::new(false);
     let temp = tempdir().expect("tempdir");
 
@@ -6137,49 +6115,71 @@ fn release_failed_task_without_checkpoints_does_not_push() {
         last_heartbeat: Utc::now(),
     };
 
-    // Same push-before-release pattern: no checkpoints → no push
-    if tracking.has_checkpoint_commits(&lease.worktree_path) {
-        tracking
-            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
-            .expect("push");
-    }
+    // No implementation-stage checkpoints → no push
+    try_preserve_failed_branch(&tracking, temp.path(), &lease);
     assert_eq!(
-        tracking.push_call_count(),
+        tracking.force_push_call_count(),
         0,
-        "push_branch should NOT be called when no implementation-stage checkpoints exist"
+        "force_push_branch should NOT be called when no implementation-stage checkpoints exist"
     );
 }
 
 #[test]
-fn completed_task_release_does_not_push_branch() {
+fn reconcile_stale_failed_task_preserves_branch_before_cleanup() {
+    let store = FsDaemonStore;
     let tracking = TrackingWorktreeAdapter::new(true);
     let temp = tempdir().expect("tempdir");
 
-    let worktree_path = temp.path().join("worktrees").join("completed-test");
+    // Create a failed task with a stale lease
+    let mut task = sample_task();
+    task.task_id = "reconcile-preserve-test".to_owned();
+    task.status = TaskStatus::Failed;
+    task.failure_class = Some("test_failure".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-reconcile-preserve-test")
+        .expect("lock");
+
+    let worktree_path = temp
+        .path()
+        .join("worktrees")
+        .join("reconcile-preserve-test");
     std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
 
+    let stale_time = Utc::now() - Duration::hours(2);
     let lease = WorktreeLease {
-        lease_id: "lease-completed-test".to_owned(),
-        task_id: "completed-test".to_owned(),
+        lease_id: "lease-reconcile-preserve-test".to_owned(),
+        task_id: "reconcile-preserve-test".to_owned(),
         project_id: "demo".to_owned(),
         worktree_path,
-        branch_name: "rb/completed-test".to_owned(),
-        acquired_at: Utc::now(),
-        ttl_seconds: 3600,
-        last_heartbeat: Utc::now(),
+        branch_name: "rb/reconcile-preserve-test".to_owned(),
+        acquired_at: stale_time,
+        ttl_seconds: 60,
+        last_heartbeat: stale_time,
     };
+    store.write_lease(temp.path(), &lease).expect("write lease");
 
-    // For completed tasks, the daemon does NOT call try_push_failed_task_branch.
-    // Verify that when the push check is skipped, push_branch is never called.
-    let is_failed = false; // completed task
-    if is_failed && tracking.has_checkpoint_commits(&lease.worktree_path) {
-        tracking
-            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
-            .expect("push");
-    }
+    // Reconcile should detect the stale lease, preserve the branch, then clean up.
+    let report = LeaseService::reconcile(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        None,
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert!(
+        report.stale_lease_ids.contains(&lease.lease_id),
+        "lease should be detected as stale"
+    );
     assert_eq!(
-        tracking.push_call_count(),
-        0,
-        "push_branch should NOT be called for completed tasks even when checkpoints exist"
+        tracking.force_push_call_count(),
+        1,
+        "reconcile should force_push_branch for stale failed task with checkpoints"
     );
 }

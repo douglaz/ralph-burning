@@ -7,7 +7,7 @@ use crate::adapters::github::{GithubIssue, GithubPort};
 use crate::shared::domain::FlowPreset;
 use crate::shared::error::AppResult;
 
-use super::lease_service::{LeaseService, ReleaseMode};
+use super::lease_service::{try_preserve_failed_branch, LeaseService, ReleaseMode};
 use super::model::{DaemonTask, DispatchMode, GithubTaskMeta, TaskStatus, WatchedIssueMeta};
 use super::repo_registry::{label_for_status, RepoRegistration, LABEL_VOCABULARY};
 use super::routing::RoutingEngine;
@@ -345,6 +345,10 @@ async fn handle_explicit_command<G: GithubPort>(
             // cleanup before retry so retry_task() doesn't reject it.
             if let Some(ref lid) = task.lease_id {
                 if let Ok(lease) = store.read_lease(base_dir, lid) {
+                    // Preserve checkpoint commits before worktree removal.
+                    if task.status == TaskStatus::Failed {
+                        try_preserve_failed_branch(worktree, &registration.repo_root, &lease);
+                    }
                     let result = LeaseService::release(
                         store,
                         worktree,

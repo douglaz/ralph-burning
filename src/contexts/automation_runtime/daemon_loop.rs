@@ -2416,24 +2416,18 @@ where
     }
 
     /// Best-effort push of the worktree branch to preserve checkpoint commits
-    /// from a failed task run. Only pushes when checkpoint commits are present.
+    /// from a failed task run. Delegates to the centralized
+    /// [`try_preserve_failed_branch`] helper.
     fn try_push_failed_task_branch(
         &self,
         repo_root: &Path,
         lease: &crate::contexts::automation_runtime::model::WorktreeLease,
     ) {
-        if !self.worktree.has_checkpoint_commits(&lease.worktree_path) {
-            return;
-        }
-        if let Err(e) =
-            self.worktree
-                .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)
-        {
-            eprintln!(
-                "daemon: best-effort push of branch '{}' failed: {e}",
-                lease.branch_name
-            );
-        }
+        crate::contexts::automation_runtime::lease_service::try_preserve_failed_branch(
+            self.worktree,
+            repo_root,
+            lease,
+        );
     }
 
     fn release_task_lease(
