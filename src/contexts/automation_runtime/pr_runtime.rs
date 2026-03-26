@@ -67,7 +67,7 @@ where
         let base_branch = self.base_branch_name(repo_root)?;
         self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         self.worktree
-            .force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+            .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
         self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         let ahead = self
             .github
@@ -103,7 +103,7 @@ where
         if task.pr_url.is_none() {
             self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
             self.worktree
-                .force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+                .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
             self.ensure_task_not_cancelled(base_dir, task_id, cancel)?;
         }
         let ahead = self
@@ -167,7 +167,7 @@ where
     ) -> AppResult<String> {
         self.ensure_task_not_cancelled(base_dir, &task.task_id, cancel)?;
         self.worktree
-            .force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
+            .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)?;
         self.create_draft_after_push(base_dir, task, lease, base_branch, cancel)
             .await
     }

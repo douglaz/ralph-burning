@@ -612,6 +612,25 @@ impl WorktreePort for WorktreeAdapter {
         self.default_branch_ref(repo_root)
     }
 
+    fn push_branch(
+        &self,
+        _repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<()> {
+        let output = Self::git_in(
+            worktree_path,
+            &["push", "--set-upstream", "origin", branch_name],
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::Io(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )))
+    }
+
     fn force_push_branch(
         &self,
         _repo_root: &Path,
@@ -774,7 +793,10 @@ impl WorktreePort for WorktreeAdapter {
         )?;
         if !log_output.status.success() {
             restore_original(worktree_path, &original_sha);
-            return Ok(false);
+            return Err(std::io::Error::other(
+                "git log for checkpoint discovery failed after successful fetch",
+            )
+            .into());
         }
         let stdout = String::from_utf8_lossy(&log_output.stdout);
         for line in stdout.lines() {
@@ -791,18 +813,24 @@ impl WorktreePort for WorktreeAdapter {
                 match Self::git_in(worktree_path, &["reset", "--hard", sha]) {
                     Ok(ref o) if o.status.success() => return Ok(true),
                     Ok(ref o) => {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
                         eprintln!(
                             "daemon: retry resume reset to checkpoint {} failed: {}",
                             sha,
-                            String::from_utf8_lossy(&o.stderr).trim()
+                            stderr.trim()
                         );
                         restore_original(worktree_path, &original_sha);
-                        return Ok(false);
+                        return Err(std::io::Error::other(format!(
+                            "git reset --hard '{}' failed: {}",
+                            sha,
+                            stderr.trim()
+                        ))
+                        .into());
                     }
                     Err(e) => {
                         eprintln!("daemon: retry resume reset to checkpoint {sha} failed: {e}");
                         restore_original(worktree_path, &original_sha);
-                        return Ok(false);
+                        return Err(e);
                     }
                 }
             }

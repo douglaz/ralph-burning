@@ -207,9 +207,11 @@ impl LeaseService {
             });
         }
 
-        // Best-effort: on retries only, fetch a previously-preserved branch
-        // and reset to the latest implementation-stage checkpoint. New tasks
-        // (attempt_count == 0) always start fresh from the default branch.
+        // On failed-task retries, fetch the preserved branch and reset to the
+        // latest checkpoint. Ok(false) means the branch doesn't exist or has no
+        // qualifying checkpoint — start fresh. Ok(true) means resume succeeded.
+        // Err means an unexpected failure (network, auth, corrupted state) —
+        // propagate so the preserved branch is not silently lost and overwritten.
         if is_retry {
             match worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name) {
                 Ok(true) => {
@@ -219,9 +221,7 @@ impl LeaseService {
                     eprintln!("daemon: no preserved branch '{branch_name}' found, starting fresh");
                 }
                 Err(e) => {
-                    eprintln!(
-                        "daemon: resume from preserved branch '{branch_name}' failed: {e}, starting fresh"
-                    );
+                    return Err(e);
                 }
             }
         }
