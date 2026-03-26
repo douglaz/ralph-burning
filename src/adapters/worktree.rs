@@ -602,19 +602,28 @@ impl WorktreePort for WorktreeAdapter {
     }
 
     fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
+        // Only preserve branches that reached the implementation stage or
+        // later. Pre-implementation stages (prompt_review, planning, docs_plan,
+        // ci_plan) create checkpoints too early to be worth preserving.
+        const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
+
         let Ok(output) = Self::git_in(
             worktree_path,
-            &[
-                "log",
-                "--oneline",
-                "--grep",
-                "^rb: checkpoint ",
-                "--max-count=1",
-            ],
+            &["log", "--format=%s", "--grep", "^rb: checkpoint "],
         ) else {
             return false;
         };
-        output.status.success() && !output.stdout.is_empty()
+        if !output.status.success() {
+            return false;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().any(|line| {
+            // Subject format: rb: checkpoint project=X stage=Y cycle=N round=M
+            line.split_whitespace()
+                .find(|part| part.starts_with("stage="))
+                .map(|part| &part["stage=".len()..])
+                .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage))
+        })
     }
 
     fn try_resume_from_remote(
@@ -629,13 +638,35 @@ impl WorktreePort for WorktreeAdapter {
             Ok(ref o) if o.status.success() => {}
             _ => return Ok(false),
         }
-        // Reset the worktree to the fetched remote branch tip.
+        // Reset the worktree to the fetched remote branch tip first, so the
+        // full commit history is available for checkpoint discovery.
         let remote_ref = format!("origin/{branch_name}");
         let reset_output = Self::git_in(worktree_path, &["reset", "--hard", &remote_ref])?;
-        if reset_output.status.success() {
-            return Ok(true);
+        if !reset_output.status.success() {
+            return Ok(false);
         }
-        Ok(false)
+        // Find the latest checkpoint commit and reset to it so we resume
+        // from a known-good durable state rather than whatever HEAD was at
+        // push time (HEAD may have advanced past the last checkpoint).
+        let log_output = Self::git_in(
+            worktree_path,
+            &[
+                "log",
+                "--format=%H",
+                "--grep",
+                "^rb: checkpoint ",
+                "--max-count=1",
+            ],
+        )?;
+        if log_output.status.success() {
+            let sha = String::from_utf8_lossy(&log_output.stdout)
+                .trim()
+                .to_owned();
+            if !sha.is_empty() {
+                let _ = Self::git_in(worktree_path, &["reset", "--hard", &sha]);
+            }
+        }
+        Ok(true)
     }
 
     fn rebase_with_agent_resolution(

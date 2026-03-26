@@ -170,13 +170,16 @@ pub trait WorktreePort {
     ) -> AppResult<()> {
         Ok(())
     }
-    /// Returns true if the worktree branch contains any checkpoint commits
-    /// (commits whose subject starts with "rb: checkpoint ").
+    /// Returns true if the worktree branch contains checkpoint commits from
+    /// the implementation stage or later (excludes prompt_review, planning,
+    /// docs_plan, ci_plan). Used to gate branch preservation on task failure.
     fn has_checkpoint_commits(&self, _worktree_path: &Path) -> bool {
         false
     }
-    /// Best-effort fetch of a remote branch and reset to it. Returns true if
-    /// the remote branch existed and the worktree was reset to it.
+    /// Best-effort fetch of a remote branch and reset to the latest checkpoint
+    /// commit. Returns true if the remote branch existed and the worktree was
+    /// reset. After fetching, the implementation locates the newest checkpoint
+    /// commit and resets to that SHA rather than the branch tip.
     fn try_resume_from_remote(
         &self,
         _repo_root: &Path,

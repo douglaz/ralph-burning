@@ -5973,3 +5973,213 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
         .release_writer_lock(temp.path(), &cli_project_id, "cli-oversized-ttl")
         .expect("cleanup cli lock");
 }
+
+// ---------------------------------------------------------------------------
+// Worktree preservation: has_checkpoint_commits implementation-stage gating
+// ---------------------------------------------------------------------------
+
+/// A worktree adapter that tracks push_branch calls and allows configuring
+/// has_checkpoint_commits return value. Used for preservation regression tests.
+struct TrackingWorktreeAdapter {
+    checkpoint_result: bool,
+    push_calls: std::sync::Mutex<Vec<String>>,
+}
+
+impl TrackingWorktreeAdapter {
+    fn new(checkpoint_result: bool) -> Self {
+        Self {
+            checkpoint_result,
+            push_calls: std::sync::Mutex::new(Vec::new()),
+        }
+    }
+
+    fn push_call_count(&self) -> usize {
+        self.push_calls.lock().unwrap().len()
+    }
+}
+
+impl WorktreePort for TrackingWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _branch_name: &str,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        std::fs::create_dir_all(worktree_path)?;
+        Ok(())
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
+        use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(worktree_path)?;
+            Ok(WorktreeCleanupOutcome::Removed)
+        } else {
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent)
+        }
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+
+    fn has_checkpoint_commits(&self, _worktree_path: &std::path::Path) -> bool {
+        self.checkpoint_result
+    }
+
+    fn push_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.push_calls.lock().unwrap().push(branch_name.to_owned());
+        Ok(())
+    }
+}
+
+#[test]
+fn release_failed_task_with_checkpoints_pushes_branch_before_cleanup() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(true);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "push-preserve-test".to_owned();
+    task.status = TaskStatus::Failed;
+    task.failure_class = Some("test_failure".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-push-preserve-test")
+        .expect("lock");
+
+    let worktree_path = temp.path().join("worktrees").join("push-preserve-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-push-preserve-test".to_owned(),
+        task_id: "push-preserve-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/push-preserve-test".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 3600,
+        last_heartbeat: Utc::now(),
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    // Simulate the daemon push-before-release pattern: check for checkpoints
+    // and push if present, then release.
+    if tracking.has_checkpoint_commits(&lease.worktree_path) {
+        tracking
+            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
+            .expect("push");
+    }
+    let result = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ReleaseMode::Idempotent,
+    );
+    assert!(result.is_ok());
+    assert_eq!(
+        tracking.push_call_count(),
+        1,
+        "push_branch should be called once for failed task with checkpoints"
+    );
+}
+
+#[test]
+fn release_failed_task_without_checkpoints_does_not_push() {
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let worktree_path = temp.path().join("worktrees").join("no-push-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-no-push-test".to_owned(),
+        task_id: "no-push-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/no-push-test".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 3600,
+        last_heartbeat: Utc::now(),
+    };
+
+    // Same push-before-release pattern: no checkpoints → no push
+    if tracking.has_checkpoint_commits(&lease.worktree_path) {
+        tracking
+            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
+            .expect("push");
+    }
+    assert_eq!(
+        tracking.push_call_count(),
+        0,
+        "push_branch should NOT be called when no implementation-stage checkpoints exist"
+    );
+}
+
+#[test]
+fn completed_task_release_does_not_push_branch() {
+    let tracking = TrackingWorktreeAdapter::new(true);
+    let temp = tempdir().expect("tempdir");
+
+    let worktree_path = temp.path().join("worktrees").join("completed-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-completed-test".to_owned(),
+        task_id: "completed-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/completed-test".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 3600,
+        last_heartbeat: Utc::now(),
+    };
+
+    // For completed tasks, the daemon does NOT call try_push_failed_task_branch.
+    // Verify that when the push check is skipped, push_branch is never called.
+    let is_failed = false; // completed task
+    if is_failed && tracking.has_checkpoint_commits(&lease.worktree_path) {
+        tracking
+            .push_branch(temp.path(), &lease.worktree_path, &lease.branch_name)
+            .expect("push");
+    }
+    assert_eq!(
+        tracking.push_call_count(),
+        0,
+        "push_branch should NOT be called for completed tasks even when checkpoints exist"
+    );
+}

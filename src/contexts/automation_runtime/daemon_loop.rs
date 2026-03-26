@@ -376,6 +376,11 @@ where
                                 // Terminal tasks: release deferred lease, then clear dirty.
                                 if let Some(ref lid) = dirty_task.lease_id {
                                     if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
+                                        // Preserve checkpoint commits for failed tasks
+                                        // before the worktree is removed.
+                                        if dirty_task.status == TaskStatus::Failed {
+                                            self.try_push_failed_task_branch(checkout, &lease);
+                                        }
                                         match self.release_task_lease(
                                             &daemon_dir,
                                             checkout,
