@@ -14,6 +14,30 @@ use crate::contexts::automation_runtime::{
 use crate::shared::domain::ProjectId;
 use crate::shared::error::{AppError, AppResult};
 
+/// Best-effort force-push of the worktree branch to preserve checkpoint
+/// commits from a failed task run. Only pushes when the worktree contains
+/// checkpoint commits from the implementation stage or later.
+///
+/// This function is the single entry point for branch preservation and
+/// should be called before any `LeaseService::release()` that disposes of
+/// a failed task's worktree.
+pub fn try_preserve_failed_branch(
+    worktree: &dyn WorktreePort,
+    repo_root: &Path,
+    lease: &WorktreeLease,
+) {
+    if !worktree.has_checkpoint_commits(repo_root, &lease.worktree_path) {
+        return;
+    }
+    if let Err(e) = worktree.force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)
+    {
+        eprintln!(
+            "daemon: best-effort push of branch '{}' failed: {e}",
+            lease.branch_name
+        );
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ReconcileReport {
     pub stale_lease_ids: Vec<String>,
@@ -119,6 +143,7 @@ impl LeaseService {
         ttl_seconds: u64,
         worktree_path_override: Option<std::path::PathBuf>,
         branch_name_override: Option<String>,
+        is_retry: bool,
     ) -> AppResult<WorktreeLease> {
         if store
             .list_leases(base_dir)?
@@ -180,6 +205,62 @@ impl LeaseService {
                 trigger: error.to_string(),
                 rollback_details: details,
             });
+        }
+
+        // On failed-task retries, fetch the preserved branch and reset to the
+        // latest checkpoint. Ok(false) means the branch doesn't exist or has no
+        // qualifying checkpoint — start fresh. Ok(true) means resume succeeded.
+        // Err means an unexpected failure (network, auth, corrupted state) —
+        // propagate so the preserved branch is not silently lost and overwritten.
+        if is_retry {
+            match worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name) {
+                Ok(true) => {
+                    eprintln!("daemon: resumed retry from preserved branch '{branch_name}'");
+                }
+                Ok(false) => {
+                    eprintln!("daemon: no preserved branch '{branch_name}' found, starting fresh");
+                }
+                Err(resume_error) => {
+                    // Rollback: remove just-created worktree and release writer
+                    // lock so resources are not orphaned without a lease record.
+                    let mut rollback_failures = Vec::new();
+
+                    if worktree_path.exists() {
+                        if let Err(e) = worktree.remove_worktree(repo_root, &worktree_path, task_id)
+                        {
+                            rollback_failures.push(format!("worktree removal: {e}"));
+                        }
+                    }
+
+                    let lock_may_be_held =
+                        match store.release_writer_lock(base_dir, project_id, &lease_id) {
+                            Ok(WriterLockReleaseOutcome::Released)
+                            | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
+                            Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                                rollback_failures.push(format!(
+                                    "writer lock owner mismatch (actual: {actual_owner})"
+                                ));
+                                true
+                            }
+                            Err(e) => {
+                                rollback_failures.push(format!("writer lock release: {e}"));
+                                true
+                            }
+                        };
+
+                    if rollback_failures.is_empty() {
+                        return Err(resume_error);
+                    }
+                    let mut details = rollback_failures.join("; ");
+                    if lock_may_be_held {
+                        details.push_str("; project writer lock may still be held");
+                    }
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: resume_error.to_string(),
+                        rollback_details: details,
+                    });
+                }
+            }
         }
 
         let now = Utc::now();
@@ -424,6 +505,14 @@ impl LeaseService {
                     ),
                 });
                 continue;
+            }
+
+            // Preserve checkpoint commits for failed tasks before cleanup.
+            // The task was either already Failed/Aborted or was just marked
+            // Failed above due to stale heartbeat.
+            let task = store.read_task(base_dir, &lease.task_id)?;
+            if task.status == TaskStatus::Failed {
+                try_preserve_failed_branch(worktree, repo_root, &lease);
             }
 
             // Release order: worktree removal → writer-lock release → lease-file

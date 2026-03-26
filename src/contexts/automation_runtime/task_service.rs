@@ -144,6 +144,15 @@ impl DaemonTaskService {
         }
 
         hydrate_routing(&mut task, routing_engine, default_flow)?;
+        // Resume from a preserved branch only for failed-task retries.
+        // Aborted retries (no failure_class) start fresh to avoid
+        // resurrecting stale work from a user-cancelled run.
+        let is_failed_retry = task.attempt_count > 0 && task.failure_class.is_some();
+        // Save failure provenance before clearing so we can restore it if
+        // the claim rolls back to Pending (e.g. LeaseAcquired journal failure).
+        let saved_failure_class = task.failure_class.clone();
+        let saved_failure_message = task.failure_message.clone();
+        task.clear_failure();
         let project_id = ProjectId::new(task.project_id.clone())?;
         let lease = match LeaseService::acquire(
             store,
@@ -155,6 +164,7 @@ impl DaemonTaskService {
             lease_ttl_seconds,
             worktree_path_override,
             branch_name_override,
+            is_failed_retry,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {
@@ -217,10 +227,14 @@ impl DaemonTaskService {
 
             if resources_released {
                 // Physical resources released — safe to restore Pending.
+                // Restore failure provenance so the next claim attempt still
+                // detects a failed-task retry and resumes from the preserved branch.
                 let release_journal_err = release_result.ok().and_then(|r| r.journal_error);
                 let rollback_result = (|| -> AppResult<()> {
                     task.status = TaskStatus::Pending;
                     task.clear_lease();
+                    task.failure_class = saved_failure_class.clone();
+                    task.failure_message = saved_failure_message.clone();
                     task.updated_at = Utc::now();
                     store.write_task(base_dir, &task)?;
                     let _ = Self::append_journal_event(
@@ -449,7 +463,10 @@ impl DaemonTaskService {
 
         task.transition_to(TaskStatus::Pending, Utc::now())?;
         task.attempt_count += 1;
-        task.clear_failure();
+        // Do NOT clear failure info here — it serves as provenance so
+        // claim_task can distinguish a failed-task retry (which should
+        // resume from a preserved branch) from an aborted-task retry
+        // (which should start fresh). claim_task clears it after reading.
         store.write_task(base_dir, &task)?;
         Ok(task)
     }

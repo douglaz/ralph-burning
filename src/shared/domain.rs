@@ -1098,6 +1098,8 @@ pub struct PromptReviewSettings {
     pub validator_backends: Option<Vec<PanelBackendSpec>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_reviewers: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_refinement_retries: Option<u32>,
     #[serde(flatten)]
     pub extra: Table,
 }
@@ -1108,6 +1110,7 @@ impl PromptReviewSettings {
             && self.refiner_backend.is_none()
             && self.validator_backends.is_none()
             && self.min_reviewers.is_none()
+            && self.max_refinement_retries.is_none()
             && self.extra.is_empty()
     }
 }
@@ -1452,6 +1455,7 @@ pub struct EffectivePromptReviewPolicy {
     pub refiner_backend: Option<BackendSelection>,
     pub validator_backends: Vec<PanelBackendSpec>,
     pub min_reviewers: usize,
+    pub max_refinement_retries: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

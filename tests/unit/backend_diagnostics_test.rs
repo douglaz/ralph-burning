@@ -2157,6 +2157,7 @@ fn probe_prompt_review_panel_failure_reports_refiner_not_planner() {
         refiner_backend: Some("openrouter".to_owned()),
         validator_backends: None,
         min_reviewers: None,
+        max_refinement_retries: None,
         extra: toml::Table::new(),
     };
     write_workspace_config(temp_dir.path(), &workspace);
@@ -2385,6 +2386,7 @@ async fn check_with_availability_aggregates_refiner_failure_independently_of_val
         refiner_backend: Some("openrouter".to_owned()),
         validator_backends: None,
         min_reviewers: None,
+        max_refinement_retries: None,
         extra: toml::Table::new(),
     };
     write_workspace_config(temp_dir.path(), &workspace);
@@ -2853,6 +2855,7 @@ fn probe_prompt_review_panel_optional_omission_below_minimum_reports_insufficien
             PanelBackendSpec::optional(BackendFamily::OpenRouter),
         ]),
         min_reviewers: Some(2),
+        max_refinement_retries: None,
         extra: toml::Table::new(),
     };
     write_workspace_config(temp_dir.path(), &workspace);
@@ -3035,6 +3038,7 @@ async fn probe_with_availability_reports_correct_configured_index_after_optional
             PanelBackendSpec::required(BackendFamily::Claude),
         ]),
         min_reviewers: Some(1),
+        max_refinement_retries: None,
         refiner_backend: Some("codex".to_owned()),
         extra: toml::Table::new(),
     };

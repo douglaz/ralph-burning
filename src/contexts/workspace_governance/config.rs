@@ -23,6 +23,7 @@ pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::Standard;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
 pub const DEFAULT_MIN_REVIEWERS: usize = 2;
+pub const DEFAULT_MAX_REFINEMENT_RETRIES: u32 = 2;
 pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 20;
@@ -219,6 +220,12 @@ impl EffectiveConfig {
                 project_config.prompt_review.min_reviewers,
                 None,
                 DEFAULT_MIN_REVIEWERS,
+            ),
+            max_refinement_retries: resolve_scalar(
+                workspace_config.prompt_review.max_refinement_retries,
+                project_config.prompt_review.max_refinement_retries,
+                None,
+                DEFAULT_MAX_REFINEMENT_RETRIES,
             ),
         };
 
@@ -709,6 +716,14 @@ impl EffectiveConfig {
                     self.workspace_config.prompt_review.min_reviewers,
                     self.project_config.prompt_review.min_reviewers,
                     None::<usize>,
+                ),
+            ),
+            ["prompt_review", "max_refinement_retries"] => (
+                ConfigValue::Integer(self.prompt_review_policy.max_refinement_retries as u64),
+                source_for_option(
+                    self.workspace_config.prompt_review.max_refinement_retries,
+                    self.project_config.prompt_review.max_refinement_retries,
+                    None::<u32>,
                 ),
             ),
             ["workflow", "planner_backend"] => (
@@ -1585,6 +1600,7 @@ fn known_config_keys() -> Vec<String> {
         "prompt_review.refiner_backend".to_owned(),
         "prompt_review.validator_backends".to_owned(),
         "prompt_review.min_reviewers".to_owned(),
+        "prompt_review.max_refinement_retries".to_owned(),
         "workflow.planner_backend".to_owned(),
         "workflow.implementer_backend".to_owned(),
         "workflow.reviewer_backend".to_owned(),
@@ -1676,6 +1692,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["prompt_review", "min_reviewers"] => apply_optional_u64(
             document,
             &["prompt_review", "min_reviewers"],
+            key,
+            raw_value,
+        )?,
+        ["prompt_review", "max_refinement_retries"] => apply_optional_u64(
+            document,
+            &["prompt_review", "max_refinement_retries"],
             key,
             raw_value,
         )?,

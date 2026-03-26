@@ -376,6 +376,11 @@ where
                                 // Terminal tasks: release deferred lease, then clear dirty.
                                 if let Some(ref lid) = dirty_task.lease_id {
                                     if let Ok(lease) = self.store.read_lease(&daemon_dir, lid) {
+                                        // Preserve checkpoint commits for failed tasks
+                                        // before the worktree is removed.
+                                        if dirty_task.status == TaskStatus::Failed {
+                                            self.try_push_failed_task_branch(checkout, &lease);
+                                        }
                                         match self.release_task_lease(
                                             &daemon_dir,
                                             checkout,
@@ -889,6 +894,7 @@ where
                             );
                             return Err(e);
                         }
+                        self.try_push_failed_task_branch(repo_root, &lease);
                         let _ = self.release_task_lease(
                             store_dir,
                             repo_root,
@@ -948,6 +954,7 @@ where
                     );
                     return Err(e);
                 }
+                self.try_push_failed_task_branch(repo_root, &lease);
                 let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
@@ -1365,6 +1372,7 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
+                self.try_push_failed_task_branch(repo_root, &lease);
                 let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
@@ -2050,6 +2058,13 @@ where
     fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
         let leases = self.store.list_leases(store_dir)?;
         for lease in &leases {
+            // Preserve checkpoint branch for tasks that were already failed
+            // before shutdown (e.g. retained lease after label-sync failure).
+            if let Ok(task) = self.store.read_task(store_dir, &lease.task_id) {
+                if task.status == TaskStatus::Failed {
+                    self.try_push_failed_task_branch(repo_root, lease);
+                }
+            }
             let _ = DaemonTaskService::mark_aborted(self.store, store_dir, &lease.task_id);
             if let Err(e) = self.release_task_lease(store_dir, repo_root, &lease.task_id, lease) {
                 eprintln!(
@@ -2397,6 +2412,7 @@ where
             failure_message,
         )
         .map(|_| ());
+        self.try_push_failed_task_branch(repo_root, lease);
         let cleanup_result = self.release_task_lease(base_dir, repo_root, task_id, lease);
 
         match (mark_result, cleanup_result) {
@@ -2405,6 +2421,21 @@ where
             (Ok(()), Err(error)) => Err(error),
             (Err(error), Err(_)) => Err(error),
         }
+    }
+
+    /// Best-effort push of the worktree branch to preserve checkpoint commits
+    /// from a failed task run. Delegates to the centralized
+    /// [`try_preserve_failed_branch`] helper.
+    fn try_push_failed_task_branch(
+        &self,
+        repo_root: &Path,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+    ) {
+        crate::contexts::automation_runtime::lease_service::try_preserve_failed_branch(
+            self.worktree,
+            repo_root,
+            lease,
+        );
     }
 
     fn release_task_lease(

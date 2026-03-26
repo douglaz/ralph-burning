@@ -17195,6 +17195,15 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 self.events.lock().unwrap().push("push".to_owned());
                 Ok(())
             }
+            fn force_push_branch(
+                &self,
+                _repo_root: &Path,
+                _worktree_path: &Path,
+                _branch_name: &str,
+            ) -> AppResult<()> {
+                self.events.lock().unwrap().push("push".to_owned());
+                Ok(())
+            }
         }
 
         let ws = TempWorkspace::new()?;

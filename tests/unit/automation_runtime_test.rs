@@ -3,7 +3,9 @@ use tempfile::tempdir;
 
 use ralph_burning::adapters::fs::FsDaemonStore;
 use ralph_burning::adapters::worktree::WorktreeAdapter;
-use ralph_burning::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
+use ralph_burning::contexts::automation_runtime::lease_service::{
+    try_preserve_failed_branch, LeaseService, ReleaseMode,
+};
 use ralph_burning::contexts::automation_runtime::model::{
     CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, TaskStatus, WatchedIssueMeta,
     WorktreeLease,
@@ -390,8 +392,14 @@ fn retry_resets_failed_task_to_pending_and_increments_attempt_count() {
 
     assert_eq!(TaskStatus::Pending, retried.status);
     assert_eq!(1, retried.attempt_count);
-    assert!(retried.failure_class.is_none());
-    assert!(retried.failure_message.is_none());
+    // Failure provenance is preserved after retry so claim_task can
+    // distinguish failed-task retries (resume from preserved branch)
+    // from aborted-task retries (start fresh). claim_task clears it.
+    assert_eq!(
+        retried.failure_class.as_deref(),
+        Some("daemon_dispatch_failed")
+    );
+    assert_eq!(retried.failure_message.as_deref(), Some("boom"));
 }
 
 // ── Watched-issue ingestion tests ───────────────────────────────────────────
@@ -1515,6 +1523,68 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
         task_after.status
     );
     // lease_id should be cleared (resources were released by SuccessWorktreeAdapter)
+    assert!(
+        task_after.lease_id.is_none(),
+        "lease_id must be cleared after rollback"
+    );
+}
+
+#[test]
+fn claim_rollback_preserves_failure_provenance_for_retry_resume() {
+    // When a failed-task retry hits the LeaseAcquired journal rollback path,
+    // the task must be rolled back to Pending with its failure_class and
+    // failure_message intact so the next claim attempt still detects
+    // is_failed_retry=true and resumes from the preserved branch.
+    let temp = tempdir().expect("tempdir");
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    // fail_after=0: the very first journal append (LeaseAcquired) will fail.
+    let store = FailingJournalStore::new(0);
+
+    // Create a task that looks like a failed-task retry:
+    // attempt_count > 0, failure_class set.
+    let mut task = sample_task();
+    task.task_id = "retry-rollback-prov".to_owned();
+    task.project_id = "retry-rollback-prov".to_owned();
+    task.attempt_count = 1;
+    task.set_failure("daemon_dispatch_failed", "transient error");
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &worktree_adapter,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "retry-rollback-prov",
+        FlowPreset::Standard,
+        300,
+        None,
+        None,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    let task_after = store
+        .read_task(temp.path(), "retry-rollback-prov")
+        .expect("read task");
+    assert_eq!(
+        TaskStatus::Pending,
+        task_after.status,
+        "task should be rolled back to Pending"
+    );
+    // Failure provenance must survive the rollback
+    assert_eq!(
+        task_after.failure_class.as_deref(),
+        Some("daemon_dispatch_failed"),
+        "failure_class must be restored after rollback so next claim detects is_failed_retry"
+    );
+    assert_eq!(
+        task_after.failure_message.as_deref(),
+        Some("transient error"),
+        "failure_message must be restored after rollback"
+    );
     assert!(
         task_after.lease_id.is_none(),
         "lease_id must be cleared after rollback"
@@ -5532,6 +5602,7 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
@@ -5778,6 +5849,7 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
@@ -5836,6 +5908,7 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
@@ -5972,4 +6045,451 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
     store
         .release_writer_lock(temp.path(), &cli_project_id, "cli-oversized-ttl")
         .expect("cleanup cli lock");
+}
+
+// ---------------------------------------------------------------------------
+// Worktree preservation: has_checkpoint_commits implementation-stage gating
+// ---------------------------------------------------------------------------
+
+/// A worktree adapter that tracks force_push_branch calls and allows configuring
+/// has_checkpoint_commits return value. Used for preservation regression tests.
+struct TrackingWorktreeAdapter {
+    checkpoint_result: bool,
+    force_push_calls: std::sync::Mutex<Vec<String>>,
+    resume_calls: std::sync::Mutex<Vec<String>>,
+    resume_error: bool,
+}
+
+impl TrackingWorktreeAdapter {
+    fn new(checkpoint_result: bool) -> Self {
+        Self {
+            checkpoint_result,
+            force_push_calls: std::sync::Mutex::new(Vec::new()),
+            resume_calls: std::sync::Mutex::new(Vec::new()),
+            resume_error: false,
+        }
+    }
+
+    fn with_resume_error(mut self) -> Self {
+        self.resume_error = true;
+        self
+    }
+
+    fn force_push_call_count(&self) -> usize {
+        self.force_push_calls.lock().unwrap().len()
+    }
+
+    fn resume_call_count(&self) -> usize {
+        self.resume_calls.lock().unwrap().len()
+    }
+}
+
+impl WorktreePort for TrackingWorktreeAdapter {
+    fn worktree_path(&self, base_dir: &std::path::Path, task_id: &str) -> std::path::PathBuf {
+        base_dir
+            .join(".ralph-burning")
+            .join("worktrees")
+            .join(task_id)
+    }
+
+    fn branch_name(&self, task_id: &str) -> String {
+        format!("rb/{task_id}")
+    }
+
+    fn create_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _branch_name: &str,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        std::fs::create_dir_all(worktree_path)?;
+        Ok(())
+    }
+
+    fn remove_worktree(
+        &self,
+        _repo_root: &std::path::Path,
+        worktree_path: &std::path::Path,
+        _task_id: &str,
+    ) -> ralph_burning::shared::error::AppResult<
+        ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome,
+    > {
+        use ralph_burning::contexts::automation_runtime::WorktreeCleanupOutcome;
+        if worktree_path.exists() {
+            std::fs::remove_dir_all(worktree_path)?;
+            Ok(WorktreeCleanupOutcome::Removed)
+        } else {
+            Ok(WorktreeCleanupOutcome::AlreadyAbsent)
+        }
+    }
+
+    fn rebase_onto_default_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        _branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        Ok(())
+    }
+
+    fn has_checkpoint_commits(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+    ) -> bool {
+        self.checkpoint_result
+    }
+
+    fn force_push_branch(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<()> {
+        self.force_push_calls
+            .lock()
+            .unwrap()
+            .push(branch_name.to_owned());
+        Ok(())
+    }
+
+    fn try_resume_from_remote(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<bool> {
+        self.resume_calls
+            .lock()
+            .unwrap()
+            .push(branch_name.to_owned());
+        if self.resume_error {
+            return Err(ralph_burning::shared::error::AppError::Io(
+                std::io::Error::other("simulated resume failure"),
+            ));
+        }
+        Ok(true)
+    }
+}
+
+#[test]
+fn try_preserve_failed_branch_force_pushes_when_checkpoints_present() {
+    let tracking = TrackingWorktreeAdapter::new(true);
+    let temp = tempdir().expect("tempdir");
+
+    let worktree_path = temp.path().join("worktrees").join("push-preserve-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-push-preserve-test".to_owned(),
+        task_id: "push-preserve-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/push-preserve-test".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 3600,
+        last_heartbeat: Utc::now(),
+    };
+
+    // The centralized try_preserve_failed_branch should force_push when
+    // implementation-stage checkpoints exist.
+    try_preserve_failed_branch(&tracking, temp.path(), &lease);
+    assert_eq!(
+        tracking.force_push_call_count(),
+        1,
+        "force_push_branch should be called once when implementation-stage checkpoints exist"
+    );
+}
+
+#[test]
+fn try_preserve_failed_branch_skips_push_without_checkpoints() {
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let worktree_path = temp.path().join("worktrees").join("no-push-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let lease = WorktreeLease {
+        lease_id: "lease-no-push-test".to_owned(),
+        task_id: "no-push-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/no-push-test".to_owned(),
+        acquired_at: Utc::now(),
+        ttl_seconds: 3600,
+        last_heartbeat: Utc::now(),
+    };
+
+    // No implementation-stage checkpoints → no push
+    try_preserve_failed_branch(&tracking, temp.path(), &lease);
+    assert_eq!(
+        tracking.force_push_call_count(),
+        0,
+        "force_push_branch should NOT be called when no implementation-stage checkpoints exist"
+    );
+}
+
+#[test]
+fn reconcile_stale_failed_task_preserves_branch_before_cleanup() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(true);
+    let temp = tempdir().expect("tempdir");
+
+    // Create a failed task with a stale lease
+    let mut task = sample_task();
+    task.task_id = "reconcile-preserve-test".to_owned();
+    task.status = TaskStatus::Failed;
+    task.failure_class = Some("test_failure".to_owned());
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("demo".to_owned()).expect("valid id");
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "lease-reconcile-preserve-test")
+        .expect("lock");
+
+    let worktree_path = temp
+        .path()
+        .join("worktrees")
+        .join("reconcile-preserve-test");
+    std::fs::create_dir_all(&worktree_path).expect("create worktree dir");
+
+    let stale_time = Utc::now() - Duration::hours(2);
+    let lease = WorktreeLease {
+        lease_id: "lease-reconcile-preserve-test".to_owned(),
+        task_id: "reconcile-preserve-test".to_owned(),
+        project_id: "demo".to_owned(),
+        worktree_path,
+        branch_name: "rb/reconcile-preserve-test".to_owned(),
+        acquired_at: stale_time,
+        ttl_seconds: 60,
+        last_heartbeat: stale_time,
+    };
+    store.write_lease(temp.path(), &lease).expect("write lease");
+
+    // Reconcile should detect the stale lease, preserve the branch, then clean up.
+    let report = LeaseService::reconcile(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        None,
+        Utc::now(),
+    )
+    .expect("reconcile");
+
+    assert!(
+        report.stale_lease_ids.contains(&lease.lease_id),
+        "lease should be detected as stale"
+    );
+    assert_eq!(
+        tracking.force_push_call_count(),
+        1,
+        "reconcile should force_push_branch for stale failed task with checkpoints"
+    );
+}
+
+#[test]
+fn lease_acquire_with_is_retry_true_calls_try_resume_from_remote() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "retry-resume-test".to_owned();
+    task.project_id = "retry-resume".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("retry-resume".to_owned()).expect("valid id");
+
+    let lease = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "retry-resume-test",
+        &project_id,
+        300,
+        None,
+        None,
+        true,
+    )
+    .expect("acquire should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        1,
+        "try_resume_from_remote should be called when is_retry=true"
+    );
+
+    // Clean up lease so the test directory can be removed
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}
+
+#[test]
+fn lease_acquire_with_is_retry_false_skips_try_resume_from_remote() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "fresh-no-resume-test".to_owned();
+    task.project_id = "fresh-no-resume".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id = ralph_burning::shared::domain::ProjectId::new("fresh-no-resume".to_owned())
+        .expect("valid id");
+
+    let lease = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "fresh-no-resume-test",
+        &project_id,
+        300,
+        None,
+        None,
+        false,
+    )
+    .expect("acquire should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        0,
+        "try_resume_from_remote should NOT be called when is_retry=false"
+    );
+
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}
+
+#[test]
+fn aborted_retry_does_not_resume_from_preserved_branch() {
+    // An aborted task has no failure_class, so claim_task must compute
+    // is_failed_retry=false even when attempt_count > 0. This ensures
+    // stale worktree branches from user-cancelled runs are never resumed.
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let routing = RoutingEngine::new();
+    let temp = tempdir().expect("tempdir");
+
+    // Start with an Aborted task (no failure_class, as mark_aborted doesn't set it).
+    let mut task = sample_task();
+    task.task_id = "aborted-retry-test".to_owned();
+    task.project_id = "aborted-retry".to_owned();
+    task.issue_ref = "org/repo#aborted".to_owned();
+    task.status = TaskStatus::Aborted;
+    // Explicitly no failure_class — this is the key difference from Failed.
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // retry_task: Aborted → Pending, attempt_count becomes 1.
+    DaemonTaskService::retry_task(&store, temp.path(), "aborted-retry-test")
+        .expect("retry aborted task");
+
+    // claim_task should NOT trigger try_resume_from_remote because
+    // failure_class is None, making is_failed_retry = false.
+    let (_claimed_task, lease) = DaemonTaskService::claim_task(
+        &store,
+        &tracking,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "aborted-retry-test",
+        FlowPreset::Standard,
+        300,
+        None,
+        None,
+    )
+    .expect("claim should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        0,
+        "try_resume_from_remote should NOT be called for aborted-task retries"
+    );
+
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}
+
+#[test]
+fn lease_acquire_resume_error_rolls_back_worktree_and_writer_lock() {
+    // When try_resume_from_remote returns Err, LeaseService::acquire must
+    // clean up the just-created worktree and release the writer lock so
+    // resources are not orphaned without a durable lease record.
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false).with_resume_error();
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "resume-err-test".to_owned();
+    task.project_id = "resume-err".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("resume-err".to_owned()).expect("valid id");
+
+    // Acquire with is_retry=true triggers try_resume_from_remote, which will
+    // return Err via the resume_error flag.
+    let result = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "resume-err-test",
+        &project_id,
+        300,
+        None,
+        None,
+        true,
+    );
+
+    assert!(
+        result.is_err(),
+        "acquire should fail when resume returns Err"
+    );
+
+    // Worktree directory should have been removed during rollback.
+    let worktree_path = tracking.worktree_path(temp.path(), "resume-err-test");
+    assert!(
+        !worktree_path.exists(),
+        "worktree should be removed after resume-error rollback"
+    );
+
+    // Writer lock should have been released — acquiring it again must succeed.
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "verify-released")
+        .expect("writer lock should be available after rollback");
+    store
+        .release_writer_lock(temp.path(), &project_id, "verify-released")
+        .expect("cleanup");
+
+    // No lease record should exist for this task.
+    let leases = store.list_leases(temp.path()).expect("list leases");
+    assert!(
+        !leases.iter().any(|l| l.task_id == "resume-err-test"),
+        "no lease record should exist after resume-error rollback"
+    );
 }

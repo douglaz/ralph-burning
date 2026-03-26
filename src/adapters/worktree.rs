@@ -186,6 +186,21 @@ impl WorktreeAdapter {
             .map_err(AppError::from)
     }
 
+    /// Returns the merge-base SHA between HEAD (in `dir`) and `base_ref`,
+    /// suitable for use as a range boundary (e.g. `<merge-base>..HEAD`) to
+    /// scope git log to branch-local commits only. Returns `None` if the
+    /// merge-base cannot be determined.
+    fn branch_fork_point(dir: &Path, base_ref: &str) -> Option<String> {
+        let mb = Self::git_in(dir, &["merge-base", "HEAD", base_ref]).ok()?;
+        if mb.status.success() {
+            let sha = String::from_utf8_lossy(&mb.stdout).trim().to_owned();
+            if !sha.is_empty() {
+                return Some(sha);
+            }
+        }
+        None
+    }
+
     fn conflicted_file_paths(worktree_path: &Path) -> AppResult<Vec<String>> {
         let conflicts = Self::git_in(worktree_path, &["diff", "--name-only", "--diff-filter=U"])?;
         if !conflicts.status.success() {
@@ -343,6 +358,17 @@ impl WorktreeAdapter {
             }
         }
 
+        // Detached HEAD: resolve to concrete SHA so the ref works correctly
+        // when passed to merge-base in a different worktree context (where
+        // "HEAD" would resolve to the worktree's own HEAD, not repo_root's).
+        let head_sha = Self::git(repo_root, &["rev-parse", "HEAD"])?;
+        if head_sha.status.success() {
+            let sha = String::from_utf8_lossy(&head_sha.stdout).trim().to_owned();
+            if !sha.is_empty() {
+                return Ok(sha);
+            }
+        }
+
         Ok("HEAD".to_owned())
     }
 
@@ -473,6 +499,10 @@ impl RepositoryResetPort for WorktreeAdapter {
     }
 }
 
+/// Stages that precede actual implementation work. Checkpoints from these
+/// stages are not worth preserving on failure or resuming from on retry.
+const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
+
 impl WorktreePort for WorktreeAdapter {
     fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
         base_dir.join("worktrees").join(task_id)
@@ -599,6 +629,215 @@ impl WorktreePort for WorktreeAdapter {
         Err(AppError::Io(std::io::Error::other(
             String::from_utf8_lossy(&output.stderr).trim().to_owned(),
         )))
+    }
+
+    fn force_push_branch(
+        &self,
+        _repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<()> {
+        let output = Self::git_in(
+            worktree_path,
+            &[
+                "push",
+                "--force-with-lease",
+                "--set-upstream",
+                "origin",
+                branch_name,
+            ],
+        )?;
+        if output.status.success() {
+            return Ok(());
+        }
+
+        Err(AppError::Io(std::io::Error::other(
+            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
+        )))
+    }
+
+    fn has_checkpoint_commits(&self, repo_root: &Path, worktree_path: &Path) -> bool {
+        // Scope to branch-local commits only, so inherited checkpoint commits
+        // from the default branch history are not counted. Use the actual
+        // default branch ref (via repo_root) to compute the fork point.
+        let Ok(base_ref) = self.default_branch_ref(repo_root) else {
+            return false;
+        };
+        let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
+            return false;
+        };
+        let range = format!("{fork_sha}..HEAD");
+        let Ok(output) = Self::git_in(
+            worktree_path,
+            &["log", &range, "--format=%s", "--grep", "^rb: checkpoint "],
+        ) else {
+            return false;
+        };
+        if !output.status.success() {
+            return false;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().any(|line| {
+            // Subject format: rb: checkpoint project=X stage=Y cycle=N round=M
+            line.split_whitespace()
+                .find(|part| part.starts_with("stage="))
+                .map(|part| &part["stage=".len()..])
+                .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage))
+        })
+    }
+
+    fn try_resume_from_remote(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<bool> {
+        // Fetch the remote branch into an explicit remote-tracking ref.
+        // Using a refspec ensures refs/remotes/origin/<branch> is created
+        // even in narrow / --single-branch clones where a bare
+        // `git fetch origin <branch>` only updates FETCH_HEAD.
+        let refspec = format!("+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}");
+        let fetch_output = Self::git(repo_root, &["fetch", "origin", &refspec]);
+        match fetch_output {
+            Ok(ref o) if o.status.success() => {}
+            Ok(ref o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr);
+                // "couldn't find remote ref" is git's message for a missing branch —
+                // this is the only expected failure (first attempt or cleaned up).
+                if stderr.contains("couldn't find remote ref") {
+                    return Ok(false);
+                }
+                // Any other fetch failure is unexpected and should be surfaced
+                // so operators can diagnose network/auth/config issues.
+                return Err(std::io::Error::other(format!(
+                    "git fetch origin '{}' failed: {}",
+                    refspec,
+                    stderr.trim()
+                ))
+                .into());
+            }
+            Err(e) => {
+                eprintln!("daemon: retry resume fetch of '{branch_name}' failed: {e}");
+                return Err(e);
+            }
+        }
+        // Capture current HEAD so we can restore it if resume fails. The
+        // worktree was just created by create_worktree on the default branch,
+        // and we must leave it there if no qualifying checkpoint is found.
+        let original_head = Self::git_in(worktree_path, &["rev-parse", "HEAD"])?;
+        let original_sha = String::from_utf8_lossy(&original_head.stdout)
+            .trim()
+            .to_owned();
+
+        // Helper: restore original HEAD on failure paths after the mutation.
+        let restore_original = |wt: &Path, sha: &str| {
+            if let Ok(out) = Self::git_in(wt, &["reset", "--hard", sha]) {
+                if !out.status.success() {
+                    eprintln!(
+                        "daemon: retry resume restore to original HEAD {sha} failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+            } else {
+                eprintln!("daemon: retry resume restore to original HEAD {sha} failed: git error");
+            }
+        };
+
+        // Reset the worktree to the fetched remote branch tip first, so the
+        // full commit history is available for checkpoint discovery.
+        // The fetch above explicitly created refs/remotes/origin/<branch>,
+        // so this reset should always succeed after a successful fetch.
+        let remote_ref = format!("origin/{branch_name}");
+        let reset_output = Self::git_in(worktree_path, &["reset", "--hard", &remote_ref])?;
+        if !reset_output.status.success() {
+            let stderr = String::from_utf8_lossy(&reset_output.stderr);
+            eprintln!(
+                "daemon: retry resume reset to '{}' failed: {}",
+                remote_ref,
+                stderr.trim()
+            );
+            restore_original(worktree_path, &original_sha);
+            return Err(std::io::Error::other(format!(
+                "git reset --hard '{}' failed: {}",
+                remote_ref,
+                stderr.trim()
+            ))
+            .into());
+        }
+
+        // Find the latest branch-local implementation-stage checkpoint and
+        // reset to it. Use the actual default branch ref (via repo_root) to
+        // compute the fork point, so inherited checkpoints from the default
+        // branch are not matched. Returns true only if we actually reset to a
+        // qualifying checkpoint; false otherwise (with worktree restored to
+        // original HEAD).
+        let base_ref = self.default_branch_ref(repo_root).unwrap_or_default();
+        let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
+            eprintln!(
+                "daemon: retry resume for '{branch_name}': could not resolve fork point, \
+                 starting fresh"
+            );
+            restore_original(worktree_path, &original_sha);
+            return Ok(false);
+        };
+        let range = format!("{fork_sha}..HEAD");
+        let log_output = Self::git_in(
+            worktree_path,
+            &[
+                "log",
+                &range,
+                "--format=%H %s",
+                "--grep",
+                "^rb: checkpoint ",
+            ],
+        )?;
+        if !log_output.status.success() {
+            restore_original(worktree_path, &original_sha);
+            return Err(std::io::Error::other(
+                "git log for checkpoint discovery failed after successful fetch",
+            )
+            .into());
+        }
+        let stdout = String::from_utf8_lossy(&log_output.stdout);
+        for line in stdout.lines() {
+            // Format: "<sha> rb: checkpoint project=X stage=Y cycle=N round=M"
+            let Some((sha, subject)) = line.split_once(' ') else {
+                continue;
+            };
+            let is_impl_stage = subject
+                .split_whitespace()
+                .find(|part| part.starts_with("stage="))
+                .map(|part| &part["stage=".len()..])
+                .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage));
+            if is_impl_stage {
+                match Self::git_in(worktree_path, &["reset", "--hard", sha]) {
+                    Ok(ref o) if o.status.success() => return Ok(true),
+                    Ok(ref o) => {
+                        let stderr = String::from_utf8_lossy(&o.stderr);
+                        eprintln!(
+                            "daemon: retry resume reset to checkpoint {} failed: {}",
+                            sha,
+                            stderr.trim()
+                        );
+                        restore_original(worktree_path, &original_sha);
+                        return Err(std::io::Error::other(format!(
+                            "git reset --hard '{}' failed: {}",
+                            sha,
+                            stderr.trim()
+                        ))
+                        .into());
+                    }
+                    Err(e) => {
+                        eprintln!("daemon: retry resume reset to checkpoint {sha} failed: {e}");
+                        restore_original(worktree_path, &original_sha);
+                        return Err(e);
+                    }
+                }
+            }
+        }
+        // No qualifying implementation-stage checkpoint found.
+        restore_original(worktree_path, &original_sha);
+        Ok(false)
     }
 
     fn rebase_with_agent_resolution(

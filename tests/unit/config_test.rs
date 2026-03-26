@@ -60,6 +60,7 @@ fn effective_config_merges_workspace_overrides() {
         refiner_backend: None,
         validator_backends: None,
         min_reviewers: None,
+        max_refinement_retries: None,
         extra: toml::map::Map::new(),
     };
     config.settings = WorkspaceSettings {
@@ -101,6 +102,7 @@ fn workspace_config_round_trips_extended_settings() {
         refiner_backend: None,
         validator_backends: None,
         min_reviewers: None,
+        max_refinement_retries: None,
         extra: toml::map::Map::new(),
     };
     config.settings = WorkspaceSettings {

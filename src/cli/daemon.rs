@@ -8,7 +8,9 @@ use crate::adapters::fs::{
 use crate::adapters::github::{GithubClient, GithubClientConfig};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::automation_runtime::daemon_loop::{DaemonLoop, DaemonLoopConfig};
-use crate::contexts::automation_runtime::lease_service::{LeaseService, ReleaseMode};
+use crate::contexts::automation_runtime::lease_service::{
+    try_preserve_failed_branch, LeaseService, ReleaseMode,
+};
 use crate::contexts::automation_runtime::model::TaskStatus;
 use crate::contexts::automation_runtime::repo_registry::{self, DataDirLayout, RepoRegistryPort};
 use crate::contexts::automation_runtime::task_service::DaemonTaskService;
@@ -429,6 +431,10 @@ async fn handle_retry_by_issue(
         let worktree = WorktreeAdapter;
         let checkout = DataDirLayout::checkout_path(data_dir_path, owner, repo);
         if let Ok(lease) = store.read_lease(&daemon_dir, lid) {
+            // Preserve checkpoint commits before worktree removal.
+            if task.status == TaskStatus::Failed {
+                try_preserve_failed_branch(&worktree, &checkout, &lease);
+            }
             let result = LeaseService::release(
                 &store,
                 &worktree,

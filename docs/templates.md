@@ -43,7 +43,7 @@ These IDs correspond to `StageId::as_str()`:
 
 | Template ID | Required Placeholders | Optional |
 |---|---|---|
-| `prompt_review_refiner` | `role_label`, `prompt_text`, `json_schema` | — |
+| `prompt_review_refiner` | `role_label`, `prompt_text`, `json_schema` | `prior_concerns` |
 | `prompt_review_validator` | `role_label`, `prompt_text`, `json_schema` | — |
 | `completion_panel_completer` | `prompt_text`, `json_schema` | — |
 | `final_review_reviewer` | `project_prompt`, `json_schema` | — |
