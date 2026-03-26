@@ -186,49 +186,16 @@ impl WorktreeAdapter {
             .map_err(AppError::from)
     }
 
-    /// Returns the merge-base SHA between HEAD and the default branch, suitable
-    /// for use as a range boundary (e.g. `<merge-base>..HEAD`) to scope git log
-    /// to branch-local commits only. Returns `None` if resolution fails.
-    fn branch_fork_point(dir: &Path) -> Option<String> {
-        let default_ref = Self::resolve_default_ref_in(dir)?;
-        let mb = Self::git_in(dir, &["merge-base", "HEAD", &default_ref]).ok()?;
+    /// Returns the merge-base SHA between HEAD (in `dir`) and `base_ref`,
+    /// suitable for use as a range boundary (e.g. `<merge-base>..HEAD`) to
+    /// scope git log to branch-local commits only. Returns `None` if the
+    /// merge-base cannot be determined.
+    fn branch_fork_point(dir: &Path, base_ref: &str) -> Option<String> {
+        let mb = Self::git_in(dir, &["merge-base", "HEAD", base_ref]).ok()?;
         if mb.status.success() {
             let sha = String::from_utf8_lossy(&mb.stdout).trim().to_owned();
             if !sha.is_empty() {
                 return Some(sha);
-            }
-        }
-        None
-    }
-
-    /// Resolves the default branch remote ref from within any git working
-    /// directory (including worktrees). Tries `origin/HEAD`, then well-known
-    /// names (`origin/main`, `origin/master`), matching the fallback pattern
-    /// used by `default_branch_ref`.
-    fn resolve_default_ref_in(dir: &Path) -> Option<String> {
-        // Try symbolic origin/HEAD first.
-        if let Ok(output) = Self::git_in(
-            dir,
-            &[
-                "symbolic-ref",
-                "--quiet",
-                "--short",
-                "refs/remotes/origin/HEAD",
-            ],
-        ) {
-            if output.status.success() {
-                let v = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                if !v.is_empty() {
-                    return Some(v);
-                }
-            }
-        }
-        // Try well-known default branch names.
-        for candidate in &["origin/main", "origin/master"] {
-            if let Ok(output) = Self::git_in(dir, &["rev-parse", "--verify", candidate]) {
-                if output.status.success() {
-                    return Some((*candidate).to_owned());
-                }
             }
         }
         None
@@ -659,11 +626,14 @@ impl WorktreePort for WorktreeAdapter {
         )))
     }
 
-    fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
+    fn has_checkpoint_commits(&self, repo_root: &Path, worktree_path: &Path) -> bool {
         // Scope to branch-local commits only, so inherited checkpoint commits
-        // from the default branch history are not counted. If the fork point
-        // cannot be resolved, conservatively return false (nothing to preserve).
-        let Some(fork_sha) = Self::branch_fork_point(worktree_path) else {
+        // from the default branch history are not counted. Use the actual
+        // default branch ref (via repo_root) to compute the fork point.
+        let Ok(base_ref) = self.default_branch_ref(repo_root) else {
+            return false;
+        };
+        let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
             return false;
         };
         let range = format!("{fork_sha}..HEAD");
@@ -729,11 +699,12 @@ impl WorktreePort for WorktreeAdapter {
             return Ok(false);
         }
         // Find the latest branch-local implementation-stage checkpoint and
-        // reset to it. Scope to commits after the fork point so inherited
-        // checkpoints from the default branch are not matched. If the fork
-        // point cannot be resolved, still return true (branch was fetched) but
-        // skip checkpoint discovery — the worktree stays at the remote tip.
-        let Some(fork_sha) = Self::branch_fork_point(worktree_path) else {
+        // reset to it. Use the actual default branch ref (via repo_root) to
+        // compute the fork point, so inherited checkpoints from the default
+        // branch are not matched. If the fork point cannot be resolved, still
+        // return true (branch was fetched) but skip checkpoint discovery.
+        let base_ref = self.default_branch_ref(repo_root).unwrap_or_default();
+        let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
             return Ok(true);
         };
         let range = format!("{fork_sha}..HEAD");

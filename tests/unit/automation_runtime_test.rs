@@ -6058,7 +6058,11 @@ impl WorktreePort for TrackingWorktreeAdapter {
         Ok(())
     }
 
-    fn has_checkpoint_commits(&self, _worktree_path: &std::path::Path) -> bool {
+    fn has_checkpoint_commits(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+    ) -> bool {
         self.checkpoint_result
     }
 

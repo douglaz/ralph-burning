@@ -26,7 +26,7 @@ pub fn try_preserve_failed_branch(
     repo_root: &Path,
     lease: &WorktreeLease,
 ) {
-    if !worktree.has_checkpoint_commits(&lease.worktree_path) {
+    if !worktree.has_checkpoint_commits(repo_root, &lease.worktree_path) {
         return;
     }
     if let Err(e) = worktree.force_push_branch(repo_root, &lease.worktree_path, &lease.branch_name)

@@ -176,7 +176,9 @@ pub trait WorktreePort {
     /// Returns true if the worktree branch contains checkpoint commits from
     /// the implementation stage or later (excludes prompt_review, planning,
     /// docs_plan, ci_plan). Used to gate branch preservation on task failure.
-    fn has_checkpoint_commits(&self, _worktree_path: &Path) -> bool {
+    /// `repo_root` is used to resolve the default branch for scoping the log
+    /// to branch-local commits only.
+    fn has_checkpoint_commits(&self, _repo_root: &Path, _worktree_path: &Path) -> bool {
         false
     }
     /// Best-effort fetch of a remote branch and reset to the latest checkpoint
