@@ -6366,3 +6366,58 @@ fn lease_acquire_with_is_retry_false_skips_try_resume_from_remote() {
         ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
     );
 }
+
+#[test]
+fn aborted_retry_does_not_resume_from_preserved_branch() {
+    // An aborted task has no failure_class, so claim_task must compute
+    // is_failed_retry=false even when attempt_count > 0. This ensures
+    // stale worktree branches from user-cancelled runs are never resumed.
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let routing = RoutingEngine::new();
+    let temp = tempdir().expect("tempdir");
+
+    // Start with an Aborted task (no failure_class, as mark_aborted doesn't set it).
+    let mut task = sample_task();
+    task.task_id = "aborted-retry-test".to_owned();
+    task.project_id = "aborted-retry".to_owned();
+    task.issue_ref = "org/repo#aborted".to_owned();
+    task.status = TaskStatus::Aborted;
+    // Explicitly no failure_class — this is the key difference from Failed.
+    store.create_task(temp.path(), &task).expect("create task");
+
+    // retry_task: Aborted → Pending, attempt_count becomes 1.
+    DaemonTaskService::retry_task(&store, temp.path(), "aborted-retry-test")
+        .expect("retry aborted task");
+
+    // claim_task should NOT trigger try_resume_from_remote because
+    // failure_class is None, making is_failed_retry = false.
+    let (_claimed_task, lease) = DaemonTaskService::claim_task(
+        &store,
+        &tracking,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "aborted-retry-test",
+        FlowPreset::Standard,
+        300,
+        None,
+        None,
+    )
+    .expect("claim should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        0,
+        "try_resume_from_remote should NOT be called for aborted-task retries"
+    );
+
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}

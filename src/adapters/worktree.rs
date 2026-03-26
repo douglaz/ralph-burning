@@ -673,28 +673,33 @@ impl WorktreePort for WorktreeAdapter {
         worktree_path: &Path,
         branch_name: &str,
     ) -> AppResult<bool> {
-        // Fetch the remote branch. If the branch doesn't exist on the remote
-        // this is expected (first attempt, or branch was cleaned up) — return
-        // false silently. For other failures, log a warning so operators can
-        // diagnose transient network/auth issues that silently prevent resume.
-        let fetch_output = Self::git(repo_root, &["fetch", "origin", branch_name]);
+        // Fetch the remote branch into an explicit remote-tracking ref.
+        // Using a refspec ensures refs/remotes/origin/<branch> is created
+        // even in narrow / --single-branch clones where a bare
+        // `git fetch origin <branch>` only updates FETCH_HEAD.
+        let refspec = format!("+refs/heads/{branch_name}:refs/remotes/origin/{branch_name}");
+        let fetch_output = Self::git(repo_root, &["fetch", "origin", &refspec]);
         match fetch_output {
             Ok(ref o) if o.status.success() => {}
             Ok(ref o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr);
-                // "couldn't find remote ref" is git's message for a missing branch.
-                if !stderr.contains("couldn't find remote ref") {
-                    eprintln!(
-                        "daemon: retry resume fetch of '{}' failed (non-missing): {}",
-                        branch_name,
-                        stderr.trim()
-                    );
+                // "couldn't find remote ref" is git's message for a missing branch —
+                // this is the only expected failure (first attempt or cleaned up).
+                if stderr.contains("couldn't find remote ref") {
+                    return Ok(false);
                 }
-                return Ok(false);
+                // Any other fetch failure is unexpected and should be surfaced
+                // so operators can diagnose network/auth/config issues.
+                return Err(std::io::Error::other(format!(
+                    "git fetch origin '{}' failed: {}",
+                    refspec,
+                    stderr.trim()
+                ))
+                .into());
             }
             Err(e) => {
                 eprintln!("daemon: retry resume fetch of '{branch_name}' failed: {e}");
-                return Ok(false);
+                return Err(e);
             }
         }
         // Capture current HEAD so we can restore it if resume fails. The
@@ -721,16 +726,24 @@ impl WorktreePort for WorktreeAdapter {
 
         // Reset the worktree to the fetched remote branch tip first, so the
         // full commit history is available for checkpoint discovery.
+        // The fetch above explicitly created refs/remotes/origin/<branch>,
+        // so this reset should always succeed after a successful fetch.
         let remote_ref = format!("origin/{branch_name}");
         let reset_output = Self::git_in(worktree_path, &["reset", "--hard", &remote_ref])?;
         if !reset_output.status.success() {
+            let stderr = String::from_utf8_lossy(&reset_output.stderr);
             eprintln!(
                 "daemon: retry resume reset to '{}' failed: {}",
                 remote_ref,
-                String::from_utf8_lossy(&reset_output.stderr).trim()
+                stderr.trim()
             );
             restore_original(worktree_path, &original_sha);
-            return Ok(false);
+            return Err(std::io::Error::other(format!(
+                "git reset --hard '{}' failed: {}",
+                remote_ref,
+                stderr.trim()
+            ))
+            .into());
         }
 
         // Find the latest branch-local implementation-stage checkpoint and

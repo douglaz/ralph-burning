@@ -109,10 +109,10 @@ where
         };
 
         // ── Step 1: Run the refiner ────────────────────────────────────────
-        let extra_values: Vec<(&str, &str)> = match &prior_concerns {
-            Some(concerns) => vec![("prior_concerns", concerns.as_str())],
-            None => vec![],
-        };
+        // Always supply prior_concerns (empty string on round 0) so templates
+        // that require the placeholder can render without error.
+        let concerns_str = prior_concerns.as_deref().unwrap_or("");
+        let extra_values: Vec<(&str, &str)> = vec![("prior_concerns", concerns_str)];
         let (refinement_payload, refiner_producer) = invoke_panel_member(
             agent_service,
             base_dir,

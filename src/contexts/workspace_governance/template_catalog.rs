@@ -396,8 +396,8 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
     let panel_result = match template_id {
         "prompt_review_refiner" => Some(TemplateManifest {
             template_id: "prompt_review_refiner",
-            required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &["prior_concerns"],
+            required_placeholders: &["role_label", "prompt_text", "json_schema", "prior_concerns"],
+            optional_placeholders: &[],
             built_in_default: PROMPT_REVIEW_REFINER_DEFAULT,
         }),
         "prompt_review_validator" => Some(TemplateManifest {
