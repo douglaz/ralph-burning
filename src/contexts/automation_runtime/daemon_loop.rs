@@ -889,6 +889,7 @@ where
                             );
                             return Err(e);
                         }
+                        self.try_push_failed_task_branch(repo_root, &lease);
                         let _ = self.release_task_lease(
                             store_dir,
                             repo_root,
@@ -948,6 +949,7 @@ where
                     );
                     return Err(e);
                 }
+                self.try_push_failed_task_branch(repo_root, &lease);
                 let _ = self.release_task_lease(store_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
@@ -1365,6 +1367,7 @@ where
                     &failure_class,
                     &error.to_string(),
                 )?;
+                self.try_push_failed_task_branch(repo_root, &lease);
                 let _ = self.release_task_lease(base_dir, repo_root, &active_task.task_id, &lease);
                 println!("failed task {}: {}", active_task.task_id, error);
             }
@@ -2404,6 +2407,27 @@ where
             (Err(error), Ok(())) => Err(error),
             (Ok(()), Err(error)) => Err(error),
             (Err(error), Err(_)) => Err(error),
+        }
+    }
+
+    /// Best-effort push of the worktree branch to preserve checkpoint commits
+    /// from a failed task run. Only pushes when checkpoint commits are present.
+    fn try_push_failed_task_branch(
+        &self,
+        repo_root: &Path,
+        lease: &crate::contexts::automation_runtime::model::WorktreeLease,
+    ) {
+        if !self.worktree.has_checkpoint_commits(&lease.worktree_path) {
+            return;
+        }
+        if let Err(e) =
+            self.worktree
+                .push_branch(repo_root, &lease.worktree_path, &lease.branch_name)
+        {
+            eprintln!(
+                "daemon: best-effort push of branch '{}' failed: {e}",
+                lease.branch_name
+            );
         }
     }
 

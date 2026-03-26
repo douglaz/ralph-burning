@@ -601,6 +601,43 @@ impl WorktreePort for WorktreeAdapter {
         )))
     }
 
+    fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
+        let Ok(output) = Self::git_in(
+            worktree_path,
+            &[
+                "log",
+                "--oneline",
+                "--grep",
+                "^rb: checkpoint ",
+                "--max-count=1",
+            ],
+        ) else {
+            return false;
+        };
+        output.status.success() && !output.stdout.is_empty()
+    }
+
+    fn try_resume_from_remote(
+        &self,
+        repo_root: &Path,
+        worktree_path: &Path,
+        branch_name: &str,
+    ) -> AppResult<bool> {
+        // Fetch the remote branch — if it doesn't exist, return false.
+        let fetch_output = Self::git(repo_root, &["fetch", "origin", branch_name]);
+        match fetch_output {
+            Ok(ref o) if o.status.success() => {}
+            _ => return Ok(false),
+        }
+        // Reset the worktree to the fetched remote branch tip.
+        let remote_ref = format!("origin/{branch_name}");
+        let reset_output = Self::git_in(worktree_path, &["reset", "--hard", &remote_ref])?;
+        if reset_output.status.success() {
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn rebase_with_agent_resolution(
         &self,
         repo_root: &Path,

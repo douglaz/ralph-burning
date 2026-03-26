@@ -182,6 +182,10 @@ impl LeaseService {
             });
         }
 
+        // Best-effort: if a previous failed run pushed this branch to the
+        // remote, resume from that state instead of starting from scratch.
+        let _ = worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name);
+
         let now = Utc::now();
         let lease = WorktreeLease {
             lease_id,

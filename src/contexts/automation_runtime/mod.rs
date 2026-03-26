@@ -170,6 +170,21 @@ pub trait WorktreePort {
     ) -> AppResult<()> {
         Ok(())
     }
+    /// Returns true if the worktree branch contains any checkpoint commits
+    /// (commits whose subject starts with "rb: checkpoint ").
+    fn has_checkpoint_commits(&self, _worktree_path: &Path) -> bool {
+        false
+    }
+    /// Best-effort fetch of a remote branch and reset to it. Returns true if
+    /// the remote branch existed and the worktree was reset to it.
+    fn try_resume_from_remote(
+        &self,
+        _repo_root: &Path,
+        _worktree_path: &Path,
+        _branch_name: &str,
+    ) -> AppResult<bool> {
+        Ok(false)
+    }
     fn rebase_with_agent_resolution(
         &self,
         repo_root: &Path,
