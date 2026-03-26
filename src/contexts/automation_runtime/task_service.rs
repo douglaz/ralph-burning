@@ -148,6 +148,10 @@ impl DaemonTaskService {
         // Aborted retries (no failure_class) start fresh to avoid
         // resurrecting stale work from a user-cancelled run.
         let is_failed_retry = task.attempt_count > 0 && task.failure_class.is_some();
+        // Save failure provenance before clearing so we can restore it if
+        // the claim rolls back to Pending (e.g. LeaseAcquired journal failure).
+        let saved_failure_class = task.failure_class.clone();
+        let saved_failure_message = task.failure_message.clone();
         task.clear_failure();
         let project_id = ProjectId::new(task.project_id.clone())?;
         let lease = match LeaseService::acquire(
@@ -223,10 +227,14 @@ impl DaemonTaskService {
 
             if resources_released {
                 // Physical resources released — safe to restore Pending.
+                // Restore failure provenance so the next claim attempt still
+                // detects a failed-task retry and resumes from the preserved branch.
                 let release_journal_err = release_result.ok().and_then(|r| r.journal_error);
                 let rollback_result = (|| -> AppResult<()> {
                     task.status = TaskStatus::Pending;
                     task.clear_lease();
+                    task.failure_class = saved_failure_class.clone();
+                    task.failure_message = saved_failure_message.clone();
                     task.updated_at = Utc::now();
                     store.write_task(base_dir, &task)?;
                     let _ = Self::append_journal_event(

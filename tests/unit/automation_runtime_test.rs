@@ -1530,6 +1530,68 @@ fn claim_journal_failure_rolls_back_to_pending_not_stranded_claimed() {
 }
 
 #[test]
+fn claim_rollback_preserves_failure_provenance_for_retry_resume() {
+    // When a failed-task retry hits the LeaseAcquired journal rollback path,
+    // the task must be rolled back to Pending with its failure_class and
+    // failure_message intact so the next claim attempt still detects
+    // is_failed_retry=true and resumes from the preserved branch.
+    let temp = tempdir().expect("tempdir");
+    let worktree_adapter = SuccessWorktreeAdapter;
+    let routing = RoutingEngine::new();
+
+    // fail_after=0: the very first journal append (LeaseAcquired) will fail.
+    let store = FailingJournalStore::new(0);
+
+    // Create a task that looks like a failed-task retry:
+    // attempt_count > 0, failure_class set.
+    let mut task = sample_task();
+    task.task_id = "retry-rollback-prov".to_owned();
+    task.project_id = "retry-rollback-prov".to_owned();
+    task.attempt_count = 1;
+    task.set_failure("daemon_dispatch_failed", "transient error");
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let result = DaemonTaskService::claim_task(
+        &store,
+        &worktree_adapter,
+        &routing,
+        temp.path(),
+        temp.path(),
+        "retry-rollback-prov",
+        FlowPreset::Standard,
+        300,
+        None,
+        None,
+    );
+
+    assert!(result.is_err(), "claim_task should fail on journal error");
+
+    let task_after = store
+        .read_task(temp.path(), "retry-rollback-prov")
+        .expect("read task");
+    assert_eq!(
+        TaskStatus::Pending,
+        task_after.status,
+        "task should be rolled back to Pending"
+    );
+    // Failure provenance must survive the rollback
+    assert_eq!(
+        task_after.failure_class.as_deref(),
+        Some("daemon_dispatch_failed"),
+        "failure_class must be restored after rollback so next claim detects is_failed_retry"
+    );
+    assert_eq!(
+        task_after.failure_message.as_deref(),
+        Some("transient error"),
+        "failure_message must be restored after rollback"
+    );
+    assert!(
+        task_after.lease_id.is_none(),
+        "lease_id must be cleared after rollback"
+    );
+}
+
+#[test]
 fn claim_task_claimed_journal_failure_marks_failed_with_cleared_lease() {
     // When TaskClaimed journal fails (after LeaseAcquired succeeds),
     // the task must end up Failed with cleared lease_id.
