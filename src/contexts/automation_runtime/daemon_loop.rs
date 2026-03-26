@@ -2478,7 +2478,9 @@ where
                 project_id,
                 flow,
                 effective_config,
-                &RetryPolicy::default_policy(),
+                &RetryPolicy::default_policy().with_max_remediation_cycles(
+                    effective_config.run_policy().max_review_iterations,
+                ),
                 cancellation_token,
             )
             .await
@@ -2498,7 +2500,9 @@ where
                 project_id,
                 flow,
                 effective_config,
-                &RetryPolicy::default_policy(),
+                &RetryPolicy::default_policy().with_max_remediation_cycles(
+                    effective_config.run_policy().max_review_iterations,
+                ),
                 cancellation_token,
             )
             .await
