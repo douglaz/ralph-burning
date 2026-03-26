@@ -19909,6 +19909,9 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         })
     });
     }
+    if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        reg_skip!(m, "SC-TMUX-008", "tmux is not available");
+    } else {
     reg!(m, "SC-TMUX-008", || {
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionService;
@@ -19952,6 +19955,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             Ok(())
         })
     });
+    }
     reg!(m, "SC-TMUX-009", || {
         let ws = TempWorkspace::new()?;
         setup_workspace_with_project(&ws, "watchable-stream", "standard")?;
