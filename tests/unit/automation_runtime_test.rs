@@ -392,8 +392,14 @@ fn retry_resets_failed_task_to_pending_and_increments_attempt_count() {
 
     assert_eq!(TaskStatus::Pending, retried.status);
     assert_eq!(1, retried.attempt_count);
-    assert!(retried.failure_class.is_none());
-    assert!(retried.failure_message.is_none());
+    // Failure provenance is preserved after retry so claim_task can
+    // distinguish failed-task retries (resume from preserved branch)
+    // from aborted-task retries (start fresh). claim_task clears it.
+    assert_eq!(
+        retried.failure_class.as_deref(),
+        Some("daemon_dispatch_failed")
+    );
+    assert_eq!(retried.failure_message.as_deref(), Some("boom"));
 }
 
 // ── Watched-issue ingestion tests ───────────────────────────────────────────

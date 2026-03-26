@@ -128,6 +128,7 @@ where
             cancellation_token.clone(),
             Some(project_id),
             &extra_values,
+            &retry_suffix,
         )
         .await?;
 
@@ -185,6 +186,7 @@ where
                 cancellation_token.clone(),
                 Some(project_id),
                 &[],
+                &retry_suffix,
             )
             .await?;
 
@@ -307,6 +309,7 @@ async fn invoke_panel_member<A, R, S>(
     cancellation_token: CancellationToken,
     project_id: Option<&ProjectId>,
     extra_values: &[(&str, &str)],
+    retry_suffix: &str,
 ) -> AppResult<(Value, RecordProducer)>
 where
     A: AgentExecutionPort,
@@ -314,7 +317,7 @@ where
     S: SessionStorePort,
 {
     let invocation_id = format!(
-        "{}-{}-{role_label}-c{}-a{}-cr{}",
+        "{}-{}-{role_label}-c{}-a{}-cr{}{retry_suffix}",
         run_id.as_str(),
         stage_id.as_str(),
         cursor.cycle,

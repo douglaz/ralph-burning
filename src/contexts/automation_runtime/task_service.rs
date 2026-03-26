@@ -144,6 +144,11 @@ impl DaemonTaskService {
         }
 
         hydrate_routing(&mut task, routing_engine, default_flow)?;
+        // Resume from a preserved branch only for failed-task retries.
+        // Aborted retries (no failure_class) start fresh to avoid
+        // resurrecting stale work from a user-cancelled run.
+        let is_failed_retry = task.attempt_count > 0 && task.failure_class.is_some();
+        task.clear_failure();
         let project_id = ProjectId::new(task.project_id.clone())?;
         let lease = match LeaseService::acquire(
             store,
@@ -155,7 +160,7 @@ impl DaemonTaskService {
             lease_ttl_seconds,
             worktree_path_override,
             branch_name_override,
-            task.attempt_count > 0,
+            is_failed_retry,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {
@@ -450,7 +455,10 @@ impl DaemonTaskService {
 
         task.transition_to(TaskStatus::Pending, Utc::now())?;
         task.attempt_count += 1;
-        task.clear_failure();
+        // Do NOT clear failure info here — it serves as provenance so
+        // claim_task can distinguish a failed-task retry (which should
+        // resume from a preserved branch) from an aborted-task retry
+        // (which should start fresh). claim_task clears it after reading.
         store.write_task(base_dir, &task)?;
         Ok(task)
     }

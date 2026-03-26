@@ -707,7 +707,16 @@ impl WorktreePort for WorktreeAdapter {
 
         // Helper: restore original HEAD on failure paths after the mutation.
         let restore_original = |wt: &Path, sha: &str| {
-            let _ = Self::git_in(wt, &["reset", "--hard", sha]);
+            if let Ok(out) = Self::git_in(wt, &["reset", "--hard", sha]) {
+                if !out.status.success() {
+                    eprintln!(
+                        "daemon: retry resume restore to original HEAD {sha} failed: {}",
+                        String::from_utf8_lossy(&out.stderr).trim()
+                    );
+                }
+            } else {
+                eprintln!("daemon: retry resume restore to original HEAD {sha} failed: git error");
+            }
         };
 
         // Reset the worktree to the fetched remote branch tip first, so the
