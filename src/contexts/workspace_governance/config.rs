@@ -23,6 +23,7 @@ pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::Standard;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
 pub const DEFAULT_MIN_REVIEWERS: usize = 2;
+pub const DEFAULT_MAX_REFINEMENT_RETRIES: u32 = 2;
 pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 20;
@@ -219,6 +220,12 @@ impl EffectiveConfig {
                 project_config.prompt_review.min_reviewers,
                 None,
                 DEFAULT_MIN_REVIEWERS,
+            ),
+            max_refinement_retries: resolve_scalar(
+                workspace_config.prompt_review.max_refinement_retries,
+                project_config.prompt_review.max_refinement_retries,
+                None,
+                DEFAULT_MAX_REFINEMENT_RETRIES,
             ),
         };
 

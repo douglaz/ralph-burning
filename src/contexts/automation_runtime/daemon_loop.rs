@@ -2405,6 +2405,7 @@ where
             failure_message,
         )
         .map(|_| ());
+        self.try_push_failed_task_branch(repo_root, lease);
         let cleanup_result = self.release_task_lease(base_dir, repo_root, task_id, lease);
 
         match (mark_result, cleanup_result) {
