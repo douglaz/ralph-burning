@@ -186,6 +186,45 @@ impl WorktreeAdapter {
             .map_err(AppError::from)
     }
 
+    /// Returns the merge-base SHA between HEAD and the default branch, suitable
+    /// for use as a range boundary (e.g. `<merge-base>..HEAD`) to scope git log
+    /// to branch-local commits only. Returns `None` if resolution fails.
+    fn branch_fork_point(dir: &Path) -> Option<String> {
+        // Resolve the default branch ref (same logic as default_branch_ref but
+        // via git_in so it works from worktrees).
+        let origin_head = Self::git_in(
+            dir,
+            &[
+                "symbolic-ref",
+                "--quiet",
+                "--short",
+                "refs/remotes/origin/HEAD",
+            ],
+        )
+        .ok()?;
+        let default_ref = if origin_head.status.success() {
+            let v = String::from_utf8_lossy(&origin_head.stdout)
+                .trim()
+                .to_owned();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        } else {
+            None
+        };
+        let default_ref = default_ref.unwrap_or_else(|| "HEAD".to_owned());
+        let mb = Self::git_in(dir, &["merge-base", "HEAD", &default_ref]).ok()?;
+        if mb.status.success() {
+            let sha = String::from_utf8_lossy(&mb.stdout).trim().to_owned();
+            if !sha.is_empty() {
+                return Some(sha);
+            }
+        }
+        None
+    }
+
     fn conflicted_file_paths(worktree_path: &Path) -> AppResult<Vec<String>> {
         let conflicts = Self::git_in(worktree_path, &["diff", "--name-only", "--diff-filter=U"])?;
         if !conflicts.status.success() {
@@ -612,9 +651,14 @@ impl WorktreePort for WorktreeAdapter {
     }
 
     fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
+        // Scope to branch-local commits only, so inherited checkpoint commits
+        // from the default branch history are not counted.
+        let range = Self::branch_fork_point(worktree_path)
+            .map(|mb| format!("{mb}..HEAD"))
+            .unwrap_or_else(|| "HEAD".to_owned());
         let Ok(output) = Self::git_in(
             worktree_path,
-            &["log", "--format=%s", "--grep", "^rb: checkpoint "],
+            &["log", &range, "--format=%s", "--grep", "^rb: checkpoint "],
         ) else {
             return false;
         };
@@ -650,13 +694,22 @@ impl WorktreePort for WorktreeAdapter {
         if !reset_output.status.success() {
             return Ok(false);
         }
-        // Find the latest implementation-stage-or-later checkpoint commit and
-        // reset to it. If no qualifying checkpoint exists, the worktree stays
-        // at the remote tip (which is the default-branch base, effectively a
-        // fresh start).
+        // Find the latest branch-local implementation-stage checkpoint and
+        // reset to it. Scope to commits after the fork point so inherited
+        // checkpoints from the default branch are not matched. If no qualifying
+        // checkpoint exists, the worktree stays at the remote tip.
+        let range = Self::branch_fork_point(worktree_path)
+            .map(|mb| format!("{mb}..HEAD"))
+            .unwrap_or_else(|| "HEAD".to_owned());
         let log_output = Self::git_in(
             worktree_path,
-            &["log", "--format=%H %s", "--grep", "^rb: checkpoint "],
+            &[
+                "log",
+                &range,
+                "--format=%H %s",
+                "--grep",
+                "^rb: checkpoint ",
+            ],
         )?;
         if log_output.status.success() {
             let stdout = String::from_utf8_lossy(&log_output.stdout);
