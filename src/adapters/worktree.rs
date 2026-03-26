@@ -686,6 +686,14 @@ impl WorktreePort for WorktreeAdapter {
                 return Ok(false);
             }
         }
+        // Capture current HEAD so we can restore it if resume fails. The
+        // worktree was just created by create_worktree on the default branch,
+        // and we must leave it there if no qualifying checkpoint is found.
+        let original_head = Self::git_in(worktree_path, &["rev-parse", "HEAD"])?;
+        let original_sha = String::from_utf8_lossy(&original_head.stdout)
+            .trim()
+            .to_owned();
+
         // Reset the worktree to the fetched remote branch tip first, so the
         // full commit history is available for checkpoint discovery.
         let remote_ref = format!("origin/{branch_name}");
@@ -698,18 +706,25 @@ impl WorktreePort for WorktreeAdapter {
             );
             return Ok(false);
         }
+
+        // Helper: restore original HEAD on failure paths after the mutation.
+        let restore_original = |wt: &Path, sha: &str| {
+            let _ = Self::git_in(wt, &["reset", "--hard", sha]);
+        };
+
         // Find the latest branch-local implementation-stage checkpoint and
         // reset to it. Use the actual default branch ref (via repo_root) to
         // compute the fork point, so inherited checkpoints from the default
         // branch are not matched. Returns true only if we actually reset to a
-        // qualifying checkpoint; false otherwise so the caller knows the
-        // worktree does not contain resumed state.
+        // qualifying checkpoint; false otherwise (with worktree restored to
+        // original HEAD).
         let base_ref = self.default_branch_ref(repo_root).unwrap_or_default();
         let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
             eprintln!(
                 "daemon: retry resume for '{branch_name}': could not resolve fork point, \
                  starting fresh"
             );
+            restore_original(worktree_path, &original_sha);
             return Ok(false);
         };
         let range = format!("{fork_sha}..HEAD");
@@ -724,6 +739,7 @@ impl WorktreePort for WorktreeAdapter {
             ],
         )?;
         if !log_output.status.success() {
+            restore_original(worktree_path, &original_sha);
             return Ok(false);
         }
         let stdout = String::from_utf8_lossy(&log_output.stdout);
@@ -746,16 +762,19 @@ impl WorktreePort for WorktreeAdapter {
                             sha,
                             String::from_utf8_lossy(&o.stderr).trim()
                         );
+                        restore_original(worktree_path, &original_sha);
                         return Ok(false);
                     }
                     Err(e) => {
                         eprintln!("daemon: retry resume reset to checkpoint {sha} failed: {e}");
+                        restore_original(worktree_path, &original_sha);
                         return Ok(false);
                     }
                 }
             }
         }
         // No qualifying implementation-stage checkpoint found.
+        restore_original(worktree_path, &original_sha);
         Ok(false)
     }
 
