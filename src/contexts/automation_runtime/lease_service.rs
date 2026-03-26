@@ -211,7 +211,19 @@ impl LeaseService {
         // and reset to the latest implementation-stage checkpoint. New tasks
         // (attempt_count == 0) always start fresh from the default branch.
         if is_retry {
-            let _ = worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name);
+            match worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name) {
+                Ok(true) => {
+                    eprintln!("daemon: resumed retry from preserved branch '{branch_name}'");
+                }
+                Ok(false) => {
+                    eprintln!("daemon: no preserved branch '{branch_name}' found, starting fresh");
+                }
+                Err(e) => {
+                    eprintln!(
+                        "daemon: resume from preserved branch '{branch_name}' failed: {e}, starting fresh"
+                    );
+                }
+            }
         }
 
         let now = Utc::now();
