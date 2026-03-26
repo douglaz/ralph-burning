@@ -162,17 +162,9 @@ pub trait WorktreePort {
     fn default_branch_name(&self, _repo_root: &Path) -> AppResult<String> {
         Ok("main".to_owned())
     }
-    fn push_branch(
-        &self,
-        _repo_root: &Path,
-        _worktree_path: &Path,
-        _branch_name: &str,
-    ) -> AppResult<()> {
-        Ok(())
-    }
     /// Force-push a branch to the remote, using `--force-with-lease` to avoid
     /// clobbering concurrent changes. Used for preserving checkpoint commits
-    /// from failed runs where a prior push may have diverged after rebase.
+    /// from failed runs and for PR-branch publication after rebase.
     fn force_push_branch(
         &self,
         _repo_root: &Path,

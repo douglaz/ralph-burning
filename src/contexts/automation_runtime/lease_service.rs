@@ -143,6 +143,7 @@ impl LeaseService {
         ttl_seconds: u64,
         worktree_path_override: Option<std::path::PathBuf>,
         branch_name_override: Option<String>,
+        is_retry: bool,
     ) -> AppResult<WorktreeLease> {
         if store
             .list_leases(base_dir)?
@@ -206,9 +207,12 @@ impl LeaseService {
             });
         }
 
-        // Best-effort: if a previous failed run pushed this branch to the
-        // remote, resume from that state instead of starting from scratch.
-        let _ = worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name);
+        // Best-effort: on retries only, fetch a previously-preserved branch
+        // and reset to the latest implementation-stage checkpoint. New tasks
+        // (attempt_count == 0) always start fresh from the default branch.
+        if is_retry {
+            let _ = worktree.try_resume_from_remote(repo_root, &worktree_path, &branch_name);
+        }
 
         let now = Utc::now();
         let lease = WorktreeLease {

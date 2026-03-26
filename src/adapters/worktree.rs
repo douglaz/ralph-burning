@@ -582,25 +582,6 @@ impl WorktreePort for WorktreeAdapter {
         self.default_branch_ref(repo_root)
     }
 
-    fn push_branch(
-        &self,
-        _repo_root: &Path,
-        worktree_path: &Path,
-        branch_name: &str,
-    ) -> AppResult<()> {
-        let output = Self::git_in(
-            worktree_path,
-            &["push", "--set-upstream", "origin", branch_name],
-        )?;
-        if output.status.success() {
-            return Ok(());
-        }
-
-        Err(AppError::Io(std::io::Error::other(
-            String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-        )))
-    }
-
     fn force_push_branch(
         &self,
         _repo_root: &Path,
@@ -670,25 +651,33 @@ impl WorktreePort for WorktreeAdapter {
         if !reset_output.status.success() {
             return Ok(false);
         }
-        // Find the latest checkpoint commit and reset to it so we resume
-        // from a known-good durable state rather than whatever HEAD was at
-        // push time (HEAD may have advanced past the last checkpoint).
+        // Find the latest implementation-stage-or-later checkpoint commit and
+        // reset to it. Pre-implementation checkpoints (prompt_review, planning,
+        // docs_plan, ci_plan) are not worth resuming from. If no qualifying
+        // checkpoint exists, the worktree stays at the remote tip (which is
+        // the default-branch base, effectively a fresh start).
+        const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
+
         let log_output = Self::git_in(
             worktree_path,
-            &[
-                "log",
-                "--format=%H",
-                "--grep",
-                "^rb: checkpoint ",
-                "--max-count=1",
-            ],
+            &["log", "--format=%H %s", "--grep", "^rb: checkpoint "],
         )?;
         if log_output.status.success() {
-            let sha = String::from_utf8_lossy(&log_output.stdout)
-                .trim()
-                .to_owned();
-            if !sha.is_empty() {
-                let _ = Self::git_in(worktree_path, &["reset", "--hard", &sha]);
+            let stdout = String::from_utf8_lossy(&log_output.stdout);
+            for line in stdout.lines() {
+                // Format: "<sha> rb: checkpoint project=X stage=Y cycle=N round=M"
+                let Some((sha, subject)) = line.split_once(' ') else {
+                    continue;
+                };
+                let is_impl_stage = subject
+                    .split_whitespace()
+                    .find(|part| part.starts_with("stage="))
+                    .map(|part| &part["stage=".len()..])
+                    .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage));
+                if is_impl_stage {
+                    let _ = Self::git_in(worktree_path, &["reset", "--hard", sha]);
+                    break;
+                }
             }
         }
         Ok(true)

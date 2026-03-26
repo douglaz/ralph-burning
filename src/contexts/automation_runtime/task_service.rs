@@ -155,6 +155,7 @@ impl DaemonTaskService {
             lease_ttl_seconds,
             worktree_path_override,
             branch_name_override,
+            task.attempt_count > 0,
         ) {
             Ok(lease) => lease,
             Err(AppError::ProjectWriterLockHeld { .. }) => {

@@ -5534,6 +5534,7 @@ fn worktree_acquire_rollback_failure_reports_both_causes_and_lock_warning() {
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
@@ -5780,6 +5781,7 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_cleans_dir_and_reports
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
@@ -5838,6 +5840,7 @@ fn worktree_acquire_create_worktree_partial_fail_rollback_clean_lock_release_suc
         300,
         None,
         None,
+        false,
     )
     .expect_err("acquire should fail");
 
