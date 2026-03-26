@@ -19808,13 +19808,12 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
         Ok(())
     });
 
+    if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        reg_skip!(m, "SC-TMUX-006", "tmux is not available");
+    } else {
     reg!(m, "SC-TMUX-006", || {
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
-
-        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-            return Err("SKIP: tmux is not available".into());
-        }
 
         let bin_dir = TempWorkspace::new()?;
         let state_dir = TempWorkspace::new()?;
@@ -19853,13 +19852,13 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             Ok(())
         })
     });
+    }
+    if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
+        reg_skip!(m, "SC-TMUX-007", "tmux is not available");
+    } else {
     reg!(m, "SC-TMUX-007", || {
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionPort;
-
-        if crate::adapters::tmux::TmuxAdapter::check_tmux_available().is_err() {
-            return Err("SKIP: tmux is not available".into());
-        }
 
         let bin_dir = TempWorkspace::new()?;
         let state_dir = TempWorkspace::new()?;
@@ -19909,6 +19908,7 @@ fn register_tmux_streaming_slice6(m: &mut HashMap<String, ScenarioExecutor>) {
             Ok(())
         })
     });
+    }
     reg!(m, "SC-TMUX-008", || {
         use crate::adapters::process_backend::ProcessBackendAdapter;
         use crate::contexts::agent_execution::service::AgentExecutionService;
