@@ -6057,6 +6057,7 @@ struct TrackingWorktreeAdapter {
     checkpoint_result: bool,
     force_push_calls: std::sync::Mutex<Vec<String>>,
     resume_calls: std::sync::Mutex<Vec<String>>,
+    resume_error: bool,
 }
 
 impl TrackingWorktreeAdapter {
@@ -6065,7 +6066,13 @@ impl TrackingWorktreeAdapter {
             checkpoint_result,
             force_push_calls: std::sync::Mutex::new(Vec::new()),
             resume_calls: std::sync::Mutex::new(Vec::new()),
+            resume_error: false,
         }
+    }
+
+    fn with_resume_error(mut self) -> Self {
+        self.resume_error = true;
+        self
     }
 
     fn force_push_call_count(&self) -> usize {
@@ -6157,6 +6164,11 @@ impl WorktreePort for TrackingWorktreeAdapter {
             .lock()
             .unwrap()
             .push(branch_name.to_owned());
+        if self.resume_error {
+            return Err(ralph_burning::shared::error::AppError::Io(
+                std::io::Error::other("simulated resume failure"),
+            ));
+        }
         Ok(true)
     }
 }
@@ -6419,5 +6431,65 @@ fn aborted_retry_does_not_resume_from_preserved_branch() {
         temp.path(),
         &lease,
         ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}
+
+#[test]
+fn lease_acquire_resume_error_rolls_back_worktree_and_writer_lock() {
+    // When try_resume_from_remote returns Err, LeaseService::acquire must
+    // clean up the just-created worktree and release the writer lock so
+    // resources are not orphaned without a durable lease record.
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false).with_resume_error();
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "resume-err-test".to_owned();
+    task.project_id = "resume-err".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("resume-err".to_owned()).expect("valid id");
+
+    // Acquire with is_retry=true triggers try_resume_from_remote, which will
+    // return Err via the resume_error flag.
+    let result = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "resume-err-test",
+        &project_id,
+        300,
+        None,
+        None,
+        true,
+    );
+
+    assert!(
+        result.is_err(),
+        "acquire should fail when resume returns Err"
+    );
+
+    // Worktree directory should have been removed during rollback.
+    let worktree_path = tracking.worktree_path(temp.path(), "resume-err-test");
+    assert!(
+        !worktree_path.exists(),
+        "worktree should be removed after resume-error rollback"
+    );
+
+    // Writer lock should have been released — acquiring it again must succeed.
+    store
+        .acquire_writer_lock(temp.path(), &project_id, "verify-released")
+        .expect("writer lock should be available after rollback");
+    store
+        .release_writer_lock(temp.path(), &project_id, "verify-released")
+        .expect("cleanup");
+
+    // No lease record should exist for this task.
+    let leases = store.list_leases(temp.path()).expect("list leases");
+    assert!(
+        !leases.iter().any(|l| l.task_id == "resume-err-test"),
+        "no lease record should exist after resume-error rollback"
     );
 }

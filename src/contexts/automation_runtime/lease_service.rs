@@ -220,8 +220,45 @@ impl LeaseService {
                 Ok(false) => {
                     eprintln!("daemon: no preserved branch '{branch_name}' found, starting fresh");
                 }
-                Err(e) => {
-                    return Err(e);
+                Err(resume_error) => {
+                    // Rollback: remove just-created worktree and release writer
+                    // lock so resources are not orphaned without a lease record.
+                    let mut rollback_failures = Vec::new();
+
+                    if worktree_path.exists() {
+                        if let Err(e) = worktree.remove_worktree(repo_root, &worktree_path, task_id)
+                        {
+                            rollback_failures.push(format!("worktree removal: {e}"));
+                        }
+                    }
+
+                    let lock_may_be_held =
+                        match store.release_writer_lock(base_dir, project_id, &lease_id) {
+                            Ok(WriterLockReleaseOutcome::Released)
+                            | Ok(WriterLockReleaseOutcome::AlreadyAbsent) => false,
+                            Ok(WriterLockReleaseOutcome::OwnerMismatch { actual_owner }) => {
+                                rollback_failures.push(format!(
+                                    "writer lock owner mismatch (actual: {actual_owner})"
+                                ));
+                                true
+                            }
+                            Err(e) => {
+                                rollback_failures.push(format!("writer lock release: {e}"));
+                                true
+                            }
+                        };
+
+                    if rollback_failures.is_empty() {
+                        return Err(resume_error);
+                    }
+                    let mut details = rollback_failures.join("; ");
+                    if lock_may_be_held {
+                        details.push_str("; project writer lock may still be held");
+                    }
+                    return Err(AppError::AcquisitionRollbackFailed {
+                        trigger: resume_error.to_string(),
+                        rollback_details: details,
+                    });
                 }
             }
         }
