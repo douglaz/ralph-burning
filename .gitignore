@@ -26,13 +26,14 @@ result
 .claude/scheduled_tasks.lock
 *.log
 
-# Stray tooling-generated markdown files (root only)
-/*-impl-notes.md
-/*-impl-response-*.md
-/*-spec.md
-/*-review-*-feedback.md
-/*-review-approved.md
-/*-termination-request.md
-/*-completer-verdict-*.md
-/*-final-review-*.md
-/*-quick-dev-*.md
+# Stray date-prefixed tooling markdown files (root only)
+# Each pattern requires an 8-digit YYYYMMDD prefix + a known tooling suffix.
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-impl-notes.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-impl-response-*.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-spec.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-review-*-feedback.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-review-approved.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-termination-request.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-completer-verdict-*.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-final-review-*.md
+/[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*-quick-dev-*.md
