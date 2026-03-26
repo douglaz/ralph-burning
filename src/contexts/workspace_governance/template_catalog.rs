@@ -135,6 +135,7 @@ untestable claims, implicit assumptions, and scope gaps.
 Return only JSON. Put the rewritten prompt in `refined_prompt`, summarize \
 the changes in `refinement_summary`, and list the key improvements in `improvements`.
 
+{{prior_concerns}}
 ## Prompt to Review
 
 {{prompt_text}}
@@ -396,7 +397,7 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
         "prompt_review_refiner" => Some(TemplateManifest {
             template_id: "prompt_review_refiner",
             required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &[],
+            optional_placeholders: &["prior_concerns"],
             built_in_default: PROMPT_REVIEW_REFINER_DEFAULT,
         }),
         "prompt_review_validator" => Some(TemplateManifest {

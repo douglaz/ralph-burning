@@ -5903,6 +5903,9 @@ where
     let policy = BackendPolicyService::new(effective_config);
     let mut panel = policy.resolve_prompt_review_panel(cursor.cycle)?;
     let min_reviewers = effective_config.prompt_review_policy().min_reviewers;
+    let max_refinement_retries = effective_config
+        .prompt_review_policy()
+        .max_refinement_retries;
 
     // ── Pre-snapshot availability filtering ─────────────────────────────
     // Check runtime availability of the refiner and each validator BEFORE
@@ -6019,6 +6022,7 @@ where
         cursor,
         &panel,
         min_reviewers,
+        max_refinement_retries,
         prompt_reference,
         snapshot.rollback_point_meta.rollback_count,
         refiner_timeout,

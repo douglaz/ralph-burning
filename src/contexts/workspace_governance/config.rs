@@ -718,6 +718,14 @@ impl EffectiveConfig {
                     None::<usize>,
                 ),
             ),
+            ["prompt_review", "max_refinement_retries"] => (
+                ConfigValue::Integer(self.prompt_review_policy.max_refinement_retries as u64),
+                source_for_option(
+                    self.workspace_config.prompt_review.max_refinement_retries,
+                    self.project_config.prompt_review.max_refinement_retries,
+                    None::<u32>,
+                ),
+            ),
             ["workflow", "planner_backend"] => (
                 ConfigValue::String(
                     self.backend_policy
@@ -1592,6 +1600,7 @@ fn known_config_keys() -> Vec<String> {
         "prompt_review.refiner_backend".to_owned(),
         "prompt_review.validator_backends".to_owned(),
         "prompt_review.min_reviewers".to_owned(),
+        "prompt_review.max_refinement_retries".to_owned(),
         "workflow.planner_backend".to_owned(),
         "workflow.implementer_backend".to_owned(),
         "workflow.reviewer_backend".to_owned(),
@@ -1683,6 +1692,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["prompt_review", "min_reviewers"] => apply_optional_u64(
             document,
             &["prompt_review", "min_reviewers"],
+            key,
+            raw_value,
+        )?,
+        ["prompt_review", "max_refinement_retries"] => apply_optional_u64(
+            document,
+            &["prompt_review", "max_refinement_retries"],
             key,
             raw_value,
         )?,
