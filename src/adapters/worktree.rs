@@ -473,6 +473,10 @@ impl RepositoryResetPort for WorktreeAdapter {
     }
 }
 
+/// Stages that precede actual implementation work. Checkpoints from these
+/// stages are not worth preserving on failure or resuming from on retry.
+const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
+
 impl WorktreePort for WorktreeAdapter {
     fn worktree_path(&self, base_dir: &Path, task_id: &str) -> PathBuf {
         base_dir.join("worktrees").join(task_id)
@@ -608,11 +612,6 @@ impl WorktreePort for WorktreeAdapter {
     }
 
     fn has_checkpoint_commits(&self, worktree_path: &Path) -> bool {
-        // Only preserve branches that reached the implementation stage or
-        // later. Pre-implementation stages (prompt_review, planning, docs_plan,
-        // ci_plan) create checkpoints too early to be worth preserving.
-        const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
-
         let Ok(output) = Self::git_in(
             worktree_path,
             &["log", "--format=%s", "--grep", "^rb: checkpoint "],
@@ -652,12 +651,9 @@ impl WorktreePort for WorktreeAdapter {
             return Ok(false);
         }
         // Find the latest implementation-stage-or-later checkpoint commit and
-        // reset to it. Pre-implementation checkpoints (prompt_review, planning,
-        // docs_plan, ci_plan) are not worth resuming from. If no qualifying
-        // checkpoint exists, the worktree stays at the remote tip (which is
-        // the default-branch base, effectively a fresh start).
-        const PRE_IMPL_STAGES: &[&str] = &["prompt_review", "planning", "docs_plan", "ci_plan"];
-
+        // reset to it. If no qualifying checkpoint exists, the worktree stays
+        // at the remote tip (which is the default-branch base, effectively a
+        // fresh start).
         let log_output = Self::git_in(
             worktree_path,
             &["log", "--format=%H %s", "--grep", "^rb: checkpoint "],

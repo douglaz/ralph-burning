@@ -5988,6 +5988,7 @@ fn reconcile_oversized_ttl_override_does_not_reclaim_fresh_worktree_or_cli_lease
 struct TrackingWorktreeAdapter {
     checkpoint_result: bool,
     force_push_calls: std::sync::Mutex<Vec<String>>,
+    resume_calls: std::sync::Mutex<Vec<String>>,
 }
 
 impl TrackingWorktreeAdapter {
@@ -5995,11 +5996,16 @@ impl TrackingWorktreeAdapter {
         Self {
             checkpoint_result,
             force_push_calls: std::sync::Mutex::new(Vec::new()),
+            resume_calls: std::sync::Mutex::new(Vec::new()),
         }
     }
 
     fn force_push_call_count(&self) -> usize {
         self.force_push_calls.lock().unwrap().len()
+    }
+
+    fn resume_call_count(&self) -> usize {
+        self.resume_calls.lock().unwrap().len()
     }
 }
 
@@ -6067,6 +6073,19 @@ impl WorktreePort for TrackingWorktreeAdapter {
             .unwrap()
             .push(branch_name.to_owned());
         Ok(())
+    }
+
+    fn try_resume_from_remote(
+        &self,
+        _repo_root: &std::path::Path,
+        _worktree_path: &std::path::Path,
+        branch_name: &str,
+    ) -> ralph_burning::shared::error::AppResult<bool> {
+        self.resume_calls
+            .lock()
+            .unwrap()
+            .push(branch_name.to_owned());
+        Ok(true)
     }
 }
 
@@ -6184,5 +6203,94 @@ fn reconcile_stale_failed_task_preserves_branch_before_cleanup() {
         tracking.force_push_call_count(),
         1,
         "reconcile should force_push_branch for stale failed task with checkpoints"
+    );
+}
+
+#[test]
+fn lease_acquire_with_is_retry_true_calls_try_resume_from_remote() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "retry-resume-test".to_owned();
+    task.project_id = "retry-resume".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id =
+        ralph_burning::shared::domain::ProjectId::new("retry-resume".to_owned()).expect("valid id");
+
+    let lease = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "retry-resume-test",
+        &project_id,
+        300,
+        None,
+        None,
+        true,
+    )
+    .expect("acquire should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        1,
+        "try_resume_from_remote should be called when is_retry=true"
+    );
+
+    // Clean up lease so the test directory can be removed
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
+    );
+}
+
+#[test]
+fn lease_acquire_with_is_retry_false_skips_try_resume_from_remote() {
+    let store = FsDaemonStore;
+    let tracking = TrackingWorktreeAdapter::new(false);
+    let temp = tempdir().expect("tempdir");
+
+    let mut task = sample_task();
+    task.task_id = "fresh-no-resume-test".to_owned();
+    task.project_id = "fresh-no-resume".to_owned();
+    store.create_task(temp.path(), &task).expect("create task");
+
+    let project_id = ralph_burning::shared::domain::ProjectId::new("fresh-no-resume".to_owned())
+        .expect("valid id");
+
+    let lease = LeaseService::acquire(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        "fresh-no-resume-test",
+        &project_id,
+        300,
+        None,
+        None,
+        false,
+    )
+    .expect("acquire should succeed");
+
+    assert_eq!(
+        tracking.resume_call_count(),
+        0,
+        "try_resume_from_remote should NOT be called when is_retry=false"
+    );
+
+    let _ = LeaseService::release(
+        &store,
+        &tracking,
+        temp.path(),
+        temp.path(),
+        &lease,
+        ralph_burning::contexts::automation_runtime::lease_service::ReleaseMode::Idempotent,
     );
 }
