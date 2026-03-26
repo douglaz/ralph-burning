@@ -2058,6 +2058,13 @@ where
     fn cleanup_active_leases(&self, store_dir: &Path, repo_root: &Path) -> AppResult<()> {
         let leases = self.store.list_leases(store_dir)?;
         for lease in &leases {
+            // Preserve checkpoint branch for tasks that were already failed
+            // before shutdown (e.g. retained lease after label-sync failure).
+            if let Ok(task) = self.store.read_task(store_dir, &lease.task_id) {
+                if task.status == TaskStatus::Failed {
+                    self.try_push_failed_task_branch(repo_root, lease);
+                }
+            }
             let _ = DaemonTaskService::mark_aborted(self.store, store_dir, &lease.task_id);
             if let Err(e) = self.release_task_lease(store_dir, repo_root, &lease.task_id, lease) {
                 eprintln!(

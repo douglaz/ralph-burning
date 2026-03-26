@@ -701,11 +701,16 @@ impl WorktreePort for WorktreeAdapter {
         // Find the latest branch-local implementation-stage checkpoint and
         // reset to it. Use the actual default branch ref (via repo_root) to
         // compute the fork point, so inherited checkpoints from the default
-        // branch are not matched. If the fork point cannot be resolved, still
-        // return true (branch was fetched) but skip checkpoint discovery.
+        // branch are not matched. Returns true only if we actually reset to a
+        // qualifying checkpoint; false otherwise so the caller knows the
+        // worktree does not contain resumed state.
         let base_ref = self.default_branch_ref(repo_root).unwrap_or_default();
         let Some(fork_sha) = Self::branch_fork_point(worktree_path, &base_ref) else {
-            return Ok(true);
+            eprintln!(
+                "daemon: retry resume for '{branch_name}': could not resolve fork point, \
+                 starting fresh"
+            );
+            return Ok(false);
         };
         let range = format!("{fork_sha}..HEAD");
         let log_output = Self::git_in(
@@ -718,25 +723,40 @@ impl WorktreePort for WorktreeAdapter {
                 "^rb: checkpoint ",
             ],
         )?;
-        if log_output.status.success() {
-            let stdout = String::from_utf8_lossy(&log_output.stdout);
-            for line in stdout.lines() {
-                // Format: "<sha> rb: checkpoint project=X stage=Y cycle=N round=M"
-                let Some((sha, subject)) = line.split_once(' ') else {
-                    continue;
-                };
-                let is_impl_stage = subject
-                    .split_whitespace()
-                    .find(|part| part.starts_with("stage="))
-                    .map(|part| &part["stage=".len()..])
-                    .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage));
-                if is_impl_stage {
-                    let _ = Self::git_in(worktree_path, &["reset", "--hard", sha]);
-                    break;
+        if !log_output.status.success() {
+            return Ok(false);
+        }
+        let stdout = String::from_utf8_lossy(&log_output.stdout);
+        for line in stdout.lines() {
+            // Format: "<sha> rb: checkpoint project=X stage=Y cycle=N round=M"
+            let Some((sha, subject)) = line.split_once(' ') else {
+                continue;
+            };
+            let is_impl_stage = subject
+                .split_whitespace()
+                .find(|part| part.starts_with("stage="))
+                .map(|part| &part["stage=".len()..])
+                .is_some_and(|stage| !PRE_IMPL_STAGES.contains(&stage));
+            if is_impl_stage {
+                match Self::git_in(worktree_path, &["reset", "--hard", sha]) {
+                    Ok(ref o) if o.status.success() => return Ok(true),
+                    Ok(ref o) => {
+                        eprintln!(
+                            "daemon: retry resume reset to checkpoint {} failed: {}",
+                            sha,
+                            String::from_utf8_lossy(&o.stderr).trim()
+                        );
+                        return Ok(false);
+                    }
+                    Err(e) => {
+                        eprintln!("daemon: retry resume reset to checkpoint {sha} failed: {e}");
+                        return Ok(false);
+                    }
                 }
             }
         }
-        Ok(true)
+        // No qualifying implementation-stage checkpoint found.
+        Ok(false)
     }
 
     fn rebase_with_agent_resolution(
