@@ -358,6 +358,17 @@ impl WorktreeAdapter {
             }
         }
 
+        // Detached HEAD: resolve to concrete SHA so the ref works correctly
+        // when passed to merge-base in a different worktree context (where
+        // "HEAD" would resolve to the worktree's own HEAD, not repo_root's).
+        let head_sha = Self::git(repo_root, &["rev-parse", "HEAD"])?;
+        if head_sha.status.success() {
+            let sha = String::from_utf8_lossy(&head_sha.stdout).trim().to_owned();
+            if !sha.is_empty() {
+                return Ok(sha);
+            }
+        }
+
         Ok("HEAD".to_owned())
     }
 
@@ -694,6 +705,11 @@ impl WorktreePort for WorktreeAdapter {
             .trim()
             .to_owned();
 
+        // Helper: restore original HEAD on failure paths after the mutation.
+        let restore_original = |wt: &Path, sha: &str| {
+            let _ = Self::git_in(wt, &["reset", "--hard", sha]);
+        };
+
         // Reset the worktree to the fetched remote branch tip first, so the
         // full commit history is available for checkpoint discovery.
         let remote_ref = format!("origin/{branch_name}");
@@ -704,13 +720,9 @@ impl WorktreePort for WorktreeAdapter {
                 remote_ref,
                 String::from_utf8_lossy(&reset_output.stderr).trim()
             );
+            restore_original(worktree_path, &original_sha);
             return Ok(false);
         }
-
-        // Helper: restore original HEAD on failure paths after the mutation.
-        let restore_original = |wt: &Path, sha: &str| {
-            let _ = Self::git_in(wt, &["reset", "--hard", sha]);
-        };
 
         // Find the latest branch-local implementation-stage checkpoint and
         // reset to it. Use the actual default branch ref (via repo_root) to
