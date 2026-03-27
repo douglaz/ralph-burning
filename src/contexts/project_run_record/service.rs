@@ -12,7 +12,7 @@ use super::journal;
 use super::model::{
     ActiveRun, AmendmentSource, ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord,
     ProjectDetail, ProjectListEntry, ProjectRecord, ProjectStatusSummary, QueuedAmendment,
-    RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry, SessionStore,
+    RollbackPoint, RunSnapshot, RunStatus, RuntimeLogEntry, SessionStore, TaskSource,
 };
 use super::queries::{
     self, RunHistoryView, RunRollbackTargetView, RunStatusJsonView, RunStatusView, RunTailView,
@@ -232,6 +232,8 @@ pub struct CreateProjectInput {
     pub prompt_contents: String,
     pub prompt_hash: String,
     pub created_at: DateTime<Utc>,
+    /// Milestone/bead linkage metadata. None for standalone projects.
+    pub task_source: Option<TaskSource>,
 }
 
 /// Create a new project with all canonical files.
@@ -307,6 +309,7 @@ pub fn create_project_from_seed(
         prompt_contents: prompt_body,
         prompt_hash,
         created_at,
+        task_source: None,
     };
 
     create_project_with_initial_details(
@@ -340,6 +343,7 @@ fn create_project_with_initial_details(
         prompt_hash: input.prompt_hash,
         created_at: input.created_at,
         status_summary: ProjectStatusSummary::Created,
+        task_source: input.task_source,
     };
 
     let run_snapshot = RunSnapshot::initial();

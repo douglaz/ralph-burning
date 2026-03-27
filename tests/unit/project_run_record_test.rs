@@ -318,6 +318,7 @@ fn make_project_record(id: &str) -> ProjectRecord {
         prompt_hash: "abc123".to_owned(),
         created_at: test_timestamp(),
         status_summary: ProjectStatusSummary::Created,
+        task_source: None,
     }
 }
 
@@ -481,6 +482,7 @@ fn create_project_succeeds_with_valid_input() {
         prompt_contents: "# My prompt\nDo something.".to_owned(),
         prompt_hash: "hash123".to_owned(),
         created_at: test_timestamp(),
+        task_source: None,
     };
 
     let result = create_project(&store, &journal_store, &base_dir, input);
@@ -506,6 +508,7 @@ fn create_project_fails_on_duplicate_id() {
         prompt_contents: "content".to_owned(),
         prompt_hash: "hash".to_owned(),
         created_at: test_timestamp(),
+        task_source: None,
     };
 
     let result = create_project(&store, &journal_store, &base_dir, input);

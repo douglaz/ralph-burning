@@ -321,6 +321,7 @@ mod tests {
                 prompt_contents: prompt_contents.to_owned(),
                 prompt_hash: prompt_hash.clone(),
                 created_at: Utc::now(),
+                task_source: None,
             },
         )?;
 

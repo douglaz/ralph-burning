@@ -183,6 +183,7 @@ async fn handle_create(args: ProjectCreateArgs) -> AppResult<()> {
         prompt_contents,
         prompt_hash,
         created_at: Utc::now(),
+        task_source: None,
     };
 
     let record = service::create_project(&store, &journal_store, &current_dir, input)?;

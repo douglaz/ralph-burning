@@ -2050,6 +2050,7 @@ where
             prompt_contents: prompt_contents.clone(),
             prompt_hash: FileSystem::prompt_hash(&prompt_contents),
             created_at: Utc::now(),
+            task_source: None,
         };
         create_project(self.project_store, self.journal_store, base_dir, input)?;
         Ok(())

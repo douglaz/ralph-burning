@@ -14,6 +14,55 @@ pub struct ProjectRecord {
     pub prompt_hash: String,
     pub created_at: DateTime<Utc>,
     pub status_summary: ProjectStatusSummary,
+    /// Milestone linkage: present when this project executes a bead within a milestone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_source: Option<TaskSource>,
+}
+
+/// Describes the origin of a project when it executes a milestone bead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TaskSource {
+    /// The milestone this task belongs to.
+    pub milestone_id: String,
+    /// The bead being executed.
+    pub bead_id: String,
+    /// Parent epic or root epic ID when useful for context.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_epic_id: Option<String>,
+    /// How this task was created.
+    #[serde(default)]
+    pub origin: TaskOrigin,
+    /// Plan version at the time this task was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_version: Option<u32>,
+}
+
+impl ProjectRecord {
+    /// Returns true if this project is a milestone bead execution.
+    pub fn is_milestone_task(&self) -> bool {
+        self.task_source.is_some()
+    }
+
+    /// Returns the milestone ID if this is a milestone task.
+    pub fn milestone_id(&self) -> Option<&str> {
+        self.task_source.as_ref().map(|ts| ts.milestone_id.as_str())
+    }
+
+    /// Returns the bead ID if this is a milestone task.
+    pub fn bead_id(&self) -> Option<&str> {
+        self.task_source.as_ref().map(|ts| ts.bead_id.as_str())
+    }
+}
+
+/// How a task-mode project was created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskOrigin {
+    /// Created by the milestone controller.
+    #[default]
+    Milestone,
+    /// Created manually by a user.
+    Manual,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

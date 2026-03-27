@@ -17,6 +17,13 @@ use crate::contexts::automation_runtime::repo_registry::{
     parse_repo_slug, RepoRegistration, RepoRegistryPort,
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
+use crate::contexts::milestone_record::model::{
+    MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot, TaskRunEntry,
+};
+use crate::contexts::milestone_record::service::{
+    MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+    TaskRunLineagePort,
+};
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, PayloadRecord, ProjectRecord, RollbackPoint, RunSnapshot,
@@ -2053,6 +2060,274 @@ impl RepoRegistryPort for FsRepoRegistryStore {
         let path = Self::registration_path(data_dir, owner, repo);
         let contents = serde_json::to_string_pretty(registration)?;
         FileSystem::write_atomic(&path, &contents)
+    }
+}
+
+// ── Milestone filesystem layout ─────────────────────────────────────────────
+//
+// .ralph-burning/milestones/{id}/
+//   ├─ milestone.toml        (immutable record)
+//   ├─ status.json           (mutable snapshot)
+//   ├─ journal.ndjson        (event log)
+//   ├─ plan.json             (machine-readable plan)
+//   ├─ plan.md               (human-readable plan)
+//   └─ task-runs.ndjson      (bead → project lineage)
+
+const MILESTONES_DIR: &str = "milestones";
+const MILESTONE_CONFIG_FILE: &str = "milestone.toml";
+const MILESTONE_STATUS_FILE: &str = "status.json";
+const MILESTONE_JOURNAL_FILE: &str = "journal.ndjson";
+const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
+const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
+const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
+
+impl FileSystem {
+    pub(crate) fn milestone_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        Self::workspace_root_path(base_dir)
+            .join(MILESTONES_DIR)
+            .join(milestone_id.as_str())
+    }
+}
+
+pub struct FsMilestoneStore;
+
+impl MilestoneStorePort for FsMilestoneStore {
+    fn milestone_exists(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<bool> {
+        let root = FileSystem::milestone_root(base_dir, milestone_id);
+        if !root.is_dir() {
+            return Ok(false);
+        }
+        if !root.join(MILESTONE_CONFIG_FILE).is_file() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/milestone.toml", milestone_id),
+                details: "milestone directory exists but milestone.toml is missing".to_owned(),
+            });
+        }
+        Ok(true)
+    }
+
+    fn read_milestone_record(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<MilestoneRecord> {
+        let root = FileSystem::milestone_root(base_dir, milestone_id);
+        let path = root.join(MILESTONE_CONFIG_FILE);
+        let raw = fs::read_to_string(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AppError::CorruptRecord {
+                    file: format!("milestones/{}/milestone.toml", milestone_id),
+                    details: "milestone.toml not found".to_owned(),
+                }
+            } else {
+                e.into()
+            }
+        })?;
+        toml::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+            file: format!("milestones/{}/milestone.toml", milestone_id),
+            details: e.to_string(),
+        })
+    }
+
+    fn list_milestone_ids(&self, base_dir: &Path) -> AppResult<Vec<MilestoneId>> {
+        let milestones_dir = FileSystem::workspace_root_path(base_dir).join(MILESTONES_DIR);
+        if !milestones_dir.is_dir() {
+            return Ok(Vec::new());
+        }
+        let mut ids = Vec::new();
+        for entry in fs::read_dir(&milestones_dir)? {
+            let entry = entry?;
+            if !entry.file_type()?.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with('.') {
+                continue;
+            }
+            if let Ok(mid) = MilestoneId::new(name_str.as_ref()) {
+                if entry.path().join(MILESTONE_CONFIG_FILE).is_file() {
+                    ids.push(mid);
+                }
+            }
+        }
+        ids.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        Ok(ids)
+    }
+
+    fn create_milestone_atomic(
+        &self,
+        base_dir: &Path,
+        record: &MilestoneRecord,
+        snapshot: &MilestoneSnapshot,
+        initial_journal_line: &str,
+    ) -> AppResult<()> {
+        let root = FileSystem::milestone_root(base_dir, &record.id);
+        if root.exists() {
+            return Err(AppError::DuplicateProject {
+                project_id: record.id.to_string(),
+            });
+        }
+        fs::create_dir_all(&root)?;
+
+        let record_toml = toml::to_string_pretty(record)?;
+        FileSystem::write_create_new(&root.join(MILESTONE_CONFIG_FILE), &record_toml)?;
+
+        let snapshot_json = serde_json::to_string_pretty(snapshot)?;
+        FileSystem::write_create_new(&root.join(MILESTONE_STATUS_FILE), &snapshot_json)?;
+
+        FileSystem::write_create_new(&root.join(MILESTONE_JOURNAL_FILE), initial_journal_line)?;
+
+        Ok(())
+    }
+}
+
+pub struct FsMilestoneSnapshotStore;
+
+impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
+    fn read_snapshot(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<MilestoneSnapshot> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
+        let raw = fs::read_to_string(&path)?;
+        serde_json::from_str(&raw).map_err(|e| AppError::CorruptRecord {
+            file: format!("milestones/{}/status.json", milestone_id),
+            details: e.to_string(),
+        })
+    }
+
+    fn write_snapshot(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        snapshot: &MilestoneSnapshot,
+    ) -> AppResult<()> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
+        let json = serde_json::to_string_pretty(snapshot)?;
+        FileSystem::write_atomic(&path, &json)
+    }
+}
+
+pub struct FsMilestoneJournalStore;
+
+impl MilestoneJournalPort for FsMilestoneJournalStore {
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<MilestoneJournalEvent>> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE);
+        let raw = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut events = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let event: MilestoneJournalEvent =
+                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                    file: format!("milestones/{}/journal.ndjson", milestone_id),
+                    details: format!("line {}: {}", i + 1, e),
+                })?;
+            events.push(event);
+        }
+        Ok(events)
+    }
+
+    fn append_event(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        line: &str,
+    ) -> AppResult<()> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE);
+        FileSystem::append_line(&path, line)
+    }
+}
+
+pub struct FsTaskRunLineageStore;
+
+impl TaskRunLineagePort for FsTaskRunLineageStore {
+    fn read_task_runs(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<TaskRunEntry>> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let raw = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut entries = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let entry: TaskRunEntry =
+                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!("line {}: {}", i + 1, e),
+                })?;
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    fn append_task_run(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        entry: &TaskRunEntry,
+    ) -> AppResult<()> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let line = serde_json::to_string(entry)?;
+        FileSystem::append_line(&path, &line)
+    }
+}
+
+pub struct FsMilestonePlanStore;
+
+impl MilestonePlanPort for FsMilestonePlanStore {
+    fn read_plan_json(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<String> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_JSON_FILE);
+        Ok(fs::read_to_string(&path)?)
+    }
+
+    fn write_plan_json(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        content: &str,
+    ) -> AppResult<()> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_JSON_FILE);
+        FileSystem::write_atomic(&path, content)
+    }
+
+    fn read_plan_md(&self, base_dir: &Path, milestone_id: &MilestoneId) -> AppResult<String> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_MD_FILE);
+        Ok(fs::read_to_string(&path)?)
+    }
+
+    fn write_plan_md(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        content: &str,
+    ) -> AppResult<()> {
+        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_PLAN_MD_FILE);
+        FileSystem::write_atomic(&path, content)
     }
 }
 
