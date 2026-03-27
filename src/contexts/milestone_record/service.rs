@@ -286,6 +286,7 @@ pub fn record_bead_start(
     }
 
     let entry = TaskRunEntry {
+        milestone_id: Some(milestone_id.to_string()),
         bead_id: bead_id.to_owned(),
         project_id: project_id.to_owned(),
         run_id: run_id.map(str::to_owned),
@@ -336,6 +337,7 @@ pub fn record_bead_completion(
     now: DateTime<Utc>,
 ) -> AppResult<()> {
     let entry = TaskRunEntry {
+        milestone_id: Some(milestone_id.to_string()),
         bead_id: bead_id.to_owned(),
         project_id: project_id.to_owned(),
         run_id: run_id.map(str::to_owned),
@@ -688,8 +690,10 @@ mod tests {
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].milestone_id.as_deref(), Some(record.id.as_str()));
         assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(runs[0].plan_hash.as_deref(), Some("abc123"));
+        assert_eq!(runs[1].milestone_id.as_deref(), Some(record.id.as_str()));
         assert_eq!(runs[1].outcome_detail.as_deref(), Some("All tests passed"));
         Ok(())
     }
@@ -698,6 +702,7 @@ mod tests {
     fn task_run_entry_serialization_with_new_fields() -> Result<(), Box<dyn std::error::Error>> {
         let now = Utc::now();
         let entry = TaskRunEntry {
+            milestone_id: Some("ms-1".to_owned()),
             bead_id: "bead-1".to_owned(),
             project_id: "proj-1".to_owned(),
             run_id: Some("run-42".to_owned()),
@@ -709,6 +714,7 @@ mod tests {
         };
         let json = serde_json::to_string(&entry)?;
         let parsed: TaskRunEntry = serde_json::from_str(&json)?;
+        assert_eq!(parsed.milestone_id.as_deref(), Some("ms-1"));
         assert_eq!(parsed.run_id.as_deref(), Some("run-42"));
         assert_eq!(parsed.plan_hash.as_deref(), Some("sha256-abc"));
         assert_eq!(
@@ -721,14 +727,52 @@ mod tests {
     #[test]
     fn task_run_entry_backward_compat_without_new_fields() -> Result<(), Box<dyn std::error::Error>>
     {
-        // Simulate old-format JSON without run_id, plan_hash, outcome_detail
+        // Simulate old-format JSON without milestone_id, run_id, plan_hash, outcome_detail
         let old_json = r#"{"bead_id":"b1","project_id":"p1","outcome":"running","started_at":"2025-01-01T00:00:00Z"}"#;
         let parsed: TaskRunEntry = serde_json::from_str(old_json)?;
         assert_eq!(parsed.bead_id, "b1");
+        assert!(parsed.milestone_id.is_none());
         assert!(parsed.run_id.is_none());
         assert!(parsed.plan_hash.is_none());
         assert!(parsed.outcome_detail.is_none());
         assert!(parsed.finished_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn read_task_runs_backfills_milestone_id_for_legacy_entries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "legacy-run-test".to_owned(),
+                name: "Legacy Run Test".to_owned(),
+                description: "testing legacy task run backfill".to_owned(),
+            },
+            now,
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        std::fs::write(
+            &task_runs_path,
+            r#"{"bead_id":"bead-1","project_id":"project-1","outcome":"running","started_at":"2025-01-01T00:00:00Z"}"#,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].milestone_id.as_deref(), Some(record.id.as_str()));
+        assert_eq!(runs[0].bead_id, "bead-1");
         Ok(())
     }
 
@@ -845,6 +889,7 @@ mod tests {
         let bead1_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
         assert_eq!(bead1_runs.len(), 4); // 2 start + 2 completion entries
         for run in &bead1_runs {
+            assert_eq!(run.milestone_id.as_deref(), Some(record.id.as_str()));
             assert_eq!(run.bead_id, "bead-1");
         }
 
@@ -909,6 +954,7 @@ mod tests {
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].milestone_id.as_deref(), Some(record.id.as_str()));
         assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
         assert_eq!(runs[0].outcome_detail.as_deref(), Some("All checks passed"));
         assert!(runs[0].finished_at.is_some());

@@ -266,6 +266,9 @@ impl MilestoneJournalEvent {
 /// Maps a bead to the Ralph project/run that executed it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskRunEntry {
+    /// Milestone ID for self-contained lineage queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub milestone_id: Option<String>,
     /// Bead ID from the `.beads/` graph.
     pub bead_id: String,
     /// Ralph project ID for this bead's execution.

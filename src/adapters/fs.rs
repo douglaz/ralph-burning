@@ -2275,11 +2275,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if trimmed.is_empty() {
                 continue;
             }
-            let entry: TaskRunEntry =
+            let mut entry: TaskRunEntry =
                 serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
                     file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                     details: format!("line {}: {}", i + 1, e),
                 })?;
+            entry
+                .milestone_id
+                .get_or_insert_with(|| milestone_id.to_string());
             entries.push(entry);
         }
         Ok(entries)
@@ -2338,6 +2341,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let mut found = false;
         for entry in entries.iter_mut().rev() {
             if entry.bead_id == bead_id && entry.project_id == project_id {
+                entry
+                    .milestone_id
+                    .get_or_insert_with(|| milestone_id.to_string());
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);
