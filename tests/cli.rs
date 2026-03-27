@@ -618,7 +618,7 @@ fn config_show_prints_effective_values_and_sources() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("[settings]"));
     assert!(stdout.contains("prompt_review.enabled = true # source: default"));
-    assert!(stdout.contains("default_flow = \"standard\" # source: default"));
+    assert!(stdout.contains("default_flow = \"quick_dev\" # source: default"));
     assert!(stdout.contains("default_backend = \"claude\" # source: default"));
 }
 
@@ -1216,7 +1216,7 @@ fn config_get_prints_known_values_and_rejects_unknown_keys() {
         .output()
         .expect("run config get");
     assert!(known.status.success());
-    assert_eq!("standard\n", String::from_utf8_lossy(&known.stdout));
+    assert_eq!("quick_dev\n", String::from_utf8_lossy(&known.stdout));
 
     let unknown = Command::new(binary())
         .args(["config", "get", "unknown.key"])

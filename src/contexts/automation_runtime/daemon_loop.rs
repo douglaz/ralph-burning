@@ -40,7 +40,7 @@ use crate::contexts::project_run_record::CreateProjectInput;
 use crate::contexts::requirements_drafting::service::{self as req_service, RequirementsStorePort};
 use crate::contexts::workflow_composition::engine;
 use crate::contexts::workflow_composition::retry_policy::RetryPolicy;
-use crate::contexts::workspace_governance::config::EffectiveConfig;
+use crate::contexts::workspace_governance::config::{EffectiveConfig, DEFAULT_FLOW_PRESET};
 use crate::contexts::workspace_governance::WORKSPACE_DIR;
 use crate::shared::domain::{
     BackendPolicyRole, BackendRole, FlowPreset, ProjectId, ResolvedBackendTarget, SessionPolicy,
@@ -477,7 +477,7 @@ where
                 &self.routing_engine,
                 EffectiveConfig::load(checkout)
                     .map(|c| c.default_flow())
-                    .unwrap_or(FlowPreset::Standard),
+                    .unwrap_or(DEFAULT_FLOW_PRESET),
             )
             .await
             {

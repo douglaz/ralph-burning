@@ -69,12 +69,12 @@ impl<'a> BackendPolicyService<'a> {
         let planner_family = self.planner_family_for_cycle(cycle)?;
         let family = match role {
             BackendPolicyRole::Planner
+            | BackendPolicyRole::Implementer
             | BackendPolicyRole::PromptReviewer
             | BackendPolicyRole::PromptValidator
-            | BackendPolicyRole::Reviewer
             | BackendPolicyRole::FinalReviewer
             | BackendPolicyRole::Arbiter => planner_family,
-            BackendPolicyRole::Implementer
+            BackendPolicyRole::Reviewer
             | BackendPolicyRole::Qa
             | BackendPolicyRole::AcceptanceQa
             | BackendPolicyRole::Completer => self.opposite_family(planner_family)?,

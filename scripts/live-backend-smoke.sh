@@ -123,6 +123,7 @@ mode = "direct"
 
 [workflow]
 implementer_backend = "claude"
+reviewer_backend = "claude"
 qa_backend = "claude"
 
 [completion]
