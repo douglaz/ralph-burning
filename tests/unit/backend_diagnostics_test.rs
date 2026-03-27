@@ -3344,12 +3344,12 @@ fn check_still_skips_final_review_for_flows_without_final_review_stage() {
 
 // ── opposite-family role attribution ──────────────────────────────────────
 
-/// Regression: when opposite-family roles (implementer, qa, completer) have no
+/// Regression: when opposite-family roles (reviewer, qa, completer) have no
 /// explicit override, `family_for_role()` must reflect the runtime resolution
 /// path (`opposite_family(planner_family)`), not `default_backend`.
 ///
 /// Setup: default_backend=claude, both opposite families disabled. The runtime
-/// resolution for implementer would attempt opposite_family(claude) and fail.
+/// resolution for reviewer would attempt opposite_family(claude) and fail.
 /// `show-effective` must report the attempted opposite family, not "claude".
 #[test]
 fn show_effective_opposite_family_roles_report_attempted_family_not_base() {
@@ -3371,17 +3371,17 @@ fn show_effective_opposite_family_roles_report_attempted_family_not_base() {
     let service = BackendDiagnosticsService::new(&config);
     let view = service.show_effective();
 
-    // Implementer, qa, acceptance_qa, completer use opposite-family resolution.
+    // Reviewer, qa, acceptance_qa, completer use opposite-family resolution.
     // With no opposite family available, they should NOT report "claude" as
     // the backend family — that would be wrong per runtime semantics.
-    let implementer = view.roles.iter().find(|r| r.role == "implementer").unwrap();
+    let reviewer = view.roles.iter().find(|r| r.role == "reviewer").unwrap();
     assert_ne!(
-        "claude", implementer.backend_family,
-        "implementer should not report base backend 'claude' — it uses opposite-family resolution"
+        "claude", reviewer.backend_family,
+        "reviewer should not report base backend 'claude' — it uses opposite-family resolution"
     );
     assert!(
-        implementer.resolution_error.is_some(),
-        "implementer should have resolution_error when opposite family is unavailable"
+        reviewer.resolution_error.is_some(),
+        "reviewer should have resolution_error when opposite family is unavailable"
     );
 
     let qa = view.roles.iter().find(|r| r.role == "qa").unwrap();
@@ -3396,7 +3396,7 @@ fn show_effective_opposite_family_roles_report_attempted_family_not_base() {
         "completer should not report base backend 'claude' — it uses opposite-family resolution"
     );
 
-    // Planner-family roles (planner, reviewer) should still report "claude"
+    // Planner-family roles (planner, implementer) should still report "claude"
     let planner = view.roles.iter().find(|r| r.role == "planner").unwrap();
     assert_eq!(
         "claude", planner.backend_family,
@@ -3421,14 +3421,14 @@ fn show_effective_opposite_family_roles_report_resolved_family_when_available() 
     let view = service.show_effective();
 
     // When resolution succeeds, the resolved target family is used (codex)
-    let implementer = view.roles.iter().find(|r| r.role == "implementer").unwrap();
+    let reviewer = view.roles.iter().find(|r| r.role == "reviewer").unwrap();
     assert_eq!(
-        "codex", implementer.backend_family,
-        "implementer should resolve to opposite family 'codex' when available"
+        "codex", reviewer.backend_family,
+        "reviewer should resolve to opposite family 'codex' when available"
     );
     assert!(
-        implementer.resolution_error.is_none(),
-        "implementer should not have resolution_error when opposite family is available"
+        reviewer.resolution_error.is_none(),
+        "reviewer should not have resolution_error when opposite family is available"
     );
 }
 
@@ -3453,18 +3453,18 @@ fn check_reports_opposite_family_not_base_for_failed_opposite_roles() {
     let service = BackendDiagnosticsService::new(&config);
     let result = service.check_backends(FlowPreset::Standard);
 
-    // Implementer failures should NOT report backend_family="claude"
-    let impl_failure = result.failures.iter().find(|f| f.role == "implementer");
-    if let Some(failure) = impl_failure {
+    // Reviewer failures should NOT report backend_family="claude"
+    let reviewer_failure = result.failures.iter().find(|f| f.role == "reviewer");
+    if let Some(failure) = reviewer_failure {
         assert_ne!(
             "claude", failure.backend_family,
-            "implementer failure should report the attempted opposite family, not 'claude': {:?}",
+            "reviewer failure should report the attempted opposite family, not 'claude': {:?}",
             failure
         );
     }
 }
 
-/// Regression: `backend probe --role implementer` must report the opposite-family
+/// Regression: `backend probe --role reviewer` must report the opposite-family
 /// failure, not claim the base backend is unavailable.
 #[test]
 fn probe_singular_opposite_role_reports_correct_family() {
@@ -3484,7 +3484,7 @@ fn probe_singular_opposite_role_reports_correct_family() {
     let config = EffectiveConfig::load(temp_dir.path()).expect("load config");
     let service = BackendDiagnosticsService::new(&config);
 
-    let result = service.probe("implementer", FlowPreset::Standard, 1);
+    let result = service.probe("reviewer", FlowPreset::Standard, 1);
     assert!(
         result.is_err(),
         "probe should fail when no opposite family is enabled"

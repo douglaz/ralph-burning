@@ -343,7 +343,7 @@ fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
     let implementer = policy
         .resolve_role_target(BackendPolicyRole::Implementer, 1)
         .expect("implementer target");
-    assert_eq!(BackendFamily::OpenRouter, implementer.backend.family);
+    assert_eq!(BackendFamily::Claude, implementer.backend.family);
 }
 
 #[test]

@@ -1404,8 +1404,8 @@ impl<'a> BackendDiagnosticsService<'a> {
     /// a given role (assuming cycle 1). This mirrors the resolution path in
     /// `BackendPolicyService::resolve_role_target()`:
     /// - Roles with explicit overrides → override family
-    /// - Planner-family roles (Planner, Reviewer, PromptReviewer, etc.) → base_backend.family
-    /// - Opposite-family roles (Implementer, Qa, AcceptanceQa, Completer) → opposite_family(base)
+    /// - Planner-family roles (Planner, Implementer, PromptReviewer, etc.) → base_backend.family
+    /// - Opposite-family roles (Reviewer, Qa, AcceptanceQa, Completer) → opposite_family(base)
     fn family_for_role(&self, role: BackendPolicyRole) -> String {
         let bp = self.config.backend_policy();
 
@@ -1443,7 +1443,7 @@ impl<'a> BackendDiagnosticsService<'a> {
     fn role_uses_opposite_family(role: BackendPolicyRole) -> bool {
         matches!(
             role,
-            BackendPolicyRole::Implementer
+            BackendPolicyRole::Reviewer
                 | BackendPolicyRole::Qa
                 | BackendPolicyRole::AcceptanceQa
                 | BackendPolicyRole::Completer

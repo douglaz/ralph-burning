@@ -18,8 +18,8 @@ use super::{load_workspace_config, workspace_config_path};
 
 /// Default: enabled.
 pub const DEFAULT_PROMPT_REVIEW_ENABLED: bool = true;
-/// Default: standard.
-pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::Standard;
+/// Default: quick_dev.
+pub const DEFAULT_FLOW_PRESET: FlowPreset = FlowPreset::QuickDev;
 pub const DEFAULT_MAX_QA_ITERATIONS: u32 = 3;
 pub const DEFAULT_MAX_REVIEW_ITERATIONS: u32 = 3;
 pub const DEFAULT_MIN_REVIEWERS: usize = 2;
