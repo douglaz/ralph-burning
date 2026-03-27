@@ -7,6 +7,8 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use chrono::{DateTime, Utc};
+
 use crate::contexts::agent_execution::model::RawOutputReference;
 use crate::contexts::agent_execution::service::RawOutputPort;
 use crate::contexts::agent_execution::session::{PersistedSessions, SessionStorePort};
@@ -19,6 +21,7 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
     MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot, TaskRunEntry,
+    TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2292,6 +2295,80 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
         let line = serde_json::to_string(entry)?;
         FileSystem::append_line(&path, &line)
+    }
+
+    fn update_task_run(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+    ) -> AppResult<()> {
+        let path =
+            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let raw = match fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!(
+                        "no task runs file found when updating bead={bead_id} project={project_id}"
+                    ),
+                });
+            }
+            Err(e) => return Err(e.into()),
+        };
+        let mut entries: Vec<TaskRunEntry> = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let entry: TaskRunEntry =
+                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!("line {}: {}", i + 1, e),
+                })?;
+            entries.push(entry);
+        }
+        // Find the most recent matching entry (last match) and update it
+        let mut found = false;
+        for entry in entries.iter_mut().rev() {
+            if entry.bead_id == bead_id && entry.project_id == project_id {
+                entry.outcome = outcome;
+                entry.outcome_detail = outcome_detail;
+                entry.finished_at = Some(finished_at);
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!("no matching task run for bead={bead_id} project={project_id}"),
+            });
+        }
+        // Rewrite the file
+        let mut content = String::new();
+        for entry in &entries {
+            let line = serde_json::to_string(entry)?;
+            content.push_str(&line);
+            content.push('\n');
+        }
+        FileSystem::write_atomic(&path, &content)
+    }
+
+    fn find_runs_for_bead(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+    ) -> AppResult<Vec<TaskRunEntry>> {
+        let all = self.read_task_runs(base_dir, milestone_id)?;
+        Ok(all.into_iter().filter(|e| e.bead_id == bead_id).collect())
     }
 }
 

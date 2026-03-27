@@ -270,8 +270,17 @@ pub struct TaskRunEntry {
     pub bead_id: String,
     /// Ralph project ID for this bead's execution.
     pub project_id: String,
+    /// Specific run ID within the project.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    /// Plan version/hash at time of execution.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
     /// Outcome of the task run.
     pub outcome: TaskRunOutcome,
+    /// Human-readable outcome summary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_detail: Option<String>,
     /// When this task run was started.
     pub started_at: DateTime<Utc>,
     /// When this task run finished (if complete).
