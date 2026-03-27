@@ -249,6 +249,10 @@ impl BvProcessRunner for OsBvProcessRunner {
             cmd.current_dir(dir);
         }
 
+        // kill_on_drop ensures the child is terminated if the future is
+        // cancelled by tokio::time::timeout, preventing orphaned processes.
+        cmd.kill_on_drop(true);
+
         let child = cmd.spawn().map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
                 BvError::BvNotFound {

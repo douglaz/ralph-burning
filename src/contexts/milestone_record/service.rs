@@ -252,6 +252,17 @@ pub fn record_bead_start(
     project_id: &str,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
+    let snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    if let Some(existing) = &snapshot.active_bead {
+        if existing != bead_id {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot start bead '{bead_id}': bead '{existing}' is already active"
+                ),
+            });
+        }
+    }
+
     let entry = TaskRunEntry {
         bead_id: bead_id.to_owned(),
         project_id: project_id.to_owned(),
@@ -261,7 +272,7 @@ pub fn record_bead_start(
     };
     lineage_store.append_task_run(base_dir, milestone_id, &entry)?;
 
-    let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    let mut snapshot = snapshot;
     snapshot.active_bead = Some(bead_id.to_owned());
     snapshot.progress.in_progress_beads = snapshot.progress.in_progress_beads.saturating_add(1);
     if snapshot.status == MilestoneStatus::Ready || snapshot.status == MilestoneStatus::Planning {
@@ -280,6 +291,9 @@ pub fn record_bead_start(
 }
 
 /// Record the completion of a bead task run.
+///
+/// `started_at` should be the original start time from `record_bead_start`;
+/// `now` is the completion timestamp.
 #[allow(clippy::too_many_arguments)]
 pub fn record_bead_completion(
     snapshot_store: &impl MilestoneSnapshotPort,
@@ -290,13 +304,14 @@ pub fn record_bead_completion(
     bead_id: &str,
     project_id: &str,
     outcome: TaskRunOutcome,
+    started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
     let entry = TaskRunEntry {
         bead_id: bead_id.to_owned(),
         project_id: project_id.to_owned(),
         outcome,
-        started_at: now,
+        started_at,
         finished_at: Some(now),
     };
     lineage_store.append_task_run(base_dir, milestone_id, &entry)?;
@@ -593,6 +608,7 @@ mod tests {
             "bead-1",
             "project-1",
             TaskRunOutcome::Succeeded,
+            now,
             now,
         )?;
 
