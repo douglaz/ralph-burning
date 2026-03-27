@@ -60,6 +60,7 @@ fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset)
             prompt_contents: prompt_contents.to_owned(),
             prompt_hash: ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents),
             created_at: Utc::now(),
+            task_source: None,
         },
     )
     .unwrap();

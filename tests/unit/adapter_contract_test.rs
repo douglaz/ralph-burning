@@ -36,6 +36,7 @@ fn make_project_record(id: &str) -> ProjectRecord {
         prompt_hash: "abc123".to_owned(),
         created_at: test_timestamp(),
         status_summary: ProjectStatusSummary::Created,
+        task_source: None,
     }
 }
 

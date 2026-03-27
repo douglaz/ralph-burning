@@ -242,7 +242,9 @@ impl BackendRole {
     pub fn default_target(self) -> ResolvedBackendTarget {
         match self {
             Self::Planner => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
-            Self::Implementer => ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6"),
+            Self::Implementer => {
+                ResolvedBackendTarget::new(BackendFamily::Claude, "claude-opus-4-6")
+            }
             Self::Reviewer => ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4"),
             Self::QaValidator => {
                 ResolvedBackendTarget::new(BackendFamily::OpenRouter, "openai/gpt-5.4")

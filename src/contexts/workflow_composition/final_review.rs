@@ -1136,6 +1136,7 @@ mod tests {
                 prompt_contents: "# Prompt\n\nTest prompt.\n".to_owned(),
                 prompt_hash: FileSystem::prompt_hash("# Prompt\n\nTest prompt.\n"),
                 created_at: Utc::now(),
+                task_source: None,
             },
         )
         .expect("project creation");
