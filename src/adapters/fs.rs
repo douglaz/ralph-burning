@@ -2331,6 +2331,45 @@ impl FsTaskRunLineageStore {
         merged
     }
 
+    fn option_conflicts(existing: Option<&str>, requested: Option<&str>) -> bool {
+        matches!((existing, requested), (Some(existing), Some(requested)) if existing != requested)
+    }
+
+    fn backfill_terminal_entry(
+        entry: &mut TaskRunEntry,
+        run_id: Option<&str>,
+        plan_hash: Option<&str>,
+        outcome_detail: Option<&str>,
+        finished_at: DateTime<Utc>,
+    ) -> bool {
+        let mut changed = false;
+
+        if let Some(run_id) = run_id {
+            if entry.run_id.is_none() {
+                entry.run_id = Some(run_id.to_owned());
+                changed = true;
+            }
+        }
+        if let Some(plan_hash) = plan_hash {
+            if entry.plan_hash.is_none() {
+                entry.plan_hash = Some(plan_hash.to_owned());
+                changed = true;
+            }
+        }
+        if let Some(outcome_detail) = outcome_detail {
+            if entry.outcome_detail.is_none() {
+                entry.outcome_detail = Some(outcome_detail.to_owned());
+                changed = true;
+            }
+        }
+        if entry.finished_at.is_none() {
+            entry.finished_at = Some(finished_at);
+            changed = true;
+        }
+
+        changed
+    }
+
     fn collapse_runs_for_bead(entries: Vec<TaskRunEntry>, bead_id: &str) -> Vec<TaskRunEntry> {
         let mut consumed_starts = HashSet::new();
         let mut merged_terminals = HashMap::new();
@@ -2422,7 +2461,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         outcome: TaskRunOutcome,
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
-    ) -> AppResult<()> {
+    ) -> AppResult<TaskRunEntry> {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let raw = match fs::read_to_string(&path) {
@@ -2542,36 +2581,67 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             }
         };
 
-        let entry = &mut entries[target_index];
-        if entry.outcome.is_terminal() {
-            let run_suffix = run_id
-                .map(|run_id| format!(" run={run_id}"))
-                .unwrap_or_default();
-            return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                details: format!(
-                    "task run for bead={bead_id} project={project_id}{run_suffix} is already finalized with outcome={}",
-                    entry.outcome,
-                ),
-            });
-        }
-        if let Some(run_id) = run_id {
-            entry.run_id.get_or_insert_with(|| run_id.to_owned());
-        }
-        if entry.plan_hash.is_none() {
-            entry.plan_hash = plan_hash.map(str::to_owned);
-        }
-        entry.outcome = outcome;
-        entry.outcome_detail = outcome_detail;
-        entry.finished_at = Some(finished_at);
+        let should_write;
+        let finalized_entry = {
+            let entry = &mut entries[target_index];
+            if entry.outcome.is_terminal() {
+                let run_suffix = entry
+                    .run_id
+                    .as_deref()
+                    .or(run_id)
+                    .map(|run_id| format!(" run={run_id}"))
+                    .unwrap_or_default();
+                let incompatible_terminal_update = entry.outcome != outcome
+                    || Self::option_conflicts(entry.run_id.as_deref(), run_id)
+                    || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
+                    || Self::option_conflicts(
+                        entry.outcome_detail.as_deref(),
+                        outcome_detail.as_deref(),
+                    );
+                if incompatible_terminal_update {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                        details: format!(
+                            "task run for bead={bead_id} project={project_id}{run_suffix} is already finalized with outcome={}",
+                            entry.outcome,
+                        ),
+                    });
+                }
 
-        let mut content = String::new();
-        for entry in &entries {
-            let line = serde_json::to_string(entry)?;
-            content.push_str(&line);
-            content.push('\n');
+                should_write = Self::backfill_terminal_entry(
+                    entry,
+                    run_id,
+                    plan_hash,
+                    outcome_detail.as_deref(),
+                    finished_at,
+                );
+            } else {
+                if let Some(run_id) = run_id {
+                    entry.run_id.get_or_insert_with(|| run_id.to_owned());
+                }
+                if entry.plan_hash.is_none() {
+                    entry.plan_hash = plan_hash.map(str::to_owned);
+                }
+                entry.outcome = outcome;
+                entry.outcome_detail = outcome_detail;
+                entry.finished_at = Some(finished_at);
+                should_write = true;
+            }
+
+            entry.clone()
+        };
+
+        if should_write {
+            let mut content = String::new();
+            for entry in &entries {
+                let line = serde_json::to_string(entry)?;
+                content.push_str(&line);
+                content.push('\n');
+            }
+            FileSystem::write_atomic(&path, &content)?;
         }
-        FileSystem::write_atomic(&path, &content)
+
+        Ok(finalized_entry)
     }
 
     fn find_runs_for_bead(
