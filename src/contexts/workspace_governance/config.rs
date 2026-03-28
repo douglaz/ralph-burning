@@ -27,7 +27,7 @@ pub const DEFAULT_MAX_REFINEMENT_RETRIES: u32 = 2;
 pub const DEFAULT_MIN_COMPLETERS: usize = 2;
 pub const DEFAULT_CONSENSUS_THRESHOLD: f64 = 0.66;
 pub const DEFAULT_MAX_FINAL_RESTARTS: u32 = 20;
-pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 10;
+pub const DEFAULT_MAX_COMPLETION_ROUNDS: u32 = 20;
 pub const DEFAULT_PROCESS_BACKEND_TIMEOUT_SECS: u64 = 3600;
 pub const DEFAULT_PR_NO_DIFF_ACTION: PrPolicy = PrPolicy::SkipOnNoDiff;
 pub const DEFAULT_REBASE_AGENT_RESOLUTION_ENABLED: bool = false;
@@ -188,6 +188,12 @@ impl EffectiveConfig {
                 project_config.workflow.max_review_iterations,
                 None,
                 DEFAULT_MAX_REVIEW_ITERATIONS,
+            ),
+            max_completion_rounds: resolve_scalar(
+                workspace_config.workflow.max_completion_rounds,
+                project_config.workflow.max_completion_rounds,
+                None,
+                DEFAULT_MAX_COMPLETION_ROUNDS,
             ),
             prompt_change_action: resolve_scalar(
                 workspace_config.workflow.prompt_change_action,
@@ -819,6 +825,14 @@ impl EffectiveConfig {
                 source_for_option(
                     self.workspace_config.workflow.max_review_iterations,
                     self.project_config.workflow.max_review_iterations,
+                    None::<u32>,
+                ),
+            ),
+            ["workflow", "max_completion_rounds"] => (
+                ConfigValue::Integer(self.run_policy.max_completion_rounds as u64),
+                source_for_option(
+                    self.workspace_config.workflow.max_completion_rounds,
+                    self.project_config.workflow.max_completion_rounds,
                     None::<u32>,
                 ),
             ),
@@ -1607,6 +1621,7 @@ fn known_config_keys() -> Vec<String> {
         "workflow.qa_backend".to_owned(),
         "workflow.max_qa_iterations".to_owned(),
         "workflow.max_review_iterations".to_owned(),
+        "workflow.max_completion_rounds".to_owned(),
         "workflow.prompt_change_action".to_owned(),
         "completion.backends".to_owned(),
         "completion.min_completers".to_owned(),
@@ -1719,6 +1734,12 @@ fn apply_to_document(document: &mut DocumentMut, key: &str, raw_value: &str) -> 
         ["workflow", "max_review_iterations"] => apply_optional_u64(
             document,
             &["workflow", "max_review_iterations"],
+            key,
+            raw_value,
+        )?,
+        ["workflow", "max_completion_rounds"] => apply_optional_u64(
+            document,
+            &["workflow", "max_completion_rounds"],
             key,
             raw_value,
         )?,

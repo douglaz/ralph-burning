@@ -36,9 +36,7 @@ use crate::contexts::project_run_record::service::{
 use crate::contexts::workflow_composition::payloads::{
     ReviewOutcome, StagePayload, ValidationPayload,
 };
-use crate::contexts::workspace_governance::config::{
-    EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
-};
+use crate::contexts::workspace_governance::config::EffectiveConfig;
 use crate::contexts::workspace_governance::template_catalog;
 use crate::shared::domain::{
     BackendFamily, BackendPolicyRole, BackendRole, FailureClass, FlowPreset, ProjectId,
@@ -2062,7 +2060,7 @@ where
                     let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
                         .ok()
                         .and_then(|v| v.parse::<u32>().ok())
-                        .unwrap_or(DEFAULT_MAX_COMPLETION_ROUNDS);
+                        .unwrap_or(effective_config.run_policy().max_completion_rounds);
                     if next_cursor.completion_round > max_rounds {
                         return fail_run_result(
                             &AppError::StageCommitFailed {
@@ -2472,7 +2470,7 @@ where
                     let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
                         .ok()
                         .and_then(|value| value.parse::<u32>().ok())
-                        .unwrap_or(DEFAULT_MAX_COMPLETION_ROUNDS);
+                        .unwrap_or(effective_config.run_policy().max_completion_rounds);
                     if next_cursor.completion_round > max_rounds {
                         return fail_run_result(
                             &AppError::StageCommitFailed {

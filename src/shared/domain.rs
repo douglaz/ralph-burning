@@ -1132,6 +1132,8 @@ pub struct WorkflowSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_review_iterations: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_rounds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_change_action: Option<PromptChangeAction>,
     #[serde(flatten)]
     pub extra: Table,
@@ -1145,6 +1147,7 @@ impl WorkflowSettings {
             && self.qa_backend.is_none()
             && self.max_qa_iterations.is_none()
             && self.max_review_iterations.is_none()
+            && self.max_completion_rounds.is_none()
             && self.prompt_change_action.is_none()
             && self.extra.is_empty()
     }
@@ -1447,6 +1450,7 @@ pub struct EffectiveRunPolicy {
     pub default_flow: FlowPreset,
     pub max_qa_iterations: u32,
     pub max_review_iterations: u32,
+    pub max_completion_rounds: u32,
     pub prompt_change_action: PromptChangeAction,
 }
 
