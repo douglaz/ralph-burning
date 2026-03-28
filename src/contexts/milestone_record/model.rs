@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -331,6 +331,69 @@ impl TaskRunEntry {
         }
         merged
     }
+}
+
+pub fn active_bead_ids(entries: &[TaskRunEntry]) -> BTreeSet<String> {
+    entries
+        .iter()
+        .filter(|entry| !entry.outcome.is_terminal())
+        .map(|entry| entry.bead_id.clone())
+        .collect()
+}
+
+pub fn find_matching_running_task_run(
+    entries: &[TaskRunEntry],
+    bead_id: &str,
+    project_id: &str,
+    run_id: Option<&str>,
+) -> Option<TaskRunEntry> {
+    let matching_running_entries: Vec<TaskRunEntry> = entries
+        .iter()
+        .filter(|entry| {
+            entry.bead_id == bead_id
+                && entry.project_id == project_id
+                && !entry.outcome.is_terminal()
+        })
+        .cloned()
+        .collect();
+
+    if let Some(run_id) = run_id {
+        let exact_running_matches: Vec<TaskRunEntry> = matching_running_entries
+            .iter()
+            .filter(|entry| entry.run_id.as_deref() == Some(run_id))
+            .cloned()
+            .collect();
+        exact_running_matches.first().cloned().or_else(|| {
+            let unmatched_running: Vec<TaskRunEntry> = matching_running_entries
+                .iter()
+                .filter(|entry| entry.run_id.is_none())
+                .cloned()
+                .collect();
+            match unmatched_running.as_slice() {
+                [entry] => Some(entry.clone()),
+                _ => None,
+            }
+        })
+    } else {
+        match matching_running_entries.as_slice() {
+            [entry] => Some(entry.clone()),
+            _ => None,
+        }
+    }
+}
+
+pub fn has_finalized_task_run(
+    entries: &[TaskRunEntry],
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+) -> bool {
+    entries.iter().any(|entry| {
+        entry.bead_id == bead_id
+            && entry.project_id == project_id
+            && entry.run_id.as_deref() == Some(run_id)
+            && entry.outcome.is_terminal()
+    })
 }
 
 pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {

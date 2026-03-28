@@ -21,8 +21,9 @@ use crate::contexts::automation_runtime::repo_registry::{
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
-    collapse_task_run_attempts, MilestoneId, MilestoneJournalEvent, MilestoneRecord,
-    MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
+    active_bead_ids, collapse_task_run_attempts, find_matching_running_task_run,
+    has_finalized_task_run, MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot,
+    TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2246,14 +2247,21 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
-impl MilestoneJournalPort for FsMilestoneJournalStore {
-    fn read_journal(
-        &self,
-        base_dir: &Path,
+impl FsMilestoneJournalStore {
+    fn journal_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE)
+    }
+
+    fn journal_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id)
+            .join(format!("{MILESTONE_JOURNAL_FILE}.lock"))
+    }
+
+    fn read_journal_from_path(
+        path: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<MilestoneJournalEvent>> {
-        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE);
-        let raw = match fs::read_to_string(&path) {
+        let raw = match fs::read_to_string(path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
@@ -2273,6 +2281,16 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         }
         Ok(events)
     }
+}
+
+impl MilestoneJournalPort for FsMilestoneJournalStore {
+    fn read_journal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<MilestoneJournalEvent>> {
+        Self::read_journal_from_path(&Self::journal_path(base_dir, milestone_id), milestone_id)
+    }
 
     fn append_event(
         &self,
@@ -2280,8 +2298,32 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
         milestone_id: &MilestoneId,
         line: &str,
     ) -> AppResult<()> {
-        let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE);
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
         FileSystem::append_line(&path, line)
+    }
+
+    fn append_event_if_missing(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        event: &MilestoneJournalEvent,
+    ) -> AppResult<bool> {
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
+        let journal = Self::read_journal_from_path(&path, milestone_id)?;
+        if journal.iter().any(|existing| {
+            existing.timestamp == event.timestamp
+                && existing.event_type == event.event_type
+                && existing.bead_id == event.bead_id
+                && existing.details == event.details
+        }) {
+            return Ok(false);
+        }
+
+        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+        FileSystem::append_line(&path, &line)?;
+        Ok(true)
     }
 }
 
@@ -2295,6 +2337,44 @@ impl FsTaskRunLineageStore {
     fn task_runs_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
         FileSystem::milestone_root(base_dir, milestone_id)
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
+    }
+
+    fn read_task_runs_from_path(
+        path: &Path,
+        milestone_id: &MilestoneId,
+    ) -> AppResult<Vec<TaskRunEntry>> {
+        let raw = match fs::read_to_string(path) {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut entries = Vec::new();
+        for (i, line) in raw.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let mut entry: TaskRunEntry =
+                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!("line {}: {}", i + 1, e),
+                })?;
+            entry
+                .milestone_id
+                .get_or_insert_with(|| milestone_id.to_string());
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
+    fn write_task_runs(path: &Path, entries: &[TaskRunEntry]) -> AppResult<()> {
+        let mut content = String::new();
+        for entry in entries {
+            let line = serde_json::to_string(entry)?;
+            content.push_str(&line);
+            content.push('\n');
+        }
+        FileSystem::write_atomic(path, &content)
     }
 
     fn is_superseded_legacy_start(entries: &[TaskRunEntry], index: usize) -> bool {
@@ -2357,6 +2437,34 @@ impl FsTaskRunLineageStore {
         changed
     }
 
+    fn backfill_running_entry(
+        entry: &mut TaskRunEntry,
+        milestone_id: &MilestoneId,
+        run_id: Option<&str>,
+        plan_hash: Option<&str>,
+    ) -> bool {
+        let mut changed = false;
+
+        if entry.milestone_id.is_none() {
+            entry.milestone_id = Some(milestone_id.to_string());
+            changed = true;
+        }
+        if let Some(run_id) = run_id {
+            if entry.run_id.is_none() {
+                entry.run_id = Some(run_id.to_owned());
+                changed = true;
+            }
+        }
+        if let Some(plan_hash) = plan_hash {
+            if entry.plan_hash.is_none() {
+                entry.plan_hash = Some(plan_hash.to_owned());
+                changed = true;
+            }
+        }
+
+        changed
+    }
+
     fn unique_terminal_replay_match(
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
@@ -2400,29 +2508,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<TaskRunEntry>> {
-        let path = Self::task_runs_path(base_dir, milestone_id);
-        let raw = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(e) => return Err(e.into()),
-        };
-        let mut entries = Vec::new();
-        for (i, line) in raw.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let mut entry: TaskRunEntry =
-                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
-                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                    details: format!("line {}: {}", i + 1, e),
-                })?;
-            entry
-                .milestone_id
-                .get_or_insert_with(|| milestone_id.to_string());
-            entries.push(entry);
-        }
-        Ok(entries)
+        Self::read_task_runs_from_path(&Self::task_runs_path(base_dir, milestone_id), milestone_id)
     }
 
     fn append_task_run(
@@ -2435,6 +2521,85 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let line = serde_json::to_string(entry)?;
         FileSystem::append_line(&path, &line)
+    }
+
+    fn record_task_run_start(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        run_id: Option<&str>,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+    ) -> AppResult<TaskRunEntry> {
+        let path = Self::task_runs_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
+        let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let canonical_task_runs = collapse_task_run_attempts(entries.clone());
+        let active_beads = active_bead_ids(&canonical_task_runs);
+
+        if let Some(other_active_bead) = active_beads
+            .iter()
+            .find(|active| active.as_str() != bead_id)
+        {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot start bead '{bead_id}': bead '{other_active_bead}' is already active"
+                ),
+            });
+        }
+
+        if let Some(run_id) = run_id {
+            if has_finalized_task_run(&canonical_task_runs, bead_id, project_id, run_id) {
+                return Err(AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot start bead '{bead_id}': run '{run_id}' for project '{project_id}' is already finalized"
+                    ),
+                });
+            }
+        }
+
+        if let Some(existing_entry) =
+            find_matching_running_task_run(&canonical_task_runs, bead_id, project_id, run_id)
+        {
+            if let Some(existing_index) = entries.iter().position(|entry| {
+                !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
+            }) {
+                if Self::backfill_running_entry(
+                    &mut entries[existing_index],
+                    milestone_id,
+                    run_id,
+                    plan_hash,
+                ) {
+                    Self::write_task_runs(&path, &entries)?;
+                }
+                return Ok(entries[existing_index].clone());
+            }
+
+            return Ok(existing_entry);
+        }
+
+        if active_beads.contains(bead_id) {
+            return Err(AppError::RunStartFailed {
+                reason: format!("cannot start bead '{bead_id}': it is already active"),
+            });
+        }
+
+        let entry = TaskRunEntry {
+            milestone_id: Some(milestone_id.to_string()),
+            bead_id: bead_id.to_owned(),
+            project_id: project_id.to_owned(),
+            run_id: run_id.map(str::to_owned),
+            plan_hash: plan_hash.map(str::to_owned),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+        };
+        entries.push(entry.clone());
+        Self::write_task_runs(&path, &entries)?;
+        Ok(entry)
     }
 
     fn update_task_run(
@@ -2451,33 +2616,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
     ) -> AppResult<TaskRunEntry> {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
-        let raw = match fs::read_to_string(&path) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(AppError::CorruptRecord {
-                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                    details: format!(
-                        "no task runs file found when updating bead={bead_id} project={project_id}"
-                    ),
-                });
-            }
-            Err(e) => return Err(e.into()),
-        };
-        let mut entries: Vec<TaskRunEntry> = Vec::new();
-        for (i, line) in raw.lines().enumerate() {
-            let trimmed = line.trim();
-            if trimmed.is_empty() {
-                continue;
-            }
-            let mut entry: TaskRunEntry =
-                serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
-                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                    details: format!("line {}: {}", i + 1, e),
-                })?;
-            entry
-                .milestone_id
-                .get_or_insert_with(|| milestone_id.to_string());
-            entries.push(entry);
+        let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        if entries.is_empty() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!(
+                    "no task runs file found when updating bead={bead_id} project={project_id}"
+                ),
+            });
         }
 
         let matching_indices: Vec<usize> = entries
@@ -2677,16 +2823,13 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         };
 
         if should_write {
-            let mut content = String::new();
-            for (index, entry) in entries.iter().enumerate() {
-                if duplicate_indices_to_remove.contains(&index) {
-                    continue;
-                }
-                let line = serde_json::to_string(entry)?;
-                content.push_str(&line);
-                content.push('\n');
-            }
-            FileSystem::write_atomic(&path, &content)?;
+            let filtered_entries: Vec<TaskRunEntry> = entries
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !duplicate_indices_to_remove.contains(index))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            Self::write_task_runs(&path, &filtered_entries)?;
         }
 
         Ok(finalized_entry)
