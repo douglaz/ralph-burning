@@ -74,8 +74,9 @@ pub trait TaskRunLineagePort {
         milestone_id: &MilestoneId,
         entry: &TaskRunEntry,
     ) -> AppResult<()>;
-    /// Update an existing task run entry's outcome by matching bead_id + project_id.
-    /// Sets the outcome, outcome_detail, and finished_at on the most recent matching entry.
+    /// Update an existing task run entry's outcome by matching bead_id + project_id,
+    /// further narrowing by run_id when available. Implementations should reject
+    /// ambiguous matches instead of rewriting an arbitrary historical attempt.
     #[allow(clippy::too_many_arguments)]
     fn update_task_run(
         &self,
@@ -83,6 +84,8 @@ pub trait TaskRunLineagePort {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
+        run_id: Option<&str>,
+        plan_hash: Option<&str>,
         outcome: TaskRunOutcome,
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
@@ -318,8 +321,10 @@ pub fn record_bead_start(
 
 /// Record the completion of a bead task run.
 ///
-/// `started_at` should be the original start time from `record_bead_start`;
-/// `now` is the completion timestamp.
+/// This finalizes the existing lineage row created by [`record_bead_start`] and
+/// updates snapshot + journal state in the same flow. `started_at` is retained
+/// for compatibility with existing callers, but the persisted start time is read
+/// from the existing lineage row instead of appending a second entry.
 #[allow(clippy::too_many_arguments)]
 pub fn record_bead_completion(
     snapshot_store: &impl MilestoneSnapshotPort,
@@ -333,57 +338,23 @@ pub fn record_bead_completion(
     plan_hash: Option<&str>,
     outcome: TaskRunOutcome,
     outcome_detail: Option<&str>,
-    started_at: DateTime<Utc>,
+    _started_at: DateTime<Utc>,
     now: DateTime<Utc>,
 ) -> AppResult<()> {
-    let entry = TaskRunEntry {
-        milestone_id: Some(milestone_id.to_string()),
-        bead_id: bead_id.to_owned(),
-        project_id: project_id.to_owned(),
-        run_id: run_id.map(str::to_owned),
-        plan_hash: plan_hash.map(str::to_owned),
+    update_task_run(
+        snapshot_store,
+        journal_store,
+        lineage_store,
+        base_dir,
+        milestone_id,
+        bead_id,
+        project_id,
+        run_id,
+        plan_hash,
         outcome,
-        outcome_detail: outcome_detail.map(str::to_owned),
-        started_at,
-        finished_at: Some(now),
-    };
-    lineage_store.append_task_run(base_dir, milestone_id, &entry)?;
-
-    let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
-    snapshot.progress.in_progress_beads = snapshot.progress.in_progress_beads.saturating_sub(1);
-    match outcome {
-        TaskRunOutcome::Succeeded => {
-            snapshot.progress.completed_beads = snapshot.progress.completed_beads.saturating_add(1);
-        }
-        TaskRunOutcome::Failed => {
-            snapshot.progress.failed_beads = snapshot.progress.failed_beads.saturating_add(1);
-        }
-        _ => {}
-    }
-    if snapshot
-        .active_bead
-        .as_deref()
-        .is_some_and(|id| id == bead_id)
-    {
-        snapshot.active_bead = None;
-    }
-    snapshot.updated_at = now;
-
-    let event_type = if outcome == TaskRunOutcome::Succeeded {
-        MilestoneEventType::BeadCompleted
-    } else {
-        MilestoneEventType::BeadFailed
-    };
-
-    snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
-
-    let event = MilestoneJournalEvent::new(event_type, now)
-        .with_bead(bead_id)
-        .with_details(format!("project={project_id}, outcome={outcome}"));
-    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
-    journal_store.append_event(base_dir, milestone_id, &line)?;
-
-    Ok(())
+        outcome_detail.map(str::to_owned),
+        now,
+    )
 }
 
 /// Read the journal for a milestone.
@@ -417,24 +388,87 @@ pub fn find_runs_for_bead(
 /// Update an existing task run's outcome after completion.
 #[allow(clippy::too_many_arguments)]
 pub fn update_task_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
     lineage_store: &impl TaskRunLineagePort,
     base_dir: &Path,
     milestone_id: &MilestoneId,
     bead_id: &str,
     project_id: &str,
+    run_id: Option<&str>,
+    plan_hash: Option<&str>,
     outcome: TaskRunOutcome,
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
+    if !outcome.is_terminal() {
+        return Err(AppError::RunStartFailed {
+            reason: format!(
+                "cannot finalize bead '{bead_id}' with non-terminal outcome '{outcome}'"
+            ),
+        });
+    }
+
     lineage_store.update_task_run(
         base_dir,
         milestone_id,
         bead_id,
         project_id,
+        run_id,
+        plan_hash,
         outcome,
-        outcome_detail,
+        outcome_detail.clone(),
         finished_at,
-    )
+    )?;
+
+    let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+    snapshot.progress.in_progress_beads = snapshot.progress.in_progress_beads.saturating_sub(1);
+    let event_type = match outcome {
+        TaskRunOutcome::Succeeded => {
+            snapshot.progress.completed_beads = snapshot.progress.completed_beads.saturating_add(1);
+            MilestoneEventType::BeadCompleted
+        }
+        TaskRunOutcome::Failed => {
+            snapshot.progress.failed_beads = snapshot.progress.failed_beads.saturating_add(1);
+            MilestoneEventType::BeadFailed
+        }
+        TaskRunOutcome::Skipped => {
+            snapshot.progress.skipped_beads = snapshot.progress.skipped_beads.saturating_add(1);
+            MilestoneEventType::BeadSkipped
+        }
+        TaskRunOutcome::Pending | TaskRunOutcome::Running => {
+            unreachable!("non-terminal outcomes are rejected before snapshot mutation")
+        }
+    };
+    if snapshot
+        .active_bead
+        .as_deref()
+        .is_some_and(|id| id == bead_id)
+    {
+        snapshot.active_bead = None;
+    }
+    snapshot.updated_at = finished_at;
+    snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+
+    let mut details = vec![format!("project={project_id}")];
+    if let Some(run_id) = run_id {
+        details.push(format!("run={run_id}"));
+    }
+    if let Some(plan_hash) = plan_hash {
+        details.push(format!("plan_hash={plan_hash}"));
+    }
+    details.push(format!("outcome={outcome}"));
+    if let Some(detail) = outcome_detail {
+        details.push(format!("detail={detail}"));
+    }
+
+    let event = MilestoneJournalEvent::new(event_type, finished_at)
+        .with_bead(bead_id)
+        .with_details(details.join(", "));
+    let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+    journal_store.append_event(base_dir, milestone_id, &line)?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -687,14 +721,21 @@ mod tests {
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.skipped_beads, 0);
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
-        assert_eq!(runs.len(), 2);
+        assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].milestone_id.as_deref(), Some(record.id.as_str()));
         assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(runs[0].plan_hash.as_deref(), Some("abc123"));
-        assert_eq!(runs[1].milestone_id.as_deref(), Some(record.id.as_str()));
-        assert_eq!(runs[1].outcome_detail.as_deref(), Some("All tests passed"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(runs[0].outcome_detail.as_deref(), Some("All tests passed"));
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert_eq!(
+            journal.last().map(|event| event.event_type),
+            Some(MilestoneEventType::BeadCompleted)
+        );
         Ok(())
     }
 
@@ -887,15 +928,18 @@ mod tests {
 
         // find_runs_for_bead should return only bead-1 entries
         let bead1_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
-        assert_eq!(bead1_runs.len(), 4); // 2 start + 2 completion entries
+        assert_eq!(bead1_runs.len(), 2);
         for run in &bead1_runs {
             assert_eq!(run.milestone_id.as_deref(), Some(record.id.as_str()));
             assert_eq!(run.bead_id, "bead-1");
         }
+        assert_eq!(bead1_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(bead1_runs[1].outcome, TaskRunOutcome::Succeeded);
 
-        // bead-2 should have exactly 2 entries
+        // bead-2 should have exactly 1 entry
         let bead2_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-2")?;
-        assert_eq!(bead2_runs.len(), 2);
+        assert_eq!(bead2_runs.len(), 1);
+        assert_eq!(bead2_runs[0].outcome, TaskRunOutcome::Succeeded);
 
         // Non-existent bead should return empty
         let empty_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-999")?;
@@ -935,29 +979,46 @@ mod tests {
             &record.id,
             "bead-1",
             "project-1",
-            Some("run-1"),
+            None,
             None,
             now,
         )?;
 
         // Update the running entry via update_task_run
         update_task_run(
+            &snapshot_store,
+            &journal_store,
             &lineage_store,
             base,
             &record.id,
             "bead-1",
             "project-1",
+            Some("run-1"),
+            Some("plan-v1"),
             TaskRunOutcome::Succeeded,
             Some("All checks passed".to_owned()),
             now,
         )?;
 
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs.len(), 1);
         assert_eq!(runs[0].milestone_id.as_deref(), Some(record.id.as_str()));
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
         assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
         assert_eq!(runs[0].outcome_detail.as_deref(), Some("All checks passed"));
         assert!(runs[0].finished_at.is_some());
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert_eq!(
+            journal.last().map(|event| event.event_type),
+            Some(MilestoneEventType::BeadCompleted)
+        );
         Ok(())
     }
 
@@ -1042,13 +1103,223 @@ mod tests {
         )?;
 
         let bead1_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
-        assert_eq!(bead1_runs.len(), 4); // start+complete for each attempt
-                                         // First attempt failed
-        assert_eq!(bead1_runs[1].outcome, TaskRunOutcome::Failed);
-        assert_eq!(bead1_runs[1].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(bead1_runs.len(), 2);
+        assert_eq!(bead1_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(bead1_runs[0].plan_hash.as_deref(), Some("plan-v1"));
         // Second attempt succeeded
-        assert_eq!(bead1_runs[3].outcome, TaskRunOutcome::Succeeded);
-        assert_eq!(bead1_runs[3].plan_hash.as_deref(), Some("plan-v2"));
+        assert_eq!(bead1_runs[1].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(bead1_runs[1].plan_hash.as_deref(), Some("plan-v2"));
+        Ok(())
+    }
+
+    #[test]
+    fn skipped_runs_are_tracked_without_counting_as_failures(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "skip-test".to_owned(),
+                name: "Skip Test".to_owned(),
+                description: "testing skipped task runs".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-skip"),
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-skip"),
+            TaskRunOutcome::Skipped,
+            Some("Handled by another milestone"),
+            now,
+            now,
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        assert_eq!(snapshot.progress.skipped_beads, 1);
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Skipped);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        assert_eq!(
+            journal.last().map(|event| event.event_type),
+            Some(MilestoneEventType::BeadSkipped)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_flow_rejects_duplicate_finalization() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "duplicate-finalize-test".to_owned(),
+                name: "Duplicate Finalize Test".to_owned(),
+                description: "testing duplicate completion protection".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("first completion"),
+            now,
+            now,
+        )?;
+
+        let error = update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            TaskRunOutcome::Failed,
+            Some("second completion".to_owned()),
+            now,
+        )
+        .expect_err("duplicate terminal updates should fail");
+        assert!(error.to_string().contains("already finalized"));
+        Ok(())
+    }
+
+    #[test]
+    fn lineage_updates_require_run_id_when_multiple_open_attempts_exist(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "ambiguous-run-test".to_owned(),
+                name: "Ambiguous Run Test".to_owned(),
+                description: "testing run-id disambiguation".to_owned(),
+            },
+            now,
+        )?;
+
+        for run_id in ["run-1", "run-2"] {
+            lineage_store.append_task_run(
+                base,
+                &record.id,
+                &TaskRunEntry {
+                    milestone_id: Some(record.id.to_string()),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    run_id: Some(run_id.to_owned()),
+                    plan_hash: None,
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at: now,
+                    finished_at: None,
+                },
+            )?;
+        }
+
+        let error = lineage_store
+            .update_task_run(
+                base,
+                &record.id,
+                "bead-1",
+                "project-1",
+                None,
+                None,
+                TaskRunOutcome::Succeeded,
+                Some("missing run id".to_owned()),
+                now,
+            )
+            .expect_err("ambiguous updates should require run_id");
+        assert!(error.to_string().contains("provide run_id"));
+
+        lineage_store.update_task_run(
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-2"),
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("selected exact run".to_owned()),
+            now,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs[1].run_id.as_deref(), Some("run-2"));
+        assert_eq!(runs[1].plan_hash.as_deref(), Some("plan-v2"));
+        assert_eq!(runs[1].outcome, TaskRunOutcome::Succeeded);
         Ok(())
     }
 }

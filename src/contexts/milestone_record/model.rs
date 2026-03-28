@@ -198,6 +198,9 @@ pub struct MilestoneProgress {
     pub in_progress_beads: u32,
     /// Beads that failed and need attention.
     pub failed_beads: u32,
+    /// Beads intentionally skipped during execution.
+    #[serde(default)]
+    pub skipped_beads: u32,
     /// Beads that are blocked by dependencies.
     pub blocked_beads: u32,
 }
@@ -207,6 +210,7 @@ impl MilestoneProgress {
         self.total_beads
             .saturating_sub(self.completed_beads)
             .saturating_sub(self.failed_beads)
+            .saturating_sub(self.skipped_beads)
     }
 }
 
@@ -233,6 +237,7 @@ pub enum MilestoneEventType {
     BeadStarted,
     BeadCompleted,
     BeadFailed,
+    BeadSkipped,
     ProgressUpdated,
 }
 
@@ -386,12 +391,22 @@ mod tests {
     fn progress_remaining_saturates() -> Result<(), Box<dyn std::error::Error>> {
         let progress = MilestoneProgress {
             total_beads: 5,
-            completed_beads: 3,
+            completed_beads: 2,
             in_progress_beads: 1,
             failed_beads: 1,
+            skipped_beads: 1,
             blocked_beads: 0,
         };
         assert_eq!(progress.remaining(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn progress_deserialization_defaults_skipped_beads() -> Result<(), Box<dyn std::error::Error>> {
+        let progress: MilestoneProgress = serde_json::from_str(
+            r#"{"total_beads":5,"completed_beads":2,"in_progress_beads":1,"failed_beads":1,"blocked_beads":0}"#,
+        )?;
+        assert_eq!(progress.skipped_beads, 0);
         Ok(())
     }
 

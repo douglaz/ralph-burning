@@ -8,6 +8,7 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use chrono::{DateTime, Utc};
+use nix::fcntl::{Flock, FlockArg};
 
 use crate::contexts::agent_execution::model::RawOutputReference;
 use crate::contexts::agent_execution::service::RawOutputPort;
@@ -2092,6 +2093,36 @@ impl FileSystem {
     }
 }
 
+struct AdvisoryFileLock {
+    _file: Flock<fs::File>,
+}
+
+impl AdvisoryFileLock {
+    fn acquire(path: &Path) -> AppResult<Self> {
+        let parent = path.parent().ok_or_else(|| {
+            AppError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("path '{}' has no parent directory", path.display()),
+            ))
+        })?;
+        fs::create_dir_all(parent)?;
+
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(path)?;
+        let lock = Flock::lock(file, FlockArg::LockExclusive)
+            .map_err(|(_, errno)| errno_to_io_error(errno))?;
+        Ok(Self { _file: lock })
+    }
+}
+
+fn errno_to_io_error(errno: nix::errno::Errno) -> AppError {
+    std::io::Error::from_raw_os_error(errno as i32).into()
+}
+
 pub struct FsMilestoneStore;
 
 impl MilestoneStorePort for FsMilestoneStore {
@@ -2256,14 +2287,24 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
 
 pub struct FsTaskRunLineageStore;
 
+impl FsTaskRunLineageStore {
+    fn task_runs_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE)
+    }
+
+    fn task_runs_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id)
+            .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
+    }
+}
+
 impl TaskRunLineagePort for FsTaskRunLineageStore {
     fn read_task_runs(
         &self,
         base_dir: &Path,
         milestone_id: &MilestoneId,
     ) -> AppResult<Vec<TaskRunEntry>> {
-        let path =
-            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let path = Self::task_runs_path(base_dir, milestone_id);
         let raw = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -2294,8 +2335,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         entry: &TaskRunEntry,
     ) -> AppResult<()> {
-        let path =
-            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let path = Self::task_runs_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let line = serde_json::to_string(entry)?;
         FileSystem::append_line(&path, &line)
     }
@@ -2306,12 +2347,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
+        run_id: Option<&str>,
+        plan_hash: Option<&str>,
         outcome: TaskRunOutcome,
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
     ) -> AppResult<()> {
-        let path =
-            FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_TASK_RUNS_FILE);
+        let path = Self::task_runs_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let raw = match fs::read_to_string(&path) {
             Ok(content) => content,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -2330,34 +2373,121 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if trimmed.is_empty() {
                 continue;
             }
-            let entry: TaskRunEntry =
+            let mut entry: TaskRunEntry =
                 serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
                     file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                     details: format!("line {}: {}", i + 1, e),
                 })?;
+            entry
+                .milestone_id
+                .get_or_insert_with(|| milestone_id.to_string());
             entries.push(entry);
         }
-        // Find the most recent matching entry (last match) and update it
-        let mut found = false;
-        for entry in entries.iter_mut().rev() {
-            if entry.bead_id == bead_id && entry.project_id == project_id {
-                entry
-                    .milestone_id
-                    .get_or_insert_with(|| milestone_id.to_string());
-                entry.outcome = outcome;
-                entry.outcome_detail = outcome_detail;
-                entry.finished_at = Some(finished_at);
-                found = true;
-                break;
-            }
-        }
-        if !found {
+
+        let matching_indices: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (entry.bead_id == bead_id && entry.project_id == project_id).then_some(index)
+            })
+            .collect();
+        if matching_indices.is_empty() {
             return Err(AppError::CorruptRecord {
                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                 details: format!("no matching task run for bead={bead_id} project={project_id}"),
             });
         }
-        // Rewrite the file
+
+        let target_index = if let Some(run_id) = run_id {
+            let exact_matches: Vec<usize> = matching_indices
+                .iter()
+                .copied()
+                .filter(|index| entries[*index].run_id.as_deref() == Some(run_id))
+                .collect();
+            match exact_matches.as_slice() {
+                [index] => *index,
+                [] => {
+                    let open_matches: Vec<usize> = matching_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| {
+                            !entries[*index].outcome.is_terminal()
+                                && entries[*index].run_id.is_none()
+                        })
+                        .collect();
+                    match open_matches.as_slice() {
+                        [index] => *index,
+                        [] => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}"
+                                ),
+                            });
+                        }
+                        _ => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
+                                ),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                        details: format!(
+                            "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
+                        ),
+                    });
+                }
+            }
+        } else {
+            match matching_indices.as_slice() {
+                [index] => *index,
+                _ => {
+                    let open_matches: Vec<usize> = matching_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| !entries[*index].outcome.is_terminal())
+                        .collect();
+                    match open_matches.as_slice() {
+                        [index] => *index,
+                        _ => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "ambiguous task run update for bead={bead_id} project={project_id}; provide run_id to disambiguate"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        };
+
+        let entry = &mut entries[target_index];
+        if entry.outcome.is_terminal() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!(
+                    "task run for bead={bead_id} project={project_id} is already finalized with outcome={}",
+                    entry.outcome
+                ),
+            });
+        }
+        if let Some(run_id) = run_id {
+            entry.run_id.get_or_insert_with(|| run_id.to_owned());
+        }
+        if entry.plan_hash.is_none() {
+            entry.plan_hash = plan_hash.map(str::to_owned);
+        }
+        entry.outcome = outcome;
+        entry.outcome_detail = outcome_detail;
+        entry.finished_at = Some(finished_at);
+
         let mut content = String::new();
         for entry in &entries {
             let line = serde_json::to_string(entry)?;
@@ -2373,8 +2503,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
     ) -> AppResult<Vec<TaskRunEntry>> {
-        let all = self.read_task_runs(base_dir, milestone_id)?;
-        Ok(all.into_iter().filter(|e| e.bead_id == bead_id).collect())
+        let mut runs: Vec<TaskRunEntry> = self
+            .read_task_runs(base_dir, milestone_id)?
+            .into_iter()
+            .filter(|entry| entry.bead_id == bead_id)
+            .collect();
+        runs.sort_by(|left, right| {
+            left.started_at
+                .cmp(&right.started_at)
+                .then_with(|| left.finished_at.cmp(&right.finished_at))
+        });
+        Ok(runs)
     }
 }
 
