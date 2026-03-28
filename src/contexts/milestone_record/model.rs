@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -296,6 +297,82 @@ pub struct TaskRunEntry {
     pub finished_at: Option<DateTime<Utc>>,
 }
 
+impl TaskRunEntry {
+    pub fn same_attempt(left: &Self, right: &Self) -> bool {
+        if left.bead_id != right.bead_id || left.project_id != right.project_id {
+            return false;
+        }
+
+        match (left.run_id.as_deref(), right.run_id.as_deref()) {
+            (Some(left_run_id), Some(right_run_id)) => left_run_id == right_run_id,
+            _ => left.started_at == right.started_at,
+        }
+    }
+
+    pub fn merge_attempt_entries(primary: &Self, secondary: &Self) -> Self {
+        let mut merged = primary.clone();
+        if merged.milestone_id.is_none() {
+            merged.milestone_id = secondary.milestone_id.clone();
+        }
+        if merged.run_id.is_none() {
+            merged.run_id = secondary.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = secondary.plan_hash.clone();
+        }
+        if merged.outcome_detail.is_none() {
+            merged.outcome_detail = secondary.outcome_detail.clone();
+        }
+        merged.started_at = merged.started_at.min(secondary.started_at);
+        match (merged.finished_at, secondary.finished_at) {
+            (None, Some(finished_at)) => merged.finished_at = Some(finished_at),
+            (Some(current), Some(other)) if other < current => merged.finished_at = Some(other),
+            _ => {}
+        }
+        merged
+    }
+}
+
+pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {
+    let mut consumed_starts = HashSet::new();
+    let mut merged_terminals = HashMap::new();
+
+    for (terminal_index, terminal) in entries.iter().enumerate() {
+        if !terminal.outcome.is_terminal() {
+            continue;
+        }
+
+        if let Some((start_index, start)) =
+            entries.iter().enumerate().find(|(start_index, start)| {
+                !start.outcome.is_terminal()
+                    && !consumed_starts.contains(start_index)
+                    && TaskRunEntry::same_attempt(start, terminal)
+            })
+        {
+            consumed_starts.insert(start_index);
+            merged_terminals.insert(
+                terminal_index,
+                TaskRunEntry::merge_attempt_entries(terminal, start),
+            );
+        }
+    }
+
+    let mut normalized = Vec::new();
+    for (index, entry) in entries.into_iter().enumerate() {
+        if consumed_starts.contains(&index) {
+            continue;
+        }
+
+        if let Some(merged) = merged_terminals.remove(&index) {
+            normalized.push(merged);
+        } else {
+            normalized.push(entry);
+        }
+    }
+
+    normalized
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TaskRunOutcome {
@@ -456,6 +533,65 @@ mod tests {
         assert!(TaskRunOutcome::Succeeded.is_terminal());
         assert!(TaskRunOutcome::Failed.is_terminal());
         assert!(TaskRunOutcome::Skipped.is_terminal());
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_task_run_attempts_merges_legacy_rows() -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let collapsed = collapse_task_run_attempts(vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: Some("plan-a".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("done".to_owned()),
+                started_at,
+                finished_at: Some(started_at),
+            },
+        ]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].milestone_id.as_deref(), Some("ms-1"));
+        assert_eq!(collapsed[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(collapsed[0].plan_hash.as_deref(), Some("plan-a"));
+        assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("done"));
+        Ok(())
+    }
+
+    #[test]
+    fn same_attempt_prefers_run_id_when_present() -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let first = TaskRunEntry {
+            milestone_id: None,
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: Some("run-1".to_owned()),
+            plan_hash: None,
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+        };
+        let second = TaskRunEntry {
+            run_id: Some("run-2".to_owned()),
+            ..first.clone()
+        };
+
+        assert!(!TaskRunEntry::same_attempt(&first, &second));
         Ok(())
     }
 }
