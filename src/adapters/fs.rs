@@ -22,8 +22,8 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
     active_bead_ids, collapse_task_run_attempts, find_matching_running_task_run,
-    has_finalized_task_run, MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot,
-    TaskRunEntry, TaskRunOutcome,
+    has_finalized_task_run, render_completion_journal_details, MilestoneId, MilestoneJournalEvent,
+    MilestoneRecord, MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2278,6 +2278,10 @@ struct CompletionJournalDetails {
 
 impl CompletionJournalDetails {
     fn parse(details: &str) -> Option<Self> {
+        // `project_id`, `run_id`, and `plan_hash` are emitted by
+        // `render_completion_journal_details`, which treats them as simple
+        // identifiers and debug-asserts that they never contain the `, `
+        // delimiter. Only the trailing `detail=` payload is free-form text.
         let (project_id, mut remainder) = Self::split_required(details, "project=")?;
         let mut run_id = None;
         if remainder.starts_with("run=") {
@@ -2345,18 +2349,13 @@ impl CompletionJournalDetails {
     }
 
     fn render(&self) -> String {
-        let mut details = vec![format!("project={}", self.project_id)];
-        if let Some(run_id) = self.run_id.as_deref() {
-            details.push(format!("run={run_id}"));
-        }
-        if let Some(plan_hash) = self.plan_hash.as_deref() {
-            details.push(format!("plan_hash={plan_hash}"));
-        }
-        details.push(format!("outcome={}", self.outcome));
-        if let Some(outcome_detail) = self.outcome_detail.as_deref() {
-            details.push(format!("detail={outcome_detail}"));
-        }
-        details.join(", ")
+        render_completion_journal_details(
+            &self.project_id,
+            self.run_id.as_deref(),
+            self.plan_hash.as_deref(),
+            &self.outcome,
+            self.outcome_detail.as_deref(),
+        )
     }
 }
 
@@ -2824,12 +2823,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         .copied()
                         .filter(|index| {
                             !entries[*index].outcome.is_terminal()
-                                && entries[*index].run_id.is_none()
                                 && !Self::is_superseded_legacy_start(&entries, *index)
                         })
                         .collect();
                     match open_matches.as_slice() {
-                        [index] => *index,
                         [] => {
                             if let Some(index) = Self::unique_terminal_replay_match(
                                 &entries,
@@ -2845,6 +2842,16 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                     ),
                                 });
                             }
+                        }
+                        [index] if entries[*index].run_id.is_none() => *index,
+                        [index] => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only run={} is still open",
+                                    entries[*index].run_id.as_deref().unwrap_or("<missing>")
+                                ),
+                            });
                         }
                         _ => {
                             return Err(AppError::CorruptRecord {

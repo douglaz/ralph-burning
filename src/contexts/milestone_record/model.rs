@@ -1,5 +1,5 @@
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -332,6 +332,50 @@ impl TaskRunEntry {
         }
         merged
     }
+
+    pub fn completion_journal_details(&self) -> String {
+        render_completion_journal_details(
+            &self.project_id,
+            self.run_id.as_deref(),
+            self.plan_hash.as_deref(),
+            self.outcome,
+            self.outcome_detail.as_deref(),
+        )
+    }
+}
+
+pub fn render_completion_journal_details(
+    project_id: &str,
+    run_id: Option<&str>,
+    plan_hash: Option<&str>,
+    outcome: impl fmt::Display,
+    outcome_detail: Option<&str>,
+) -> String {
+    debug_assert!(
+        !project_id.contains(", "),
+        "project_id is rendered into a comma-delimited journal field and must not contain ', '"
+    );
+    debug_assert!(
+        run_id.is_none_or(|value| !value.contains(", ")),
+        "run_id is rendered into a comma-delimited journal field and must not contain ', '"
+    );
+    debug_assert!(
+        plan_hash.is_none_or(|value| !value.contains(", ")),
+        "plan_hash is rendered into a comma-delimited journal field and must not contain ', '"
+    );
+
+    let mut details = vec![format!("project={project_id}")];
+    if let Some(run_id) = run_id {
+        details.push(format!("run={run_id}"));
+    }
+    if let Some(plan_hash) = plan_hash {
+        details.push(format!("plan_hash={plan_hash}"));
+    }
+    details.push(format!("outcome={outcome}"));
+    if let Some(outcome_detail) = outcome_detail {
+        details.push(format!("detail={outcome_detail}"));
+    }
+    details.join(", ")
 }
 
 fn compare_task_run_recency(left: &TaskRunEntry, right: &TaskRunEntry) -> Ordering {
@@ -429,43 +473,48 @@ pub fn has_finalized_task_run(
 }
 
 pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {
-    let mut consumed_starts = HashSet::new();
-    let mut merged_terminals = HashMap::new();
+    let mut collapsed_groups: Vec<Vec<TaskRunEntry>> = Vec::new();
 
-    for (terminal_index, terminal) in entries.iter().enumerate() {
-        if !terminal.outcome.is_terminal() {
-            continue;
-        }
-
-        if let Some((start_index, start)) =
-            entries.iter().enumerate().find(|(start_index, start)| {
-                !start.outcome.is_terminal()
-                    && !consumed_starts.contains(start_index)
-                    && TaskRunEntry::same_attempt(start, terminal)
-            })
-        {
-            consumed_starts.insert(start_index);
-            merged_terminals.insert(
-                terminal_index,
-                TaskRunEntry::merge_attempt_entries(terminal, start),
-            );
-        }
-    }
-
-    let mut normalized = Vec::new();
-    for (index, entry) in entries.into_iter().enumerate() {
-        if consumed_starts.contains(&index) {
-            continue;
-        }
-
-        if let Some(merged) = merged_terminals.remove(&index) {
-            normalized.push(merged);
+    for entry in entries {
+        if let Some(group) = collapsed_groups.iter_mut().find(|group| {
+            group
+                .iter()
+                .all(|existing| can_collapse_attempt_entries(existing, &entry))
+        }) {
+            group.push(entry);
         } else {
-            normalized.push(entry);
+            collapsed_groups.push(vec![entry]);
         }
     }
 
-    normalized
+    collapsed_groups
+        .into_iter()
+        .map(collapse_task_run_group)
+        .collect()
+}
+
+fn can_collapse_attempt_entries(left: &TaskRunEntry, right: &TaskRunEntry) -> bool {
+    TaskRunEntry::same_attempt(left, right)
+        && (!left.outcome.is_terminal()
+            || !right.outcome.is_terminal()
+            || left.outcome == right.outcome)
+}
+
+fn collapse_task_run_group(group: Vec<TaskRunEntry>) -> TaskRunEntry {
+    let primary_index = group
+        .iter()
+        .position(|entry| entry.outcome.is_terminal())
+        .unwrap_or(0);
+    let mut merged = group[primary_index].clone();
+
+    for (index, entry) in group.iter().enumerate() {
+        if index == primary_index {
+            continue;
+        }
+        merged = TaskRunEntry::merge_attempt_entries(&merged, entry);
+    }
+
+    merged
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -664,6 +713,54 @@ mod tests {
         assert_eq!(collapsed[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(collapsed[0].plan_hash.as_deref(), Some("plan-a"));
         assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("done"));
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_task_run_attempts_deduplicates_terminal_replays(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let finished_at = started_at + chrono::Duration::seconds(5);
+        let collapsed = collapse_task_run_attempts(vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: None,
+                started_at,
+                finished_at: Some(finished_at),
+            },
+            TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("replayed".to_owned()),
+                started_at,
+                finished_at: Some(finished_at),
+            },
+        ]);
+
+        assert_eq!(collapsed.len(), 1);
+        assert_eq!(collapsed[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(collapsed[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("replayed"));
         Ok(())
     }
 
