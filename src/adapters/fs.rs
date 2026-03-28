@@ -2085,6 +2085,7 @@ const MILESTONE_JOURNAL_FILE: &str = "journal.ndjson";
 const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
 const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
+const MILESTONE_MUTATION_LOCK_FILE: &str = "mutation.lock";
 
 impl FileSystem {
     pub(crate) fn milestone_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
@@ -2219,6 +2220,12 @@ impl MilestoneStorePort for FsMilestoneStore {
 
 pub struct FsMilestoneSnapshotStore;
 
+impl FsMilestoneSnapshotStore {
+    fn mutation_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_MUTATION_LOCK_FILE)
+    }
+}
+
 impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
     fn read_snapshot(
         &self,
@@ -2242,6 +2249,19 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
         let path = FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_STATUS_FILE);
         let json = serde_json::to_string_pretty(snapshot)?;
         FileSystem::write_atomic(&path, &json)
+    }
+
+    fn with_milestone_write_lock<T, F>(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        operation: F,
+    ) -> AppResult<T>
+    where
+        F: FnOnce() -> AppResult<T>,
+    {
+        let _lock = AdvisoryFileLock::acquire(&Self::mutation_lock_path(base_dir, milestone_id))?;
+        operation()
     }
 }
 
