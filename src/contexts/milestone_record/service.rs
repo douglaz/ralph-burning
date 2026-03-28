@@ -386,6 +386,11 @@ pub fn find_runs_for_bead(
 }
 
 /// Update an existing task run's outcome after completion.
+///
+/// The lineage row is written first and should be treated as the durable source
+/// of truth for repair. Snapshot counters and journal events are persisted in
+/// separate follow-up writes, so an interrupted completion can leave those
+/// artifacts temporarily out of sync with `task-runs.ndjson` until reconciled.
 #[allow(clippy::too_many_arguments)]
 pub fn update_task_run(
     snapshot_store: &impl MilestoneSnapshotPort,
@@ -949,6 +954,106 @@ mod tests {
     }
 
     #[test]
+    fn find_runs_for_bead_collapses_legacy_start_completion_pairs(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "legacy-query-test".to_owned(),
+                name: "Legacy Query Test".to_owned(),
+                description: "testing legacy task-run query collapse".to_owned(),
+            },
+            now,
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        let first_started = now;
+        let second_started = now + chrono::Duration::seconds(10);
+        let legacy_lines = [
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: first_started,
+                finished_at: None,
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("legacy failure".to_owned()),
+                started_at: first_started,
+                finished_at: Some(first_started + chrono::Duration::seconds(5)),
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: second_started,
+                finished_at: None,
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("legacy success".to_owned()),
+                started_at: second_started,
+                finished_at: Some(second_started + chrono::Duration::seconds(5)),
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-2".to_owned(),
+                project_id: "other-project".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now + chrono::Duration::seconds(20),
+                finished_at: None,
+            })?,
+        ]
+        .join("\n");
+        std::fs::write(&task_runs_path, format!("{legacy_lines}\n"))?;
+
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs.len(), 2);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(runs[0].outcome_detail.as_deref(), Some("legacy failure"));
+        assert_eq!(runs[1].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(runs[1].outcome_detail.as_deref(), Some("legacy success"));
+        assert!(runs.iter().all(|run| run.outcome.is_terminal()));
+        assert!(runs
+            .iter()
+            .all(|run| run.milestone_id.as_deref() == Some(record.id.as_str())));
+        Ok(())
+    }
+
+    #[test]
     fn update_task_run_modifies_outcome() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -1113,6 +1218,105 @@ mod tests {
     }
 
     #[test]
+    fn legacy_paired_rows_do_not_block_no_run_id_retry_finalization(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "legacy-update-test".to_owned(),
+                name: "Legacy Update Test".to_owned(),
+                description: "testing legacy paired rows during retry finalization".to_owned(),
+            },
+            now,
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        let legacy_started = now;
+        let legacy_lines = [
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: legacy_started,
+                finished_at: None,
+            })?,
+            serde_json::to_string(&TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("legacy failure".to_owned()),
+                started_at: legacy_started,
+                finished_at: Some(legacy_started + chrono::Duration::seconds(5)),
+            })?,
+        ]
+        .join("\n");
+        std::fs::write(&task_runs_path, format!("{legacy_lines}\n"))?;
+
+        let retry_started = now + chrono::Duration::seconds(30);
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-retry"),
+            retry_started,
+        )?;
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-retry"),
+            TaskRunOutcome::Succeeded,
+            Some("retry completed".to_owned()),
+            retry_started + chrono::Duration::seconds(1),
+        )?;
+
+        let raw_runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(raw_runs.len(), 3);
+
+        let bead_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(bead_runs.len(), 2);
+        assert_eq!(bead_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(bead_runs[1].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(bead_runs[1].plan_hash.as_deref(), Some("plan-retry"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        Ok(())
+    }
+
+    #[test]
     fn skipped_runs_are_tracked_without_counting_as_failures(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -1246,6 +1450,7 @@ mod tests {
         )
         .expect_err("duplicate terminal updates should fail");
         assert!(error.to_string().contains("already finalized"));
+        assert!(error.to_string().contains("run=run-1"));
         Ok(())
     }
 

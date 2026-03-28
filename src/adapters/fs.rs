@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -2296,6 +2297,75 @@ impl FsTaskRunLineageStore {
         FileSystem::milestone_root(base_dir, milestone_id)
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
     }
+
+    fn same_attempt(left: &TaskRunEntry, right: &TaskRunEntry) -> bool {
+        left.bead_id == right.bead_id
+            && left.project_id == right.project_id
+            && left.started_at == right.started_at
+    }
+
+    fn is_superseded_legacy_start(entries: &[TaskRunEntry], index: usize) -> bool {
+        let entry = &entries[index];
+        !entry.outcome.is_terminal()
+            && entries.iter().enumerate().any(|(other_index, other)| {
+                other_index != index
+                    && other.outcome.is_terminal()
+                    && Self::same_attempt(entry, other)
+            })
+    }
+
+    fn merge_attempt_rows(terminal: &TaskRunEntry, start: &TaskRunEntry) -> TaskRunEntry {
+        let mut merged = terminal.clone();
+        if merged.milestone_id.is_none() {
+            merged.milestone_id = start.milestone_id.clone();
+        }
+        if merged.run_id.is_none() {
+            merged.run_id = start.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = start.plan_hash.clone();
+        }
+        if merged.outcome_detail.is_none() {
+            merged.outcome_detail = start.outcome_detail.clone();
+        }
+        merged
+    }
+
+    fn collapse_runs_for_bead(entries: Vec<TaskRunEntry>, bead_id: &str) -> Vec<TaskRunEntry> {
+        let mut consumed_starts = HashSet::new();
+        let mut merged_terminals = HashMap::new();
+
+        for (terminal_index, terminal) in entries.iter().enumerate() {
+            if terminal.bead_id != bead_id || !terminal.outcome.is_terminal() {
+                continue;
+            }
+
+            if let Some((start_index, start)) =
+                entries.iter().enumerate().find(|(start_index, start)| {
+                    start.bead_id == bead_id
+                        && !start.outcome.is_terminal()
+                        && !consumed_starts.contains(start_index)
+                        && Self::same_attempt(start, terminal)
+                })
+            {
+                consumed_starts.insert(start_index);
+                merged_terminals.insert(terminal_index, Self::merge_attempt_rows(terminal, start));
+            }
+        }
+
+        let mut runs = Vec::new();
+        for (index, entry) in entries.into_iter().enumerate() {
+            if entry.bead_id != bead_id || consumed_starts.contains(&index) {
+                continue;
+            }
+            if let Some(merged) = merged_terminals.remove(&index) {
+                runs.push(merged);
+            } else {
+                runs.push(entry);
+            }
+        }
+        runs
+    }
 }
 
 impl TaskRunLineagePort for FsTaskRunLineageStore {
@@ -2413,6 +2483,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         .filter(|index| {
                             !entries[*index].outcome.is_terminal()
                                 && entries[*index].run_id.is_none()
+                                && !Self::is_superseded_legacy_start(&entries, *index)
                         })
                         .collect();
                     match open_matches.as_slice() {
@@ -2451,7 +2522,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     let open_matches: Vec<usize> = matching_indices
                         .iter()
                         .copied()
-                        .filter(|index| !entries[*index].outcome.is_terminal())
+                        .filter(|index| {
+                            !entries[*index].outcome.is_terminal()
+                                && !Self::is_superseded_legacy_start(&entries, *index)
+                        })
                         .collect();
                     match open_matches.as_slice() {
                         [index] => *index,
@@ -2470,11 +2544,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
 
         let entry = &mut entries[target_index];
         if entry.outcome.is_terminal() {
+            let run_suffix = run_id
+                .map(|run_id| format!(" run={run_id}"))
+                .unwrap_or_default();
             return Err(AppError::CorruptRecord {
                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                 details: format!(
-                    "task run for bead={bead_id} project={project_id} is already finalized with outcome={}",
-                    entry.outcome
+                    "task run for bead={bead_id} project={project_id}{run_suffix} is already finalized with outcome={}",
+                    entry.outcome,
                 ),
             });
         }
@@ -2503,11 +2580,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
     ) -> AppResult<Vec<TaskRunEntry>> {
-        let mut runs: Vec<TaskRunEntry> = self
-            .read_task_runs(base_dir, milestone_id)?
-            .into_iter()
-            .filter(|entry| entry.bead_id == bead_id)
-            .collect();
+        let mut runs =
+            Self::collapse_runs_for_bead(self.read_task_runs(base_dir, milestone_id)?, bead_id);
         runs.sort_by(|left, right| {
             left.started_at
                 .cmp(&right.started_at)
