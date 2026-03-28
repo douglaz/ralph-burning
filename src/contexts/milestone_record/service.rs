@@ -8,9 +8,9 @@ use crate::shared::error::{AppError, AppResult};
 
 use super::bundle::{render_plan_json, render_plan_md, MilestoneBundle};
 use super::model::{
-    active_bead_ids, collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType,
-    MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot,
-    MilestoneStatus, TaskRunEntry, TaskRunOutcome,
+    collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType, MilestoneId,
+    MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
+    TaskRunEntry, TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -168,7 +168,11 @@ fn reconcile_snapshot_from_lineage(
     let task_runs = collapse_task_run_attempts(task_runs);
     let current_bead_runs = latest_task_runs_per_bead(&task_runs);
     let has_any_task_runs = !current_bead_runs.is_empty();
-    let active_beads: BTreeSet<String> = active_bead_ids(&current_bead_runs);
+    let active_beads: BTreeSet<String> = current_bead_runs
+        .iter()
+        .filter(|entry| !entry.outcome.is_terminal())
+        .map(|entry| entry.bead_id.clone())
+        .collect();
 
     snapshot.active_bead = match active_beads.len() {
         0 => None,
@@ -210,8 +214,10 @@ fn reconcile_snapshot_from_lineage(
             ));
         }
         snapshot.status = MilestoneStatus::Active;
-    } else if !snapshot.status.is_terminal()
-        && (has_any_task_runs || snapshot.status == MilestoneStatus::Active)
+    } else if snapshot.status == MilestoneStatus::Active
+        || (!snapshot.status.is_terminal()
+            && snapshot.status != MilestoneStatus::Paused
+            && has_any_task_runs)
     {
         snapshot.status = MilestoneStatus::Ready;
     }
@@ -710,6 +716,9 @@ mod tests {
         }
     }
 
+    /// Single-use test helper that coordinates exactly one contended lock
+    /// acquisition. A second use indicates the test setup is no longer matching
+    /// its intended one-shot synchronization contract.
     struct LockAttemptSnapshotStore {
         attempted_tx: Mutex<Option<mpsc::Sender<()>>>,
         proceed_rx: Mutex<Option<mpsc::Receiver<()>>>,
@@ -751,15 +760,23 @@ mod tests {
         where
             F: FnOnce() -> AppResult<T>,
         {
-            if let Some(attempted_tx) = self.attempted_tx.lock().expect("lock attempted_tx").take()
-            {
-                attempted_tx
-                    .send(())
-                    .expect("signal lock attempt before contention");
-            }
-            if let Some(proceed_rx) = self.proceed_rx.lock().expect("lock proceed_rx").take() {
-                proceed_rx.recv().expect("allow lock contention");
-            }
+            let attempted_tx = self
+                .attempted_tx
+                .lock()
+                .expect("lock attempted_tx")
+                .take()
+                .expect("LockAttemptSnapshotStore is single-use");
+            attempted_tx
+                .send(())
+                .expect("signal lock attempt before contention");
+
+            let proceed_rx = self
+                .proceed_rx
+                .lock()
+                .expect("lock proceed_rx")
+                .take()
+                .expect("LockAttemptSnapshotStore is single-use");
+            proceed_rx.recv().expect("allow lock contention");
 
             FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
         }
@@ -1066,6 +1083,77 @@ mod tests {
             journal.last().map(|event| event.event_type),
             Some(MilestoneEventType::BeadCompleted)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn paused_milestone_stays_paused_when_completion_reconciles_lineage(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "paused-completion-test".to_owned(),
+                name: "Paused Completion Test".to_owned(),
+                description: "preserve paused milestone state during completion repair".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            now,
+        )?;
+        update_status(
+            &snapshot_store,
+            &journal_store,
+            base,
+            &record.id,
+            MilestoneStatus::Paused,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("completed while paused"),
+            now,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Paused);
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.completed_beads, 1);
         Ok(())
     }
 
@@ -2146,6 +2234,95 @@ mod tests {
         assert_eq!(
             completion_events[0].details.as_deref(),
             Some("project=project-1, run=run-1, plan_hash=plan-v1, outcome=succeeded, detail=journal failed once")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_replay_backfills_existing_journal_event_without_duplicate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "completion-backfill-test".to_owned(),
+                name: "Completion Backfill Test".to_owned(),
+                description: "repair completion journal details on terminal replay".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+        )?;
+
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            TaskRunOutcome::Succeeded,
+            None,
+            now + chrono::Duration::seconds(1),
+        )?;
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("backfilled detail".to_owned()),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v2"));
+        assert_eq!(runs[0].outcome_detail.as_deref(), Some("backfilled detail"));
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+        assert_eq!(
+            completion_events[0].timestamp,
+            now + chrono::Duration::seconds(1)
+        );
+        assert_eq!(
+            completion_events[0].details.as_deref(),
+            Some(
+                "project=project-1, run=run-1, plan_hash=plan-v2, outcome=succeeded, detail=backfilled detail"
+            )
         );
         Ok(())
     }

@@ -2267,6 +2267,99 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
+#[derive(Clone)]
+struct CompletionJournalDetails {
+    project_id: String,
+    run_id: Option<String>,
+    plan_hash: Option<String>,
+    outcome: String,
+    outcome_detail: Option<String>,
+}
+
+impl CompletionJournalDetails {
+    fn parse(details: &str) -> Option<Self> {
+        let (project_id, mut remainder) = Self::split_required(details, "project=")?;
+        let mut run_id = None;
+        if remainder.starts_with("run=") {
+            let (parsed_run_id, next_remainder) = Self::split_required(remainder, "run=")?;
+            run_id = Some(parsed_run_id.to_owned());
+            remainder = next_remainder;
+        }
+
+        let mut plan_hash = None;
+        if remainder.starts_with("plan_hash=") {
+            let (parsed_plan_hash, next_remainder) = Self::split_required(remainder, "plan_hash=")?;
+            plan_hash = Some(parsed_plan_hash.to_owned());
+            remainder = next_remainder;
+        }
+
+        let outcome = remainder.strip_prefix("outcome=")?;
+        let (outcome, outcome_detail) = match outcome.split_once(", detail=") {
+            Some((outcome, outcome_detail)) => (outcome, Some(outcome_detail.to_owned())),
+            None => (outcome, None),
+        };
+
+        Some(Self {
+            project_id: project_id.to_owned(),
+            run_id,
+            plan_hash,
+            outcome: outcome.to_owned(),
+            outcome_detail,
+        })
+    }
+
+    fn split_required<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+        let remainder = input.strip_prefix(prefix)?;
+        let (value, rest) = remainder.split_once(", ")?;
+        Some((value, rest))
+    }
+
+    fn merge(existing: &Self, requested: &Self) -> Option<Self> {
+        if existing.project_id != requested.project_id || existing.outcome != requested.outcome {
+            return None;
+        }
+        if FsTaskRunLineageStore::option_conflicts(
+            existing.run_id.as_deref(),
+            requested.run_id.as_deref(),
+        ) || FsTaskRunLineageStore::option_conflicts(
+            existing.plan_hash.as_deref(),
+            requested.plan_hash.as_deref(),
+        ) || FsTaskRunLineageStore::option_conflicts(
+            existing.outcome_detail.as_deref(),
+            requested.outcome_detail.as_deref(),
+        ) {
+            return None;
+        }
+
+        let mut merged = existing.clone();
+        if merged.run_id.is_none() {
+            merged.run_id = requested.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = requested.plan_hash.clone();
+        }
+        if merged.outcome_detail.is_none() {
+            merged.outcome_detail = requested.outcome_detail.clone();
+        }
+        Some(merged)
+    }
+
+    fn render(&self) -> String {
+        let mut details = vec![format!("project={}", self.project_id)];
+        if let Some(run_id) = self.run_id.as_deref() {
+            details.push(format!("run={run_id}"));
+        }
+        if let Some(plan_hash) = self.plan_hash.as_deref() {
+            details.push(format!("plan_hash={plan_hash}"));
+        }
+        details.push(format!("outcome={}", self.outcome));
+        if let Some(outcome_detail) = self.outcome_detail.as_deref() {
+            details.push(format!("detail={outcome_detail}"));
+        }
+        details.join(", ")
+    }
+}
+
 impl FsMilestoneJournalStore {
     fn journal_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
         FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_JOURNAL_FILE)
@@ -2301,6 +2394,48 @@ impl FsMilestoneJournalStore {
         }
         Ok(events)
     }
+
+    fn write_journal(path: &Path, events: &[MilestoneJournalEvent]) -> AppResult<()> {
+        let mut content = String::new();
+        for event in events {
+            let line = serde_json::to_string(event)?;
+            content.push_str(&line);
+            content.push('\n');
+        }
+        FileSystem::write_atomic(path, &content)
+    }
+
+    fn is_completion_event(event: &MilestoneJournalEvent) -> bool {
+        matches!(
+            event.event_type,
+            crate::contexts::milestone_record::model::MilestoneEventType::BeadCompleted
+                | crate::contexts::milestone_record::model::MilestoneEventType::BeadFailed
+                | crate::contexts::milestone_record::model::MilestoneEventType::BeadSkipped
+        )
+    }
+
+    fn repairable_completion_event(
+        existing: &MilestoneJournalEvent,
+        requested: &MilestoneJournalEvent,
+    ) -> Option<MilestoneJournalEvent> {
+        if !Self::is_completion_event(existing)
+            || !Self::is_completion_event(requested)
+            || existing.timestamp != requested.timestamp
+            || existing.event_type != requested.event_type
+            || existing.bead_id != requested.bead_id
+        {
+            return None;
+        }
+
+        let existing_details = CompletionJournalDetails::parse(existing.details.as_deref()?)?;
+        let requested_details = CompletionJournalDetails::parse(requested.details.as_deref()?)?;
+        let merged_details =
+            CompletionJournalDetails::merge(&existing_details, &requested_details)?;
+
+        let mut repaired = existing.clone();
+        repaired.details = Some(merged_details.render());
+        Some(repaired)
+    }
 }
 
 impl MilestoneJournalPort for FsMilestoneJournalStore {
@@ -2331,7 +2466,7 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
     ) -> AppResult<bool> {
         let path = Self::journal_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
-        let journal = Self::read_journal_from_path(&path, milestone_id)?;
+        let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
         if journal.iter().any(|existing| {
             existing.timestamp == event.timestamp
                 && existing.event_type == event.event_type
@@ -2339,6 +2474,20 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
                 && existing.details == event.details
         }) {
             return Ok(false);
+        }
+
+        if let Some((existing_index, repaired_event)) =
+            journal.iter().enumerate().find_map(|(index, existing)| {
+                Self::repairable_completion_event(existing, event).map(|repaired| (index, repaired))
+            })
+        {
+            if journal[existing_index].details == repaired_event.details {
+                return Ok(false);
+            }
+
+            journal[existing_index] = repaired_event;
+            Self::write_journal(&path, &journal)?;
+            return Ok(true);
         }
 
         let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
