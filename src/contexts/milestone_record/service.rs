@@ -8,9 +8,9 @@ use crate::shared::error::{AppError, AppResult};
 
 use super::bundle::{render_plan_json, render_plan_md, MilestoneBundle};
 use super::model::{
-    active_bead_ids, collapse_task_run_attempts, MilestoneEventType, MilestoneId,
-    MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot, MilestoneStatus,
-    TaskRunEntry, TaskRunOutcome,
+    active_bead_ids, collapse_task_run_attempts, latest_task_runs_per_bead, MilestoneEventType,
+    MilestoneId, MilestoneJournalEvent, MilestoneProgress, MilestoneRecord, MilestoneSnapshot,
+    MilestoneStatus, TaskRunEntry, TaskRunOutcome,
 };
 
 // ── Ports ───────────────────────────────────────────────────────────────────
@@ -166,8 +166,9 @@ fn reconcile_snapshot_from_lineage(
     task_runs: Vec<TaskRunEntry>,
 ) -> AppResult<()> {
     let task_runs = collapse_task_run_attempts(task_runs);
-    let has_any_task_runs = !task_runs.is_empty();
-    let active_beads: BTreeSet<String> = active_bead_ids(&task_runs);
+    let current_bead_runs = latest_task_runs_per_bead(&task_runs);
+    let has_any_task_runs = !current_bead_runs.is_empty();
+    let active_beads: BTreeSet<String> = active_bead_ids(&current_bead_runs);
 
     snapshot.active_bead = match active_beads.len() {
         0 => None,
@@ -181,19 +182,19 @@ fn reconcile_snapshot_from_lineage(
         }
     };
 
-    snapshot.progress.in_progress_beads = task_runs
+    snapshot.progress.in_progress_beads = current_bead_runs
         .iter()
         .filter(|entry| !entry.outcome.is_terminal())
         .count() as u32;
-    snapshot.progress.completed_beads = task_runs
+    snapshot.progress.completed_beads = current_bead_runs
         .iter()
         .filter(|entry| entry.outcome == TaskRunOutcome::Succeeded)
         .count() as u32;
-    snapshot.progress.failed_beads = task_runs
+    snapshot.progress.failed_beads = current_bead_runs
         .iter()
         .filter(|entry| entry.outcome == TaskRunOutcome::Failed)
         .count() as u32;
-    snapshot.progress.skipped_beads = task_runs
+    snapshot.progress.skipped_beads = current_bead_runs
         .iter()
         .filter(|entry| entry.outcome == TaskRunOutcome::Skipped)
         .count() as u32;
@@ -369,12 +370,12 @@ pub fn persist_plan(
         format!("{:x}", hasher.finalize())
     };
 
-    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
         plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
-        snapshot.plan_hash = Some(plan_hash.clone());
+        snapshot.plan_hash = Some(plan_hash);
         snapshot.plan_version = snapshot.plan_version.saturating_add(1);
         snapshot.progress = MilestoneProgress {
             total_beads: bundle.bead_count() as u32,
@@ -549,7 +550,7 @@ pub fn update_task_run(
     outcome_detail: Option<String>,
     finished_at: DateTime<Utc>,
 ) -> AppResult<()> {
-    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, || {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
         if !outcome.is_terminal() {
             return Err(AppError::RunStartFailed {
                 reason: format!(
@@ -566,7 +567,7 @@ pub fn update_task_run(
             run_id,
             plan_hash,
             outcome,
-            outcome_detail.clone(),
+            outcome_detail,
             finished_at,
         )?;
 
@@ -706,6 +707,61 @@ mod tests {
                 entered_tx: Mutex::new(Some(entered_tx)),
                 release_rx: Mutex::new(Some(release_rx)),
             }
+        }
+    }
+
+    struct LockAttemptSnapshotStore {
+        attempted_tx: Mutex<Option<mpsc::Sender<()>>>,
+        proceed_rx: Mutex<Option<mpsc::Receiver<()>>>,
+    }
+
+    impl LockAttemptSnapshotStore {
+        fn new(attempted_tx: mpsc::Sender<()>, proceed_rx: mpsc::Receiver<()>) -> Self {
+            Self {
+                attempted_tx: Mutex::new(Some(attempted_tx)),
+                proceed_rx: Mutex::new(Some(proceed_rx)),
+            }
+        }
+    }
+
+    impl MilestoneSnapshotPort for LockAttemptSnapshotStore {
+        fn read_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+        ) -> AppResult<MilestoneSnapshot> {
+            FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id)
+        }
+
+        fn write_snapshot(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            snapshot: &MilestoneSnapshot,
+        ) -> AppResult<()> {
+            FsMilestoneSnapshotStore.write_snapshot(base_dir, milestone_id, snapshot)
+        }
+
+        fn with_milestone_write_lock<T, F>(
+            &self,
+            base_dir: &Path,
+            milestone_id: &MilestoneId,
+            operation: F,
+        ) -> AppResult<T>
+        where
+            F: FnOnce() -> AppResult<T>,
+        {
+            if let Some(attempted_tx) = self.attempted_tx.lock().expect("lock attempted_tx").take()
+            {
+                attempted_tx
+                    .send(())
+                    .expect("signal lock attempt before contention");
+            }
+            if let Some(proceed_rx) = self.proceed_rx.lock().expect("lock proceed_rx").take() {
+                proceed_rx.recv().expect("allow lock contention");
+            }
+
+            FsMilestoneSnapshotStore.with_milestone_write_lock(base_dir, milestone_id, operation)
         }
     }
 
@@ -1513,6 +1569,7 @@ mod tests {
         )?;
 
         // Attempt 2: succeed
+        let retry_started = now + chrono::Duration::seconds(10);
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -1523,7 +1580,7 @@ mod tests {
             "project-b",
             Some("run-2"),
             Some("plan-v2"),
-            now,
+            retry_started,
         )?;
         record_bead_completion(
             &snapshot_store,
@@ -1537,8 +1594,8 @@ mod tests {
             Some("plan-v2"),
             TaskRunOutcome::Succeeded,
             Some("All green"),
-            now,
-            now,
+            retry_started,
+            retry_started + chrono::Duration::seconds(1),
         )?;
 
         let bead1_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
@@ -1548,6 +1605,16 @@ mod tests {
         // Second attempt succeeded
         assert_eq!(bead1_runs[1].outcome, TaskRunOutcome::Succeeded);
         assert_eq!(bead1_runs[1].plan_hash.as_deref(), Some("plan-v2"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        assert_eq!(snapshot.progress.skipped_beads, 0);
         Ok(())
     }
 
@@ -1651,6 +1718,7 @@ mod tests {
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.in_progress_beads, 0);
         assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.failed_beads, 0);
         Ok(())
     }
 
@@ -2304,8 +2372,14 @@ mod tests {
 
         let (entered_tx, entered_rx) = mpsc::channel();
         let (release_tx, release_rx) = mpsc::channel();
+        let (start_attempted_tx, start_attempted_rx) = mpsc::channel();
+        let (start_proceed_tx, start_proceed_rx) = mpsc::channel();
         let (start_finished_tx, start_finished_rx) = mpsc::channel();
         let blocking_snapshot_store = Arc::new(BlockingSnapshotStore::new(entered_tx, release_rx));
+        let start_snapshot_store = Arc::new(LockAttemptSnapshotStore::new(
+            start_attempted_tx,
+            start_proceed_rx,
+        ));
         let base_dir = base.to_path_buf();
         let milestone_id = record.id.clone();
 
@@ -2333,7 +2407,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("completion should block on the ready snapshot write");
 
-        let start_store = Arc::clone(&blocking_snapshot_store);
+        let start_store = Arc::clone(&start_snapshot_store);
         let base_dir = base.to_path_buf();
         let milestone_id = record.id.clone();
         let start_handle = std::thread::spawn(move || -> AppResult<()> {
@@ -2354,6 +2428,13 @@ mod tests {
             let _ = start_finished_tx.send(());
             result
         });
+
+        start_attempted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("new bead start should reach the write-lock contention point");
+        start_proceed_tx
+            .send(())
+            .expect("allow new bead start to contend on the write lock");
 
         assert!(
             start_finished_rx

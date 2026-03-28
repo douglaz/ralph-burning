@@ -1,4 +1,5 @@
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::str::FromStr;
 
@@ -193,13 +194,13 @@ impl MilestoneSnapshot {
 pub struct MilestoneProgress {
     /// Total number of beads in the plan.
     pub total_beads: u32,
-    /// Beads that have been completed.
+    /// Beads whose latest task attempt has completed successfully.
     pub completed_beads: u32,
-    /// Beads currently in progress.
+    /// Beads whose latest task attempt is currently in progress.
     pub in_progress_beads: u32,
-    /// Beads that failed and need attention.
+    /// Beads whose latest task attempt failed and still need attention.
     pub failed_beads: u32,
-    /// Beads intentionally skipped during execution.
+    /// Beads whose latest task attempt was intentionally skipped.
     #[serde(default)]
     pub skipped_beads: u32,
     /// Beads that are blocked by dependencies.
@@ -333,11 +334,42 @@ impl TaskRunEntry {
     }
 }
 
+fn compare_task_run_recency(left: &TaskRunEntry, right: &TaskRunEntry) -> Ordering {
+    left.started_at
+        .cmp(&right.started_at)
+        .then_with(|| {
+            left.finished_at
+                .unwrap_or(left.started_at)
+                .cmp(&right.finished_at.unwrap_or(right.started_at))
+        })
+        .then_with(|| left.outcome.is_terminal().cmp(&right.outcome.is_terminal()))
+        .then_with(|| left.project_id.cmp(&right.project_id))
+        .then_with(|| left.run_id.as_deref().cmp(&right.run_id.as_deref()))
+}
+
+/// Collapse attempt history down to each bead's latest observed state.
+pub fn latest_task_runs_per_bead(entries: &[TaskRunEntry]) -> Vec<TaskRunEntry> {
+    let mut latest_by_bead = BTreeMap::new();
+
+    for entry in entries {
+        latest_by_bead
+            .entry(entry.bead_id.clone())
+            .and_modify(|current: &mut TaskRunEntry| {
+                if compare_task_run_recency(entry, current) == Ordering::Greater {
+                    *current = entry.clone();
+                }
+            })
+            .or_insert_with(|| entry.clone());
+    }
+
+    latest_by_bead.into_values().collect()
+}
+
 pub fn active_bead_ids(entries: &[TaskRunEntry]) -> BTreeSet<String> {
-    entries
-        .iter()
+    latest_task_runs_per_bead(entries)
+        .into_iter()
         .filter(|entry| !entry.outcome.is_terminal())
-        .map(|entry| entry.bead_id.clone())
+        .map(|entry| entry.bead_id)
         .collect()
 }
 
@@ -655,6 +687,61 @@ mod tests {
         };
 
         assert!(!TaskRunEntry::same_attempt(&first, &second));
+        Ok(())
+    }
+
+    #[test]
+    fn latest_task_runs_per_bead_prefers_newest_retry_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("first attempt failed".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(5)),
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v2".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("retry passed".to_owned()),
+                started_at: started_at + chrono::Duration::seconds(10),
+                finished_at: Some(started_at + chrono::Duration::seconds(20)),
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-2".to_owned(),
+                project_id: "project-3".to_owned(),
+                run_id: Some("run-3".to_owned()),
+                plan_hash: Some("plan-v3".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: started_at + chrono::Duration::seconds(30),
+                finished_at: None,
+            },
+        ];
+
+        let latest = latest_task_runs_per_bead(&entries);
+        assert_eq!(latest.len(), 2);
+        assert!(latest.iter().any(|entry| {
+            entry.bead_id == "bead-1" && entry.outcome == TaskRunOutcome::Succeeded
+        }));
+        assert!(latest.iter().any(|entry| {
+            entry.bead_id == "bead-2" && entry.outcome == TaskRunOutcome::Running
+        }));
+
+        let active_beads = active_bead_ids(&entries);
+        assert_eq!(active_beads.len(), 1);
+        assert!(active_beads.contains("bead-2"));
         Ok(())
     }
 }
