@@ -2812,9 +2812,13 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             }
         }
 
-        if let Some(existing_entry) =
-            find_matching_running_task_run(&canonical_task_runs, bead_id, project_id, run_id)
-        {
+        if let Some(existing_entry) = find_matching_running_task_run(
+            &canonical_task_runs,
+            bead_id,
+            project_id,
+            run_id,
+            started_at,
+        ) {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
@@ -2845,7 +2849,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        if active_beads.contains(bead_id) {
+        let allow_named_retry_after_legacy_open = run_id.is_some()
+            && matches!(matching_running_entries.as_slice(), [entry] if entry.run_id.is_none());
+
+        if active_beads.contains(bead_id) && !allow_named_retry_after_legacy_open {
             return Err(AppError::RunStartFailed {
                 reason: format!("cannot start bead '{bead_id}': it is already active"),
             });

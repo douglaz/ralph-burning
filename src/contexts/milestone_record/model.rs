@@ -306,7 +306,10 @@ impl TaskRunEntry {
 
         match (left.run_id.as_deref(), right.run_id.as_deref()) {
             (Some(left_run_id), Some(right_run_id)) => left_run_id == right_run_id,
-            _ => left.started_at == right.started_at,
+            _ => {
+                left.started_at == right.started_at
+                    && (!left.outcome.is_terminal() || !right.outcome.is_terminal())
+            }
         }
     }
 
@@ -417,6 +420,7 @@ pub fn find_matching_running_task_run(
     bead_id: &str,
     project_id: &str,
     run_id: Option<&str>,
+    started_at: DateTime<Utc>,
 ) -> Option<TaskRunEntry> {
     let matching_running_entries: Vec<TaskRunEntry> = entries
         .iter()
@@ -429,20 +433,12 @@ pub fn find_matching_running_task_run(
         .collect();
 
     if let Some(run_id) = run_id {
-        let exact_running_matches: Vec<TaskRunEntry> = matching_running_entries
-            .iter()
-            .filter(|entry| entry.run_id.as_deref() == Some(run_id))
-            .cloned()
-            .collect();
-        exact_running_matches.first().cloned().or_else(|| {
-            match matching_running_entries.as_slice() {
-                [entry] if entry.run_id.is_none() => Some(entry.clone()),
-                _ => None,
-            }
-        })
+        matching_running_entries
+            .into_iter()
+            .find(|entry| entry.run_id.as_deref() == Some(run_id))
     } else {
         match matching_running_entries.as_slice() {
-            [entry] => Some(entry.clone()),
+            [entry] if entry.started_at == started_at => Some(entry.clone()),
             _ => None,
         }
     }
@@ -466,12 +462,8 @@ pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntr
     let mut collapsed_groups: Vec<Vec<TaskRunEntry>> = Vec::new();
 
     for entry in entries {
-        if let Some(group) = collapsed_groups.iter_mut().find(|group| {
-            group
-                .iter()
-                .all(|existing| can_collapse_attempt_entries(existing, &entry))
-        }) {
-            group.push(entry);
+        if let Some(group_index) = find_collapse_group_index(&collapsed_groups, &entry) {
+            collapsed_groups[group_index].push(entry);
         } else {
             collapsed_groups.push(vec![entry]);
         }
@@ -483,11 +475,63 @@ pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntr
         .collect()
 }
 
-fn can_collapse_attempt_entries(left: &TaskRunEntry, right: &TaskRunEntry) -> bool {
-    TaskRunEntry::same_attempt(left, right)
-        && (!left.outcome.is_terminal()
-            || !right.outcome.is_terminal()
-            || left.outcome == right.outcome)
+fn find_collapse_group_index(groups: &[Vec<TaskRunEntry>], entry: &TaskRunEntry) -> Option<usize> {
+    if let Some(run_id) = entry.run_id.as_deref() {
+        if let Some(group_index) = groups.iter().position(|group| {
+            group_matches_named_attempt(group, entry, run_id) && group_accepts_entry(group, entry)
+        }) {
+            return Some(group_index);
+        }
+    }
+
+    if entry.outcome.is_terminal() {
+        return unique_open_legacy_group_index(groups, entry);
+    }
+
+    None
+}
+
+fn group_matches_named_attempt(group: &[TaskRunEntry], entry: &TaskRunEntry, run_id: &str) -> bool {
+    group.iter().any(|existing| {
+        existing.bead_id == entry.bead_id
+            && existing.project_id == entry.project_id
+            && existing.run_id.as_deref() == Some(run_id)
+    })
+}
+
+fn group_accepts_entry(group: &[TaskRunEntry], entry: &TaskRunEntry) -> bool {
+    group.iter().all(|existing| {
+        !existing.outcome.is_terminal()
+            || !entry.outcome.is_terminal()
+            || existing.outcome == entry.outcome
+    })
+}
+
+fn unique_open_legacy_group_index(
+    groups: &[Vec<TaskRunEntry>],
+    entry: &TaskRunEntry,
+) -> Option<usize> {
+    let matching_group_indices: Vec<usize> = groups
+        .iter()
+        .enumerate()
+        .filter_map(|(index, group)| legacy_group_accepts_completion(group, entry).then_some(index))
+        .collect();
+
+    match matching_group_indices.as_slice() {
+        [index] => Some(*index),
+        _ => None,
+    }
+}
+
+fn legacy_group_accepts_completion(group: &[TaskRunEntry], entry: &TaskRunEntry) -> bool {
+    !group.iter().any(|existing| existing.outcome.is_terminal())
+        && group.iter().any(|existing| {
+            existing.bead_id == entry.bead_id
+                && existing.project_id == entry.project_id
+                && existing.run_id.is_none()
+                && !existing.outcome.is_terminal()
+                && existing.started_at == entry.started_at
+        })
 }
 
 fn collapse_task_run_group(group: Vec<TaskRunEntry>) -> TaskRunEntry {
@@ -833,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn find_matching_running_task_run_reuses_only_sole_legacy_open_attempt(
+    fn find_matching_running_task_run_requires_exact_run_id_match(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
         let entries = vec![TaskRunEntry {
@@ -848,10 +892,14 @@ mod tests {
             finished_at: None,
         }];
 
-        let matched =
-            find_matching_running_task_run(&entries, "bead-1", "project-1", Some("run-3"))
-                .expect("sole legacy open attempt should be reusable");
-        assert_eq!(matched.run_id, None);
+        assert!(find_matching_running_task_run(
+            &entries,
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            started_at,
+        )
+        .is_none());
         Ok(())
     }
 
@@ -884,10 +932,71 @@ mod tests {
             },
         ];
 
-        assert!(
-            find_matching_running_task_run(&entries, "bead-1", "project-1", Some("run-3"))
-                .is_none()
-        );
+        assert!(find_matching_running_task_run(
+            &entries,
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            started_at + chrono::Duration::seconds(2),
+        )
+        .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn collapse_task_run_attempts_preserves_same_timestamp_legacy_retries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let collapsed = collapse_task_run_attempts(vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("first retry".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("second retry".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(2)),
+            },
+        ]);
+
+        assert_eq!(collapsed.len(), 2);
+        assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("first retry"));
+        assert_eq!(collapsed[1].outcome_detail.as_deref(), Some("second retry"));
         Ok(())
     }
 
