@@ -1817,8 +1817,8 @@ mod tests {
             &record.id,
             "bead-1",
             "project-1",
-            None,
-            None,
+            Some("run-1"),
+            Some("plan-v1"),
             now,
         )?;
 
@@ -3292,7 +3292,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_retry_after_legacy_open_appends_new_attempt(
+    fn explicit_retry_after_legacy_open_supersedes_old_attempt(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -3345,10 +3345,17 @@ mod tests {
             retry_started_at,
         )?;
 
-        let running_attempts = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
-        assert_eq!(running_attempts.len(), 2);
-        assert_eq!(running_attempts[0].run_id, None);
-        assert_eq!(running_attempts[1].run_id.as_deref(), Some("run-2"));
+        let attempts_after_retry = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(attempts_after_retry.len(), 2);
+        assert_eq!(attempts_after_retry[0].run_id, None);
+        assert_eq!(attempts_after_retry[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(attempts_after_retry[0].finished_at, Some(retry_started_at));
+        assert!(attempts_after_retry[0]
+            .outcome_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("superseded by retry")));
+        assert_eq!(attempts_after_retry[1].run_id.as_deref(), Some("run-2"));
+        assert_eq!(attempts_after_retry[1].outcome, TaskRunOutcome::Running);
 
         record_bead_completion(
             &snapshot_store,
@@ -3369,7 +3376,7 @@ mod tests {
         let finalized_attempts = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
         assert_eq!(finalized_attempts.len(), 2);
         assert_eq!(finalized_attempts[0].run_id, None);
-        assert_eq!(finalized_attempts[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(finalized_attempts[0].outcome, TaskRunOutcome::Failed);
         assert_eq!(finalized_attempts[1].run_id.as_deref(), Some("run-2"));
         assert_eq!(finalized_attempts[1].outcome, TaskRunOutcome::Succeeded);
 
@@ -3380,6 +3387,85 @@ mod tests {
         assert_eq!(snapshot.status, MilestoneStatus::Ready);
         assert_eq!(snapshot.active_bead, None);
         assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn completion_with_named_run_id_requires_exact_attempt_match(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "exact-completion-match-test".to_owned(),
+                name: "Exact Completion Match Test".to_owned(),
+                description: "named completions must not finalize an unrelated legacy open attempt"
+                    .to_owned(),
+            },
+            now,
+        )?;
+
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: record.id.to_string(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+            },
+        )?;
+
+        let error = record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-2"),
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("should fail fast"),
+            now + chrono::Duration::seconds(10),
+            now + chrono::Duration::seconds(15),
+        )
+        .expect_err("named completion should require an exact matching attempt");
+        assert!(error
+            .to_string()
+            .contains("only a legacy runless attempt is still open"));
+
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, None);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Planning);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert!(completion_events.is_empty());
         Ok(())
     }
 

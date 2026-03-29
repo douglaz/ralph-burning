@@ -2824,15 +2824,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        if run_id.is_none() {
-            if let [legacy_open_entry] = matching_running_entries.as_slice() {
-                if legacy_open_entry.run_id.is_none() {
-                    Self::fail_superseded_running_attempt(
-                        &mut entries,
-                        legacy_open_entry,
-                        started_at,
-                    );
-                }
+        if let [legacy_open_entry] = matching_running_entries.as_slice() {
+            if legacy_open_entry.run_id.is_none() {
+                Self::fail_superseded_running_attempt(&mut entries, legacy_open_entry, started_at);
             }
         }
 
@@ -2925,7 +2919,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 });
                             }
                         }
-                        [index] if entries[*index].run_id.is_none() => *index,
+                        [index] if entries[*index].run_id.is_none() => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only a legacy runless attempt is still open"
+                                ),
+                            });
+                        }
                         [index] => {
                             return Err(AppError::CorruptRecord {
                                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),

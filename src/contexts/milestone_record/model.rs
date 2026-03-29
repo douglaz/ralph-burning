@@ -22,6 +22,7 @@ impl MilestoneId {
     pub fn new(value: impl Into<String>) -> AppResult<Self> {
         let normalized = value.into().trim().to_owned();
         if normalized.is_empty()
+            || normalized.starts_with('.')
             || normalized == "."
             || normalized == ".."
             || normalized.contains('/')
@@ -591,6 +592,8 @@ mod tests {
         assert!(MilestoneId::new("  ").is_err());
         assert!(MilestoneId::new(".").is_err());
         assert!(MilestoneId::new("..").is_err());
+        assert!(MilestoneId::new(".locks").is_err());
+        assert!(MilestoneId::new(".hidden").is_err());
         assert!(MilestoneId::new("a/b").is_err());
         Ok(())
     }
