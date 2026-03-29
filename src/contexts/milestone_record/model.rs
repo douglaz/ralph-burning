@@ -377,34 +377,32 @@ pub fn render_completion_journal_details(
 }
 
 fn compare_task_run_recency(left: &TaskRunEntry, right: &TaskRunEntry) -> Ordering {
-    left.started_at
-        .cmp(&right.started_at)
-        .then_with(|| {
-            left.finished_at
-                .unwrap_or(left.started_at)
-                .cmp(&right.finished_at.unwrap_or(right.started_at))
-        })
-        .then_with(|| left.outcome.is_terminal().cmp(&right.outcome.is_terminal()))
-        .then_with(|| left.project_id.cmp(&right.project_id))
-        .then_with(|| left.run_id.as_deref().cmp(&right.run_id.as_deref()))
+    left.started_at.cmp(&right.started_at)
 }
 
 /// Collapse attempt history down to each bead's latest observed state.
+/// When retries share the same `started_at`, later entries in the slice win so
+/// append order still reflects the newest observed attempt.
 pub fn latest_task_runs_per_bead(entries: &[TaskRunEntry]) -> Vec<TaskRunEntry> {
     let mut latest_by_bead = BTreeMap::new();
 
-    for entry in entries {
+    for (index, entry) in entries.iter().enumerate() {
         latest_by_bead
             .entry(entry.bead_id.clone())
-            .and_modify(|current: &mut TaskRunEntry| {
-                if compare_task_run_recency(entry, current) == Ordering::Greater {
-                    *current = entry.clone();
+            .and_modify(|current: &mut (usize, TaskRunEntry)| {
+                let ordering = compare_task_run_recency(entry, &current.1);
+                if ordering != Ordering::Less {
+                    current.0 = index;
+                    current.1 = entry.clone();
                 }
             })
-            .or_insert_with(|| entry.clone());
+            .or_insert_with(|| (index, entry.clone()));
     }
 
-    latest_by_bead.into_values().collect()
+    latest_by_bead
+        .into_values()
+        .map(|(_, entry)| entry)
+        .collect()
 }
 
 pub fn active_bead_ids(entries: &[TaskRunEntry]) -> BTreeSet<String> {
@@ -420,7 +418,7 @@ pub fn find_matching_running_task_run(
     bead_id: &str,
     project_id: &str,
     run_id: Option<&str>,
-    started_at: DateTime<Utc>,
+    _started_at: DateTime<Utc>,
 ) -> Option<TaskRunEntry> {
     let matching_running_entries: Vec<TaskRunEntry> = entries
         .iter()
@@ -438,7 +436,7 @@ pub fn find_matching_running_task_run(
             .find(|entry| entry.run_id.as_deref() == Some(run_id))
     } else {
         match matching_running_entries.as_slice() {
-            [entry] if entry.started_at == started_at => Some(entry.clone()),
+            [entry] => Some(entry.clone()),
             _ => None,
         }
     }
@@ -877,6 +875,46 @@ mod tests {
     }
 
     #[test]
+    fn latest_task_runs_per_bead_prefers_later_same_timestamp_retry_state(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Failed,
+                outcome_detail: Some("first attempt failed".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-2".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v2".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+        ];
+
+        let latest = latest_task_runs_per_bead(&entries);
+        assert_eq!(latest.len(), 1);
+        assert_eq!(latest[0].run_id.as_deref(), Some("run-2"));
+        assert_eq!(latest[0].outcome, TaskRunOutcome::Running);
+
+        let active_beads = active_bead_ids(&entries);
+        assert_eq!(active_beads.len(), 1);
+        assert!(active_beads.contains("bead-1"));
+        Ok(())
+    }
+
+    #[test]
     fn find_matching_running_task_run_requires_exact_run_id_match(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
@@ -900,6 +938,35 @@ mod tests {
             started_at,
         )
         .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn find_matching_running_task_run_reuses_sole_runless_attempt_for_retry_repair(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![TaskRunEntry {
+            milestone_id: Some("ms-1".to_owned()),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: Some("plan-v1".to_owned()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+        }];
+
+        let matched = find_matching_running_task_run(
+            &entries,
+            "bead-1",
+            "project-1",
+            None,
+            started_at + chrono::Duration::seconds(30),
+        )
+        .expect("a sole runless running attempt should be reused for retry repair");
+        assert_eq!(matched.started_at, started_at);
+        assert_eq!(matched.plan_hash.as_deref(), Some("plan-v1"));
         Ok(())
     }
 
