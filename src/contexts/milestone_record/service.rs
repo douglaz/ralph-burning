@@ -1282,6 +1282,52 @@ mod tests {
     }
 
     #[test]
+    fn append_task_run_persists_milestone_id_for_new_entries(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "append-run-milestone-id-test".to_owned(),
+                name: "Append Run Milestone ID Test".to_owned(),
+                description: "testing append_task_run milestone_id persistence".to_owned(),
+            },
+            now,
+        )?;
+
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: None,
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-1".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+            },
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        let raw = std::fs::read_to_string(task_runs_path)?;
+        assert!(raw.contains(&format!(r#""milestone_id":"{}""#, record.id)));
+        Ok(())
+    }
+
+    #[test]
     fn find_runs_for_bead_filters_correctly() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -2292,9 +2338,17 @@ mod tests {
             .collect();
         assert_eq!(completion_events.len(), 1);
         assert_eq!(completion_events[0].timestamp, now);
+        let details: serde_json::Value =
+            serde_json::from_str(completion_events[0].details.as_deref().unwrap())?;
         assert_eq!(
-            completion_events[0].details.as_deref(),
-            Some("project=project-1, run=run-1, plan_hash=plan-v1, outcome=succeeded, detail=journal failed once")
+            details,
+            serde_json::json!({
+                "project_id": "project-1",
+                "run_id": "run-1",
+                "plan_hash": "plan-v1",
+                "outcome": "succeeded",
+                "outcome_detail": "journal failed once",
+            })
         );
         Ok(())
     }
@@ -2379,11 +2433,108 @@ mod tests {
             completion_events[0].timestamp,
             now + chrono::Duration::seconds(1)
         );
+        let details: serde_json::Value =
+            serde_json::from_str(completion_events[0].details.as_deref().unwrap())?;
         assert_eq!(
-            completion_events[0].details.as_deref(),
-            Some(
-                "project=project-1, run=run-1, plan_hash=plan-v2, outcome=succeeded, detail=backfilled detail"
-            )
+            details,
+            serde_json::json!({
+                "project_id": "project-1",
+                "run_id": "run-1",
+                "plan_hash": "plan-v2",
+                "outcome": "succeeded",
+                "outcome_detail": "backfilled detail",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn completion_replay_repairs_legacy_journal_event_with_delimited_identifiers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "legacy-delimited-completion-test".to_owned(),
+                name: "Legacy Delimited Completion Test".to_owned(),
+                description: "repair malformed legacy completion journal details on replay"
+                    .to_owned(),
+            },
+            now,
+        )?;
+
+        let finished_at = now + chrono::Duration::seconds(5);
+        lineage_store.append_task_run(
+            base,
+            &record.id,
+            &TaskRunEntry {
+                milestone_id: Some(record.id.to_string()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project, one".to_owned(),
+                run_id: Some("run, 1".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: Some(finished_at),
+            },
+        )?;
+
+        let journal_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("journal.ndjson");
+        let legacy_completion =
+            MilestoneJournalEvent::new(MilestoneEventType::BeadCompleted, finished_at)
+                .with_bead("bead-1")
+                .with_details("project=project, one, run=run, 1, outcome=succeeded");
+        std::fs::write(
+            &journal_path,
+            format!("{}\n", legacy_completion.to_ndjson_line()?),
+        )?;
+
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project, one",
+            Some("run, 1"),
+            Some("plan, v2"),
+            TaskRunOutcome::Succeeded,
+            Some("backfilled detail".to_owned()),
+            finished_at + chrono::Duration::seconds(1),
+        )?;
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+        assert_eq!(completion_events[0].timestamp, finished_at);
+        let details: serde_json::Value =
+            serde_json::from_str(completion_events[0].details.as_deref().unwrap())?;
+        assert_eq!(
+            details,
+            serde_json::json!({
+                "project_id": "project, one",
+                "run_id": "run, 1",
+                "plan_hash": "plan, v2",
+                "outcome": "succeeded",
+                "outcome_detail": "backfilled detail",
+            })
         );
         Ok(())
     }

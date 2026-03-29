@@ -2267,21 +2267,29 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CompletionJournalDetails {
     project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_hash: Option<String>,
     outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     outcome_detail: Option<String>,
 }
 
 impl CompletionJournalDetails {
     fn parse(details: &str) -> Option<Self> {
-        // `project_id`, `run_id`, and `plan_hash` are emitted by
-        // `render_completion_journal_details`, which treats them as simple
-        // identifiers and debug-asserts that they never contain the `, `
-        // delimiter. Only the trailing `detail=` payload is free-form text.
+        serde_json::from_str(details)
+            .ok()
+            .or_else(|| Self::parse_legacy(details))
+    }
+
+    fn parse_legacy(details: &str) -> Option<Self> {
+        // Backward compatibility for older completion events that used a
+        // comma-delimited string. New writes use structured JSON so
+        // identifier fields can safely contain delimiters.
         let (project_id, mut remainder) = Self::split_required(details, "project=")?;
         let mut run_id = None;
         if remainder.starts_with("run=") {
@@ -2426,14 +2434,25 @@ impl FsMilestoneJournalStore {
             return None;
         }
 
-        let existing_details = CompletionJournalDetails::parse(existing.details.as_deref()?)?;
+        let existing_details_raw = existing.details.as_deref()?;
         let requested_details = CompletionJournalDetails::parse(requested.details.as_deref()?)?;
-        let merged_details =
-            CompletionJournalDetails::merge(&existing_details, &requested_details)?;
 
-        let mut repaired = existing.clone();
-        repaired.details = Some(merged_details.render());
-        Some(repaired)
+        if let Some(existing_details) = CompletionJournalDetails::parse(existing_details_raw) {
+            let merged_details =
+                CompletionJournalDetails::merge(&existing_details, &requested_details)?;
+
+            let mut repaired = existing.clone();
+            repaired.details = Some(merged_details.render());
+            return Some(repaired);
+        }
+
+        if existing_details_raw.starts_with("project=") {
+            let mut repaired = existing.clone();
+            repaired.details = Some(requested_details.render());
+            return Some(repaired);
+        }
+
+        None
     }
 }
 
@@ -2543,6 +2562,15 @@ impl FsTaskRunLineageStore {
             content.push('\n');
         }
         FileSystem::write_atomic(path, &content)
+    }
+
+    fn canonicalize_entry_for_write(
+        entry: &TaskRunEntry,
+        milestone_id: &MilestoneId,
+    ) -> TaskRunEntry {
+        let mut canonical = entry.clone();
+        canonical.milestone_id = Some(milestone_id.to_string());
+        canonical
     }
 
     fn is_superseded_legacy_start(entries: &[TaskRunEntry], index: usize) -> bool {
@@ -2687,7 +2715,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
     ) -> AppResult<()> {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
-        let line = serde_json::to_string(entry)?;
+        let entry = Self::canonicalize_entry_for_write(entry, milestone_id);
+        let line = serde_json::to_string(&entry)?;
         FileSystem::append_line(&path, &line)
     }
 

@@ -344,6 +344,18 @@ impl TaskRunEntry {
     }
 }
 
+#[derive(Serialize)]
+struct CompletionJournalDetailsPayload<'a> {
+    project_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_hash: Option<&'a str>,
+    outcome: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    outcome_detail: Option<&'a str>,
+}
+
 pub fn render_completion_journal_details(
     project_id: &str,
     run_id: Option<&str>,
@@ -351,31 +363,14 @@ pub fn render_completion_journal_details(
     outcome: impl fmt::Display,
     outcome_detail: Option<&str>,
 ) -> String {
-    debug_assert!(
-        !project_id.contains(", "),
-        "project_id is rendered into a comma-delimited journal field and must not contain ', '"
-    );
-    debug_assert!(
-        run_id.is_none_or(|value| !value.contains(", ")),
-        "run_id is rendered into a comma-delimited journal field and must not contain ', '"
-    );
-    debug_assert!(
-        plan_hash.is_none_or(|value| !value.contains(", ")),
-        "plan_hash is rendered into a comma-delimited journal field and must not contain ', '"
-    );
-
-    let mut details = vec![format!("project={project_id}")];
-    if let Some(run_id) = run_id {
-        details.push(format!("run={run_id}"));
-    }
-    if let Some(plan_hash) = plan_hash {
-        details.push(format!("plan_hash={plan_hash}"));
-    }
-    details.push(format!("outcome={outcome}"));
-    if let Some(outcome_detail) = outcome_detail {
-        details.push(format!("detail={outcome_detail}"));
-    }
-    details.join(", ")
+    serde_json::to_string(&CompletionJournalDetailsPayload {
+        project_id,
+        run_id,
+        plan_hash,
+        outcome: outcome.to_string(),
+        outcome_detail,
+    })
+    .expect("completion journal details serialization should not fail")
 }
 
 fn compare_task_run_recency(left: &TaskRunEntry, right: &TaskRunEntry) -> Ordering {
@@ -839,6 +834,31 @@ mod tests {
         let active_beads = active_bead_ids(&entries);
         assert_eq!(active_beads.len(), 1);
         assert!(active_beads.contains("bead-2"));
+        Ok(())
+    }
+
+    #[test]
+    fn completion_journal_details_support_delimited_identifiers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let details = render_completion_journal_details(
+            "project, one",
+            Some("run, 1"),
+            Some("plan, v2"),
+            TaskRunOutcome::Succeeded,
+            Some("detail payload"),
+        );
+
+        let parsed: serde_json::Value = serde_json::from_str(&details)?;
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "project_id": "project, one",
+                "run_id": "run, 1",
+                "plan_hash": "plan, v2",
+                "outcome": "succeeded",
+                "outcome_detail": "detail payload",
+            })
+        );
         Ok(())
     }
 }
