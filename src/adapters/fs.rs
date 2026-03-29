@@ -2086,11 +2086,19 @@ const MILESTONE_PLAN_JSON_FILE: &str = "plan.json";
 const MILESTONE_PLAN_MD_FILE: &str = "plan.md";
 const MILESTONE_TASK_RUNS_FILE: &str = "task-runs.ndjson";
 const MILESTONE_MUTATION_LOCK_FILE: &str = "mutation.lock";
+const MILESTONE_LOCKS_DIR: &str = ".locks";
 
 impl FileSystem {
     pub(crate) fn milestone_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
         Self::workspace_root_path(base_dir)
             .join(MILESTONES_DIR)
+            .join(milestone_id.as_str())
+    }
+
+    pub(crate) fn milestone_lock_root(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
+        Self::workspace_root_path(base_dir)
+            .join(MILESTONES_DIR)
+            .join(MILESTONE_LOCKS_DIR)
             .join(milestone_id.as_str())
     }
 }
@@ -2222,7 +2230,7 @@ pub struct FsMilestoneSnapshotStore;
 
 impl FsMilestoneSnapshotStore {
     fn mutation_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
-        FileSystem::milestone_root(base_dir, milestone_id).join(MILESTONE_MUTATION_LOCK_FILE)
+        FileSystem::milestone_lock_root(base_dir, milestone_id).join(MILESTONE_MUTATION_LOCK_FILE)
     }
 }
 
@@ -2331,7 +2339,7 @@ impl FsMilestoneJournalStore {
     }
 
     fn journal_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
-        FileSystem::milestone_root(base_dir, milestone_id)
+        FileSystem::milestone_lock_root(base_dir, milestone_id)
             .join(format!("{MILESTONE_JOURNAL_FILE}.lock"))
     }
 
@@ -2471,7 +2479,7 @@ impl FsTaskRunLineageStore {
     }
 
     fn task_runs_lock_path(base_dir: &Path, milestone_id: &MilestoneId) -> PathBuf {
-        FileSystem::milestone_root(base_dir, milestone_id)
+        FileSystem::milestone_lock_root(base_dir, milestone_id)
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
     }
 
@@ -2485,6 +2493,7 @@ impl FsTaskRunLineageStore {
             Err(e) => return Err(e.into()),
         };
         let mut entries = Vec::new();
+        let expected_milestone_id = milestone_id.to_string();
         for (i, line) in raw.lines().enumerate() {
             let trimmed = line.trim();
             if trimmed.is_empty() {
@@ -2495,6 +2504,17 @@ impl FsTaskRunLineageStore {
                     file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                     details: format!("line {}: {}", i + 1, e),
                 })?;
+            if entry.milestone_id != expected_milestone_id {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!(
+                        "line {}: task run entry milestone_id '{}' does not match milestone path '{}'",
+                        i + 1,
+                        entry.milestone_id,
+                        milestone_id
+                    ),
+                });
+            }
             entries.push(entry);
         }
         Ok(entries)
@@ -2639,6 +2659,29 @@ impl FsTaskRunLineageStore {
         Ok(changed)
     }
 
+    fn fail_superseded_running_attempt(
+        entries: &mut [TaskRunEntry],
+        prior_attempt: &TaskRunEntry,
+        retry_started_at: DateTime<Utc>,
+    ) -> bool {
+        let detail = format!(
+            "superseded by retry started at {}",
+            retry_started_at.to_rfc3339()
+        );
+        let mut changed = false;
+
+        for entry in entries.iter_mut().filter(|entry| {
+            !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, prior_attempt)
+        }) {
+            entry.outcome = TaskRunOutcome::Failed;
+            entry.outcome_detail = Some(detail.clone());
+            entry.finished_at = Some(retry_started_at);
+            changed = true;
+        }
+
+        changed
+    }
+
     fn unique_terminal_replay_match(
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
@@ -2779,6 +2822,18 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     "cannot start bead '{bead_id}': ambiguous existing running attempts for project '{project_id}'{run_suffix}"
                 ),
             });
+        }
+
+        if run_id.is_none() {
+            if let [legacy_open_entry] = matching_running_entries.as_slice() {
+                if legacy_open_entry.run_id.is_none() {
+                    Self::fail_superseded_running_attempt(
+                        &mut entries,
+                        legacy_open_entry,
+                        started_at,
+                    );
+                }
+            }
         }
 
         let entry = TaskRunEntry {

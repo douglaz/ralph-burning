@@ -362,10 +362,10 @@ pub fn persist_plan(
     };
 
     snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         plan_store.write_plan_json(base_dir, milestone_id, &plan_json)?;
         plan_store.write_plan_md(base_dir, milestone_id, &plan_md)?;
 
-        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         snapshot.plan_hash = Some(plan_hash);
         snapshot.plan_version = snapshot.plan_version.saturating_add(1);
         snapshot.progress = MilestoneProgress {
@@ -550,6 +550,7 @@ pub fn update_task_run(
             });
         }
 
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         let finalized_run = lineage_store.update_task_run(
             base_dir,
             milestone_id,
@@ -562,7 +563,6 @@ pub fn update_task_run(
             finished_at,
         )?;
 
-        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
         reconcile_snapshot_from_lineage(
             &mut snapshot,
             milestone_id,
@@ -811,6 +811,48 @@ mod tests {
         std::fs::create_dir_all(dir.join(".ralph-burning/milestones")).unwrap();
     }
 
+    fn sample_bundle(
+        id: &str,
+        name: &str,
+    ) -> crate::contexts::milestone_record::bundle::MilestoneBundle {
+        use crate::contexts::milestone_record::bundle::{
+            AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+        };
+
+        MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: id.to_owned(),
+                name: name.to_owned(),
+            },
+            executive_summary: "Test plan.".to_owned(),
+            goals: vec!["Goal 1".to_owned()],
+            non_goals: vec![],
+            constraints: vec![],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Tests pass".to_owned(),
+                covered_by: vec![],
+            }],
+            workstreams: vec![Workstream {
+                name: "Core".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    title: "Implement feature".to_owned(),
+                    description: None,
+                    bead_type: Some("task".to_owned()),
+                    priority: Some(1),
+                    labels: vec![],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: None,
+                }],
+            }],
+            default_flow: crate::shared::domain::FlowPreset::QuickDev,
+            agents_guidance: None,
+        }
+    }
+
     #[test]
     fn create_and_load_milestone() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
@@ -912,8 +954,6 @@ mod tests {
 
     #[test]
     fn persist_plan_updates_snapshot() -> Result<(), Box<dyn std::error::Error>> {
-        use crate::contexts::milestone_record::bundle::*;
-
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
         setup_workspace(base);
@@ -934,38 +974,7 @@ mod tests {
             now,
         )?;
 
-        let bundle = MilestoneBundle {
-            schema_version: 1,
-            identity: MilestoneIdentity {
-                id: "plan-test".to_owned(),
-                name: "Plan Test".to_owned(),
-            },
-            executive_summary: "Test plan.".to_owned(),
-            goals: vec!["Goal 1".to_owned()],
-            non_goals: vec![],
-            constraints: vec![],
-            acceptance_map: vec![AcceptanceCriterion {
-                id: "AC-1".to_owned(),
-                description: "Tests pass".to_owned(),
-                covered_by: vec![],
-            }],
-            workstreams: vec![Workstream {
-                name: "Core".to_owned(),
-                description: None,
-                beads: vec![BeadProposal {
-                    title: "Implement feature".to_owned(),
-                    description: None,
-                    bead_type: Some("task".to_owned()),
-                    priority: Some(1),
-                    labels: vec![],
-                    depends_on: vec![],
-                    acceptance_criteria: vec!["AC-1".to_owned()],
-                    flow_override: None,
-                }],
-            }],
-            default_flow: crate::shared::domain::FlowPreset::QuickDev,
-            agents_guidance: None,
-        };
+        let bundle = sample_bundle("plan-test", "Plan Test");
 
         let snapshot = persist_plan(
             &snapshot_store,
@@ -986,6 +995,47 @@ mod tests {
 
         let plan_md = plan_store.read_plan_md(base, &record.id)?;
         assert!(plan_md.contains("# Plan Test"));
+        Ok(())
+    }
+
+    #[test]
+    fn persist_plan_missing_milestone_does_not_block_future_create(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let now = Utc::now();
+        let missing_id = MilestoneId::new("missing-plan-test")?;
+
+        let error = persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &missing_id,
+            &sample_bundle("missing-plan-test", "Missing Plan Test"),
+            now,
+        )
+        .expect_err("persisting a plan for a missing milestone must fail");
+        assert!(
+            error.to_string().contains("No such file") || error.to_string().contains("status.json")
+        );
+
+        let created = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: missing_id.to_string(),
+                name: "Missing Plan Test".to_owned(),
+                description: "creation should still work after a typoed persist_plan".to_owned(),
+            },
+            now,
+        )?;
+        assert_eq!(created.id, missing_id);
         Ok(())
     }
 
@@ -1272,6 +1322,77 @@ mod tests {
             .join("task-runs.ndjson");
         let raw = std::fs::read_to_string(task_runs_path)?;
         assert!(raw.contains(&format!(r#""milestone_id":"{}""#, record.id)));
+        Ok(())
+    }
+
+    #[test]
+    fn misfiled_task_run_rows_are_rejected_by_queries_and_reconciliation(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "misfiled-task-run-test".to_owned(),
+                name: "Misfiled Task Run Test".to_owned(),
+                description: "reject rows whose milestone_id does not match the file path"
+                    .to_owned(),
+            },
+            now,
+        )?;
+
+        let task_runs_path = base
+            .join(".ralph-burning/milestones")
+            .join(record.id.as_str())
+            .join("task-runs.ndjson");
+        std::fs::write(
+            &task_runs_path,
+            format!(
+                "{}\n",
+                serde_json::to_string(&TaskRunEntry {
+                    milestone_id: "other-milestone".to_owned(),
+                    bead_id: "bead-1".to_owned(),
+                    project_id: "project-1".to_owned(),
+                    run_id: None,
+                    plan_hash: None,
+                    outcome: TaskRunOutcome::Running,
+                    outcome_detail: None,
+                    started_at: now,
+                    finished_at: None,
+                })?
+            ),
+        )?;
+
+        let query_error = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")
+            .expect_err("misfiled rows must fail bead queries");
+        assert!(query_error
+            .to_string()
+            .contains("does not match milestone path"));
+
+        let start_error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-2",
+            "project-2",
+            Some("run-2"),
+            Some("plan-v2"),
+            now + chrono::Duration::seconds(1),
+        )
+        .expect_err("snapshot reconciliation must reject misfiled lineage rows");
+        assert!(start_error
+            .to_string()
+            .contains("does not match milestone path"));
         Ok(())
     }
 
@@ -1740,6 +1861,52 @@ mod tests {
             journal.last().map(|event| event.event_type),
             Some(MilestoneEventType::BeadCompleted)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn update_task_run_missing_milestone_does_not_block_future_create(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+        let missing_id = MilestoneId::new("missing-update-test")?;
+
+        let error = update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &missing_id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("missing milestone".to_owned()),
+            now,
+        )
+        .expect_err("updating a missing milestone must fail");
+        assert!(
+            error.to_string().contains("No such file") || error.to_string().contains("status.json")
+        );
+
+        let created = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: missing_id.to_string(),
+                name: "Missing Update Test".to_owned(),
+                description: "creation should still work after a typoed update_task_run".to_owned(),
+            },
+            now,
+        )?;
+        assert_eq!(created.id, missing_id);
         Ok(())
     }
 
@@ -2862,7 +3029,7 @@ mod tests {
     }
 
     #[test]
-    fn runless_retry_with_new_started_at_appends_new_attempt(
+    fn runless_retry_with_new_started_at_auto_fails_prior_attempt_and_stays_completable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -2915,9 +3082,16 @@ mod tests {
         assert_eq!(runs.len(), 2);
         assert_eq!(runs[0].run_id, None);
         assert_eq!(runs[0].started_at, now);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(runs[0].finished_at, Some(retry_started_at));
+        assert!(runs[0]
+            .outcome_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("superseded by retry")));
         assert_eq!(runs[1].run_id, None);
         assert_eq!(runs[1].started_at, retry_started_at);
         assert_eq!(runs[1].plan_hash.as_deref(), Some("plan-v2"));
+        assert_eq!(runs[1].outcome, TaskRunOutcome::Running);
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
         snapshot
@@ -2936,6 +3110,36 @@ mod tests {
         assert_eq!(start_events.len(), 2);
         assert_eq!(start_events[0].timestamp, now);
         assert_eq!(start_events[1].timestamp, retry_started_at);
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("retry succeeded"),
+            retry_started_at,
+            retry_started_at + chrono::Duration::seconds(5),
+        )?;
+
+        let finalized_runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(finalized_runs.len(), 2);
+        assert_eq!(finalized_runs[0].outcome, TaskRunOutcome::Failed);
+        assert_eq!(finalized_runs[1].outcome, TaskRunOutcome::Succeeded);
+
+        let finalized_snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        finalized_snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(finalized_snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(finalized_snapshot.progress.in_progress_beads, 0);
+        assert_eq!(finalized_snapshot.progress.completed_beads, 1);
+        assert_eq!(finalized_snapshot.progress.failed_beads, 0);
         Ok(())
     }
 
