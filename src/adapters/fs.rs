@@ -21,9 +21,9 @@ use crate::contexts::automation_runtime::repo_registry::{
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
-    active_bead_ids, collapse_task_run_attempts, find_matching_running_task_run,
-    has_finalized_task_run, render_completion_journal_details, MilestoneId, MilestoneJournalEvent,
-    MilestoneRecord, MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
+    collapse_task_run_attempts, find_matching_running_task_run, has_finalized_task_run,
+    render_completion_journal_details, MilestoneId, MilestoneJournalEvent, MilestoneRecord,
+    MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2555,18 +2555,13 @@ impl FsTaskRunLineageStore {
         matches!((existing, requested), (Some(existing), Some(requested)) if existing != requested)
     }
 
-    fn matching_running_task_runs<'a>(
+    fn running_task_runs_for_bead<'a>(
         entries: &'a [TaskRunEntry],
         bead_id: &str,
-        project_id: &str,
     ) -> Vec<&'a TaskRunEntry> {
         entries
             .iter()
-            .filter(|entry| {
-                entry.bead_id == bead_id
-                    && entry.project_id == project_id
-                    && !entry.outcome.is_terminal()
-            })
+            .filter(|entry| entry.bead_id == bead_id && !entry.outcome.is_terminal())
             .collect()
     }
 
@@ -2763,13 +2758,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
-        let active_beads = active_bead_ids(&canonical_task_runs);
-        let matching_running_entries =
-            Self::matching_running_task_runs(&canonical_task_runs, bead_id, project_id);
+        let running_attempts_for_bead =
+            Self::running_task_runs_for_bead(&canonical_task_runs, bead_id);
 
-        if let Some(other_active_bead) = active_beads
+        if let Some(other_active_bead) = canonical_task_runs
             .iter()
-            .find(|active| active.as_str() != bead_id)
+            .filter(|entry| !entry.outcome.is_terminal())
+            .map(|entry| entry.bead_id.as_str())
+            .find(|active_bead_id| *active_bead_id != bead_id)
         {
             return Err(AppError::RunStartFailed {
                 reason: format!(
@@ -2813,21 +2809,19 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             return Ok(existing_entry);
         }
 
-        if matching_running_entries.len() > 1 {
+        if running_attempts_for_bead.len() > 1 {
             let run_suffix = run_id
                 .map(|run_id| format!(" run '{run_id}'"))
                 .unwrap_or_default();
             return Err(AppError::RunStartFailed {
                 reason: format!(
-                    "cannot start bead '{bead_id}': ambiguous existing running attempts for project '{project_id}'{run_suffix}"
+                    "cannot start bead '{bead_id}': ambiguous existing running attempts{run_suffix}"
                 ),
             });
         }
 
-        if let [legacy_open_entry] = matching_running_entries.as_slice() {
-            if legacy_open_entry.run_id.is_none() {
-                Self::fail_superseded_running_attempt(&mut entries, legacy_open_entry, started_at);
-            }
+        if let [prior_running_attempt] = running_attempts_for_bead.as_slice() {
+            Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
         let entry = TaskRunEntry {
@@ -2854,6 +2848,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         project_id: &str,
         run_id: Option<&str>,
         plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
         outcome: TaskRunOutcome,
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
@@ -2980,23 +2975,44 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                 }
             }
         } else {
-            match matching_indices.as_slice() {
+            let matching_attempt_indices: Vec<usize> = matching_indices
+                .iter()
+                .copied()
+                .filter(|index| entries[*index].started_at == started_at)
+                .collect();
+
+            if matching_attempt_indices.is_empty() {
+                return Err(AppError::CorruptRecord {
+                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                    details: format!(
+                        "no matching task run for bead={bead_id} project={project_id} started_at={started_at}"
+                    ),
+                });
+            }
+
+            let open_matches: Vec<usize> = matching_attempt_indices
+                .iter()
+                .copied()
+                .filter(|index| {
+                    !entries[*index].outcome.is_terminal()
+                        && !Self::is_superseded_legacy_start(&entries, *index)
+                })
+                .collect();
+
+            match open_matches.as_slice() {
                 [index] => *index,
-                _ => {
-                    let open_matches: Vec<usize> = matching_indices
+                [] => {
+                    let terminal_matches: Vec<usize> = matching_attempt_indices
                         .iter()
                         .copied()
-                        .filter(|index| {
-                            !entries[*index].outcome.is_terminal()
-                                && !Self::is_superseded_legacy_start(&entries, *index)
-                        })
+                        .filter(|index| entries[*index].outcome.is_terminal())
                         .collect();
-                    match open_matches.as_slice() {
+                    match terminal_matches.as_slice() {
                         [index] => *index,
-                        [] => {
+                        _ => {
                             if let Some(index) = Self::unique_terminal_replay_match(
                                 &entries,
-                                &matching_indices,
+                                &matching_attempt_indices,
                                 None,
                             ) {
                                 index
@@ -3004,20 +3020,20 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 return Err(AppError::CorruptRecord {
                                     file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                                     details: format!(
-                                        "ambiguous task run update for bead={bead_id} project={project_id}; provide run_id to disambiguate"
+                                        "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
                                     ),
                                 });
                             }
                         }
-                        _ => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "ambiguous task run update for bead={bead_id} project={project_id}; provide run_id to disambiguate"
-                                ),
-                            });
-                        }
                     }
+                }
+                _ => {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                        details: format!(
+                            "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
+                        ),
+                    });
                 }
             }
         };

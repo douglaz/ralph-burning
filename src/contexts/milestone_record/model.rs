@@ -23,8 +23,6 @@ impl MilestoneId {
         let normalized = value.into().trim().to_owned();
         if normalized.is_empty()
             || normalized.starts_with('.')
-            || normalized == "."
-            || normalized == ".."
             || normalized.contains('/')
             || normalized.contains('\\')
         {
