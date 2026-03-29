@@ -201,7 +201,6 @@ pub struct MilestoneProgress {
     /// Beads whose latest task attempt failed and still need attention.
     pub failed_beads: u32,
     /// Beads whose latest task attempt was intentionally skipped.
-    #[serde(default)]
     pub skipped_beads: u32,
     /// Beads that are blocked by dependencies.
     pub blocked_beads: u32,
@@ -274,8 +273,7 @@ impl MilestoneJournalEvent {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct TaskRunEntry {
     /// Milestone ID for self-contained lineage queries.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub milestone_id: Option<String>,
+    pub milestone_id: String,
     /// Bead ID from the `.beads/` graph.
     pub bead_id: String,
     /// Ralph project ID for this bead's execution.
@@ -315,9 +313,6 @@ impl TaskRunEntry {
 
     pub fn merge_attempt_entries(primary: &Self, secondary: &Self) -> Self {
         let mut merged = primary.clone();
-        if merged.milestone_id.is_none() {
-            merged.milestone_id = secondary.milestone_id.clone();
-        }
         if merged.run_id.is_none() {
             merged.run_id = secondary.run_id.clone();
         }
@@ -418,7 +413,7 @@ pub fn find_matching_running_task_run(
     bead_id: &str,
     project_id: &str,
     run_id: Option<&str>,
-    _started_at: DateTime<Utc>,
+    started_at: DateTime<Utc>,
 ) -> Option<TaskRunEntry> {
     let matching_running_entries: Vec<TaskRunEntry> = entries
         .iter()
@@ -432,11 +427,20 @@ pub fn find_matching_running_task_run(
 
     if let Some(run_id) = run_id {
         matching_running_entries
-            .into_iter()
+            .iter()
             .find(|entry| entry.run_id.as_deref() == Some(run_id))
+            .cloned()
+            .or_else(|| match matching_running_entries.as_slice() {
+                [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
+                    Some(entry.clone())
+                }
+                _ => None,
+            })
     } else {
         match matching_running_entries.as_slice() {
-            [entry] => Some(entry.clone()),
+            [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
+                Some(entry.clone())
+            }
             _ => None,
         }
     }
@@ -655,12 +659,21 @@ mod tests {
     }
 
     #[test]
-    fn progress_deserialization_defaults_skipped_beads() -> Result<(), Box<dyn std::error::Error>> {
-        let progress: MilestoneProgress = serde_json::from_str(
+    fn progress_deserialization_requires_skipped_beads() {
+        let error = serde_json::from_str::<MilestoneProgress>(
             r#"{"total_beads":5,"completed_beads":2,"in_progress_beads":1,"failed_beads":1,"blocked_beads":0}"#,
-        )?;
-        assert_eq!(progress.skipped_beads, 0);
-        Ok(())
+        )
+        .expect_err("missing skipped_beads should fail deserialization");
+        assert!(error.to_string().contains("skipped_beads"));
+    }
+
+    #[test]
+    fn task_run_entry_deserialization_requires_milestone_id() {
+        let error = serde_json::from_str::<TaskRunEntry>(
+            r#"{"bead_id":"b1","project_id":"p1","outcome":"running","started_at":"2025-01-01T00:00:00Z"}"#,
+        )
+        .expect_err("missing milestone_id should fail deserialization");
+        assert!(error.to_string().contains("milestone_id"));
     }
 
     #[test]
@@ -717,7 +730,7 @@ mod tests {
         let started_at = Utc::now();
         let collapsed = collapse_task_run_attempts(vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,
@@ -728,7 +741,7 @@ mod tests {
                 finished_at: None,
             },
             TaskRunEntry {
-                milestone_id: None,
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -741,7 +754,7 @@ mod tests {
         ]);
 
         assert_eq!(collapsed.len(), 1);
-        assert_eq!(collapsed[0].milestone_id.as_deref(), Some("ms-1"));
+        assert_eq!(collapsed[0].milestone_id, "ms-1");
         assert_eq!(collapsed[0].run_id.as_deref(), Some("run-1"));
         assert_eq!(collapsed[0].plan_hash.as_deref(), Some("plan-a"));
         assert_eq!(collapsed[0].outcome_detail.as_deref(), Some("done"));
@@ -755,7 +768,7 @@ mod tests {
         let finished_at = started_at + chrono::Duration::seconds(5);
         let collapsed = collapse_task_run_attempts(vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -766,7 +779,7 @@ mod tests {
                 finished_at: None,
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -777,7 +790,7 @@ mod tests {
                 finished_at: Some(finished_at),
             },
             TaskRunEntry {
-                milestone_id: None,
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -800,7 +813,7 @@ mod tests {
     fn same_attempt_prefers_run_id_when_present() -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
         let first = TaskRunEntry {
-            milestone_id: None,
+            milestone_id: "ms-1".to_owned(),
             bead_id: "bead-1".to_owned(),
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
@@ -825,7 +838,7 @@ mod tests {
         let started_at = Utc::now();
         let entries = vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -836,7 +849,7 @@ mod tests {
                 finished_at: Some(started_at + chrono::Duration::seconds(5)),
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
@@ -847,7 +860,7 @@ mod tests {
                 finished_at: Some(started_at + chrono::Duration::seconds(20)),
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-2".to_owned(),
                 project_id: "project-3".to_owned(),
                 run_id: Some("run-3".to_owned()),
@@ -880,7 +893,7 @@ mod tests {
         let started_at = Utc::now();
         let entries = vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
@@ -891,7 +904,7 @@ mod tests {
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
@@ -915,11 +928,11 @@ mod tests {
     }
 
     #[test]
-    fn find_matching_running_task_run_requires_exact_run_id_match(
+    fn find_matching_running_task_run_backfills_named_replay_with_matching_started_at(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
         let entries = vec![TaskRunEntry {
-            milestone_id: Some("ms-1".to_owned()),
+            milestone_id: "ms-1".to_owned(),
             bead_id: "bead-1".to_owned(),
             project_id: "project-1".to_owned(),
             run_id: None,
@@ -930,23 +943,25 @@ mod tests {
             finished_at: None,
         }];
 
-        assert!(find_matching_running_task_run(
+        let matched = find_matching_running_task_run(
             &entries,
             "bead-1",
             "project-1",
             Some("run-3"),
             started_at,
         )
-        .is_none());
+        .expect("matching started_at should let a replay backfill a runless row");
+        assert_eq!(matched.started_at, started_at);
+        assert_eq!(matched.run_id, None);
         Ok(())
     }
 
     #[test]
-    fn find_matching_running_task_run_reuses_sole_runless_attempt_for_retry_repair(
+    fn find_matching_running_task_run_reuses_sole_runless_attempt_for_matching_started_at(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
         let entries = vec![TaskRunEntry {
-            milestone_id: Some("ms-1".to_owned()),
+            milestone_id: "ms-1".to_owned(),
             bead_id: "bead-1".to_owned(),
             project_id: "project-1".to_owned(),
             run_id: None,
@@ -957,16 +972,46 @@ mod tests {
             finished_at: None,
         }];
 
-        let matched = find_matching_running_task_run(
+        let matched =
+            find_matching_running_task_run(&entries, "bead-1", "project-1", None, started_at)
+                .expect("matching started_at should reuse the same runless attempt");
+        assert_eq!(matched.started_at, started_at);
+        assert_eq!(matched.plan_hash.as_deref(), Some("plan-v1"));
+        Ok(())
+    }
+
+    #[test]
+    fn find_matching_running_task_run_treats_new_started_at_as_new_attempt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![TaskRunEntry {
+            milestone_id: "ms-1".to_owned(),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: Some("plan-v1".to_owned()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+        }];
+
+        assert!(find_matching_running_task_run(
             &entries,
             "bead-1",
             "project-1",
             None,
             started_at + chrono::Duration::seconds(30),
         )
-        .expect("a sole runless running attempt should be reused for retry repair");
-        assert_eq!(matched.started_at, started_at);
-        assert_eq!(matched.plan_hash.as_deref(), Some("plan-v1"));
+        .is_none());
+        assert!(find_matching_running_task_run(
+            &entries,
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            started_at + chrono::Duration::seconds(30),
+        )
+        .is_none());
         Ok(())
     }
 
@@ -976,7 +1021,7 @@ mod tests {
         let started_at = Utc::now();
         let entries = vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,
@@ -987,7 +1032,7 @@ mod tests {
                 finished_at: None,
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
@@ -1016,7 +1061,7 @@ mod tests {
         let started_at = Utc::now();
         let collapsed = collapse_task_run_attempts(vec![
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,
@@ -1027,7 +1072,7 @@ mod tests {
                 finished_at: None,
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,
@@ -1038,7 +1083,7 @@ mod tests {
                 finished_at: Some(started_at + chrono::Duration::seconds(1)),
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,
@@ -1049,7 +1094,7 @@ mod tests {
                 finished_at: None,
             },
             TaskRunEntry {
-                milestone_id: Some("ms-1".to_owned()),
+                milestone_id: "ms-1".to_owned(),
                 bead_id: "bead-1".to_owned(),
                 project_id: "project-1".to_owned(),
                 run_id: None,

@@ -2281,49 +2281,7 @@ struct CompletionJournalDetails {
 
 impl CompletionJournalDetails {
     fn parse(details: &str) -> Option<Self> {
-        serde_json::from_str(details)
-            .ok()
-            .or_else(|| Self::parse_legacy(details))
-    }
-
-    fn parse_legacy(details: &str) -> Option<Self> {
-        // Backward compatibility for older completion events that used a
-        // comma-delimited string. New writes use structured JSON so
-        // identifier fields can safely contain delimiters.
-        let (project_id, mut remainder) = Self::split_required(details, "project=")?;
-        let mut run_id = None;
-        if remainder.starts_with("run=") {
-            let (parsed_run_id, next_remainder) = Self::split_required(remainder, "run=")?;
-            run_id = Some(parsed_run_id.to_owned());
-            remainder = next_remainder;
-        }
-
-        let mut plan_hash = None;
-        if remainder.starts_with("plan_hash=") {
-            let (parsed_plan_hash, next_remainder) = Self::split_required(remainder, "plan_hash=")?;
-            plan_hash = Some(parsed_plan_hash.to_owned());
-            remainder = next_remainder;
-        }
-
-        let outcome = remainder.strip_prefix("outcome=")?;
-        let (outcome, outcome_detail) = match outcome.split_once(", detail=") {
-            Some((outcome, outcome_detail)) => (outcome, Some(outcome_detail.to_owned())),
-            None => (outcome, None),
-        };
-
-        Some(Self {
-            project_id: project_id.to_owned(),
-            run_id,
-            plan_hash,
-            outcome: outcome.to_owned(),
-            outcome_detail,
-        })
-    }
-
-    fn split_required<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
-        let remainder = input.strip_prefix(prefix)?;
-        let (value, rest) = remainder.split_once(", ")?;
-        Some((value, rest))
+        serde_json::from_str(details).ok()
     }
 
     fn merge(existing: &Self, requested: &Self) -> Option<Self> {
@@ -2437,29 +2395,13 @@ impl FsMilestoneJournalStore {
         let existing_details_raw = existing.details.as_deref()?;
         let requested_details = CompletionJournalDetails::parse(requested.details.as_deref()?)?;
 
-        if let Some(existing_details) = CompletionJournalDetails::parse(existing_details_raw) {
-            let merged_details =
-                CompletionJournalDetails::merge(&existing_details, &requested_details)?;
+        let existing_details = CompletionJournalDetails::parse(existing_details_raw)?;
+        let merged_details =
+            CompletionJournalDetails::merge(&existing_details, &requested_details)?;
 
-            let mut repaired = existing.clone();
-            repaired.details = Some(merged_details.render());
-            return Some(repaired);
-        }
-
-        if existing_details_raw.starts_with("project=") {
-            tracing::warn!(
-                bead_id = existing.bead_id.as_deref().unwrap_or("<none>"),
-                timestamp = %existing.timestamp,
-                existing_details = existing_details_raw,
-                requested_details = requested.details.as_deref().unwrap_or(""),
-                "repairing malformed legacy milestone completion details by replacing them with requested metadata"
-            );
-            let mut repaired = existing.clone();
-            repaired.details = Some(requested_details.render());
-            return Some(repaired);
-        }
-
-        None
+        let mut repaired = existing.clone();
+        repaired.details = Some(merged_details.render());
+        Some(repaired)
     }
 }
 
@@ -2548,14 +2490,11 @@ impl FsTaskRunLineageStore {
             if trimmed.is_empty() {
                 continue;
             }
-            let mut entry: TaskRunEntry =
+            let entry: TaskRunEntry =
                 serde_json::from_str(trimmed).map_err(|e| AppError::CorruptRecord {
                     file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                     details: format!("line {}: {}", i + 1, e),
                 })?;
-            entry
-                .milestone_id
-                .get_or_insert_with(|| milestone_id.to_string());
             entries.push(entry);
         }
         Ok(entries)
@@ -2569,15 +2508,6 @@ impl FsTaskRunLineageStore {
             content.push('\n');
         }
         FileSystem::write_atomic(path, &content)
-    }
-
-    fn canonicalize_entry_for_write(
-        entry: &TaskRunEntry,
-        milestone_id: &MilestoneId,
-    ) -> TaskRunEntry {
-        let mut canonical = entry.clone();
-        canonical.milestone_id = Some(milestone_id.to_string());
-        canonical
     }
 
     fn is_superseded_legacy_start(entries: &[TaskRunEntry], index: usize) -> bool {
@@ -2672,7 +2602,6 @@ impl FsTaskRunLineageStore {
 
     fn backfill_running_entry(
         entry: &mut TaskRunEntry,
-        milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
         run_id: Option<&str>,
@@ -2680,10 +2609,6 @@ impl FsTaskRunLineageStore {
     ) -> AppResult<bool> {
         let mut changed = false;
 
-        if entry.milestone_id.is_none() {
-            entry.milestone_id = Some(milestone_id.to_string());
-            changed = true;
-        }
         if let Some(run_id) = run_id {
             if entry.run_id.is_none() {
                 entry.run_id = Some(run_id.to_owned());
@@ -2768,8 +2693,16 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
     ) -> AppResult<()> {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
-        let entry = Self::canonicalize_entry_for_write(entry, milestone_id);
-        let line = serde_json::to_string(&entry)?;
+        if entry.milestone_id != milestone_id.to_string() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!(
+                    "task run entry milestone_id '{}' does not match milestone path '{}'",
+                    entry.milestone_id, milestone_id
+                ),
+            });
+        }
+        let line = serde_json::to_string(entry)?;
         FileSystem::append_line(&path, &line)
     }
 
@@ -2824,7 +2757,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             }) {
                 if Self::backfill_running_entry(
                     &mut entries[existing_index],
-                    milestone_id,
                     bead_id,
                     project_id,
                     run_id,
@@ -2849,17 +2781,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        let allow_named_retry_after_legacy_open = run_id.is_some()
-            && matches!(matching_running_entries.as_slice(), [entry] if entry.run_id.is_none());
-
-        if active_beads.contains(bead_id) && !allow_named_retry_after_legacy_open {
-            return Err(AppError::RunStartFailed {
-                reason: format!("cannot start bead '{bead_id}': it is already active"),
-            });
-        }
-
         let entry = TaskRunEntry {
-            milestone_id: Some(milestone_id.to_string()),
+            milestone_id: milestone_id.to_string(),
             bead_id: bead_id.to_owned(),
             project_id: project_id.to_owned(),
             run_id: run_id.map(str::to_owned),
