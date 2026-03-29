@@ -435,13 +435,8 @@ pub fn find_matching_running_task_run(
             .cloned()
             .collect();
         exact_running_matches.first().cloned().or_else(|| {
-            let unmatched_running: Vec<TaskRunEntry> = matching_running_entries
-                .iter()
-                .filter(|entry| entry.run_id.is_none())
-                .cloned()
-                .collect();
-            match unmatched_running.as_slice() {
-                [entry] => Some(entry.clone()),
+            match matching_running_entries.as_slice() {
+                [entry] if entry.run_id.is_none() => Some(entry.clone()),
                 _ => None,
             }
         })
@@ -834,6 +829,65 @@ mod tests {
         let active_beads = active_bead_ids(&entries);
         assert_eq!(active_beads.len(), 1);
         assert!(active_beads.contains("bead-2"));
+        Ok(())
+    }
+
+    #[test]
+    fn find_matching_running_task_run_reuses_only_sole_legacy_open_attempt(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![TaskRunEntry {
+            milestone_id: Some("ms-1".to_owned()),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: None,
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at,
+            finished_at: None,
+        }];
+
+        let matched =
+            find_matching_running_task_run(&entries, "bead-1", "project-1", Some("run-3"))
+                .expect("sole legacy open attempt should be reusable");
+        assert_eq!(matched.run_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn find_matching_running_task_run_rejects_mixed_legacy_and_named_open_attempts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let entries = vec![
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: Some("ms-1".to_owned()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: started_at + chrono::Duration::seconds(1),
+                finished_at: None,
+            },
+        ];
+
+        assert!(
+            find_matching_running_task_run(&entries, "bead-1", "project-1", Some("run-3"))
+                .is_none()
+        );
         Ok(())
     }
 

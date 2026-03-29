@@ -1713,6 +1713,90 @@ mod tests {
     }
 
     #[test]
+    fn completion_rejects_conflicting_plan_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "completion-plan-conflict-test".to_owned(),
+                name: "Completion Plan Conflict Test".to_owned(),
+                description: "reject conflicting plan hashes during completion".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            now,
+        )?;
+
+        let error = record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v2"),
+            TaskRunOutcome::Succeeded,
+            Some("should fail"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )
+        .expect_err("conflicting plan hashes must be rejected");
+        assert!(error.to_string().contains("conflicting plan_hash"));
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+        assert_eq!(snapshot.progress.in_progress_beads, 1);
+        assert_eq!(snapshot.progress.completed_beads, 0);
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert!(runs[0].finished_at.is_none());
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event.event_type,
+                    MilestoneEventType::BeadCompleted
+                        | MilestoneEventType::BeadFailed
+                        | MilestoneEventType::BeadSkipped
+                )
+            })
+            .collect();
+        assert!(completion_events.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn multiple_retries_visible_for_same_bead() -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -2639,6 +2723,154 @@ mod tests {
         let finalized_runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(finalized_runs.len(), 1);
         assert_eq!(finalized_runs[0].outcome, TaskRunOutcome::Succeeded);
+        Ok(())
+    }
+
+    #[test]
+    fn start_retry_rejects_conflicting_plan_hash() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "start-plan-conflict-test".to_owned(),
+                name: "Start Plan Conflict Test".to_owned(),
+                description: "reject conflicting plan hashes on idempotent start".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v1"),
+            now,
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("plan-v2"),
+            now + chrono::Duration::seconds(5),
+        )
+        .expect_err("conflicting plan hashes must be rejected");
+        assert!(error.to_string().contains("conflicting plan_hash"));
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let start_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert_eq!(start_events.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn start_rejects_mixed_legacy_and_named_open_attempts() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "mixed-start-open-test".to_owned(),
+                name: "Mixed Start Open Test".to_owned(),
+                description:
+                    "reject ambiguous start fallback when legacy and named attempts coexist"
+                        .to_owned(),
+            },
+            now,
+        )?;
+
+        for entry in [
+            TaskRunEntry {
+                milestone_id: Some(record.id.to_string()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now,
+                finished_at: None,
+            },
+            TaskRunEntry {
+                milestone_id: Some(record.id.to_string()),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: None,
+                outcome: TaskRunOutcome::Running,
+                outcome_detail: None,
+                started_at: now + chrono::Duration::seconds(1),
+                finished_at: None,
+            },
+        ] {
+            lineage_store.append_task_run(base, &record.id, &entry)?;
+        }
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            Some("plan-v3"),
+            now + chrono::Duration::seconds(2),
+        )
+        .expect_err("mixed runless/named open attempts must be rejected as ambiguous");
+        assert!(error
+            .to_string()
+            .contains("ambiguous existing running attempts"));
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 2);
+        assert!(runs
+            .iter()
+            .all(|run| run.outcome == TaskRunOutcome::Running));
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let start_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert!(start_events.is_empty());
         Ok(())
     }
 

@@ -2447,6 +2447,13 @@ impl FsMilestoneJournalStore {
         }
 
         if existing_details_raw.starts_with("project=") {
+            tracing::warn!(
+                bead_id = existing.bead_id.as_deref().unwrap_or("<none>"),
+                timestamp = %existing.timestamp,
+                existing_details = existing_details_raw,
+                requested_details = requested.details.as_deref().unwrap_or(""),
+                "repairing malformed legacy milestone completion details by replacing them with requested metadata"
+            );
             let mut repaired = existing.clone();
             repaired.details = Some(requested_details.render());
             return Some(repaired);
@@ -2598,6 +2605,36 @@ impl FsTaskRunLineageStore {
         matches!((existing, requested), (Some(existing), Some(requested)) if existing != requested)
     }
 
+    fn matching_running_task_runs<'a>(
+        entries: &'a [TaskRunEntry],
+        bead_id: &str,
+        project_id: &str,
+    ) -> Vec<&'a TaskRunEntry> {
+        entries
+            .iter()
+            .filter(|entry| {
+                entry.bead_id == bead_id
+                    && entry.project_id == project_id
+                    && !entry.outcome.is_terminal()
+            })
+            .collect()
+    }
+
+    fn plan_hash_conflict_details(
+        bead_id: &str,
+        project_id: &str,
+        run_id: Option<&str>,
+        existing_plan_hash: &str,
+        requested_plan_hash: &str,
+    ) -> String {
+        let run_suffix = run_id
+            .map(|run_id| format!(" run={run_id}"))
+            .unwrap_or_default();
+        format!(
+            "conflicting plan_hash for bead={bead_id} project={project_id}{run_suffix}: existing={existing_plan_hash} requested={requested_plan_hash}"
+        )
+    }
+
     fn backfill_terminal_entry(
         entry: &mut TaskRunEntry,
         run_id: Option<&str>,
@@ -2636,9 +2673,11 @@ impl FsTaskRunLineageStore {
     fn backfill_running_entry(
         entry: &mut TaskRunEntry,
         milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
         run_id: Option<&str>,
         plan_hash: Option<&str>,
-    ) -> bool {
+    ) -> AppResult<bool> {
         let mut changed = false;
 
         if entry.milestone_id.is_none() {
@@ -2652,13 +2691,27 @@ impl FsTaskRunLineageStore {
             }
         }
         if let Some(plan_hash) = plan_hash {
-            if entry.plan_hash.is_none() {
-                entry.plan_hash = Some(plan_hash.to_owned());
-                changed = true;
+            match entry.plan_hash.as_deref() {
+                Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                    return Err(AppError::RunStartFailed {
+                        reason: Self::plan_hash_conflict_details(
+                            bead_id,
+                            project_id,
+                            entry.run_id.as_deref().or(run_id),
+                            existing_plan_hash,
+                            plan_hash,
+                        ),
+                    });
+                }
+                None => {
+                    entry.plan_hash = Some(plan_hash.to_owned());
+                    changed = true;
+                }
+                _ => {}
             }
         }
 
-        changed
+        Ok(changed)
     }
 
     fn unique_terminal_replay_match(
@@ -2735,6 +2788,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
         let active_beads = active_bead_ids(&canonical_task_runs);
+        let matching_running_entries =
+            Self::matching_running_task_runs(&canonical_task_runs, bead_id, project_id);
 
         if let Some(other_active_bead) = active_beads
             .iter()
@@ -2766,15 +2821,28 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                 if Self::backfill_running_entry(
                     &mut entries[existing_index],
                     milestone_id,
+                    bead_id,
+                    project_id,
                     run_id,
                     plan_hash,
-                ) {
+                )? {
                     Self::write_task_runs(&path, &entries)?;
                 }
                 return Ok(entries[existing_index].clone());
             }
 
             return Ok(existing_entry);
+        }
+
+        if matching_running_entries.len() > 1 {
+            let run_suffix = run_id
+                .map(|run_id| format!(" run '{run_id}'"))
+                .unwrap_or_default();
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot start bead '{bead_id}': ambiguous existing running attempts for project '{project_id}'{run_suffix}"
+                ),
+            });
         }
 
         if active_beads.contains(bead_id) {
@@ -3015,8 +3083,23 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                 if let Some(run_id) = run_id {
                     entry.run_id.get_or_insert_with(|| run_id.to_owned());
                 }
-                if entry.plan_hash.is_none() {
-                    entry.plan_hash = plan_hash.map(str::to_owned);
+                if let Some(plan_hash) = plan_hash {
+                    match entry.plan_hash.as_deref() {
+                        Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: Self::plan_hash_conflict_details(
+                                    bead_id,
+                                    project_id,
+                                    entry.run_id.as_deref().or(run_id),
+                                    existing_plan_hash,
+                                    plan_hash,
+                                ),
+                            });
+                        }
+                        None => entry.plan_hash = Some(plan_hash.to_owned()),
+                        _ => {}
+                    }
                 }
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
