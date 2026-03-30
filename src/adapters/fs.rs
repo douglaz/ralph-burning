@@ -2286,6 +2286,18 @@ pub struct FsMilestoneJournalStore;
 /// through `serde_json::Value`) so operators can distinguish serialization bugs
 /// from legitimate merge rejections, which would otherwise both surface as a
 /// duplicate journal event.
+/// Merge two structs at the JSON level: for every key present in `overlay`
+/// but absent from `base`, insert the overlay's value into `base`.
+///
+/// # `skip_serializing_if` requirement
+///
+/// This function relies on `Option` fields being **omitted** (key absent)
+/// when their value is `None`.  All `Option` fields on structs passed to
+/// this function **must** be annotated with
+/// `#[serde(default, skip_serializing_if = "Option::is_none")]`.
+/// If a field serialises `None` as an explicit JSON `null` instead, the
+/// key will be present in the base map and the overlay's non-null value
+/// will **not** fill it.
 fn json_fill_none<T: serde::Serialize + serde::de::DeserializeOwned>(
     base: &T,
     overlay: &T,
@@ -2794,12 +2806,27 @@ impl FsTaskRunLineageStore {
         changed
     }
 
+    /// Find a unique terminal entry among `matching_indices` that can be
+    /// treated as a replay match.
+    ///
+    /// # Contract
+    ///
+    /// When `requested_run_id` is `Some`, `requested_started_at` **must**
+    /// also be `Some`.  The started_at guard prevents backfilling the wrong
+    /// legacy terminal row when multiple runless entries exist.  Passing
+    /// `(Some(run_id), None)` would bypass the guard entirely.
     fn unique_terminal_replay_match(
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
         requested_run_id: Option<&str>,
         requested_started_at: Option<DateTime<Utc>>,
     ) -> Option<usize> {
+        debug_assert!(
+            requested_run_id.is_none() || requested_started_at.is_some(),
+            "unique_terminal_replay_match: when requested_run_id is Some, \
+             requested_started_at must also be Some to enforce the started_at \
+             guard on runless terminal candidates"
+        );
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
             .copied()
@@ -3897,6 +3924,45 @@ mod tests {
             merged.render(),
             requested_json,
             "merged completion details must match fully-populated requested"
+        );
+    }
+
+    #[test]
+    fn json_fill_none_fills_absent_option_from_overlay() {
+        // Directly verify that json_fill_none fills a None optional field
+        // (key absent due to skip_serializing_if) with the overlay's Some value.
+        let base = StartJournalDetails {
+            project_id: "proj-1".to_string(),
+            run_id: None,
+            plan_hash: None,
+        };
+        let overlay = StartJournalDetails {
+            project_id: "proj-1".to_string(),
+            run_id: Some("run-42".to_string()),
+            plan_hash: Some("hash-abc".to_string()),
+        };
+        let merged = json_fill_none(&base, &overlay).expect("json_fill_none must succeed");
+        assert_eq!(merged.run_id.as_deref(), Some("run-42"));
+        assert_eq!(merged.plan_hash.as_deref(), Some("hash-abc"));
+        assert_eq!(merged.project_id, "proj-1");
+
+        // Verify that existing base values are NOT overwritten by overlay.
+        let base_with_values = StartJournalDetails {
+            project_id: "proj-1".to_string(),
+            run_id: Some("run-original".to_string()),
+            plan_hash: Some("hash-original".to_string()),
+        };
+        let merged2 =
+            json_fill_none(&base_with_values, &overlay).expect("json_fill_none must succeed");
+        assert_eq!(
+            merged2.run_id.as_deref(),
+            Some("run-original"),
+            "base value must be preserved when both sides are present"
+        );
+        assert_eq!(
+            merged2.plan_hash.as_deref(),
+            Some("hash-original"),
+            "base value must be preserved when both sides are present"
         );
     }
 
