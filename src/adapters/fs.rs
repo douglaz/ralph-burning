@@ -2612,6 +2612,42 @@ impl FsTaskRunLineageStore {
         }
     }
 
+    /// Backfill `plan_hash` on an existing entry from the current milestone
+    /// snapshot, but only when it is provably safe — i.e., no plan evolution
+    /// has occurred since the entry was created.
+    ///
+    /// Safety rules:
+    /// - Entry must still have `plan_hash == None`.
+    /// - If the entry has `snapshot_plan_hash_at_creation` (new entries), the
+    ///   current snapshot must match it — otherwise the plan has evolved and
+    ///   backfill is unsafe.
+    /// - Legacy entries (where `snapshot_plan_hash_at_creation` is `None`)
+    ///   cannot be verified, so backfill is skipped.
+    ///
+    /// Returns `true` if the entry was modified.
+    fn safe_plan_hash_backfill(
+        entry: &mut TaskRunEntry,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+    ) -> bool {
+        if entry.plan_hash.is_some() {
+            return false;
+        }
+        let creation_hash = match &entry.snapshot_plan_hash_at_creation {
+            Some(h) => h.clone(),
+            // Legacy entry: no provenance → skip backfill.
+            None => return false,
+        };
+        let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
+        if current_hash.as_deref() == Some(creation_hash.as_str()) {
+            entry.plan_hash = Some(creation_hash);
+            true
+        } else {
+            // Plan has evolved since entry creation → backfill unsafe.
+            false
+        }
+    }
+
     fn read_task_runs_from_path(
         path: &Path,
         milestone_id: &MilestoneId,
@@ -2821,12 +2857,12 @@ impl FsTaskRunLineageStore {
         requested_run_id: Option<&str>,
         requested_started_at: Option<DateTime<Utc>>,
     ) -> Option<usize> {
-        debug_assert!(
-            requested_run_id.is_none() || requested_started_at.is_some(),
-            "unique_terminal_replay_match: when requested_run_id is Some, \
-             requested_started_at must also be Some to enforce the started_at \
-             guard on runless terminal candidates"
-        );
+        // Enforce the contract in all build modes: when the caller supplies a
+        // run_id, started_at must also be present so the guard on runless
+        // terminal candidates is never bypassed.
+        if requested_run_id.is_some() && requested_started_at.is_none() {
+            return None;
+        }
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
             .copied()
@@ -2973,18 +3009,21 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
-                let changed = Self::backfill_running_entry(
+                let mut changed = Self::backfill_running_entry(
                     &mut entries[existing_index],
                     bead_id,
                     project_id,
                     run_id,
                     plan_hash,
                 )?;
-                // NOTE: snapshot-based plan_hash backfill is intentionally NOT
-                // applied to existing rows. persist_plan() can advance
-                // snapshot.plan_hash after the original attempt started, so
-                // stamping the current snapshot hash would mislabel a v1
-                // attempt as v2. Only new entry creation auto-populates.
+                // Safe plan_hash backfill for existing rows: only when the
+                // entry's plan_hash is still None AND we can verify no plan
+                // evolution has occurred since the entry was created.
+                changed |= Self::safe_plan_hash_backfill(
+                    &mut entries[existing_index],
+                    base_dir,
+                    milestone_id,
+                );
                 if changed {
                     Self::write_task_runs(&path, &entries)?;
                 }
@@ -3011,9 +3050,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
 
         // Auto-populate plan_hash from the milestone snapshot when the caller
         // omits it — the system already knows which plan version is executing.
+        //
+        // Known limitation: if persist_plan() is called between the moment the
+        // bead is dispatched and the moment record_task_run_start is called,
+        // the entry gets stamped with the *newer* snapshot hash even though the
+        // bead was dispatched under the older plan. The long-term fix is for
+        // callers to always supply plan_hash explicitly when they know which
+        // plan version dispatched the bead.
+        let current_snapshot_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
         let effective_plan_hash = plan_hash
             .map(str::to_owned)
-            .or_else(|| Self::snapshot_plan_hash(base_dir, milestone_id));
+            .or_else(|| current_snapshot_hash.clone());
 
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),
@@ -3021,6 +3068,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             project_id: project_id.to_owned(),
             run_id: run_id.map(str::to_owned),
             plan_hash: effective_plan_hash,
+            snapshot_plan_hash_at_creation: current_snapshot_hash,
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -3090,9 +3138,19 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         .collect();
                     match open_matches.as_slice() {
                         [] => {
+                            // Pre-filter to rows matching started_at so that
+                            // unrelated completed attempts for the same
+                            // bead/project are excluded from the uniqueness
+                            // check (they would otherwise cause
+                            // is_legacy_start_for to reject valid candidates).
+                            let attempt_indices: Vec<usize> = matching_indices
+                                .iter()
+                                .copied()
+                                .filter(|index| entries[*index].started_at == started_at)
+                                .collect();
                             if let Some(index) = Self::unique_terminal_replay_match(
                                 &entries,
-                                &matching_indices,
+                                &attempt_indices,
                                 Some(run_id),
                                 Some(started_at),
                             ) {
@@ -3290,6 +3348,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     outcome_detail.as_deref(),
                     finished_at,
                 );
+                // Safe plan_hash backfill for terminal replay as well.
+                should_write |=
+                    Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
             } else {
                 if let Some(run_id) = run_id {
                     entry.run_id.get_or_insert_with(|| run_id.to_owned());
@@ -3312,11 +3373,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         _ => {}
                     }
                 }
-                // NOTE: snapshot-based plan_hash backfill is intentionally NOT
-                // applied when finalizing an existing row. persist_plan() can
-                // advance snapshot.plan_hash after the attempt started, so the
-                // current snapshot hash may not match the plan the bead ran
-                // under. Only new entry creation auto-populates.
+                // Safe plan_hash backfill: only when provenance confirms no
+                // plan evolution since the entry was created.
+                Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);

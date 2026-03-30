@@ -1266,6 +1266,7 @@ mod tests {
             project_id: "proj-1".to_owned(),
             run_id: Some("run-42".to_owned()),
             plan_hash: Some("sha256-abc".to_owned()),
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Succeeded,
             outcome_detail: Some("Completed with 3 warnings".to_owned()),
             started_at: now,
@@ -1313,6 +1314,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now,
@@ -1367,6 +1369,7 @@ mod tests {
                     project_id: "project-1".to_owned(),
                     run_id: None,
                     plan_hash: None,
+                    snapshot_plan_hash_at_creation: None,
                     outcome: TaskRunOutcome::Running,
                     outcome_detail: None,
                     started_at: now,
@@ -1565,6 +1568,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: first_started,
@@ -1576,6 +1580,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("legacy failure".to_owned()),
                 started_at: first_started,
@@ -1587,6 +1592,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: second_started,
@@ -1598,6 +1604,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("legacy success".to_owned()),
                 started_at: second_started,
@@ -1609,6 +1616,7 @@ mod tests {
                 project_id: "other-project".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now + chrono::Duration::seconds(20),
@@ -1665,6 +1673,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1676,6 +1685,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: None,
                 started_at,
@@ -1687,6 +1697,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("replayed completion".to_owned()),
                 started_at,
@@ -1741,6 +1752,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1752,6 +1764,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first retry".to_owned()),
                 started_at,
@@ -1763,6 +1776,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1774,6 +1788,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("second retry".to_owned()),
                 started_at,
@@ -2223,6 +2238,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: legacy_started,
@@ -2234,6 +2250,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("legacy failure".to_owned()),
                 started_at: legacy_started,
@@ -2329,6 +2346,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -2340,6 +2358,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("legacy failure".to_owned()),
                 started_at,
@@ -2430,6 +2449,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now,
@@ -2859,6 +2879,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: None,
             plan_hash: Some("plan-v1".to_owned()),
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Succeeded,
             outcome_detail: Some("legacy completion".to_owned()),
             started_at: now,
@@ -2870,6 +2891,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: Some("run-2".to_owned()),
             plan_hash: Some("plan-v2".to_owned()),
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Succeeded,
             outcome_detail: Some("retry completion".to_owned()),
             started_at: now + chrono::Duration::seconds(10),
@@ -3549,6 +3571,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now,
@@ -3560,6 +3583,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now + chrono::Duration::seconds(1),
@@ -3634,6 +3658,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now,
@@ -4019,6 +4044,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("first attempt finished".to_owned()),
                 started_at: now,
@@ -4418,6 +4444,7 @@ mod tests {
                     project_id: "project-1".to_owned(),
                     run_id: Some("run-1".to_owned()),
                     plan_hash: Some("plan-v1".to_owned()),
+                    snapshot_plan_hash_at_creation: None,
                     outcome: TaskRunOutcome::Running,
                     outcome_detail: None,
                     started_at,
@@ -4497,6 +4524,7 @@ mod tests {
                     project_id: "project-1".to_owned(),
                     run_id: Some(run_id.to_owned()),
                     plan_hash: None,
+                    snapshot_plan_hash_at_creation: None,
                     outcome: TaskRunOutcome::Running,
                     outcome_detail: None,
                     started_at: now,
@@ -4572,6 +4600,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now,
@@ -4583,6 +4612,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: None,
+                snapshot_plan_hash_at_creation: None,
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: now + chrono::Duration::seconds(1),
@@ -5154,6 +5184,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
             plan_hash: None, // legacy: no plan_hash
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at: now,
@@ -5257,6 +5288,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
             plan_hash: None,
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Succeeded,
             outcome_detail: None,
             started_at: now,
@@ -5341,6 +5373,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: None,
             plan_hash: None,
+            snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Succeeded,
             outcome_detail: None,
             started_at: now,
@@ -5368,6 +5401,301 @@ mod tests {
         assert!(
             result.is_err(),
             "terminal runless replay with mismatched started_at must be rejected"
+        );
+        Ok(())
+    }
+
+    /// Regression: safe_plan_hash_backfill fills plan_hash on an existing
+    /// entry when the snapshot has not evolved since creation.
+    #[test]
+    fn safe_backfill_fills_plan_hash_when_snapshot_unchanged(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "safe-backfill".to_owned(),
+                name: "Safe Backfill".to_owned(),
+                description: "safe_plan_hash_backfill test".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist a plan so snapshot has a hash.
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("safe-backfill", "Plan v1"),
+            now,
+        )?;
+
+        let snapshot = snapshot_store.read_snapshot(base, &record.id)?;
+        let expected_hash = snapshot.plan_hash.clone().expect("snapshot should have plan_hash");
+
+        // Start a bead: plan_hash auto-populated from snapshot, and
+        // snapshot_plan_hash_at_creation records the same hash.
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-backfill",
+            "project-1",
+            Some("run-1"),
+            None, // plan_hash omitted — auto-populated
+            now + chrono::Duration::seconds(1),
+        )?;
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        let entry = runs
+            .iter()
+            .find(|e| e.bead_id == "bead-backfill")
+            .expect("entry must exist");
+        assert_eq!(
+            entry.plan_hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "new entry should auto-populate plan_hash from snapshot"
+        );
+        assert_eq!(
+            entry.snapshot_plan_hash_at_creation.as_deref(),
+            Some(expected_hash.as_str()),
+            "new entry should record snapshot hash at creation"
+        );
+
+        // Preseed an entry with provenance from the current snapshot but
+        // plan_hash=None (simulates a row where plan_hash was lost or
+        // stripped but provenance is available).
+        let entry_with_provenance = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-provenance".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: Some("run-prov".to_owned()),
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: Some(expected_hash.clone()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at: now + chrono::Duration::seconds(2),
+            finished_at: None,
+        };
+        lineage_store.append_task_run(base, &record.id, &entry_with_provenance)?;
+
+        // Complete the bead — safe_plan_hash_backfill should fill plan_hash
+        // because snapshot hasn't evolved.
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-provenance",
+            "project-1",
+            Some("run-prov"),
+            None, // plan_hash omitted
+            now + chrono::Duration::seconds(2),
+            TaskRunOutcome::Succeeded,
+            None,
+            now + chrono::Duration::seconds(3),
+        )?;
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        let completed = runs
+            .iter()
+            .find(|e| e.bead_id == "bead-provenance")
+            .expect("entry must exist");
+        assert_eq!(
+            completed.plan_hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "safe backfill should fill plan_hash when snapshot unchanged"
+        );
+        Ok(())
+    }
+
+    /// Regression: safe_plan_hash_backfill does NOT fill when the snapshot
+    /// has evolved since entry creation.
+    #[test]
+    fn safe_backfill_skips_when_snapshot_evolved() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "safe-backfill-evolved".to_owned(),
+                name: "Safe Backfill Evolved".to_owned(),
+                description: "safe backfill after plan evolution".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist plan v1.
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("safe-backfill-evolved", "Plan v1"),
+            now,
+        )?;
+        let v1_snapshot = snapshot_store.read_snapshot(base, &record.id)?;
+        let v1_hash = v1_snapshot.plan_hash.clone().expect("v1 hash");
+
+        // Preseed an entry with provenance from v1 but plan_hash=None.
+        let entry = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-evolved".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: Some("run-evolved".to_owned()),
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: Some(v1_hash),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at: now + chrono::Duration::seconds(1),
+            finished_at: None,
+        };
+        lineage_store.append_task_run(base, &record.id, &entry)?;
+
+        // Evolve plan to v2.
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("safe-backfill-evolved", "Plan v2"),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        // Complete the bead — safe_plan_hash_backfill should NOT fill
+        // because snapshot has evolved (v1 → v2).
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-evolved",
+            "project-1",
+            Some("run-evolved"),
+            None,
+            now + chrono::Duration::seconds(1),
+            TaskRunOutcome::Succeeded,
+            None,
+            now + chrono::Duration::seconds(3),
+        )?;
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        let completed = runs
+            .iter()
+            .find(|e| e.bead_id == "bead-evolved")
+            .expect("entry must exist");
+        assert_eq!(
+            completed.plan_hash, None,
+            "safe backfill must NOT fill plan_hash when snapshot has evolved"
+        );
+        Ok(())
+    }
+
+    /// Regression: named terminal replay succeeds when the same bead/project
+    /// has multiple completed attempts (amendment 4 — pre-filter by started_at).
+    #[test]
+    fn named_terminal_replay_succeeds_with_multiple_attempts(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "multi-attempt-replay".to_owned(),
+                name: "Multi-Attempt Replay".to_owned(),
+                description: "terminal replay with multiple attempts".to_owned(),
+            },
+            now,
+        )?;
+
+        // Preseed two completed runless attempts for the same bead/project
+        // at different started_at times.
+        let attempt_a = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-multi".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: None,
+            outcome: TaskRunOutcome::Succeeded,
+            outcome_detail: None,
+            started_at: now,
+            finished_at: Some(now + chrono::Duration::seconds(1)),
+        };
+        let attempt_b = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-multi".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: None,
+            outcome: TaskRunOutcome::Failed,
+            outcome_detail: None,
+            started_at: now + chrono::Duration::seconds(5),
+            finished_at: Some(now + chrono::Duration::seconds(6)),
+        };
+        lineage_store.append_task_run(base, &record.id, &attempt_a)?;
+        lineage_store.append_task_run(base, &record.id, &attempt_b)?;
+
+        // Named terminal replay targeting attempt A by started_at should
+        // succeed — the started_at pre-filter excludes attempt B.
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-multi",
+            "project-1",
+            Some("run-a"),
+            None,
+            now, // matches attempt_a's started_at
+            TaskRunOutcome::Succeeded,
+            Some("repaired A".to_owned()),
+            now + chrono::Duration::seconds(1),
+        )?;
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        let result = runs
+            .iter()
+            .find(|e| e.started_at == now && e.bead_id == "bead-multi")
+            .expect("attempt A must exist");
+        assert_eq!(result.run_id.as_deref(), Some("run-a"));
+        assert_eq!(
+            result.outcome_detail.as_deref(),
+            Some("repaired A"),
+            "named terminal replay should backfill attempt A"
         );
         Ok(())
     }
