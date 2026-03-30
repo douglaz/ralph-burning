@@ -4634,7 +4634,25 @@ where
                                 ),
                             },
                         );
-                        tokio::time::sleep(backoff).await;
+                        tokio::select! {
+                            () = tokio::time::sleep(backoff) => {}
+                            () = cancellation_token.cancelled() => {}
+                        }
+                    }
+                    if cancellation_token.is_cancelled() {
+                        return fail_run_result(
+                            &error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
                     }
                     cursor = cursor.retry()?;
                     continue;

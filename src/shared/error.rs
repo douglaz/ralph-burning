@@ -299,7 +299,7 @@ impl ContractError {
 impl AppError {
     pub fn failure_class(&self) -> Option<FailureClass> {
         match self {
-            Self::BackendUnavailable { .. } => Some(FailureClass::TransportFailure),
+            Self::BackendUnavailable { .. } => Some(FailureClass::BinaryNotFound),
             Self::CapabilityMismatch { .. } => Some(FailureClass::DomainValidationFailure),
             Self::InvocationFailed { failure_class, .. } => Some(*failure_class),
             Self::InvocationTimeout { .. } => Some(FailureClass::Timeout),

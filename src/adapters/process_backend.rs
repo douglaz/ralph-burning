@@ -63,6 +63,37 @@ impl PreparedCommand {
         }
     }
 
+    /// Preserve backend artifacts (schema/message temp files) into
+    /// `runtime/failed` without requiring child process output.
+    /// Used for timeout and spawn failures where no ChildOutput is available.
+    pub(crate) async fn preserve_failed_artifacts(
+        &self,
+        request: &InvocationRequest,
+        reason: &str,
+    ) {
+        let failed_dir = request.project_root.join("runtime/failed");
+        let _ = tokio::fs::create_dir_all(&failed_dir).await;
+
+        match &self.response_decoder {
+            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => {
+                let failed_schema_path =
+                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                let failed_message_path =
+                    failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+                best_effort_move_file(schema_path, &failed_schema_path).await;
+                best_effort_move_file(message_path, &failed_message_path).await;
+            }
+        }
+
+        let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+        let _ = tokio::fs::write(failed_raw_path, format!("[no child output — {reason}]\n")).await;
+    }
+
     // Failure cleanup preserves backend artifacts for operator inspection.
     pub(crate) async fn cleanup_failed_invocation(
         &self,
@@ -1159,7 +1190,13 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         {
             Ok(output) => output,
             Err(error) => {
-                prepared.cleanup().await;
+                if error.failure_class() == Some(FailureClass::Timeout) {
+                    prepared
+                        .preserve_failed_artifacts(&request, "process timed out")
+                        .await;
+                } else {
+                    prepared.cleanup().await;
+                }
                 return Err(error);
             }
         };
@@ -1193,7 +1230,16 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     {
                         Ok(output) => output,
                         Err(error) => {
-                            fresh_prepared.cleanup().await;
+                            if error.failure_class() == Some(FailureClass::Timeout) {
+                                fresh_prepared
+                                    .preserve_failed_artifacts(
+                                        &fresh_request,
+                                        "process timed out (stale session retry)",
+                                    )
+                                    .await;
+                            } else {
+                                fresh_prepared.cleanup().await;
+                            }
                             return Err(error);
                         }
                     };

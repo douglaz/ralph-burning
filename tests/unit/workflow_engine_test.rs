@@ -1030,7 +1030,7 @@ async fn ci_improvement_always_failing_validation_fails_run() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resume_from_failed_docs_change_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -1040,7 +1040,7 @@ async fn resume_from_failed_docs_change_run_skips_completed_stages() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::DocsUpdate, 3),
+        StubBackendAdapter::default().with_transient_failure(StageId::DocsUpdate, 5),
     );
     let first_result = engine::execute_run(
         &failing_agent_service,
@@ -1098,7 +1098,7 @@ async fn resume_from_failed_docs_change_run_skips_completed_stages() {
     assert_eq!(run_resumed.details["resume_stage"], "docs_update");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resume_from_failed_ci_improvement_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -1108,7 +1108,7 @@ async fn resume_from_failed_ci_improvement_run_skips_completed_stages() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::CiUpdate, 3),
+        StubBackendAdapter::default().with_transient_failure(StageId::CiUpdate, 5),
     );
     let first_result = engine::execute_run(
         &failing_agent_service,
@@ -1404,7 +1404,7 @@ async fn quick_dev_final_review_conditionally_approved_triggers_completion_round
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -1414,7 +1414,7 @@ async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::Review, 3),
+        StubBackendAdapter::default().with_transient_failure(StageId::Review, 5),
     );
     let first_result = engine::execute_run(
         &failing_agent_service,
@@ -3024,7 +3024,7 @@ async fn resume_after_cycle_advanced_append_failure_restarts_at_implementation()
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn resume_from_failed_run_skips_completed_stages() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3034,7 +3034,7 @@ async fn resume_from_failed_run_skips_completed_stages() {
     let config = EffectiveConfig::load(base_dir).unwrap();
 
     let failing_agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 3),
+        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 5),
     );
     let first_result = engine::execute_standard_run(
         &failing_agent_service,
