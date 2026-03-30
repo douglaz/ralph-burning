@@ -1,0 +1,51 @@
+{
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr13",
+  "stage_id": "plan_and_implement",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T20:36:38.903304527Z",
+  "payload": {
+    "data": {
+      "change_summary": "Tightened milestone task-run lineage so explicit new runs no longer backfill a sole legacy runless start row, which preserves retry audit history after upgrades. I also rewrote task-run attempt collapsing to pair legacy start/completion rows sequentially instead of assuming `started_at` is unique, so same-timestamp runless retries stay visible in `find_runs_for_bead`, and added regressions for both behaviors.",
+      "outstanding_risks": [
+        "Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction, so a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage.",
+        "Legacy attempts that still omit `run_id` remain inherently ambiguous for completion updates when multiple same-project attempts are open at once; this change preserves those attempts in audit queries instead of collapsing them, but deterministic finalization still depends on richer caller metadata."
+      ],
+      "steps": [
+        {
+          "description": "Inspected the current `TaskRunEntry` matching, collapse, and filesystem start paths against the two pending amendments to isolate where legacy runless rows were being reused or over-collapsed.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Updated `src/contexts/milestone_record/model.rs` so named runs only match exact `run_id`s, legacy no-`run_id` comparisons no longer collapse terminal-terminal rows, and attempt collapsing now groups legacy rows sequentially instead of depending on timestamp uniqueness.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Adjusted `src/adapters/fs.rs` start handling so an explicit retry can append a new attempt alongside a stale legacy open row instead of rewriting it, while still rejecting genuinely ambiguous multi-open cases.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Added regression coverage in `model.rs` and `service.rs` for same-timestamp legacy retries staying visible and for upgraded explicit retries appending a new attempt after a legacy open row, then revalidated the milestone_record path.",
+          "order": 3,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record` passed with 94 tests.",
+        "`cargo clippy -- -D warnings` completed successfully."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 13
+}

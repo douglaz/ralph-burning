@@ -1,0 +1,52 @@
+{
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr12",
+  "stage_id": "plan_and_implement",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T20:05:57.285723948Z",
+  "payload": {
+    "data": {
+      "change_summary": "Hardened milestone task-run lineage against the remaining audit gaps. The running-attempt matcher now only reuses a legacy runless row when it is the sole open attempt, so mixed legacy/named open state is rejected instead of being silently rewritten. The filesystem lineage adapter now rejects conflicting plan_hash values on both start reuse and completion finalization instead of preserving stale hashes, and malformed legacy completion-event repair now emits a warning before replacing unparseable details. Added regressions for mixed-open start rejection, plan-hash conflicts on start/completion, and the tightened legacy-running match behavior, then closed bead `ralph-burning-9ni.2.4`.",
+      "outstanding_risks": [
+        "Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction; replays and milestone-scoped locking mitigate this, but a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage."
+      ],
+      "steps": [
+        {
+          "description": "Inspected the milestone lineage start/update and journal-repair paths against the three pending amendments to isolate the exact model and filesystem behaviors that still allowed ambiguous reuse, silent plan-hash drops, and un-audited legacy repair.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Tightened `find_matching_running_task_run` and `FsTaskRunLineageStore::record_task_run_start` so only a sole legacy runless attempt can be reused, while mixed runless/named open attempts now fail fast as ambiguous instead of rewriting lineage.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Updated the filesystem adapter to reject conflicting `plan_hash` metadata during running-row reuse and completion finalization, and added a `tracing::warn!` on the malformed legacy completion-detail replacement fallback so operators can audit that repair path.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Added milestone_record regressions for the tightened running-match helper, mixed-open start rejection, and conflicting plan-hash failures on both start retry and completion, then reran formatting, milestone_record tests, clippy, and bead hygiene commands.",
+          "order": 3,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record` passed with 91 tests.",
+        "`cargo clippy -- -D warnings` completed successfully.",
+        "`br lint` passed with no template warnings (`76 issues checked`).",
+        "`br close ralph-burning-9ni.2.4 --reason=\"Completed\"` succeeded, and `br sync --flush-only` reported no dirty issues to export."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 12
+}

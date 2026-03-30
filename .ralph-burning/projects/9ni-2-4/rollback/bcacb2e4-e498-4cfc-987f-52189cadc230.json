@@ -1,0 +1,110 @@
+{
+  "rollback_id": "bcacb2e4-e498-4cfc-987f-52189cadc230",
+  "created_at": "2026-03-28T01:17:59.680621846Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "c2e39f89e88b1942c06d71af9815b5b4881cbbe0",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 5
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 4
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 5,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-4-54b5dd71",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 4,
+          "body": "In `update_task_run` (service.rs:590), `snapshot.updated_at` is set to `finalized_run.finished_at.unwrap_or(finished_at)`, which on a replay uses the ORIGINAL completion timestamp, not the current wall clock. If any other operation updated the snapshot between the failed attempt and the retry, `updated_at` would regress to an earlier value. Fix: use `snapshot.updated_at.max(finished_at)` or take `max(finalized_run.finished_at.unwrap_or(finished_at), snapshot.updated_at)` so the timestamp never moves backward.",
+          "created_at": "2026-03-28T01:17:59.574568176Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "b0eec27ea4d57341110f8661c221210747f44d463b460933c499b74597dcd69f"
+        },
+        {
+          "amendment_id": "fr-4-65a16a24",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 4,
+          "body": "`normalize_task_runs` + `task_runs_same_attempt` + `merge_task_run_attempt` in service.rs (lines 134-191) duplicate `collapse_runs_for_bead` + `same_attempt` + `merge_attempt_rows` in fs.rs (lines 2301-2407). The only difference is that `collapse_runs_for_bead` also filters by bead_id. Extract the shared merge/normalize logic into a single location (e.g., a function on TaskRunEntry or a helper module) and have both call sites use it, to prevent the two copies from silently diverging.",
+          "created_at": "2026-03-28T01:17:59.574571232Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "fb1777574203fac9aa332bc0a7412d3894b7e30f6016ff96b3c52637a8743c6c"
+        },
+        {
+          "amendment_id": "fr-4-0195eaea",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 4,
+          "body": "`update_task_run()` no longer replays completions against legacy two-row NDJSON attempts, which breaks the backward-compatibility/repair story the new service API promises. `service.rs` says repeated terminal completions should be able to repair snapshot/journal state without duplication (`src/contexts/milestone_record/service.rs:545-548`), but the no-`run_id` selector in `FsTaskRunLineageStore::update_task_run()` only accepts a single non-terminal match and explicitly filters out superseded legacy start rows (`src/adapters/fs.rs:2557-2577`). For existing data written by the old code, one attempt is stored as `running` + terminal rows with the same `bead_id`/`project_id` and no `run_id`, so replaying that completion now errors with \"ambiguous task run update ... provide run_id\" instead of repairing the milestone state.",
+          "created_at": "2026-03-28T01:17:59.574575540Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "3414f8add12730f749031dd66f5f2be3162827ee7dae6f12d3be8d5c38132b4b"
+        },
+        {
+          "amendment_id": "fr-4-013c9cb2",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 4,
+          "body": "`record_bead_start()` is not idempotent for the same `(bead_id, project_id, run_id)`, and that can strand a run permanently once `update_task_run()` starts requiring a unique row. The start path appends a new running entry before writing snapshot/journal and allows the same bead to be started again (`src/contexts/milestone_record/service.rs:434-472`). If the first start call fails after `append_task_run()` and the controller retries, the file now contains duplicate running rows with the same `run_id`; later, `FsTaskRunLineageStore::update_task_run()` treats multiple exact `run_id` matches as ambiguous and refuses to finalize either one (`src/adapters/fs.rs:2510-2555`). With the new in-place finalization model, a transient start-side failure can therefore make the bead impossible to complete.",
+          "created_at": "2026-03-28T01:17:59.574579738Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "79164684a3a701897f98508b462a528ddc405282539aa9e4c2a082ee19b0a196"
+        }
+      ],
+      "processed_count": 12
+    },
+    "status_summary": "running: final review restart round 5 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-28T01:02:46.424313326Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

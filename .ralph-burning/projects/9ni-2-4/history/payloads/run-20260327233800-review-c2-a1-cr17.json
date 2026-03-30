@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260327233800-review-c2-a1-cr17",
+  "stage_id": "review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T22:41:21.323819455Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 103 milestone_record tests pass (0 failures, 0 ignored)",
+        "cargo clippy -- -D warnings passes cleanly (no warnings)",
+        "cargo fmt --all --check passes (no formatting issues)",
+        "Amendment fr-16-381b2bc1 VERIFIED: MilestoneId::new() at model.rs:25 now has `normalized.starts_with('.')` as the second check in the rejection chain, before the specific '.' and '..' checks. This rejects all dot-prefixed names including '.locks', '.hidden', '.gitignore', etc. Test at model.rs:595-596 asserts MilestoneId::new('.locks').is_err() and MilestoneId::new('.hidden').is_err().",
+        "Amendment fr-16-20005d1b VERIFIED: update_task_run in fs.rs:2922-2928 — when a run_id is provided but no exact match exists, and the sole open match has run_id=None, the code now returns an error: 'only a legacy runless attempt is still open' instead of falling back to that row. Test completion_with_named_run_id_requires_exact_attempt_match (service.rs:3395-3464) seeds a legacy runless Running entry, attempts completion with run_id='run-2', and asserts error containing 'only a legacy runless attempt is still open'. The legacy entry remains Running and unmodified.",
+        "Amendment fr-16-20005d1b VERIFIED: record_bead_completion (service.rs:464-492) has _started_at as an explicitly unused parameter (underscore-prefixed), confirming the amendment's claim that started_at is not supplied for disambiguation.",
+        "Amendment fr-16-20943f79 VERIFIED: record_task_run_start in fs.rs:2827-2831 now calls fail_superseded_running_attempt unconditionally when a sole legacy open entry (run_id=None) exists, regardless of whether the new start has an explicit run_id. The old code gated superseding on `if run_id.is_none()` which left legacy rows permanently Running when a named retry started.",
+        "Amendment fr-16-20943f79 VERIFIED: fail_superseded_running_attempt (fs.rs:2662-2683) marks the old entry as Failed with outcome_detail='superseded by retry started at {timestamp}' and sets finished_at to the new retry's started_at.",
+        "Amendment fr-16-20943f79 VERIFIED: Test explicit_retry_after_legacy_open_supersedes_old_attempt (service.rs:3295-3392) seeds a legacy Running row (run_id=None), starts a new run with run_id='run-2', asserts the old entry is Failed with 'superseded by retry' detail while the new entry is Running. Then completes the retry and verifies final snapshot has status=Ready, completed_beads=1, failed_beads=0.",
+        "All original acceptance criteria remain satisfied: milestone state answers 'what happened to bead X?', controller can update linkage after each run outcome, no backward-compatibility issues"
+      ],
+      "findings_or_gaps": [
+        "The `normalized.starts_with('.')` check at model.rs:25 makes the subsequent `normalized == '.'` and `normalized == '..'` checks at lines 27-28 redundant (both '.' and '..' start with '.'). This is harmless — just slightly redundant code — not a correctness issue.",
+        "AppError::RunStartFailed is still used (service.rs ~line 555) for rejecting non-terminal outcomes in update_task_run, which is semantically a finalization rejection. A more specific error variant would be cleaner but this is cosmetic, not a correctness issue — carried forward from prior reviews.",
+        "The outstanding risk — milestone mutations span separate lineage, snapshot, and journal files without a cross-file transaction — remains. All paths are serialized by the milestone mutation lock and replay-safe, making this an acceptable trade-off for file-based storage.",
+        "The auto-superseded legacy open rows remain visible in audit history as Failed entries with 'superseded by retry' detail, which is intentional and preserves the audit trail."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 17
+}

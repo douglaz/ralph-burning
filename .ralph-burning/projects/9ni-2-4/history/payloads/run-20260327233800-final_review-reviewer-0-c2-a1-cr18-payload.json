@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260327233800-final_review-reviewer-0-c2-a1-cr18-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-30T00:10:47.988884117Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "In `merge_attempt_entries` (model.rs:325-329), the `finished_at` merge takes the *minimum* of two `Some` timestamps. When `collapse_task_run_group` merges replayed terminal entries, the earlier `finished_at` always wins, which silently discards a later corrected timestamp. Consider using the primary's `finished_at` unconditionally when the primary is terminal (since `collapse_task_run_group` already selects the terminal entry as primary), or take the `max` to prefer the latest correction.",
+        "rationale": "If a terminal entry is replayed with a corrected `finished_at` (e.g., due to a partial-write recovery), the merge discards the correction. The current code works for the common case (start row with `finished_at: None` merged into terminal with `finished_at: Some`), but the min-of-two-Somes branch handles an edge case incorrectly."
+      },
+      {
+        "body": "The `#[serde(default, skip_serializing_if = \"Option::is_none\")]` annotations on `run_id`, `plan_hash`, and `outcome_detail` (model.rs:281, 284, 289) mean serialization omits `None` fields entirely, and deserialization silently accepts their absence. Per the acceptance criteria (\"no backward compatibility with old NDJSON schemas is required\"), consider removing `skip_serializing_if` so `None` values serialize as `null`, and removing `serde(default)` so a missing field raises a deserialization error. This would catch corruption (e.g., a truncated JSON line) instead of silently treating missing fields as `None`.",
+        "rationale": "The acceptance criteria explicitly states: 'Remove any legacy parsing, backfill-on-read, or repair paths that only exist to handle a hypothetical migration from an older schema.' The `serde(default)` attribute is a form of lenient read-time parsing that silently accepts malformed NDJSON where these fields are entirely absent. Since the writer always produces these fields (either with a value or null), their absence should indicate corruption, not a valid legacy row."
+      }
+    ],
+    "summary": "The implementation is well-structured and correct for the stated requirements. All 311 tests pass, clippy is clean (including tests with -D warnings), and the core contract (TaskRunEntry model, TaskRunLineagePort trait with update_task_run and find_runs_for_bead, FS adapter, service-layer orchestration) matches the bead specification. The model correctly captures milestone_id, bead_id, project_id, run_id, plan_hash, outcome, outcome_detail, started_at, and finished_at. The FS adapter handles idempotent replay, conflict detection, superseding of prior running attempts, and duplicate deduplication robustly. Test coverage includes serialization round-trips, find_runs_for_bead filtering/collapsing/deduplication, update_task_run with various matching scenarios, and multiple-retry visibility. Two minor issues found: (1) merge_attempt_entries takes min of finished_at which could discard corrections in rare replay scenarios, and (2) serde(default) on optional fields is more lenient than the acceptance criteria calls for."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

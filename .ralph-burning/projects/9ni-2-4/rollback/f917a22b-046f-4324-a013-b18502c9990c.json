@@ -1,0 +1,88 @@
+{
+  "rollback_id": "f917a22b-046f-4324-a013-b18502c9990c",
+  "created_at": "2026-03-28T01:55:45.452788382Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "2a51c38d739b56aa8cc6ece6ad5d9401ad521357",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 6
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 5
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 6,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-5-15b1f41e",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 5,
+          "body": "`src/contexts/milestone_record/service.rs:176-189` only converts an idle milestone back to `ready` when the old snapshot status was already `active`. `update_task_run()` relies on that helper after sealing the lineage row (`src/contexts/milestone_record/service.rs:601-610`), while `record_bead_start()` still appends the running lineage entry before writing `status.json` (`src/contexts/milestone_record/service.rs:458-480`). If the start path fails after the append but before the snapshot write, a later completion repair fixes the counters but leaves the milestone stuck in `planning` (or any other stale non-terminal status) even though a bead already ran and finished. Please make reconciliation derive the correct idle status from lineage for these partial-failure repairs, not only for the `active -> ready` case.",
+          "created_at": "2026-03-28T01:55:45.384397165Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "73ce4f84a6191ac3e782d23498d728dec761762304f14796c4aa6c802fe6c371"
+        },
+        {
+          "amendment_id": "fr-5-ef6f1e4a",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 5,
+          "body": "`record_bead_start()` is still not concurrency-safe for the idempotent retry case. It decides whether a running entry already exists from an unlocked `read_task_runs()` snapshot (`src/contexts/milestone_record/service.rs:387-423`) and only later performs a blind append (`src/contexts/milestone_record/service.rs:458-470`, `src/adapters/fs.rs:2428-2437`). The `BeadStarted` journal dedupe is another unlocked read-then-append (`src/contexts/milestone_record/service.rs:482-488`). Two controllers retrying the same `(bead_id, project_id, run_id)` concurrently can both observe “no existing row”, both append a running entry, and both emit start events. `update_task_run()` can collapse duplicate lineage rows later, but the duplicate journal history is permanent and snapshot counts are wrong until completion. The compare-and-insert for start idempotence needs to happen under a single lock.",
+          "created_at": "2026-03-28T01:55:45.384401864Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "93d2e8be9b0b2d62be2eec3992d9dda72f3f2473b4ca4dc15d45486ac8b8d3f9"
+        }
+      ],
+      "processed_count": 16
+    },
+    "status_summary": "running: final review restart round 6 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-28T01:37:14.883795433Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

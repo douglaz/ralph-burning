@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-vote-0-c2-a1-cr20-artifact",
+  "payload_id": "run-20260327233800-final_review-vote-0-c2-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T01:13:15.446600775Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe amendment identifies a real dedupe collision bug. The model change (lines 469-482) now permits distinct named runs to share a started_at timestamp, but BeadStarted events (service.rs:448-451) only include project_id in details. Since the journal deduplicates on (timestamp, event_type, bead_id, details), two starts at the same timestamp become indistinguishable and the second is silently dropped. Completion events already include run_id/plan_hash via completion_journal_details() — start events should do the same.\n\n## Votes\n\n- `fr-20-c613acbd`: Accept\n  Verified in code: completion_journal_details() (model.rs:333) already includes run_id and plan_hash, but record_bead_start (service.rs:448-451) only writes `project={project_id}`. The fs.rs dedupe key (timestamp, event_type, bead_id, details) cannot distinguish two BeadStarted events from different named runs sharing the same started_at. This is a genuine correctness bug introduced by the model relaxation at lines 469-482 that allows new named runs to proceed despite a prior finalized run at the same timestamp. The fix — widening BeadStarted details to include run identity — is consistent with how completion events already work and is necessary to maintain journal audit trail integrity.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}

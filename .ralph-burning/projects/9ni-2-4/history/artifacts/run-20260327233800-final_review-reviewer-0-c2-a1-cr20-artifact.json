@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-reviewer-0-c2-a1-cr20-artifact",
+  "payload_id": "run-20260327233800-final_review-reviewer-0-c2-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T01:06:25.707228246Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nThe diff adds `started_at` to `CompletionJournalDetails` (both the model's serialization payload and the FS adapter's read/write struct), fixes `matching_finalized_task_runs` to avoid cross-matching differently-named runs that share a timestamp, and tightens the journal merge guard to reject merging events from distinct attempts. All changes are correct:\n\n1. **`CompletionJournalDetails` merge guard (fs.rs:2297-2304)**: Adding `started_at` equality prevents incorrectly merging journal entries from different attempts that happen to share `project_id` and `outcome`. The render path includes `started_at` in serialized JSON, so the dedup check at `append_event_if_missing` (fs.rs:2452-2457) also naturally distinguishes them. Correct.\n\n2. **`matching_finalized_task_runs` fallback (model.rs:479-482)**: When `run_id` is `Some` but no exact match exists, the function now explicitly falls back to runless entries matching on `started_at`, instead of falling through to the generic filter that could match entries with a *different* named `run_id`. This closes a real correctness gap where a named retry could falsely match against a differently-named finalized entry.\n\n3. **Tests**: The four new/updated tests cover the key scenarios: different named runs at the same timestamp are kept separate in journal dedup, `matching_finalized_task_runs` rejects cross-run matches, a new named run can start even when a finalized entry shares its `started_at`, and serialization round-trips correctly include `started_at`.\n\n4. **Acceptance criteria compliance**: `milestone_id` is required (non-optional String). `run_id`, `plan_hash`, and `outcome_detail` are correctly `Option` since they are genuinely not always known at write time (runless retries, start-time entries without outcome). The `#[serde(default)]` annotations are needed for round-trip serialization of `Option` fields with `skip_serializing_if`, not for legacy migration. The backfill/repair paths handle crash recovery (partial writes), not schema migration.\n\nNo bugs, safety issues, or correctness gaps found. No amendments proposed.\n\n## Amendments\n\nNone.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 20
+}

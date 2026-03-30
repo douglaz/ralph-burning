@@ -1,0 +1,100 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr11-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T19:57:15.003527644Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-11-9348c590",
+      "fr-11-3f2dfcd6",
+      "fr-11-84b6b1d6"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-11-9348c590",
+        "normalized_body": "In the legacy repair fallback path (fs.rs:2449-2453), when an existing journal event has unparseable legacy details (starts with 'project=' but both JSON and legacy parsing fail), the code silently replaces the existing details wholesale with the requested details. If the merge path at line 2440-2446 returns None due to a conflict (e.g., different project_id or outcome between the misparsed legacy data and requested data), but the legacy data was actually just a formatting issue, the code falls through to the starts_with('project=') branch and overwrites without any conflict check. Consider logging a warning when this fallback fires so operators can audit whether data was lost.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-11-3f2dfcd6",
+        "normalized_body": "`src/contexts/milestone_record/model.rs:415-447` and `src/adapters/fs.rs:2760-2774` let `record_task_run_start` reuse a lone runless open row even when another named run for the same bead/project is already open. In a mixed legacy state like `(run_id=None, outcome=running)` plus `(run_id=\"run-2\", outcome=running)`, starting `run-3` returns `Ok(())` and rewrites the runless row to `run-3`, leaving two simultaneous open attempts for the same bead/project. I reproduced this with a small harness against the current code. That corrupts lineage attribution instead of surfacing the state as ambiguous; the start path should reject this mixed-open case the same way `update_task_run` already does.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-11-84b6b1d6",
+        "normalized_body": "`src/adapters/fs.rs:2648-2657` and `src/adapters/fs.rs:3015-3020` silently ignore a conflicting `plan_hash` once a running row already has any hash. I reproduced a normal start/completion flow where `record_bead_start(..., plan_hash=\"plan-v1\")` is followed by `record_bead_completion(..., plan_hash=\"plan-v2\")`; the call succeeds, but the persisted `TaskRunEntry` still reports `plan_hash=\"plan-v1\"`. Because the whole point of this task is to audit which plan/run attempted a bead, returning success while dropping the caller's newer hash produces incorrect milestone lineage data. The update path should either reject conflicting hashes or explicitly overwrite them.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-11-9348c590",
+        "normalized_body": "In the legacy repair fallback path (fs.rs:2449-2453), when an existing journal event has unparseable legacy details (starts with 'project=' but both JSON and legacy parsing fail), the code silently replaces the existing details wholesale with the requested details. If the merge path at line 2440-2446 returns None due to a conflict (e.g., different project_id or outcome between the misparsed legacy data and requested data), but the legacy data was actually just a formatting issue, the code falls through to the starts_with('project=') branch and overwrites without any conflict check. Consider logging a warning when this fallback fires so operators can audit whether data was lost.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-11-3f2dfcd6",
+        "normalized_body": "`src/contexts/milestone_record/model.rs:415-447` and `src/adapters/fs.rs:2760-2774` let `record_task_run_start` reuse a lone runless open row even when another named run for the same bead/project is already open. In a mixed legacy state like `(run_id=None, outcome=running)` plus `(run_id=\"run-2\", outcome=running)`, starting `run-3` returns `Ok(())` and rewrites the runless row to `run-3`, leaving two simultaneous open attempts for the same bead/project. I reproduced this with a small harness against the current code. That corrupts lineage attribution instead of surfacing the state as ambiguous; the start path should reject this mixed-open case the same way `update_task_run` already does.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-11-84b6b1d6",
+        "normalized_body": "`src/adapters/fs.rs:2648-2657` and `src/adapters/fs.rs:3015-3020` silently ignore a conflicting `plan_hash` once a running row already has any hash. I reproduced a normal start/completion flow where `record_bead_start(..., plan_hash=\"plan-v1\")` is followed by `record_bead_completion(..., plan_hash=\"plan-v2\")`; the call succeeds, but the persisted `TaskRunEntry` still reports `plan_hash=\"plan-v1\"`. Because the whole point of this task is to audit which plan/run attempted a bead, returning success while dropping the caller's newer hash produces incorrect milestone lineage data. The update path should either reject conflicting hashes or explicitly overwrite them.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 11,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 11
+}

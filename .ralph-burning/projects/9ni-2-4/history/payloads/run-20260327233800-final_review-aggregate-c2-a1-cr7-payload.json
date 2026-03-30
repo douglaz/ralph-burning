@@ -1,0 +1,100 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T02:53:51.606105206Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-7-8c8af466",
+      "fr-7-0047ba65",
+      "fr-7-368e3c97"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-7-8c8af466",
+        "normalized_body": "The concurrency test `start_and_completion_serialize_milestone_snapshot_updates` uses `recv_timeout(Duration::from_millis(100))` to assert thread 2 is blocked by the write lock. Under heavy CI load, thread 2 may not have been scheduled yet, making the assertion pass vacuously without proving the lock blocks. Consider using a synchronization barrier or a second entered_tx channel from thread 2 that fires before the lock attempt, so the test can confirm thread 2 actually reached the lock contention point before checking it hasn't completed.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-0047ba65",
+        "normalized_body": "In `persist_plan`, `plan_hash.clone()` inside the closure is an unnecessary allocation. The closure is `FnOnce` so it could capture `plan_hash: String` by value (add `move` keyword or restructure) and use `Some(plan_hash)` directly. Same pattern exists with `outcome_detail.clone()` in `update_task_run`. Not a correctness issue but a needless copy on every call.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-368e3c97",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:168-199` recomputes `MilestoneProgress` by counting every lineage row after `collapse_task_run_attempts`, but `collapse_task_run_attempts` in `src/contexts/milestone_record/model.rs:399-430` only merges legacy start/completion pairs, not separate retries. Since `MilestoneProgress` is documented as bead counts in `src/contexts/milestone_record/model.rs:191-205`, a bead that fails once and then succeeds on retry will persist `failed_beads=1` and `completed_beads=1` for that one bead. That makes `status.json` report historical attempts as current milestone state. The aggregation needs to collapse retries to one current state per bead, or store attempt-history counters separately from bead-progress counters.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-7-8c8af466",
+        "normalized_body": "The concurrency test `start_and_completion_serialize_milestone_snapshot_updates` uses `recv_timeout(Duration::from_millis(100))` to assert thread 2 is blocked by the write lock. Under heavy CI load, thread 2 may not have been scheduled yet, making the assertion pass vacuously without proving the lock blocks. Consider using a synchronization barrier or a second entered_tx channel from thread 2 that fires before the lock attempt, so the test can confirm thread 2 actually reached the lock contention point before checking it hasn't completed.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-0047ba65",
+        "normalized_body": "In `persist_plan`, `plan_hash.clone()` inside the closure is an unnecessary allocation. The closure is `FnOnce` so it could capture `plan_hash: String` by value (add `move` keyword or restructure) and use `Some(plan_hash)` directly. Same pattern exists with `outcome_detail.clone()` in `update_task_run`. Not a correctness issue but a needless copy on every call.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-368e3c97",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:168-199` recomputes `MilestoneProgress` by counting every lineage row after `collapse_task_run_attempts`, but `collapse_task_run_attempts` in `src/contexts/milestone_record/model.rs:399-430` only merges legacy start/completion pairs, not separate retries. Since `MilestoneProgress` is documented as bead counts in `src/contexts/milestone_record/model.rs:191-205`, a bead that fails once and then succeeds on retry will persist `failed_beads=1` and `completed_beads=1` for that one bead. That makes `status.json` report historical attempts as current milestone state. The aggregation needs to collapse retries to one current state per bead, or store attempt-history counters separately from bead-progress counters.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 7,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}
