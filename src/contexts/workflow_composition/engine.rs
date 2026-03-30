@@ -4619,6 +4619,30 @@ where
                 if will_retry {
                     let backoff = retry_policy.backoff_for_attempt(cursor.attempt);
                     if !backoff.is_zero() {
+                        // Persist a resumable (Failed) snapshot before sleeping
+                        // so that a crash or kill during the backoff window does
+                        // not strand the project in Running state (which `run
+                        // resume` refuses to recover).  The next loop iteration
+                        // will re-set Running at the top of the stage dispatch.
+                        if let Some(resolution) = snapshot
+                            .active_run
+                            .as_ref()
+                            .and_then(|ar| ar.stage_resolution_snapshot.clone())
+                        {
+                            snapshot.last_stage_resolution_snapshot = Some(resolution);
+                        }
+                        preserve_interrupted_run(snapshot);
+                        snapshot.status = RunStatus::Failed;
+                        snapshot.active_run = None;
+                        snapshot.status_summary = format!(
+                            "retrying {}: backoff {}s before attempt {}",
+                            stage_id.display_name(),
+                            backoff.as_secs(),
+                            cursor.attempt + 1,
+                        );
+                        let _ =
+                            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+
                         let _ = log_write.append_runtime_log(
                             base_dir,
                             project_id,

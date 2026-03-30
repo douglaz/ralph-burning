@@ -207,7 +207,7 @@ where
         // does *not* enforce a timeout, the service-level timeout is the
         // canonical enforcement and must match `request.timeout` exactly.
         let service_timeout = if self.adapter.enforces_timeout() {
-            request.timeout + Duration::from_secs(30)
+            request.timeout.saturating_add(Duration::from_secs(30))
         } else {
             request.timeout
         };
