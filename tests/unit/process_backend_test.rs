@@ -2067,3 +2067,32 @@ async fn exit_code_127_returns_transport_failure() {
         other => panic!("expected TransportFailure for exit 127, got: {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn spawn_missing_binary_returns_binary_not_found() {
+    let empty_dir = tempdir().expect("create empty dir");
+    let _env_lock = lock_path_mutex();
+    // Replace PATH entirely with an empty directory so the binary cannot be found.
+    let _path_guard = PathGuard::replace(empty_dir.path());
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    // When the binary truly does not exist, spawn() returns ErrorKind::NotFound
+    // which is classified as BinaryNotFound (non-retryable / terminal).
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BinaryNotFound,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("failed to spawn"),
+                "should mention spawn failure: {details}"
+            );
+        }
+        other => panic!("expected BinaryNotFound for missing binary, got: {other:?}"),
+    }
+}

@@ -259,7 +259,7 @@ async fn service_returns_capability_mismatch_when_backend_cannot_support_stage()
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn service_returns_backend_unavailable_as_transport_failure() {
+async fn service_returns_backend_unavailable_as_binary_not_found() {
     let temp_dir = tempdir().expect("create temp dir");
     let project_root = project_root_fixture(temp_dir.path());
     let adapter = StubBackendAdapter::default().unavailable();
@@ -280,8 +280,10 @@ async fn service_returns_backend_unavailable_as_transport_failure() {
         .await
         .expect_err("backend unavailable");
 
+    // Availability failures (missing binary, missing API key) are terminal —
+    // they won't fix themselves between retry attempts.
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
-    assert_eq!(error.failure_class(), Some(FailureClass::TransportFailure));
+    assert_eq!(error.failure_class(), Some(FailureClass::BinaryNotFound));
 }
 
 #[tokio::test(flavor = "multi_thread")]

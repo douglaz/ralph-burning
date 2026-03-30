@@ -368,6 +368,17 @@ fn map_availability_error(error: AppError, request: &InvocationRequest) -> AppEr
 
 fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
     match error {
+        // Adapter-enforced process timeouts arrive as InvocationFailed with
+        // FailureClass::Timeout.  Promote them to InvocationTimeout so that
+        // consumers (e.g. worktree rebase) can match on the canonical variant.
+        AppError::InvocationFailed {
+            failure_class: FailureClass::Timeout,
+            ..
+        } => AppError::InvocationTimeout {
+            backend: request.resolved_target.backend.family.to_string(),
+            contract_id: request.contract.label(),
+            timeout_ms: request.timeout.as_millis().min(u64::MAX as u128) as u64,
+        },
         AppError::InvocationFailed { .. }
         | AppError::InvocationTimeout { .. }
         | AppError::InvocationCancelled { .. } => error,
