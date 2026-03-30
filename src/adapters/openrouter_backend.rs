@@ -297,12 +297,19 @@ impl OpenRouterBackendAdapter {
                 invocation_id: request.invocation_id.clone(),
                 duration: Duration::from_millis(0),
                 token_counts: TokenCounts {
-                    prompt_tokens: parsed.usage.as_ref().and_then(|usage| usage.prompt_tokens),
-                    completion_tokens: parsed
+                    prompt_tokens: parsed.usage.as_ref().and_then(|u| u.prompt_tokens),
+                    completion_tokens: parsed.usage.as_ref().and_then(|u| u.completion_tokens),
+                    total_tokens: parsed.usage.as_ref().and_then(|u| u.total_tokens),
+                    cache_read_tokens: parsed.usage.as_ref().and_then(|u| {
+                        u.cache_read_input_tokens.or(u
+                            .prompt_tokens_details
+                            .as_ref()
+                            .and_then(|d| d.cached_tokens))
+                    }),
+                    cache_creation_tokens: parsed
                         .usage
                         .as_ref()
-                        .and_then(|usage| usage.completion_tokens),
-                    total_tokens: parsed.usage.as_ref().and_then(|usage| usage.total_tokens),
+                        .and_then(|u| u.cache_creation_input_tokens),
                 },
                 backend_used: request.resolved_target.backend.clone(),
                 model_used,
@@ -485,10 +492,18 @@ struct ChatMessage {
 }
 
 #[derive(Debug, Deserialize)]
+struct PromptTokensDetails {
+    cached_tokens: Option<u32>,
+}
+
+#[derive(Debug, Deserialize)]
 struct OpenRouterUsage {
     prompt_tokens: Option<u32>,
     completion_tokens: Option<u32>,
     total_tokens: Option<u32>,
+    cache_read_input_tokens: Option<u32>,
+    cache_creation_input_tokens: Option<u32>,
+    prompt_tokens_details: Option<PromptTokensDetails>,
 }
 
 #[cfg(test)]
@@ -1129,5 +1144,51 @@ mod tests {
             500 => "Internal Server Error",
             _ => "OK",
         }
+    }
+
+    // ── OpenRouterUsage cache field tests ───────────────────────────────────
+
+    #[test]
+    fn openrouter_usage_parses_anthropic_cache_fields() {
+        let usage: OpenRouterUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "cache_read_input_tokens": 80,
+            "cache_creation_input_tokens": 20
+        }))
+        .unwrap();
+        assert_eq!(usage.cache_read_input_tokens, Some(80));
+        assert_eq!(usage.cache_creation_input_tokens, Some(20));
+        assert!(usage.prompt_tokens_details.is_none());
+    }
+
+    #[test]
+    fn openrouter_usage_parses_openai_prompt_tokens_details() {
+        let usage: OpenRouterUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150,
+            "prompt_tokens_details": {
+                "cached_tokens": 60
+            }
+        }))
+        .unwrap();
+        assert!(usage.cache_read_input_tokens.is_none());
+        let details = usage.prompt_tokens_details.unwrap();
+        assert_eq!(details.cached_tokens, Some(60));
+    }
+
+    #[test]
+    fn openrouter_usage_without_cache_fields_deserializes() {
+        let usage: OpenRouterUsage = serde_json::from_value(json!({
+            "prompt_tokens": 100,
+            "completion_tokens": 50,
+            "total_tokens": 150
+        }))
+        .unwrap();
+        assert!(usage.cache_read_input_tokens.is_none());
+        assert!(usage.cache_creation_input_tokens.is_none());
+        assert!(usage.prompt_tokens_details.is_none());
     }
 }
