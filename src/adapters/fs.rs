@@ -2281,22 +2281,41 @@ pub struct FsMilestoneJournalStore;
 /// from `overlay`. This is structurally complete — no manual per-field
 /// enumeration — so future optional fields added to the struct are
 /// automatically included in journal-repair merges.
+///
+/// Logs a warning on serde failures (e.g., a field type that cannot round-trip
+/// through `serde_json::Value`) so operators can distinguish serialization bugs
+/// from legitimate merge rejections, which would otherwise both surface as a
+/// duplicate journal event.
 fn json_fill_none<T: serde::Serialize + serde::de::DeserializeOwned>(
     base: &T,
     overlay: &T,
 ) -> Option<T> {
-    let mut base_map = match serde_json::to_value(base).ok()? {
-        serde_json::Value::Object(m) => m,
-        _ => return None,
+    let mut base_map = match serde_json::to_value(base) {
+        Ok(serde_json::Value::Object(m)) => m,
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "json_fill_none: failed to serialize base");
+            return None;
+        }
     };
-    let overlay_map = match serde_json::to_value(overlay).ok()? {
-        serde_json::Value::Object(m) => m,
-        _ => return None,
+    let overlay_map = match serde_json::to_value(overlay) {
+        Ok(serde_json::Value::Object(m)) => m,
+        Ok(_) => return None,
+        Err(err) => {
+            tracing::warn!(error = %err, "json_fill_none: failed to serialize overlay");
+            return None;
+        }
     };
     for (key, value) in overlay_map {
         base_map.entry(key).or_insert(value);
     }
-    serde_json::from_value(serde_json::Value::Object(base_map)).ok()
+    match serde_json::from_value(serde_json::Value::Object(base_map)) {
+        Ok(merged) => Some(merged),
+        Err(err) => {
+            tracing::warn!(error = %err, "json_fill_none: failed to deserialize merged map");
+            None
+        }
+    }
 }
 
 impl StartJournalDetails {

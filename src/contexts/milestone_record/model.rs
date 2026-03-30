@@ -353,6 +353,15 @@ impl TaskRunEntry {
 /// Canonical owned representation of start journal details.
 /// Used for both serialization (render) and deserialization (parse) so the
 /// field set cannot drift between the model layer and the adapter layer.
+///
+/// **Forward-compatibility note**: `deny_unknown_fields` means that journal
+/// entries written by a *newer* binary (which may add fields) will fail to
+/// parse when read by an *older* binary after a rollback.  In that case
+/// `parse()` returns `None`, journal merge is skipped, and the adapter
+/// falls through to a fresh write — producing a duplicate event rather than
+/// a merged one.  This is **data-safe** (no data loss or corruption) but
+/// operationally surprising: the milestone journal will contain two entries
+/// for the same logical event until the newer binary is restored.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct StartJournalDetails {
@@ -379,6 +388,15 @@ pub fn render_start_journal_details(
 /// Canonical owned representation of completion journal details.
 /// Used for both serialization (render) and deserialization (parse) so the
 /// field set cannot drift between the model layer and the adapter layer.
+///
+/// **Forward-compatibility note**: `deny_unknown_fields` means that journal
+/// entries written by a *newer* binary (which may add fields) will fail to
+/// parse when read by an *older* binary after a rollback.  In that case
+/// `parse()` returns `None`, journal merge is skipped, and the adapter
+/// falls through to a fresh write — producing a duplicate event rather than
+/// a merged one.  This is **data-safe** (no data loss or corruption) but
+/// operationally surprising: the milestone journal will contain two entries
+/// for the same logical event until the newer binary is restored.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CompletionJournalDetails {
