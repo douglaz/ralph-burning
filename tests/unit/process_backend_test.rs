@@ -1392,12 +1392,11 @@ async fn invoke_requirements_contract_via_codex() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn invoke_openrouter_without_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
 
-    // Remove OPENROUTER_API_KEY to trigger the missing-key error path
-    let _guard = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::remove();
 
     let error = adapter
         .invoke(request)
@@ -1422,21 +1421,15 @@ async fn invoke_openrouter_without_api_key_returns_terminal_failure() {
         }
         other => panic!("expected InvocationFailed, got: {other:?}"),
     }
-
-    // Restore if it was set
-    if let Some(key) = _guard {
-        unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
-    }
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn invoke_openrouter_with_blank_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
 
-    // Set OPENROUTER_API_KEY to empty string
-    let _guard = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe { std::env::set_var("OPENROUTER_API_KEY", "") };
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::set("");
 
     let error = adapter
         .invoke(request)
@@ -1461,12 +1454,38 @@ async fn invoke_openrouter_with_blank_api_key_returns_terminal_failure() {
         }
         other => panic!("expected InvocationFailed, got: {other:?}"),
     }
+}
 
-    // Restore if it was set
-    if let Some(key) = _guard {
-        unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
-    } else {
-        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_openrouter_with_whitespace_only_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::set("   ");
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("openrouter invoke with whitespace-only API key should fail");
+
+    match &error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "whitespace-only API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
+            assert!(
+                details.contains("OPENROUTER_API_KEY"),
+                "should mention missing API key: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
     }
 }
 

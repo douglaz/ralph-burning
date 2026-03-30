@@ -534,7 +534,19 @@ impl AgentExecutionPort for TmuxAdapter {
             Err(_elapsed) => {
                 // Graceful shutdown: SIGTERM → grace period → SIGKILL, matching
                 // the cancel() flow so the child has a chance to flush output.
-                let _ = self.cancel(&request.invocation_id).await;
+                // Log a warning if cleanup fails so operators know a tmux
+                // session may have leaked (cancel() already removed the session
+                // from tracking, so we cannot retry).
+                if let Err(cancel_err) = self.cancel(&request.invocation_id).await {
+                    let _ = append_runtime_log(
+                        &request.project_root,
+                        "tmux.lifecycle",
+                        &format!(
+                            "timeout cleanup failed for invocation {}: {cancel_err}",
+                            request.invocation_id,
+                        ),
+                    );
+                }
                 prepared
                     .preserve_failed_artifacts(&request, "tmux session timed out")
                     .await;

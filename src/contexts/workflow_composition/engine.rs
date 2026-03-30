@@ -4617,7 +4617,7 @@ where
                 );
 
                 if will_retry {
-                    let backoff = retry_policy.backoff_for_attempt(cursor.attempt - 1);
+                    let backoff = retry_policy.backoff_for_attempt(cursor.attempt);
                     if !backoff.is_zero() {
                         let _ = log_write.append_runtime_log(
                             base_dir,

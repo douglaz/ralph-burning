@@ -801,7 +801,7 @@ impl ProcessBackendAdapter {
 
                 let api_key = std::env::var("OPENROUTER_API_KEY")
                     .ok()
-                    .filter(|k| !k.is_empty())
+                    .filter(|k| !k.trim().is_empty())
                     .ok_or_else(|| {
                         Self::invocation_failed(
                             request,
@@ -1203,6 +1203,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         if backend.backend.family == BackendFamily::OpenRouter
             && std::env::var("OPENROUTER_API_KEY")
                 .unwrap_or_default()
+                .trim()
                 .is_empty()
         {
             return Err(AppError::BackendUnavailable {
