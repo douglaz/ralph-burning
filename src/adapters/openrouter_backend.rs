@@ -67,10 +67,13 @@ impl OpenRouterBackendAdapter {
         }
         match std::env::var("OPENROUTER_API_KEY") {
             Ok(value) if !value.trim().is_empty() => Ok(value),
+            // A missing API key is a fatal infrastructure prerequisite that
+            // won't resolve between retry attempts — use BinaryNotFound to
+            // make it terminal (same rationale as process_backend.rs).
             _ => Err(AppError::BackendUnavailable {
                 backend: BackendFamily::OpenRouter.to_string(),
                 details: "OPENROUTER_API_KEY is not set".to_owned(),
-                failure_class: None,
+                failure_class: Some(FailureClass::BinaryNotFound),
             }),
         }
     }

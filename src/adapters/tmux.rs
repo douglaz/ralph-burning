@@ -449,9 +449,10 @@ impl TmuxAdapter {
 }
 
 impl AgentExecutionPort for TmuxAdapter {
-    fn enforces_timeout(&self) -> bool {
-        self.process.enforces_timeout()
-    }
+    // TmuxAdapter does NOT enforce its own timeout: wait_for_session_exit()
+    // polls indefinitely until the session exits or the service cancels it.
+    // The service-level timeout is the canonical enforcement, so we return
+    // false (the default) to avoid adding the 30s buffer.
 
     async fn check_capability(
         &self,
