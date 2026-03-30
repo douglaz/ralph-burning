@@ -4662,6 +4662,14 @@ where
                             () = tokio::time::sleep(backoff) => {}
                             () = cancellation_token.cancelled() => {}
                         }
+
+                        // Restore the active_run that was saved into
+                        // interrupted_run before sleep.  Without this,
+                        // carry_forward_active_run at the top of the next
+                        // loop iteration would hit CorruptRecord because
+                        // active_run is None.
+                        snapshot.active_run = snapshot.interrupted_run.take();
+                        snapshot.status = RunStatus::Running;
                     }
                     if cancellation_token.is_cancelled() {
                         let cancellation_error = AppError::InvocationCancelled {
