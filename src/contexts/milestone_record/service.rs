@@ -3041,6 +3041,104 @@ mod tests {
     }
 
     #[test]
+    fn replaying_a_finalized_runless_start_does_not_reactivate_the_milestone(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "runless-finalized-replay-test".to_owned(),
+                name: "Runless Finalized Replay Test".to_owned(),
+                description:
+                    "replaying a completed runless start must not append a new running attempt"
+                        .to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-v1"),
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("completed"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        let error = record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-v1"),
+            now,
+        )
+        .expect_err("replaying a finalized runless start should fail");
+        assert!(error.to_string().contains("already finalized"));
+
+        let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, None);
+        assert_eq!(runs[0].started_at, now);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Ready);
+        assert_eq!(snapshot.active_bead, None);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.failed_beads, 0);
+
+        let journal = read_journal(&journal_store, base, &record.id)?;
+        let start_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert_eq!(start_events.len(), 1);
+        let completion_events: Vec<_> = journal
+            .iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadCompleted)
+            .collect();
+        assert_eq!(completion_events.len(), 1);
+        Ok(())
+    }
+
+    #[test]
     fn runless_retry_with_new_started_at_auto_fails_prior_attempt_and_stays_completable(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;

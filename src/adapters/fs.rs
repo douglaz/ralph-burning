@@ -21,7 +21,7 @@ use crate::contexts::automation_runtime::repo_registry::{
 };
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
-    collapse_task_run_attempts, find_matching_running_task_run, has_finalized_task_run,
+    collapse_task_run_attempts, find_matching_running_task_run, matching_finalized_task_runs,
     render_completion_journal_details, MilestoneId, MilestoneJournalEvent, MilestoneRecord,
     MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
 };
@@ -2774,11 +2774,34 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        if let Some(run_id) = run_id {
-            if has_finalized_task_run(&canonical_task_runs, bead_id, project_id, run_id) {
+        let finalized_attempts = matching_finalized_task_runs(
+            &canonical_task_runs,
+            bead_id,
+            project_id,
+            run_id,
+            started_at,
+        );
+        match finalized_attempts.as_slice() {
+            [] => {}
+            [entry] => {
+                let finalized_attempt = entry
+                    .run_id
+                    .as_deref()
+                    .map(|run_id| format!("run '{run_id}'"))
+                    .unwrap_or_else(|| {
+                        format!("attempt started at {}", entry.started_at.to_rfc3339())
+                    });
                 return Err(AppError::RunStartFailed {
                     reason: format!(
-                        "cannot start bead '{bead_id}': run '{run_id}' for project '{project_id}' is already finalized"
+                        "cannot start bead '{bead_id}': {finalized_attempt} for project '{project_id}' is already finalized"
+                    ),
+                });
+            }
+            _ => {
+                return Err(AppError::RunStartFailed {
+                    reason: format!(
+                        "cannot start bead '{bead_id}': ambiguous finalized attempts already exist for project '{project_id}' started_at={}",
+                        started_at.to_rfc3339()
                     ),
                 });
             }

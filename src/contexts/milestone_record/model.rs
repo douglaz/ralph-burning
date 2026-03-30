@@ -445,18 +445,38 @@ pub fn find_matching_running_task_run(
     }
 }
 
-pub fn has_finalized_task_run(
+pub fn matching_finalized_task_runs(
     entries: &[TaskRunEntry],
     bead_id: &str,
     project_id: &str,
-    run_id: &str,
-) -> bool {
-    entries.iter().any(|entry| {
-        entry.bead_id == bead_id
-            && entry.project_id == project_id
-            && entry.run_id.as_deref() == Some(run_id)
-            && entry.outcome.is_terminal()
-    })
+    run_id: Option<&str>,
+    started_at: DateTime<Utc>,
+) -> Vec<TaskRunEntry> {
+    let matching_finalized_entries: Vec<TaskRunEntry> = entries
+        .iter()
+        .filter(|entry| {
+            entry.bead_id == bead_id
+                && entry.project_id == project_id
+                && entry.outcome.is_terminal()
+        })
+        .cloned()
+        .collect();
+
+    if let Some(run_id) = run_id {
+        let exact_matches: Vec<TaskRunEntry> = matching_finalized_entries
+            .iter()
+            .filter(|entry| entry.run_id.as_deref() == Some(run_id))
+            .cloned()
+            .collect();
+        if !exact_matches.is_empty() {
+            return exact_matches;
+        }
+    }
+
+    matching_finalized_entries
+        .into_iter()
+        .filter(|entry| entry.started_at == started_at)
+        .collect()
 }
 
 pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {
@@ -1053,6 +1073,62 @@ mod tests {
             started_at + chrono::Duration::seconds(2),
         )
         .is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn matching_finalized_task_runs_rejects_runless_replay_with_matching_started_at(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let matches = matching_finalized_task_runs(
+            &[TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("done".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            }],
+            "bead-1",
+            "project-1",
+            None,
+            started_at,
+        );
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].run_id, None);
+        assert_eq!(matches[0].outcome, TaskRunOutcome::Succeeded);
+        Ok(())
+    }
+
+    #[test]
+    fn matching_finalized_task_runs_falls_back_to_started_at_when_terminal_row_is_runless(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let matches = matching_finalized_task_runs(
+            &[TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: None,
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("done".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            }],
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            started_at,
+        );
+
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].run_id, None);
+        assert_eq!(matches[0].started_at, started_at);
         Ok(())
     }
 
