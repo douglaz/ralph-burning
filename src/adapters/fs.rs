@@ -2633,18 +2633,36 @@ impl FsTaskRunLineageStore {
         if entry.plan_hash.is_some() {
             return false;
         }
-        let creation_hash = match &entry.snapshot_plan_hash_at_creation {
-            Some(h) => h.clone(),
-            // Legacy entry: no provenance → skip backfill.
-            None => return false,
-        };
-        let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-        if current_hash.as_deref() == Some(creation_hash.as_str()) {
-            entry.plan_hash = Some(creation_hash);
-            true
-        } else {
-            // Plan has evolved since entry creation → backfill unsafe.
-            false
+        match &entry.snapshot_plan_hash_at_creation {
+            Some(creation_hash) => {
+                // Normal provenance path: verify the plan hasn't evolved.
+                let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
+                if current_hash.as_deref() == Some(creation_hash.as_str()) {
+                    entry.plan_hash = Some(creation_hash.clone());
+                    true
+                } else {
+                    // Plan has evolved since entry creation → backfill unsafe.
+                    false
+                }
+            }
+            None => {
+                // No provenance: entry was created before any plan was
+                // persisted.  If the entry is still Running (not terminal),
+                // it is safe to adopt the current snapshot — no prior plan
+                // version existed to conflict with.
+                if entry.outcome.is_terminal() {
+                    return false;
+                }
+                let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
+                if let Some(hash) = current_hash {
+                    entry.snapshot_plan_hash_at_creation = Some(hash.clone());
+                    entry.plan_hash = Some(hash);
+                    true
+                } else {
+                    // Still no plan persisted — nothing to backfill.
+                    false
+                }
+            }
         }
     }
 
@@ -3009,7 +3027,16 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
-                let mut changed = Self::backfill_running_entry(
+                // Pre-merge metadata from the canonical (collapsed) entry
+                // into the raw row.  In duplicate-row states the first raw
+                // row may be the stale copy while the canonical entry
+                // already holds the most complete metadata from all
+                // duplicates.
+                let pre_merge = entries[existing_index].clone();
+                entries[existing_index] =
+                    TaskRunEntry::merge_attempt_entries(&entries[existing_index], &existing_entry);
+                let mut changed = entries[existing_index] != pre_merge;
+                changed |= Self::backfill_running_entry(
                     &mut entries[existing_index],
                     bead_id,
                     project_id,
@@ -3349,8 +3376,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     finished_at,
                 );
                 // Safe plan_hash backfill for terminal replay as well.
-                should_write |=
-                    Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
+                should_write |= Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
             } else {
                 if let Some(run_id) = run_id {
                     entry.run_id.get_or_insert_with(|| run_id.to_owned());

@@ -325,6 +325,10 @@ impl TaskRunEntry {
         if merged.plan_hash.is_none() {
             merged.plan_hash = secondary.plan_hash.clone();
         }
+        if merged.snapshot_plan_hash_at_creation.is_none() {
+            merged.snapshot_plan_hash_at_creation =
+                secondary.snapshot_plan_hash_at_creation.clone();
+        }
         if merged.outcome_detail.is_none() {
             merged.outcome_detail = secondary.outcome_detail.clone();
         }

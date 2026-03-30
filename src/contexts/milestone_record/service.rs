@@ -5153,7 +5153,7 @@ mod tests {
     /// get the current snapshot hash stamped on it when replayed after a plan
     /// evolution, because the row may have originally run under an earlier plan.
     #[test]
-    fn legacy_open_row_without_plan_hash_not_mislabeled_after_plan_evolution(
+    fn running_entry_created_before_plan_adopts_snapshot_on_revisit(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -5169,43 +5169,47 @@ mod tests {
             &store,
             base,
             CreateMilestoneInput {
-                id: "legacy-open-evolve".to_owned(),
-                name: "Legacy Open Evolve".to_owned(),
-                description: "legacy open row must not be mislabeled".to_owned(),
+                id: "pre-plan-adopt".to_owned(),
+                name: "Pre-plan Adopt".to_owned(),
+                description: "running entry adopts snapshot after plan persisted".to_owned(),
             },
             now,
         )?;
 
-        // Preseed a legacy running entry with plan_hash=None (simulates a row
-        // created before auto-population existed).
-        let legacy_entry = TaskRunEntry {
+        // Preseed a running entry with plan_hash=None and
+        // snapshot_plan_hash_at_creation=None (created before any plan).
+        let pre_plan_entry = TaskRunEntry {
             milestone_id: record.id.to_string(),
             bead_id: "bead-1".to_owned(),
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
-            plan_hash: None, // legacy: no plan_hash
+            plan_hash: None,
             snapshot_plan_hash_at_creation: None,
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at: now,
             finished_at: None,
         };
-        lineage_store.append_task_run(base, &record.id, &legacy_entry)?;
+        lineage_store.append_task_run(base, &record.id, &pre_plan_entry)?;
 
-        // Now persist a plan — snapshot.plan_hash becomes hash_v1
+        // Persist a plan — snapshot.plan_hash becomes hash_v1.
         persist_plan(
             &snapshot_store,
             &journal_store,
             &plan_store,
             base,
             &record.id,
-            &sample_bundle("legacy-open-evolve", "Plan v1"),
+            &sample_bundle("pre-plan-adopt", "Plan v1"),
             now + chrono::Duration::seconds(1),
         )?;
+        let snapshot = snapshot_store.read_snapshot(base, &record.id)?;
+        let expected_hash = snapshot
+            .plan_hash
+            .expect("plan hash must exist after persist");
 
-        // Replay the start with plan_hash=None. The existing row has
-        // plan_hash=None but the snapshot now has hash_v1. The row must NOT
-        // be stamped with hash_v1 because it originally ran before any plan.
+        // Replay the start with plan_hash=None.  The entry is still Running
+        // and was created before any plan, so safe_plan_hash_backfill should
+        // adopt the current snapshot hash.
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -5222,11 +5226,17 @@ mod tests {
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs.len(), 1);
         assert_eq!(
-            runs[0].plan_hash, None,
-            "legacy open row must NOT be mislabeled with snapshot plan_hash"
+            runs[0].plan_hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "running entry created before plan must adopt snapshot plan_hash on revisit"
+        );
+        assert_eq!(
+            runs[0].snapshot_plan_hash_at_creation.as_deref(),
+            Some(expected_hash.as_str()),
+            "snapshot_plan_hash_at_creation must also be populated"
         );
 
-        // Finalize the legacy row with plan_hash=None — must also not mislabel.
+        // Finalize — plan_hash should persist through completion.
         record_bead_completion(
             &snapshot_store,
             &journal_store,
@@ -5238,7 +5248,7 @@ mod tests {
             Some("run-1"),
             None,
             TaskRunOutcome::Succeeded,
-            Some("completed legacy row"),
+            Some("completed after plan"),
             now,
             now + chrono::Duration::seconds(2),
         )?;
@@ -5246,8 +5256,9 @@ mod tests {
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(runs.len(), 1);
         assert_eq!(
-            runs[0].plan_hash, None,
-            "finalized legacy row must NOT be mislabeled with snapshot plan_hash"
+            runs[0].plan_hash.as_deref(),
+            Some(expected_hash.as_str()),
+            "finalized entry must retain plan_hash adopted during revisit"
         );
         assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
         Ok(())
@@ -5443,7 +5454,10 @@ mod tests {
         )?;
 
         let snapshot = snapshot_store.read_snapshot(base, &record.id)?;
-        let expected_hash = snapshot.plan_hash.clone().expect("snapshot should have plan_hash");
+        let expected_hash = snapshot
+            .plan_hash
+            .clone()
+            .expect("snapshot should have plan_hash");
 
         // Start a bead: plan_hash auto-populated from snapshot, and
         // snapshot_plan_hash_at_creation records the same hash.
