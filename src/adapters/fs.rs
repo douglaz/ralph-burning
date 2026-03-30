@@ -2276,6 +2276,29 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
+/// JSON-level null-fill: for every field absent from `base` (skipped because
+/// the value is None and `skip_serializing_if` omits it), insert the value
+/// from `overlay`. This is structurally complete — no manual per-field
+/// enumeration — so future optional fields added to the struct are
+/// automatically included in journal-repair merges.
+fn json_fill_none<T: serde::Serialize + serde::de::DeserializeOwned>(
+    base: &T,
+    overlay: &T,
+) -> Option<T> {
+    let mut base_map = match serde_json::to_value(base).ok()? {
+        serde_json::Value::Object(m) => m,
+        _ => return None,
+    };
+    let overlay_map = match serde_json::to_value(overlay).ok()? {
+        serde_json::Value::Object(m) => m,
+        _ => return None,
+    };
+    for (key, value) in overlay_map {
+        base_map.entry(key).or_insert(value);
+    }
+    serde_json::from_value(serde_json::Value::Object(base_map)).ok()
+}
+
 impl StartJournalDetails {
     fn parse(details: &str) -> Option<Self> {
         serde_json::from_str(details).ok()
@@ -2295,14 +2318,12 @@ impl StartJournalDetails {
             return None;
         }
 
-        let mut merged = existing.clone();
-        if merged.run_id.is_none() {
-            merged.run_id = requested.run_id.clone();
-        }
-        if merged.plan_hash.is_none() {
-            merged.plan_hash = requested.plan_hash.clone();
-        }
-        Some(merged)
+        // Fill all absent optional fields from `requested` using JSON-level
+        // merge.  This is structurally complete: adding a new optional field
+        // to the shared struct automatically includes it in the merge without
+        // manual enumeration, so future fields cannot be silently dropped
+        // during journal repair.
+        json_fill_none(existing, requested)
     }
 
     fn render(&self) -> String {
@@ -2341,17 +2362,9 @@ impl CompletionJournalDetails {
             return None;
         }
 
-        let mut merged = existing.clone();
-        if merged.run_id.is_none() {
-            merged.run_id = requested.run_id.clone();
-        }
-        if merged.plan_hash.is_none() {
-            merged.plan_hash = requested.plan_hash.clone();
-        }
-        if merged.outcome_detail.is_none() {
-            merged.outcome_detail = requested.outcome_detail.clone();
-        }
-        Some(merged)
+        // Fill all absent optional fields from `requested` using JSON-level
+        // merge — see StartJournalDetails::merge for rationale.
+        json_fill_none(existing, requested)
     }
 
     fn render(&self) -> String {
@@ -2757,6 +2770,7 @@ impl FsTaskRunLineageStore {
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
         requested_run_id: Option<&str>,
+        requested_started_at: Option<DateTime<Utc>>,
     ) -> Option<usize> {
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
@@ -2773,6 +2787,17 @@ impl FsTaskRunLineageStore {
                         .is_some_and(|candidate_run_id| candidate_run_id != run_id)
                     {
                         return false;
+                    }
+                    // When the caller supplies a run_id but the candidate is
+                    // runless, require started_at to match — same guard as the
+                    // open-match path — to avoid backfilling the wrong legacy
+                    // terminal attempt after plan evolution.
+                    if candidate.run_id.is_none() {
+                        if let Some(started_at) = requested_started_at {
+                            if candidate.started_at != started_at {
+                                return false;
+                            }
+                        }
                     }
                 }
 
@@ -3014,6 +3039,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 &entries,
                                 &matching_indices,
                                 Some(run_id),
+                                Some(started_at),
                             ) {
                                 index
                             } else {
@@ -3140,6 +3166,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             if let Some(index) = Self::unique_terminal_replay_match(
                                 &entries,
                                 &matching_attempt_indices,
+                                None,
                                 None,
                             ) {
                                 index
@@ -3787,6 +3814,62 @@ mod tests {
         assert_eq!(parsed.outcome_detail.as_deref(), Some("All checks passed"));
         // Re-render and confirm stability
         assert_eq!(parsed.render(), rendered);
+    }
+
+    /// Regression: merge() must fill ALL optional fields from the requested
+    /// struct during journal repair. If a future field is added to the shared
+    /// structs but merge doesn't copy it, the merged render will differ from
+    /// the fully-populated requested render, failing this test.
+    #[test]
+    fn journal_merge_fills_all_optional_fields() {
+        use crate::contexts::milestone_record::model::{
+            render_completion_journal_details, render_start_journal_details,
+        };
+        use chrono::{TimeZone, Utc};
+
+        // --- StartJournalDetails ---
+        let existing_json = render_start_journal_details("proj-1", None, None);
+        let requested_json =
+            render_start_journal_details("proj-1", Some("run-42"), Some("hash-abc"));
+
+        let existing =
+            StartJournalDetails::parse(&existing_json).expect("existing start must parse");
+        let requested =
+            StartJournalDetails::parse(&requested_json).expect("requested start must parse");
+        let merged = StartJournalDetails::merge(&existing, &requested)
+            .expect("merge must succeed when no conflicts");
+
+        assert_eq!(
+            merged.render(),
+            requested_json,
+            "merged start details must match fully-populated requested"
+        );
+
+        // --- CompletionJournalDetails ---
+        let ts = Utc.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap();
+        let existing_json =
+            render_completion_journal_details("proj-2", None, None, ts, "succeeded", None);
+        let requested_json = render_completion_journal_details(
+            "proj-2",
+            Some("run-99"),
+            Some("hash-xyz"),
+            ts,
+            "succeeded",
+            Some("All checks passed"),
+        );
+
+        let existing = CompletionJournalDetails::parse(&existing_json)
+            .expect("existing completion must parse");
+        let requested = CompletionJournalDetails::parse(&requested_json)
+            .expect("requested completion must parse");
+        let merged = CompletionJournalDetails::merge(&existing, &requested)
+            .expect("merge must succeed when no conflicts");
+
+        assert_eq!(
+            merged.render(),
+            requested_json,
+            "merged completion details must match fully-populated requested"
+        );
     }
 
     #[test]

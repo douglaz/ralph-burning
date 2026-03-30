@@ -5308,4 +5308,67 @@ mod tests {
         );
         Ok(())
     }
+
+    /// Regression: a terminal runless replay with the wrong started_at must be
+    /// rejected, not backfilled onto the wrong legacy terminal row.
+    #[test]
+    fn terminal_runless_replay_rejected_when_started_at_mismatches(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "terminal-started-at-guard".to_owned(),
+                name: "Terminal StartedAt Guard".to_owned(),
+                description: "terminal replay started_at guard".to_owned(),
+            },
+            now,
+        )?;
+
+        // Preseed a legacy finalized runless entry at time T.
+        let legacy_terminal = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: None,
+            plan_hash: None,
+            outcome: TaskRunOutcome::Succeeded,
+            outcome_detail: None,
+            started_at: now,
+            finished_at: Some(now + chrono::Duration::seconds(1)),
+        };
+        lineage_store.append_task_run(base, &record.id, &legacy_terminal)?;
+
+        // Attempt to replay with a run_id but a different started_at.
+        // Must be rejected — wrong legacy attempt.
+        let result = update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-wrong"),
+            None,
+            now + chrono::Duration::seconds(10),
+            TaskRunOutcome::Succeeded,
+            None,
+            now + chrono::Duration::seconds(11),
+        );
+        assert!(
+            result.is_err(),
+            "terminal runless replay with mismatched started_at must be rejected"
+        );
+        Ok(())
+    }
 }
