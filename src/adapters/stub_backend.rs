@@ -450,6 +450,8 @@ impl AgentExecutionPort for StubBackendAdapter {
                     prompt_tokens,
                     completion_tokens,
                     total_tokens,
+                    cache_read_tokens: None,
+                    cache_creation_tokens: None,
                 },
                 backend_used: request.resolved_target.backend,
                 model_used: request.resolved_target.model,

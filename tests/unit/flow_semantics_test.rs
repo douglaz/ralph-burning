@@ -62,6 +62,17 @@ fn ci_improvement_flow_semantics_match_spec() {
 }
 
 #[test]
+fn minimal_flow_semantics_match_spec() {
+    let semantics = flow_semantics(FlowPreset::Minimal);
+
+    assert_eq!(semantics.planning_stage, StageId::PlanAndImplement);
+    assert_eq!(semantics.execution_stage, StageId::PlanAndImplement);
+    assert!(semantics.remediation_trigger_stages.is_empty());
+    assert_eq!(semantics.late_stages, &[StageId::FinalReview]);
+    assert_eq!(semantics.prompt_review_stage, None);
+}
+
+#[test]
 fn standard_stage_plan_for_flow_honors_prompt_review_toggle() {
     assert_eq!(
         stage_plan_for_flow(FlowPreset::Standard, true),
@@ -123,5 +134,9 @@ fn non_standard_stage_plans_ignore_prompt_review_toggle() {
     assert_eq!(
         stage_plan_for_flow(FlowPreset::QuickDev, true),
         stage_plan_for_flow(FlowPreset::QuickDev, false)
+    );
+    assert_eq!(
+        stage_plan_for_flow(FlowPreset::Minimal, true),
+        stage_plan_for_flow(FlowPreset::Minimal, false)
     );
 }

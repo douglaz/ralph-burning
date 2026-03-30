@@ -1,9 +1,11 @@
 use std::fs;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use chrono::{TimeZone, Utc};
 use serde_json::{json, Value};
 use tempfile::tempdir;
+use tracing_subscriber::fmt::MakeWriter;
 
 use ralph_burning::adapters::fs::{FsRawOutputStore, FsSessionStore};
 use ralph_burning::adapters::stub_backend::StubBackendAdapter;
@@ -543,4 +545,95 @@ async fn service_does_not_reuse_sessions_for_roles_that_disallow_it() {
     assert_eq!(persisted.sessions.len(), 1);
     assert_eq!(persisted.sessions[0].session_id, "planner-session");
     assert_eq!(persisted.sessions[0].invocation_count, 1);
+}
+
+// ── Tracing tests ───────────────────────────────────────────────────────
+
+/// Shared writer that captures tracing output into a `Vec<u8>`.
+#[derive(Clone)]
+struct SharedWriter(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for SharedWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().write(buf)
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> MakeWriter<'a> for SharedWriter {
+    type Writer = SharedWriter;
+    fn make_writer(&'a self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn service_emits_invocation_completed_trace_with_token_fields() {
+    let buf = SharedWriter(Arc::new(Mutex::new(Vec::new())));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(buf.clone())
+        .with_ansi(false)
+        .finish();
+
+    let temp_dir = tempdir().expect("create temp dir");
+    let project_root = project_root_fixture(temp_dir.path());
+    let adapter = StubBackendAdapter::default();
+    let service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+    let request = request_fixture(
+        &project_root,
+        "trace-invoke-1",
+        StageId::Planning,
+        BackendRole::Planner,
+        BackendRole::Planner.default_target(),
+        Duration::from_secs(1),
+        SessionPolicy::NewSession,
+        CancellationToken::new(),
+    );
+
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let _envelope = service.invoke(request).await.expect("invoke succeeds");
+    drop(_guard);
+
+    let captured = String::from_utf8(buf.0.lock().unwrap().clone()).expect("valid utf8");
+
+    // The fmt subscriber emits a single line per event with all fields.
+    // Verify the "invocation completed" event was emitted with all required fields.
+    assert!(
+        captured.contains("invocation completed"),
+        "expected 'invocation completed' in trace output:\n{captured}"
+    );
+
+    // Verify all required structured fields are present
+    for field in [
+        "invocation_id=",
+        "backend=",
+        "model=",
+        "attempt=",
+        "duration_ms=",
+        "prompt_tokens=",
+        "completion_tokens=",
+        "cache_read_tokens=",
+        "cache_creation_tokens=",
+        "tokens_reported=",
+        "cache_reported=",
+        "session_reused=",
+    ] {
+        assert!(
+            captured.contains(field),
+            "missing field '{field}' in trace output:\n{captured}"
+        );
+    }
+
+    // StubBackendAdapter always reports tokens
+    assert!(
+        captured.contains("tokens_reported=true"),
+        "expected tokens_reported=true in trace output:\n{captured}"
+    );
+    // StubBackendAdapter doesn't set cache fields
+    assert!(
+        captured.contains("cache_reported=false"),
+        "expected cache_reported=false in trace output:\n{captured}"
+    );
 }

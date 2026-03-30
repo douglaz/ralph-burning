@@ -2,7 +2,7 @@ use ralph_burning::contexts::workflow_composition::{built_in_flows, flow_definit
 use ralph_burning::shared::domain::{FlowPreset, StageId};
 
 #[test]
-fn built_in_flow_registry_exposes_all_four_presets_in_order() {
+fn built_in_flow_registry_exposes_all_five_presets_in_order() {
     let presets: Vec<_> = built_in_flows()
         .iter()
         .map(|definition| definition.preset)
@@ -13,7 +13,8 @@ fn built_in_flow_registry_exposes_all_four_presets_in_order() {
             FlowPreset::Standard,
             FlowPreset::QuickDev,
             FlowPreset::DocsChange,
-            FlowPreset::CiImprovement
+            FlowPreset::CiImprovement,
+            FlowPreset::Minimal,
         ],
         presets
     );
@@ -72,5 +73,13 @@ fn ci_improvement_flow_stage_order_matches_spec() {
             StageId::Review,
         ],
         flow_definition(FlowPreset::CiImprovement).stages
+    );
+}
+
+#[test]
+fn minimal_flow_stage_order_matches_spec() {
+    assert_eq!(
+        &[StageId::PlanAndImplement, StageId::FinalReview,],
+        flow_definition(FlowPreset::Minimal).stages
     );
 }

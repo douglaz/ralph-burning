@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-use crate::shared::domain::{FailureClass, StageId};
+use crate::shared::domain::{FailureClass, FlowPreset, StageId};
 
 pub type AppResult<T> = Result<T, AppError>;
 
@@ -21,7 +21,8 @@ pub enum AppError {
     #[error("invalid identifier '{value}': identifiers must be non-empty single path segments")]
     InvalidIdentifier { value: String },
     #[error(
-        "unknown flow preset '{flow_id}'. supported presets: standard, quick_dev, docs_change, ci_improvement"
+        "unknown flow preset '{flow_id}'. supported presets: {supported}",
+        supported = FlowPreset::supported_csv()
     )]
     InvalidFlowPreset { flow_id: String },
     #[error("unsupported workspace version {version}; supported version is {supported}")]

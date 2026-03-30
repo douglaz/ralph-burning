@@ -1284,27 +1284,30 @@ fn register_active_project(m: &mut HashMap<String, ScenarioExecutor>) {
 
 fn register_flow_discovery(m: &mut HashMap<String, ScenarioExecutor>) {
     reg!(m, "flow-list-all-presets", || {
+        use crate::shared::domain::FlowPreset;
+
         let out = run_cli(&["flow", "list"], Path::new("/tmp"))?;
         assert_success(&out)?;
-        for preset in &["standard", "quick_dev", "docs_change", "ci_improvement"] {
-            assert_contains(&out.stdout, preset, "stdout")?;
+        for preset in FlowPreset::all() {
+            assert_contains(&out.stdout, preset.as_str(), "stdout")?;
         }
         Ok(())
     });
 
-    // Scenario Outline: tests all 4 example rows
     reg!(m, "flow-show-each-preset", || {
-        let examples = [
-            ("standard", "prompt_review"),
-            ("quick_dev", "plan_and_implement"),
-            ("docs_change", "docs_plan"),
-            ("ci_improvement", "ci_plan"),
-        ];
-        for (flow_id, stage_1) in &examples {
+        use crate::contexts::workflow_composition::built_in_flows;
+
+        for definition in built_in_flows() {
+            let flow_id = definition.preset.as_str();
+            let first_stage = definition
+                .stages
+                .first()
+                .expect("built-in flows must contain at least one stage")
+                .as_str();
             let out = run_cli(&["flow", "show", flow_id], Path::new("/tmp"))?;
             assert_success(&out)?;
             assert_contains(&out.stdout, "Stage count", &format!("flow show {flow_id}"))?;
-            assert_contains(&out.stdout, stage_1, &format!("flow show {flow_id}"))?;
+            assert_contains(&out.stdout, first_stage, &format!("flow show {flow_id}"))?;
         }
         Ok(())
     });
@@ -2234,15 +2237,22 @@ fn register_run_start_standard(m: &mut HashMap<String, ScenarioExecutor>) {
     });
 
     reg!(m, "SC-START-017", || {
-        // Run start should succeed for all four built-in flow presets
-        for flow in &["standard", "quick_dev", "docs_change", "ci_improvement"] {
+        use crate::shared::domain::FlowPreset;
+
+        // Run start should succeed for every built-in flow preset.
+        for flow in FlowPreset::all() {
             let ws = TempWorkspace::new()?;
-            let proj_id = format!("preset-{}", flow.replace('_', "-"));
-            setup_workspace_with_project(&ws, &proj_id, flow)?;
+            let flow_id = flow.as_str();
+            let proj_id = format!("preset-{}", flow_id.replace('_', "-"));
+            setup_workspace_with_project(&ws, &proj_id, flow_id)?;
             let out = run_cli(&["run", "start"], ws.path())?;
             assert_success(&out)?;
             let status = run_cli(&["run", "status"], ws.path())?;
-            assert_contains(&status.stdout, "completed", &format!("status for {flow}"))?;
+            assert_contains(
+                &status.stdout,
+                "completed",
+                &format!("status for {flow_id}"),
+            )?;
         }
         Ok(())
     });
@@ -14321,33 +14331,40 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
         use crate::contexts::automation_runtime::repo_registry::{
             RepoRegistration, LABEL_VOCABULARY,
         };
+        use crate::shared::domain::FlowPreset;
         use std::path::PathBuf;
 
-        // Verify the label vocabulary is complete
+        // Verify the label vocabulary is complete, including every built-in flow label.
         let required = vec![
             "rb:ready",
             "rb:in-progress",
             "rb:failed",
             "rb:completed",
-            "rb:flow:standard",
-            "rb:flow:quick_dev",
-            "rb:flow:docs_change",
-            "rb:flow:ci_improvement",
             "rb:requirements",
             "rb:waiting-feedback",
         ];
+        let flow_labels: Vec<String> = FlowPreset::all()
+            .iter()
+            .map(|preset| format!("rb:flow:{}", preset.as_str()))
+            .collect();
 
+        for label in &flow_labels {
+            if !LABEL_VOCABULARY.contains(&label.as_str()) {
+                return Err(format!("missing required label '{label}' in vocabulary"));
+            }
+        }
         for label in &required {
             if !LABEL_VOCABULARY.contains(label) {
                 return Err(format!("missing required label '{label}' in vocabulary"));
             }
         }
 
-        if LABEL_VOCABULARY.len() != required.len() {
+        let expected_len = required.len() + flow_labels.len();
+        if LABEL_VOCABULARY.len() != expected_len {
             return Err(format!(
                 "vocabulary has {} labels, expected {}",
                 LABEL_VOCABULARY.len(),
-                required.len()
+                expected_len
             ));
         }
 

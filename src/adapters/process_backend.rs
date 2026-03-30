@@ -178,13 +178,32 @@ impl PreparedCommand {
                     }
                 });
 
+                let token_counts = match envelope.usage {
+                    Some(ref u) => {
+                        let prompt = u.input_tokens;
+                        let completion = u.output_tokens;
+                        let total = match (prompt, completion) {
+                            (Some(p), Some(c)) => p.checked_add(c),
+                            _ => None,
+                        };
+                        TokenCounts {
+                            prompt_tokens: prompt,
+                            completion_tokens: completion,
+                            total_tokens: total,
+                            cache_read_tokens: u.cache_read_input_tokens,
+                            cache_creation_tokens: u.cache_creation_input_tokens,
+                        }
+                    }
+                    None => TokenCounts::default(),
+                };
+
                 Ok(InvocationEnvelope {
                     raw_output_reference: RawOutputReference::Inline(stdout_text),
                     parsed_payload,
                     metadata: InvocationMetadata {
                         invocation_id: request.invocation_id.clone(),
                         duration: Duration::from_millis(0),
-                        token_counts: TokenCounts::default(),
+                        token_counts,
                         backend_used: request.resolved_target.backend.clone(),
                         model_used: request.resolved_target.model.clone(),
                         adapter_reported_backend: None,
@@ -234,13 +253,15 @@ impl PreparedCommand {
                     None
                 };
 
+                let token_counts = extract_codex_usage_from_stdout(&output.stdout);
+
                 Ok(InvocationEnvelope {
                     raw_output_reference: RawOutputReference::Inline(last_message_text),
                     parsed_payload,
                     metadata: InvocationMetadata {
                         invocation_id: request.invocation_id.clone(),
                         duration: Duration::from_millis(0),
-                        token_counts: TokenCounts::default(),
+                        token_counts,
                         backend_used: request.resolved_target.backend.clone(),
                         model_used: request.resolved_target.model.clone(),
                         adapter_reported_backend: None,
@@ -1229,6 +1250,17 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 }
 
 #[derive(Deserialize)]
+struct ClaudeUsage {
+    #[serde(alias = "tokens_in")]
+    input_tokens: Option<u32>,
+    #[serde(alias = "tokens_out")]
+    output_tokens: Option<u32>,
+    #[serde(alias = "cached_in")]
+    cache_read_input_tokens: Option<u32>,
+    cache_creation_input_tokens: Option<u32>,
+}
+
+#[derive(Deserialize)]
 struct ClaudeEnvelope {
     #[serde(default)]
     result: String,
@@ -1236,12 +1268,65 @@ struct ClaudeEnvelope {
     session_id: Option<String>,
     #[serde(default)]
     structured_output: Option<serde_json::Value>,
+    #[serde(default)]
+    usage: Option<ClaudeUsage>,
 }
 
 pub(crate) struct ChildOutput {
     pub(crate) status: ExitStatus,
     pub(crate) stdout: Vec<u8>,
     pub(crate) stderr: Vec<u8>,
+}
+
+/// Extract token usage from Codex CLI NDJSON stdout.
+///
+/// Codex emits newline-delimited JSON events to stdout. We scan lines in
+/// reverse looking for the last event containing a `usage` object with at
+/// least one recognized token field (`input_tokens`, `output_tokens`, or
+/// `cached_input_tokens`). Lines where `usage` is null, non-object, or
+/// contains none of the recognized fields are skipped so they don't shadow
+/// a valid earlier record.
+fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
+    let text = String::from_utf8_lossy(stdout);
+    for line in text.lines().rev() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        let Some(usage) = value.get("usage").filter(|u| u.is_object()) else {
+            continue;
+        };
+        let input = usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        let output = usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        let cached = usage
+            .get("cached_input_tokens")
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u32::try_from(v).ok());
+        if input.is_none() && output.is_none() && cached.is_none() {
+            continue;
+        }
+        let total = match (input, output) {
+            (Some(i), Some(o)) => i.checked_add(o),
+            _ => None,
+        };
+        return TokenCounts {
+            prompt_tokens: input,
+            completion_tokens: output,
+            total_tokens: total,
+            cache_read_tokens: cached,
+            cache_creation_tokens: None,
+        };
+    }
+    TokenCounts::default()
 }
 
 /// Try to extract an error message from Claude's stdout JSON envelope.
@@ -2569,5 +2654,113 @@ mod tests {
             "top-level definitions should be removed"
         );
         assert_no_refs(&schema, "root");
+    }
+
+    // ── Claude envelope usage tests ─────────────────────────────────────────
+
+    #[test]
+    fn claude_envelope_with_usage_parses_token_counts() {
+        let envelope_json = r#"{
+            "result": "hello",
+            "session_id": "sess-1",
+            "usage": {
+                "input_tokens": 100,
+                "output_tokens": 50,
+                "cache_read_input_tokens": 80,
+                "cache_creation_input_tokens": 20
+            }
+        }"#;
+        let envelope: ClaudeEnvelope = serde_json::from_str(envelope_json).unwrap();
+        let usage = envelope.usage.unwrap();
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(50));
+        assert_eq!(usage.cache_read_input_tokens, Some(80));
+        assert_eq!(usage.cache_creation_input_tokens, Some(20));
+    }
+
+    #[test]
+    fn claude_envelope_without_usage_deserializes() {
+        let envelope_json = r#"{"result": "hello", "session_id": "sess-1"}"#;
+        let envelope: ClaudeEnvelope = serde_json::from_str(envelope_json).unwrap();
+        assert!(envelope.usage.is_none());
+        assert_eq!(envelope.result, "hello");
+    }
+
+    #[test]
+    fn claude_envelope_usage_with_aliases() {
+        let envelope_json = r#"{
+            "result": "",
+            "usage": {
+                "tokens_in": 200,
+                "tokens_out": 75,
+                "cached_in": 150
+            }
+        }"#;
+        let envelope: ClaudeEnvelope = serde_json::from_str(envelope_json).unwrap();
+        let usage = envelope.usage.unwrap();
+        assert_eq!(usage.input_tokens, Some(200));
+        assert_eq!(usage.output_tokens, Some(75));
+        assert_eq!(usage.cache_read_input_tokens, Some(150));
+        assert_eq!(usage.cache_creation_input_tokens, None);
+    }
+
+    // ── Codex NDJSON usage extraction tests ─────────────────────────────────
+
+    #[test]
+    fn codex_usage_extracts_from_ndjson_stdout() {
+        let stdout = br#"{"type":"message.start"}
+{"type":"turn.completed","usage":{"input_tokens":500,"output_tokens":120,"cached_input_tokens":300}}
+"#;
+        let counts = extract_codex_usage_from_stdout(stdout);
+        assert_eq!(counts.prompt_tokens, Some(500));
+        assert_eq!(counts.completion_tokens, Some(120));
+        assert_eq!(counts.total_tokens, Some(620));
+        assert_eq!(counts.cache_read_tokens, Some(300));
+        assert_eq!(counts.cache_creation_tokens, None);
+    }
+
+    #[test]
+    fn codex_usage_returns_default_for_empty_stdout() {
+        let counts = extract_codex_usage_from_stdout(b"");
+        assert_eq!(counts, TokenCounts::default());
+    }
+
+    #[test]
+    fn codex_usage_picks_last_event_with_usage() {
+        let stdout = br#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":10,"cached_input_tokens":50}}
+{"type":"turn.completed","usage":{"input_tokens":600,"output_tokens":200,"cached_input_tokens":400}}
+"#;
+        let counts = extract_codex_usage_from_stdout(stdout);
+        assert_eq!(counts.prompt_tokens, Some(600));
+        assert_eq!(counts.completion_tokens, Some(200));
+        assert_eq!(counts.cache_read_tokens, Some(400));
+    }
+
+    #[test]
+    fn codex_usage_skips_lines_without_usage() {
+        let stdout = br#"{"type":"message.start"}
+{"type":"content.delta","text":"hi"}
+{"type":"turn.completed","usage":{"input_tokens":42,"output_tokens":7}}
+"#;
+        let counts = extract_codex_usage_from_stdout(stdout);
+        assert_eq!(counts.prompt_tokens, Some(42));
+        assert_eq!(counts.completion_tokens, Some(7));
+        assert_eq!(counts.total_tokens, Some(49));
+        assert_eq!(counts.cache_read_tokens, None);
+    }
+
+    #[test]
+    fn codex_usage_skips_null_and_empty_usage_objects() {
+        // A trailing event with `"usage": null` or `"usage": {}` must not
+        // shadow a valid earlier usage record.
+        let stdout = br#"{"type":"turn.completed","usage":{"input_tokens":500,"output_tokens":120,"cached_input_tokens":300}}
+{"type":"done","usage":null}
+{"type":"cleanup","usage":{}}
+"#;
+        let counts = extract_codex_usage_from_stdout(stdout);
+        assert_eq!(counts.prompt_tokens, Some(500));
+        assert_eq!(counts.completion_tokens, Some(120));
+        assert_eq!(counts.total_tokens, Some(620));
+        assert_eq!(counts.cache_read_tokens, Some(300));
     }
 }

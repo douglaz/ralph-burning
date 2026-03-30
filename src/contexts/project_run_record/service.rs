@@ -1636,5 +1636,6 @@ fn planning_stage_for_flow(flow: FlowPreset) -> StageId {
         FlowPreset::QuickDev => StageId::PlanAndImplement,
         FlowPreset::DocsChange => StageId::DocsPlan,
         FlowPreset::CiImprovement => StageId::CiPlan,
+        FlowPreset::Minimal => StageId::PlanAndImplement,
     }
 }

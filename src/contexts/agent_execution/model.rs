@@ -242,6 +242,8 @@ pub struct TokenCounts {
     pub prompt_tokens: Option<u32>,
     pub completion_tokens: Option<u32>,
     pub total_tokens: Option<u32>,
+    pub cache_read_tokens: Option<u32>,
+    pub cache_creation_tokens: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
