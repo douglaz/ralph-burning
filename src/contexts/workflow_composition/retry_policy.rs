@@ -102,9 +102,9 @@ impl RetryPolicy {
     /// Compute the backoff duration for a given attempt number (1-indexed).
     ///
     /// Uses exponential backoff: `base * 2^(attempt - 1)`, capped at `backoff_cap`.
-    /// Returns `Duration::ZERO` when backoff is disabled.
+    /// Returns `Duration::ZERO` when backoff is disabled or `attempt` is 0.
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
-        if self.backoff_base.is_zero() {
+        if self.backoff_base.is_zero() || attempt == 0 {
             return Duration::ZERO;
         }
         let multiplier = 2u32.saturating_pow(attempt.saturating_sub(1));

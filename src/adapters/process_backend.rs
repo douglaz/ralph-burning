@@ -1463,7 +1463,7 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
 /// `BinaryNotFound` (terminal) so the retry loop does not waste attempts on
 /// a missing binary.  All other non-zero exits and signal kills map to
 /// `TransportFailure` (retryable).
-fn classify_exit_failure(status: ExitStatus) -> FailureClass {
+pub(crate) fn classify_exit_failure(status: ExitStatus) -> FailureClass {
     match status.code() {
         Some(127) => FailureClass::BinaryNotFound,
         _ => FailureClass::TransportFailure,

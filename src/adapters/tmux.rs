@@ -17,7 +17,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
-use crate::adapters::process_backend::{ChildOutput, ProcessBackendAdapter};
+use crate::adapters::process_backend::{classify_exit_failure, ChildOutput, ProcessBackendAdapter};
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
 };
@@ -449,10 +449,9 @@ impl TmuxAdapter {
 }
 
 impl AgentExecutionPort for TmuxAdapter {
-    // TmuxAdapter does NOT enforce its own timeout: wait_for_session_exit()
-    // polls indefinitely until the session exits or the service cancels it.
-    // The service-level timeout is the canonical enforcement, so we return
-    // false (the default) to avoid adding the 30s buffer.
+    fn enforces_timeout(&self) -> bool {
+        true
+    }
 
     async fn check_capability(
         &self,
@@ -516,12 +515,14 @@ impl AgentExecutionPort for TmuxAdapter {
             return Err(error);
         }
 
-        let exit_code = match self
-            .wait_for_session_exit(&session, &mut stdout_tail, &mut stderr_tail)
-            .await
+        let exit_code = match tokio::time::timeout(
+            request.timeout,
+            self.wait_for_session_exit(&session, &mut stdout_tail, &mut stderr_tail),
+        )
+        .await
         {
-            Ok(exit_code) => exit_code,
-            Err(error) => {
+            Ok(Ok(exit_code)) => exit_code,
+            Ok(Err(error)) => {
                 let _ = self.kill_session(&session.session_name).await;
                 self.remove_session_if_same(&request.invocation_id, &session)
                     .await;
@@ -529,6 +530,24 @@ impl AgentExecutionPort for TmuxAdapter {
                 prepared.cleanup().await;
                 session.cleanup();
                 return Err(error);
+            }
+            Err(_elapsed) => {
+                // Graceful shutdown: SIGTERM → grace period → SIGKILL, matching
+                // the cancel() flow so the child has a chance to flush output.
+                let _ = self.cancel(&request.invocation_id).await;
+                prepared
+                    .preserve_failed_artifacts(&request, "tmux session timed out")
+                    .await;
+                let binary_display = prepared.binary().display().to_string();
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: request.contract.label(),
+                    failure_class: FailureClass::Timeout,
+                    details: format!(
+                        "{binary_display} exceeded timeout of {}s",
+                        request.timeout.as_secs()
+                    ),
+                });
             }
         };
 
@@ -578,10 +597,11 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
+            let failure_class = classify_exit_failure(output.status);
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
                 contract_id: request.contract.label(),
-                failure_class: FailureClass::TransportFailure,
+                failure_class,
                 details: format!(
                     "{} exited with code {}{}",
                     prepared.binary().display(),
