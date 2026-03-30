@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::Duration;
+use std::time::SystemTime;
 
 use crate::shared::domain::FailureClass;
 
@@ -31,12 +32,13 @@ const DEFAULT_BACKOFF_BASE_SECS: u64 = 5;
 /// Maximum backoff delay between retry attempts (default 60 seconds).
 const DEFAULT_BACKOFF_CAP_SECS: u64 = 60;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct RetryPolicy {
     rules: HashMap<FailureClass, RetryRule>,
     max_remediation_cycles: u32,
     backoff_base: Duration,
     backoff_cap: Duration,
+    jitter: bool,
 }
 
 impl RetryPolicy {
@@ -61,6 +63,7 @@ impl RetryPolicy {
             max_remediation_cycles: 3,
             backoff_base: Duration::from_secs(DEFAULT_BACKOFF_BASE_SECS),
             backoff_cap: Duration::from_secs(DEFAULT_BACKOFF_CAP_SECS),
+            jitter: true,
         }
     }
 
@@ -77,6 +80,12 @@ impl RetryPolicy {
     pub fn with_no_backoff(mut self) -> Self {
         self.backoff_base = Duration::ZERO;
         self.backoff_cap = Duration::ZERO;
+        self.jitter = false;
+        self
+    }
+
+    pub fn with_no_jitter(mut self) -> Self {
+        self.jitter = false;
         self
     }
 
@@ -101,7 +110,10 @@ impl RetryPolicy {
 
     /// Compute the backoff duration for a given attempt number (1-indexed).
     ///
-    /// Uses exponential backoff: `base * 2^(attempt - 1)`, capped at `backoff_cap`.
+    /// Uses exponential backoff: `base * 2^(attempt - 1)`, capped at `backoff_cap`,
+    /// then applies ±25% jitter to stagger concurrent retries and avoid
+    /// thundering-herd amplification on rate-limited backends.
+    ///
     /// Returns `Duration::ZERO` when backoff is disabled or `attempt` is 0.
     pub fn backoff_for_attempt(&self, attempt: u32) -> Duration {
         if self.backoff_base.is_zero() || attempt == 0 {
@@ -109,6 +121,24 @@ impl RetryPolicy {
         }
         let multiplier = 2u32.saturating_pow(attempt.saturating_sub(1));
         let delay = self.backoff_base.saturating_mul(multiplier);
-        delay.min(self.backoff_cap)
+        let capped = delay.min(self.backoff_cap);
+        if self.jitter {
+            Self::apply_jitter(capped)
+        } else {
+            capped
+        }
+    }
+
+    /// Apply ±25% jitter to a duration using system clock nanos as a
+    /// cheap randomness source to stagger concurrent retries.
+    fn apply_jitter(base: Duration) -> Duration {
+        let nanos = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .unwrap_or_default()
+            .subsec_nanos();
+        // Map nanos into [0.75, 1.25) via: 0.75 + (nanos % 1000) / 1000 * 0.50
+        let fraction = (nanos % 1000) as f64 / 1000.0; // [0.0, 1.0)
+        let factor = 0.75 + fraction * 0.50; // [0.75, 1.25)
+        Duration::from_secs_f64(base.as_secs_f64() * factor)
     }
 }

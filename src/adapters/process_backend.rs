@@ -26,6 +26,8 @@ use crate::shared::error::{AppError, AppResult};
 
 const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
+/// Grace period for confirming process teardown after timeout-triggered kill.
+const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 pub(crate) struct PreparedCommand {
     binary: std::path::PathBuf,
@@ -994,7 +996,12 @@ impl ProcessBackendAdapter {
 
         let binary_display = binary.display();
         let mut child = command.spawn().map_err(|error| {
-            let failure_class = if error.kind() == std::io::ErrorKind::NotFound {
+            // spawn() returns ENOENT for several reasons: missing binary,
+            // missing working directory, or missing script interpreter.
+            // Only classify as BinaryNotFound when the binary itself is
+            // confirmed missing; other NotFound causes are retryable.
+            let failure_class = if error.kind() == std::io::ErrorKind::NotFound && !binary.exists()
+            {
                 FailureClass::BinaryNotFound
             } else {
                 FailureClass::TransportFailure
@@ -1048,16 +1055,31 @@ impl ProcessBackendAdapter {
             match tokio::time::timeout(timeout_duration, io_and_wait).await {
                 Ok(results) => results,
                 Err(_elapsed) => {
-                    // Timeout fired — kill the child and clean up.
-                    spawn_background_reap(request.invocation_id.clone(), active_child.clone());
+                    // Timeout fired — kill the child and confirm teardown
+                    // before releasing the tracking handle.
+                    let teardown_confirmed =
+                        confirm_teardown(&active_child, TEARDOWN_GRACE_PERIOD).await;
                     self.remove_child_if_same(&request.invocation_id, &active_child)
                         .await;
+                    let failure_class = if teardown_confirmed {
+                        FailureClass::Timeout
+                    } else {
+                        // Kill was not confirmed — the hung process may still
+                        // be alive, so report TransportFailure to signal an
+                        // unclean timeout.
+                        FailureClass::TransportFailure
+                    };
                     return Err(Self::invocation_failed(
                         request,
-                        FailureClass::Timeout,
+                        failure_class,
                         format!(
-                            "{binary_display} exceeded timeout of {}s",
+                            "{binary_display} exceeded timeout of {}s{}",
                             timeout_duration.as_secs(),
+                            if teardown_confirmed {
+                                ""
+                            } else {
+                                " (teardown not confirmed)"
+                            },
                         ),
                     ));
                 }
@@ -1480,6 +1502,17 @@ fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
         let _ = child.wait().await;
         drop(invocation_id);
     });
+}
+
+/// Attempt to force-kill the child and wait for exit within `grace_period`.
+/// Returns `true` if teardown was confirmed, `false` if kill or wait failed.
+async fn confirm_teardown(child: &Arc<ManagedChild>, grace_period: Duration) -> bool {
+    if child.force_kill().await.is_err() {
+        return false;
+    }
+    tokio::time::timeout(grace_period, child.wait())
+        .await
+        .is_ok_and(|r| r.is_ok())
 }
 
 async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {

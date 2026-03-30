@@ -49,7 +49,7 @@ fn retry_policy_can_be_customized() {
 
 #[test]
 fn default_backoff_uses_exponential_growth_capped_at_60s() {
-    let policy = RetryPolicy::default_policy();
+    let policy = RetryPolicy::default_policy().with_no_jitter();
 
     assert_eq!(policy.backoff_for_attempt(1), Duration::from_secs(5));
     assert_eq!(policy.backoff_for_attempt(2), Duration::from_secs(10));

@@ -534,27 +534,44 @@ impl AgentExecutionPort for TmuxAdapter {
             Err(_elapsed) => {
                 // Graceful shutdown: SIGTERM → grace period → SIGKILL, matching
                 // the cancel() flow so the child has a chance to flush output.
-                // Log a warning if cleanup fails so operators know a tmux
-                // session may have leaked (cancel() already removed the session
-                // from tracking, so we cannot retry).
-                if let Err(cancel_err) = self.cancel(&request.invocation_id).await {
+                let cancel_failed = if let Err(cancel_err) =
+                    self.cancel(&request.invocation_id).await
+                {
+                    // cancel() already removed the session from tracking.
+                    // Attempt a direct kill as last resort, then clean up
+                    // the session's on-disk state.
                     let _ = append_runtime_log(
                         &request.project_root,
                         "tmux.lifecycle",
                         &format!(
-                            "timeout cleanup failed for invocation {}: {cancel_err}",
+                            "timeout cleanup failed for invocation {}: {cancel_err}; \
+                                 attempting direct kill-session fallback",
                             request.invocation_id,
                         ),
                     );
-                }
+                    let _ = self.kill_session(&session.session_name).await;
+                    let _ =
+                        Self::clear_active_session(&request.project_root, &request.invocation_id);
+                    session.cleanup();
+                    true
+                } else {
+                    false
+                };
                 prepared
                     .preserve_failed_artifacts(&request, "tmux session timed out")
                     .await;
                 let binary_display = prepared.binary().display().to_string();
+                // If cancel failed, report as TransportFailure (teardown was
+                // not confirmed) so the retry loop knows cleanup was unclean.
+                let failure_class = if cancel_failed {
+                    FailureClass::TransportFailure
+                } else {
+                    FailureClass::Timeout
+                };
                 return Err(AppError::InvocationFailed {
                     backend: request.resolved_target.backend.family.to_string(),
                     contract_id: request.contract.label(),
-                    failure_class: FailureClass::Timeout,
+                    failure_class,
                     details: format!(
                         "{binary_display} exceeded timeout of {}s",
                         request.timeout.as_secs()
