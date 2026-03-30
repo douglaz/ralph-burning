@@ -1391,7 +1391,7 @@ async fn invoke_requirements_contract_via_codex() {
 // ── invoke() for OpenRouter fails gracefully without API key ─────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn invoke_openrouter_without_api_key_returns_transport_failure() {
+async fn invoke_openrouter_without_api_key_returns_terminal_failure() {
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
 
@@ -1405,7 +1405,16 @@ async fn invoke_openrouter_without_api_key_returns_transport_failure() {
         .expect_err("openrouter invoke without API key should fail");
 
     match &error {
-        AppError::InvocationFailed { details, .. } => {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "missing API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
             assert!(
                 details.contains("OPENROUTER_API_KEY"),
                 "should mention missing API key: {details}"
@@ -1417,6 +1426,47 @@ async fn invoke_openrouter_without_api_key_returns_transport_failure() {
     // Restore if it was set
     if let Some(key) = _guard {
         unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_openrouter_with_blank_api_key_returns_terminal_failure() {
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    // Set OPENROUTER_API_KEY to empty string
+    let _guard = std::env::var("OPENROUTER_API_KEY").ok();
+    unsafe { std::env::set_var("OPENROUTER_API_KEY", "") };
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("openrouter invoke with blank API key should fail");
+
+    match &error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "blank API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
+            assert!(
+                details.contains("OPENROUTER_API_KEY"),
+                "should mention missing API key: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
+    }
+
+    // Restore if it was set
+    if let Some(key) = _guard {
+        unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
+    } else {
+        unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
     }
 }
 

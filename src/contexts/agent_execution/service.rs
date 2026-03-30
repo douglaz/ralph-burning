@@ -399,7 +399,8 @@ fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
         },
         AppError::InvocationFailed { .. }
         | AppError::InvocationTimeout { .. }
-        | AppError::InvocationCancelled { .. } => error,
+        | AppError::InvocationCancelled { .. }
+        | AppError::BackendUnavailable { .. } => error,
         other => AppError::InvocationFailed {
             backend: request.resolved_target.backend.family.to_string(),
             contract_id: request.contract.label(),

@@ -799,13 +799,16 @@ impl ProcessBackendAdapter {
                     other => other,
                 })?;
 
-                let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
-                    Self::invocation_failed(
-                        request,
-                        FailureClass::TransportFailure,
-                        "OPENROUTER_API_KEY is not set".to_owned(),
-                    )
-                })?;
+                let api_key = std::env::var("OPENROUTER_API_KEY")
+                    .ok()
+                    .filter(|k| !k.is_empty())
+                    .ok_or_else(|| {
+                        Self::invocation_failed(
+                            request,
+                            FailureClass::BinaryNotFound,
+                            "OPENROUTER_API_KEY is not set".to_owned(),
+                        )
+                    })?;
 
                 let model_id = &request.resolved_target.model.model_id;
                 let session_resuming =
