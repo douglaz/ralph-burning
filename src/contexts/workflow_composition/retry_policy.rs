@@ -129,15 +129,28 @@ impl RetryPolicy {
         }
     }
 
-    /// Apply ±25% jitter to a duration using system clock nanos as a
-    /// cheap randomness source to stagger concurrent retries.
+    /// Apply ±25% jitter to a duration to stagger concurrent retries.
+    ///
+    /// Uses system clock nanos run through a hash-mixing step so that
+    /// coarse-clock platforms (where subsec_nanos changes in large
+    /// jumps) still produce well-distributed jitter values.
     fn apply_jitter(base: Duration) -> Duration {
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .subsec_nanos();
-        // Map nanos into [0.75, 1.25) via: 0.75 + (nanos % 1000) / 1000 * 0.50
-        let fraction = (nanos % 1000) as f64 / 1000.0; // [0.0, 1.0)
+        // Murmur-style mix: spread entropy across all bits so that
+        // coarse-grained clocks (e.g. 1ms resolution) don't produce
+        // identical jitter for closely-spaced calls.
+        let mixed = {
+            let mut h = nanos;
+            h ^= h >> 16;
+            h = h.wrapping_mul(0x45d9f3b);
+            h ^= h >> 16;
+            h
+        };
+        // Map mixed into [0.75, 1.25) via: 0.75 + (mixed % 1000) / 1000 * 0.50
+        let fraction = (mixed % 1000) as f64 / 1000.0; // [0.0, 1.0)
         let factor = 0.75 + fraction * 0.50; // [0.75, 1.25)
         Duration::from_secs_f64(base.as_secs_f64() * factor)
     }
