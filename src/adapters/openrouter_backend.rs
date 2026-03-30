@@ -1146,7 +1146,80 @@ mod tests {
         }
     }
 
-    // ── OpenRouterUsage cache field tests ───────────────────────────────────
+    // ── OpenRouter invoke-level cache field tests ─────────────────────────
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_maps_anthropic_cache_tokens_to_envelope() {
+        let _env_guard = ENV_MUTEX.lock().expect("env lock");
+        let server = MockHttpServer::start(vec![ResponsePlan::json(
+            200,
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"questions\":[{\"id\":\"q1\",\"prompt\":\"What?\",\"rationale\":\"Scope\",\"required\":true}]}"
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 80,
+                    "total_tokens": 280,
+                    "cache_read_input_tokens": 150,
+                    "cache_creation_input_tokens": 30
+                }
+            }),
+        )]);
+        set_openrouter_env(&server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(server.base_url.clone());
+        let (_dir, request) =
+            request_fixture(BackendFamily::OpenRouter, "anthropic/claude-3.5-sonnet");
+
+        let envelope = adapter.invoke(request).await.expect("invoke succeeds");
+        assert_eq!(envelope.metadata.token_counts.prompt_tokens, Some(200));
+        assert_eq!(envelope.metadata.token_counts.completion_tokens, Some(80));
+        assert_eq!(envelope.metadata.token_counts.total_tokens, Some(280));
+        assert_eq!(envelope.metadata.token_counts.cache_read_tokens, Some(150));
+        assert_eq!(
+            envelope.metadata.token_counts.cache_creation_tokens,
+            Some(30)
+        );
+        clear_openrouter_env();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn invoke_maps_openai_prompt_tokens_details_cached_tokens_to_envelope() {
+        let _env_guard = ENV_MUTEX.lock().expect("env lock");
+        let server = MockHttpServer::start(vec![ResponsePlan::json(
+            200,
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": "{\"questions\":[{\"id\":\"q1\",\"prompt\":\"What?\",\"rationale\":\"Scope\",\"required\":true}]}"
+                    }
+                }],
+                "usage": {
+                    "prompt_tokens": 300,
+                    "completion_tokens": 90,
+                    "total_tokens": 390,
+                    "prompt_tokens_details": {
+                        "cached_tokens": 200
+                    }
+                }
+            }),
+        )]);
+        set_openrouter_env(&server.base_url);
+        let adapter = OpenRouterBackendAdapter::with_base_url(server.base_url.clone());
+        let (_dir, request) = request_fixture(BackendFamily::OpenRouter, "openai/gpt-4o");
+
+        let envelope = adapter.invoke(request).await.expect("invoke succeeds");
+        assert_eq!(envelope.metadata.token_counts.prompt_tokens, Some(300));
+        assert_eq!(envelope.metadata.token_counts.completion_tokens, Some(90));
+        assert_eq!(envelope.metadata.token_counts.total_tokens, Some(390));
+        assert_eq!(envelope.metadata.token_counts.cache_read_tokens, Some(200));
+        assert_eq!(envelope.metadata.token_counts.cache_creation_tokens, None);
+        clear_openrouter_env();
+    }
+
+    // ── OpenRouterUsage deserialization tests ────────────────────────────────
 
     #[test]
     fn openrouter_usage_parses_anthropic_cache_fields() {

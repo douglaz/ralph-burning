@@ -1934,3 +1934,54 @@ async fn codex_invalid_last_message_preserves_failure_artifacts() {
         "preserved last-message should contain the invalid payload: {failed_message}"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn claude_envelope_with_usage_populates_token_counts() {
+    let adapter = ProcessBackendAdapter::new();
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let payload_json = serde_json::json!({
+        "questions": [
+            {"id": "q1", "prompt": "What?", "required": true}
+        ]
+    });
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    let envelope_file = request.working_dir.join("usage-claude-envelope.json");
+    {
+        let envelope = serde_json::json!({
+            "type": "result",
+            "result": "",
+            "session_id": "usage-sess-1",
+            "structured_output": payload_json,
+            "usage": {
+                "input_tokens": 1200,
+                "output_tokens": 350,
+                "cache_read_input_tokens": 800,
+                "cache_creation_input_tokens": 100
+            }
+        });
+        fs::write(&envelope_file, serde_json::to_string(&envelope).unwrap())
+            .expect("write envelope file");
+    }
+    write_fake_claude(bin_dir.path(), &envelope_file);
+
+    request.contract = InvocationContract::Requirements {
+        label: "requirements:question_set".to_owned(),
+    };
+
+    let result = adapter
+        .invoke(request)
+        .await
+        .expect("invoke should succeed");
+    assert_eq!(result.metadata.token_counts.prompt_tokens, Some(1200));
+    assert_eq!(result.metadata.token_counts.completion_tokens, Some(350));
+    assert_eq!(result.metadata.token_counts.total_tokens, Some(1550));
+    assert_eq!(result.metadata.token_counts.cache_read_tokens, Some(800));
+    assert_eq!(
+        result.metadata.token_counts.cache_creation_tokens,
+        Some(100)
+    );
+}
