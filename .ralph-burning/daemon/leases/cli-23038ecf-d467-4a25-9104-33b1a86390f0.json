@@ -1,0 +1,9 @@
+{
+  "lease_kind": "cli_writer",
+  "lease_id": "cli-23038ecf-d467-4a25-9104-33b1a86390f0",
+  "project_id": "emj",
+  "owner": "cli",
+  "acquired_at": "2026-03-30T01:49:28.177521811Z",
+  "ttl_seconds": 300,
+  "last_heartbeat": "2026-03-30T01:59:28.359462384Z"
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-planner-positions-c2-a1-cr20-artifact",
+  "payload_id": "run-20260327233800-final_review-planner-positions-c2-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T01:12:20.189037763Z",
+  "content": "# Final Review Planner Positions\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccept the amendment. It identifies a real correctness bug: distinct named starts that are now allowed by the lineage model can still be silently dropped from the journal because the start-event dedupe key does not distinguish them.\n\n## Votes\n\n- `fr-20-c613acbd`: Accept\n  `record_bead_start` writes `BeadStarted` with details only `project={project_id}`, while `append_event_if_missing` dedupes on `(timestamp, event_type, bead_id, details)`. After the model change that allows a new named run with the same `started_at` as a finalized prior run, two legitimate starts for the same bead/project/timestamp become journal-identical and the later one is discarded. That loses milestone audit history and makes journal semantics diverge from the lineage store, which already distinguishes runs by `run_id`/`plan_hash`. Including run identity in `BeadStarted` details, or otherwise widening dedupe for start events without breaking idempotent same-run retries, is the correct fix.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

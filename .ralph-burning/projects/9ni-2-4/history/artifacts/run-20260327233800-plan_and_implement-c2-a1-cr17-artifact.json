@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-plan_and_implement-c2-a1-cr17-artifact",
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr17",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-03-29T22:39:20.345759326Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nRejected dot-prefixed milestone IDs so milestone data cannot collide with the `.locks` namespace, tightened task-run completion so a supplied `run_id` only finalizes an exact matching attempt, and changed new named retries after a stale legacy runless start to mark that older attempt as superseded before appending the retry. Added regressions covering the new ID validation, exact-match completion rejection, and legacy-open retry supersession behavior.\n\n## Steps\n\n0. [Completed] Inspected the pending amendments against the current milestone model, service, and filesystem lineage logic to isolate the remaining lock-namespace, completion-targeting, and stale-open retry behaviors.\n1. [Completed] Updated `MilestoneId::new()` to reject dot-prefixed identifiers and extended the milestone-model tests to cover hidden-name rejection.\n2. [Completed] Patched `FsTaskRunLineageStore` so named completions no longer fall back to a lone runless open row, and so starting a new named retry after a stale legacy runless attempt first auto-fails the older attempt as superseded.\n3. [Completed] Adjusted milestone-record service regressions for the new retry semantics, added an exact-match completion failure test, and reran formatting, milestone-record tests, and clippy validation.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo test --lib contexts::milestone_record` passed with 103 tests.\n- `cargo clippy -- -D warnings` completed successfully.\n\n## Outstanding Risks\n\n- Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction; milestone-scoped locking and replay-safe updates mitigate this, but a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage.\n- Malformed or manually edited lineage can still contain multiple simultaneous runless open attempts for the same bead/project; the normal start path now prevents stale legacy-open contradictions for new named retries, but deterministic finalization of already-corrupt data still depends on repair or richer caller metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

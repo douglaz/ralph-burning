@@ -1,0 +1,90 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr19-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-30T00:53:04.213519172Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-19-b035a585",
+      "fr-19-4993d634"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-19-b035a585",
+        "normalized_body": "In `matching_finalized_task_runs` (model.rs:448-480), the `started_at` fallback path does not exclude entries whose `run_id` is `Some(different_id)`. When a caller provides `run_id = Some(\"run-3\")` and the DB has a finalized entry with `run_id = Some(\"run-2\")` at the same `started_at`, the fallback returns that entry — blocking a legitimate new run with a misleading \"already finalized\" error. The fallback filter (line 476-479) should additionally require `entry.run_id.is_none()` when `run_id` was provided, so it only catches the runless-to-named upgrade case the tests intend to cover, not a collision between two distinct named runs that happen to share a timestamp.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-19-b353e532",
+        "normalized_body": "`src/contexts/milestone_record/model.rs:299-309`, `src/contexts/milestone_record/model.rs:410-479`, `src/contexts/milestone_record/model.rs:499-555`, and `src/adapters/fs.rs:2757-2833` still use `started_at` as a fallback attempt identifier whenever `run_id` is missing. That legacy path makes `record_task_run_start` reuse or reject a row purely because the timestamp matches, so two distinct runless retries that happen to share the same timestamp are silently collapsed into one attempt. This breaks the new audit requirement that every retry for a bead remain visible; remove the started-at backfill/collapse logic and treat each persisted attempt as authoritative instead of reconstructing legacy pairs.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-19-4993d634",
+        "normalized_body": "`src/adapters/fs.rs:2295-2322` and `src/adapters/fs.rs:2390-2469` merge completion journal events based only on `timestamp + event_type + bead_id` plus loosely compatible details. If two different attempts for the same bead/project complete at the same timestamp and at least one lacks a `run_id`, `append_event_if_missing` will repair/overwrite the first event instead of appending a second one. Tighten the dedupe key to a real attempt identity (for example `run_id`, or `started_at` when that is the explicit identifier) or drop this repair path.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-19-b035a585",
+        "normalized_body": "In `matching_finalized_task_runs` (model.rs:448-480), the `started_at` fallback path does not exclude entries whose `run_id` is `Some(different_id)`. When a caller provides `run_id = Some(\"run-3\")` and the DB has a finalized entry with `run_id = Some(\"run-2\")` at the same `started_at`, the fallback returns that entry — blocking a legitimate new run with a misleading \"already finalized\" error. The fallback filter (line 476-479) should additionally require `entry.run_id.is_none()` when `run_id` was provided, so it only catches the runless-to-named upgrade case the tests intend to cover, not a collision between two distinct named runs that happen to share a timestamp.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-19-4993d634",
+        "normalized_body": "`src/adapters/fs.rs:2295-2322` and `src/adapters/fs.rs:2390-2469` merge completion journal events based only on `timestamp + event_type + bead_id` plus loosely compatible details. If two different attempts for the same bead/project complete at the same timestamp and at least one lacks a `run_id`, `append_event_if_missing` will repair/overwrite the first event instead of appending a second one. Tighten the dedupe key to a real attempt identity (for example `run_id`, or `started_at` when that is the explicit identifier) or drop this repair path.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 19,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-19-b353e532"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 19
+}

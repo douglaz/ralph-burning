@@ -1,0 +1,37 @@
+{
+  "active_run": {
+    "run_id": "run-20260330014928",
+    "stage_cursor": {
+      "stage": "review",
+      "cycle": 1,
+      "attempt": 1,
+      "completion_round": 1
+    },
+    "started_at": "2026-03-30T01:49:28.195156129Z",
+    "prompt_hash_at_cycle_start": "3ec351f1dd95ccae",
+    "prompt_hash_at_stage_start": "3ec351f1dd95ccae",
+    "qa_iterations_current_cycle": 0,
+    "review_iterations_current_cycle": 0,
+    "final_review_restart_count": 0,
+    "stage_resolution_snapshot": {
+      "stage_id": "review",
+      "resolved_at": "2026-03-30T01:56:26.162101091Z",
+      "primary_target": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  },
+  "status": "running",
+  "cycle_history": [],
+  "completion_rounds": 1,
+  "rollback_point_meta": {
+    "last_rollback_id": null,
+    "rollback_count": 0
+  },
+  "amendment_queue": {
+    "pending": [],
+    "processed_count": 0
+  },
+  "status_summary": "running: Review"
+}
