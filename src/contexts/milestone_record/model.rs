@@ -335,6 +335,7 @@ impl TaskRunEntry {
             &self.project_id,
             self.run_id.as_deref(),
             self.plan_hash.as_deref(),
+            self.started_at,
             self.outcome,
             self.outcome_detail.as_deref(),
         )
@@ -348,6 +349,7 @@ struct CompletionJournalDetailsPayload<'a> {
     run_id: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     plan_hash: Option<&'a str>,
+    started_at: DateTime<Utc>,
     outcome: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     outcome_detail: Option<&'a str>,
@@ -357,6 +359,7 @@ pub fn render_completion_journal_details(
     project_id: &str,
     run_id: Option<&str>,
     plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
     outcome: impl fmt::Display,
     outcome_detail: Option<&str>,
 ) -> String {
@@ -364,6 +367,7 @@ pub fn render_completion_journal_details(
         project_id,
         run_id,
         plan_hash,
+        started_at,
         outcome: outcome.to_string(),
         outcome_detail,
     })
@@ -471,6 +475,11 @@ pub fn matching_finalized_task_runs(
         if !exact_matches.is_empty() {
             return exact_matches;
         }
+
+        return matching_finalized_entries
+            .into_iter()
+            .filter(|entry| entry.run_id.is_none() && entry.started_at == started_at)
+            .collect();
     }
 
     matching_finalized_entries
@@ -1133,6 +1142,32 @@ mod tests {
     }
 
     #[test]
+    fn matching_finalized_task_runs_ignores_different_named_run_at_same_started_at(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
+        let matches = matching_finalized_task_runs(
+            &[TaskRunEntry {
+                milestone_id: "ms-1".to_owned(),
+                bead_id: "bead-1".to_owned(),
+                project_id: "project-1".to_owned(),
+                run_id: Some("run-2".to_owned()),
+                plan_hash: Some("plan-v1".to_owned()),
+                outcome: TaskRunOutcome::Succeeded,
+                outcome_detail: Some("done".to_owned()),
+                started_at,
+                finished_at: Some(started_at + chrono::Duration::seconds(1)),
+            }],
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            started_at,
+        );
+
+        assert!(matches.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn collapse_task_run_attempts_preserves_same_timestamp_legacy_retries(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
@@ -1192,10 +1227,12 @@ mod tests {
     #[test]
     fn completion_journal_details_support_delimited_identifiers(
     ) -> Result<(), Box<dyn std::error::Error>> {
+        let started_at = Utc::now();
         let details = render_completion_journal_details(
             "project, one",
             Some("run, 1"),
             Some("plan, v2"),
+            started_at,
             TaskRunOutcome::Succeeded,
             Some("detail payload"),
         );
@@ -1207,6 +1244,7 @@ mod tests {
                 "project_id": "project, one",
                 "run_id": "run, 1",
                 "plan_hash": "plan, v2",
+                "started_at": started_at,
                 "outcome": "succeeded",
                 "outcome_detail": "detail payload",
             })

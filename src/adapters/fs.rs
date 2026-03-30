@@ -2282,6 +2282,7 @@ struct CompletionJournalDetails {
     run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     plan_hash: Option<String>,
+    started_at: DateTime<Utc>,
     outcome: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     outcome_detail: Option<String>,
@@ -2293,7 +2294,12 @@ impl CompletionJournalDetails {
     }
 
     fn merge(existing: &Self, requested: &Self) -> Option<Self> {
-        if existing.project_id != requested.project_id || existing.outcome != requested.outcome {
+        // Repair in place only when both journal rows refer to the same attempt.
+        // Named runs use run_id; runless retries are disambiguated by started_at.
+        if existing.project_id != requested.project_id
+            || existing.started_at != requested.started_at
+            || existing.outcome != requested.outcome
+        {
             return None;
         }
         if FsTaskRunLineageStore::option_conflicts(
@@ -2327,6 +2333,7 @@ impl CompletionJournalDetails {
             &self.project_id,
             self.run_id.as_deref(),
             self.plan_hash.as_deref(),
+            self.started_at,
             &self.outcome,
             self.outcome_detail.as_deref(),
         )
