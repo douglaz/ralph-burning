@@ -3016,12 +3016,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             }
                         }
                         [index] if entries[*index].run_id.is_none() => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only a legacy runless attempt is still open"
-                                ),
-                            });
+                            // Accept runless match: backfill run_id (and plan_hash)
+                            // so a start recorded before the controller knew the
+                            // run ID can be finalized with the now-known identity.
+                            *index
                         }
                         [index] => {
                             return Err(AppError::CorruptRecord {
@@ -3709,6 +3707,53 @@ mod tests {
     use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
     use crate::shared::domain::ProjectId;
     use tempfile::tempdir;
+
+    /// Ensure `StartJournalDetails` (fs.rs) stays in sync with
+    /// `render_start_journal_details` (model.rs). If a field is added to the
+    /// render payload but not to the parsing struct, the round-trip will lose it.
+    #[test]
+    fn start_journal_details_round_trips_with_model_render() {
+        use crate::contexts::milestone_record::model::render_start_journal_details;
+
+        // Render via the model's canonical function
+        let rendered = render_start_journal_details("proj-1", Some("run-42"), Some("hash-abc"));
+        // Parse through the fs adapter's struct
+        let parsed = StartJournalDetails::parse(&rendered)
+            .expect("StartJournalDetails must parse model-rendered JSON");
+        assert_eq!(parsed.project_id, "proj-1");
+        assert_eq!(parsed.run_id.as_deref(), Some("run-42"));
+        assert_eq!(parsed.plan_hash.as_deref(), Some("hash-abc"));
+        // Re-render and confirm stability
+        assert_eq!(parsed.render(), rendered);
+    }
+
+    /// Ensure `CompletionJournalDetails` (fs.rs) stays in sync with
+    /// `render_completion_journal_details` (model.rs).
+    #[test]
+    fn completion_journal_details_round_trips_with_model_render() {
+        use crate::contexts::milestone_record::model::render_completion_journal_details;
+        use chrono::{TimeZone, Utc};
+
+        let ts = Utc.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap();
+        let rendered = render_completion_journal_details(
+            "proj-2",
+            Some("run-99"),
+            Some("hash-xyz"),
+            ts,
+            "succeeded",
+            Some("All checks passed"),
+        );
+        let parsed = CompletionJournalDetails::parse(&rendered)
+            .expect("CompletionJournalDetails must parse model-rendered JSON");
+        assert_eq!(parsed.project_id, "proj-2");
+        assert_eq!(parsed.run_id.as_deref(), Some("run-99"));
+        assert_eq!(parsed.plan_hash.as_deref(), Some("hash-xyz"));
+        assert_eq!(parsed.started_at, ts);
+        assert_eq!(parsed.outcome, "succeeded");
+        assert_eq!(parsed.outcome_detail.as_deref(), Some("All checks passed"));
+        // Re-render and confirm stability
+        assert_eq!(parsed.render(), rendered);
+    }
 
     #[test]
     fn release_writer_lock_detects_replaced_file_via_inode() {

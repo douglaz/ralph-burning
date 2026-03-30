@@ -426,13 +426,19 @@ pub fn record_bead_start(
             });
         }
 
+        // Auto-populate plan_hash from the milestone snapshot when the caller
+        // omits it — the system already knows which plan version is executing.
+        let effective_plan_hash = plan_hash
+            .map(str::to_owned)
+            .or_else(|| snapshot.plan_hash.clone());
+
         let started_entry = lineage_store.record_task_run_start(
             base_dir,
             milestone_id,
             bead_id,
             project_id,
             run_id,
-            plan_hash,
+            effective_plan_hash.as_deref(),
             now,
         )?;
 
@@ -554,13 +560,20 @@ pub fn update_task_run(
         }
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+
+        // Auto-populate plan_hash from the milestone snapshot when the caller
+        // omits it — the system already knows which plan version is executing.
+        let effective_plan_hash = plan_hash
+            .map(str::to_owned)
+            .or_else(|| snapshot.plan_hash.clone());
+
         let finalized_run = lineage_store.update_task_run(
             base_dir,
             milestone_id,
             bead_id,
             project_id,
             run_id,
-            plan_hash,
+            effective_plan_hash.as_deref(),
             started_at,
             outcome,
             outcome_detail,
@@ -3803,8 +3816,10 @@ mod tests {
         Ok(())
     }
 
+    /// Runless-to-named completion is now accepted (Issue 2), but conflicting
+    /// plan_hash values still prevent finalization.
     #[test]
-    fn completion_with_named_run_id_requires_exact_attempt_match(
+    fn completion_with_conflicting_plan_hash_rejects_runless_match(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let tmp = tempfile::tempdir()?;
         let base = tmp.path();
@@ -3821,8 +3836,7 @@ mod tests {
             CreateMilestoneInput {
                 id: "exact-completion-match-test".to_owned(),
                 name: "Exact Completion Match Test".to_owned(),
-                description: "named completions must not finalize an unrelated legacy open attempt"
-                    .to_owned(),
+                description: "conflicting plan_hash must still prevent finalization".to_owned(),
             },
             now,
         )?;
@@ -3851,17 +3865,19 @@ mod tests {
             Some("run-2"),
             Some("plan-v2"),
             TaskRunOutcome::Succeeded,
-            Some("should fail fast"),
+            Some("should fail due to plan_hash conflict"),
             now + chrono::Duration::seconds(10),
             now + chrono::Duration::seconds(15),
         )
-        .expect_err("named completion should require an exact matching attempt");
-        assert!(error
-            .to_string()
-            .contains("only a legacy runless attempt is still open"));
+        .expect_err("conflicting plan_hash should prevent finalization");
+        assert!(
+            error.to_string().contains("conflicting plan_hash"),
+            "expected plan_hash conflict error, got: {error}"
+        );
 
         let runs = find_runs_for_bead(&lineage_store, base, &record.id, "bead-1")?;
         assert_eq!(runs.len(), 1);
+        // run_id is NOT backfilled because the operation failed
         assert_eq!(runs[0].run_id, None);
         assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
         assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
@@ -4608,6 +4624,230 @@ mod tests {
         assert!(runs
             .iter()
             .all(|run| run.outcome == TaskRunOutcome::Running));
+        Ok(())
+    }
+
+    /// Issue 2: A start recorded without run_id can be completed with a
+    /// subsequently known run_id.
+    #[test]
+    fn runless_start_completed_with_named_run_id() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "runless-named-test".to_owned(),
+                name: "Runless to Named".to_owned(),
+                description: "test runless start finalized with run_id".to_owned(),
+            },
+            now,
+        )?;
+
+        // Start bead WITHOUT run_id or plan_hash (early/legacy path)
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            now,
+        )?;
+
+        let runs_before = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs_before.len(), 1);
+        assert_eq!(runs_before[0].run_id, None);
+
+        // Complete bead WITH a subsequently discovered run_id and plan_hash
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-late"),
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("completed with late run_id"),
+            now,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-late"));
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(
+            runs[0].outcome_detail.as_deref(),
+            Some("completed with late run_id")
+        );
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        snapshot
+            .validate_semantics()
+            .map_err(Box::<dyn std::error::Error>::from)?;
+        assert_eq!(snapshot.progress.completed_beads, 1);
+        assert_eq!(snapshot.progress.in_progress_beads, 0);
+        Ok(())
+    }
+
+    /// Issue 3: plan_hash is auto-populated from the milestone snapshot when
+    /// callers omit it.
+    #[test]
+    fn plan_hash_auto_populated_from_snapshot() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "plan-hash-auto".to_owned(),
+                name: "Plan Hash Auto".to_owned(),
+                description: "test plan_hash auto-population from snapshot".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist a plan — this stores the plan_hash in the snapshot
+        let snapshot = persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("plan-hash-auto", "Plan Hash Auto"),
+            now,
+        )?;
+        let expected_plan_hash = snapshot.plan_hash.clone().expect("plan_hash must be set");
+
+        // Start bead WITHOUT plan_hash — should auto-populate from snapshot
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None, // plan_hash omitted
+            now,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some(expected_plan_hash.as_str()),
+            "plan_hash should be auto-populated from snapshot on start"
+        );
+
+        // Complete bead WITHOUT plan_hash — should also auto-populate
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None, // plan_hash omitted
+            TaskRunOutcome::Succeeded,
+            Some("auto plan_hash test"),
+            now,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some(expected_plan_hash.as_str()),
+            "plan_hash should be preserved through completion"
+        );
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Succeeded);
+        Ok(())
+    }
+
+    /// Issue 3 (variant): When callers provide an explicit plan_hash, it should
+    /// take precedence over the snapshot value.
+    #[test]
+    fn explicit_plan_hash_takes_precedence_over_snapshot() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "plan-hash-explicit".to_owned(),
+                name: "Plan Hash Explicit".to_owned(),
+                description: "test explicit plan_hash precedence".to_owned(),
+            },
+            now,
+        )?;
+
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("plan-hash-explicit", "Plan Hash Explicit"),
+            now,
+        )?;
+
+        // Start bead WITH explicit plan_hash
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            Some("caller-provided-hash"),
+            now,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some("caller-provided-hash"),
+            "explicit plan_hash must take precedence over snapshot"
+        );
         Ok(())
     }
 }
