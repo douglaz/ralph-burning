@@ -2323,6 +2323,13 @@ impl StartJournalDetails {
         // to the shared struct automatically includes it in the merge without
         // manual enumeration, so future fields cannot be silently dropped
         // during journal repair.
+        //
+        // INVARIANT: `json_fill_none` keeps the base value when both sides
+        // are present.  Any new optional field where conflicting values
+        // should be rejected (like run_id and plan_hash above) MUST have
+        // an explicit `option_conflicts` check added before this call;
+        // otherwise conflicting values are silently preserved from the
+        // existing record.
         json_fill_none(existing, requested)
     }
 
@@ -2362,8 +2369,10 @@ impl CompletionJournalDetails {
             return None;
         }
 
-        // Fill all absent optional fields from `requested` using JSON-level
-        // merge — see StartJournalDetails::merge for rationale.
+        // Fill all absent optional fields from `requested` — see the
+        // INVARIANT comment in StartJournalDetails::merge.  Any new
+        // optional field with conflict semantics MUST have an explicit
+        // `option_conflicts` check added above this call.
         json_fill_none(existing, requested)
     }
 
