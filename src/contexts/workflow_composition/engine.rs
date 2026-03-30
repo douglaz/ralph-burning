@@ -4646,7 +4646,42 @@ where
                         // journal saying "failed/retrying" while run.json is
                         // still in a prior state, producing an unresumable
                         // journal/snapshot divergence.
-                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+                        //
+                        // If the write fails, we cannot just propagate with `?`
+                        // because that bypasses fail_run_result — leaving
+                        // run.json in its old Running state on disk (the exact
+                        // unresumable condition we are trying to prevent).
+                        // Instead, restore active_run so fail_run_result can
+                        // re-attempt the snapshot write and emit a run_failed
+                        // journal event.
+                        if let Err(snapshot_err) =
+                            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                        {
+                            // Restore active_run so fail_run's
+                            // preserve_interrupted_run sees valid state.
+                            snapshot.active_run = snapshot.interrupted_run.take();
+                            snapshot.status = RunStatus::Running;
+                            let wrapper = AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "pre-backoff snapshot write failed at attempt {}: {}",
+                                    cursor.attempt, snapshot_err,
+                                ),
+                            };
+                            return fail_run_result(
+                                &wrapper,
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
 
                         let _ = log_write.append_runtime_log(
                             base_dir,

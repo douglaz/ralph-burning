@@ -2806,6 +2806,101 @@ async fn retry_success_on_second_attempt_completes_run() {
     assert_eq!(implementation_completed[0].details["attempt"], 2);
 }
 
+/// Snapshot write store that fails specifically during the pre-backoff write.
+/// Delegates to `FsRunSnapshotWriteStore` for all writes except when the
+/// snapshot is in the "retrying" state (status=Failed, status_summary starts
+/// with "retrying"), simulating a disk error during the backoff window.
+struct BackoffFailingSnapshotWriteStore;
+
+impl RunSnapshotWritePort for BackoffFailingSnapshotWriteStore {
+    fn write_run_snapshot(
+        &self,
+        base_dir: &Path,
+        project_id: &ralph_burning::shared::domain::ProjectId,
+        snapshot: &RunSnapshot,
+    ) -> AppResult<()> {
+        if snapshot.status == RunStatus::Failed && snapshot.status_summary.starts_with("retrying") {
+            return Err(AppError::Io(std::io::Error::other(
+                "simulated disk error during pre-backoff snapshot write",
+            )));
+        }
+        FsRunSnapshotWriteStore.write_run_snapshot(base_dir, project_id, snapshot)
+    }
+}
+
+/// When the pre-backoff snapshot write fails, the engine must route the error
+/// through fail_run_result (not bare `?`) so the run ends in a recoverable
+/// Failed state with a run_failed journal event.
+#[tokio::test(start_paused = true)]
+async fn snapshot_write_failure_during_backoff_routes_through_fail_run() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+
+    setup_workspace(base_dir);
+    let pid = create_standard_project(base_dir, "snap-backoff-fail");
+
+    // 1 transient failure triggers the backoff path; the snapshot write
+    // during backoff will fail via BackoffFailingSnapshotWriteStore.
+    let agent_service = build_agent_service_with_adapter(
+        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 1),
+    );
+    let config = EffectiveConfig::load(base_dir).unwrap();
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &BackoffFailingSnapshotWriteStore,
+        &FsJournalStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    // (a) The engine must return an error.
+    assert!(
+        result.is_err(),
+        "run should fail when pre-backoff snapshot write fails"
+    );
+
+    // (b) The snapshot on disk must be in Failed state (fail_run_result
+    // re-attempts the write, which succeeds because the snapshot is no
+    // longer in the "retrying" state — it has the fail_run summary).
+    let snapshot = FsRunSnapshotStore
+        .read_run_snapshot(base_dir, &pid)
+        .unwrap();
+    assert_eq!(
+        snapshot.status,
+        RunStatus::Failed,
+        "run must end in Failed state, not stranded in Running"
+    );
+    assert!(snapshot.active_run.is_none());
+
+    // (c) The journal must contain the stage_failed event (durable before
+    // the snapshot write was attempted).
+    let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
+    let impl_failed = stage_events(&events, JournalEventType::StageFailed, "implementation");
+    assert!(
+        !impl_failed.is_empty(),
+        "stage_failed event must be present in journal"
+    );
+    assert_eq!(impl_failed[0].details["will_retry"], true);
+
+    // (d) A run_failed journal event should be present (from fail_run_result).
+    let run_failed: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::RunFailed)
+        .collect();
+    assert_eq!(
+        run_failed.len(),
+        1,
+        "fail_run_result should emit a run_failed journal event"
+    );
+}
+
 #[tokio::test]
 async fn remediation_cycle_is_triggered_by_qa_request_changes() {
     let tmp = tempdir().unwrap();

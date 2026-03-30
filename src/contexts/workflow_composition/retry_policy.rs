@@ -1,8 +1,15 @@
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::time::Duration;
 use std::time::SystemTime;
 
 use crate::shared::domain::FailureClass;
+
+thread_local! {
+    /// Monotonic counter mixed into jitter to ensure distinct values even
+    /// when multiple calls land within the same clock tick.
+    static JITTER_COUNTER: Cell<u32> = const { Cell::new(0) };
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RetryRule {
@@ -131,19 +138,24 @@ impl RetryPolicy {
 
     /// Apply ±25% jitter to a duration to stagger concurrent retries.
     ///
-    /// Uses system clock nanos run through a hash-mixing step so that
-    /// coarse-clock platforms (where subsec_nanos changes in large
-    /// jumps) still produce well-distributed jitter values.
+    /// Combines system clock nanos with a thread-local monotonic counter
+    /// and mixes both through a hash step.  The counter ensures that
+    /// calls within the same clock tick (coarse-clock VMs, containers)
+    /// still produce distinct jitter values.
     fn apply_jitter(base: Duration) -> Duration {
         let nanos = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .unwrap_or_default()
             .subsec_nanos();
-        // Murmur-style mix: spread entropy across all bits so that
-        // coarse-grained clocks (e.g. 1ms resolution) don't produce
-        // identical jitter for closely-spaced calls.
+        let counter = JITTER_COUNTER.with(|c| {
+            let v = c.get().wrapping_add(1);
+            c.set(v);
+            v
+        });
+        // Murmur-style mix of nanos XOR counter: the counter guarantees
+        // distinct inputs even when nanos is identical across calls.
         let mixed = {
-            let mut h = nanos;
+            let mut h = nanos ^ counter.wrapping_mul(2654435761); // Knuth multiplicative hash
             h ^= h >> 16;
             h = h.wrapping_mul(0x45d9f3b);
             h ^= h >> 16;
