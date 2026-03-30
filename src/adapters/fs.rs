@@ -2561,6 +2561,15 @@ impl FsTaskRunLineageStore {
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
     }
 
+    /// Read the snapshot's plan_hash for backfill-only auto-population.
+    /// Returns `None` if no snapshot exists or no plan has been persisted.
+    fn snapshot_plan_hash(base_dir: &Path, milestone_id: &MilestoneId) -> Option<String> {
+        FsMilestoneSnapshotStore
+            .read_snapshot(base_dir, milestone_id)
+            .ok()
+            .and_then(|s| s.plan_hash)
+    }
+
     fn read_task_runs_from_path(
         path: &Path,
         milestone_id: &MilestoneId,
@@ -2895,13 +2904,22 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
-                if Self::backfill_running_entry(
+                let mut changed = Self::backfill_running_entry(
                     &mut entries[existing_index],
                     bead_id,
                     project_id,
                     run_id,
                     plan_hash,
-                )? {
+                )?;
+                // Auto-populate plan_hash from snapshot when both caller and
+                // existing row lack it.
+                if entries[existing_index].plan_hash.is_none() {
+                    if let Some(snapshot_hash) = Self::snapshot_plan_hash(base_dir, milestone_id) {
+                        entries[existing_index].plan_hash = Some(snapshot_hash);
+                        changed = true;
+                    }
+                }
+                if changed {
                     Self::write_task_runs(&path, &entries)?;
                 }
                 return Ok(entries[existing_index].clone());
@@ -2925,12 +2943,18 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
+        // Auto-populate plan_hash from the milestone snapshot when the caller
+        // omits it — the system already knows which plan version is executing.
+        let effective_plan_hash = plan_hash
+            .map(str::to_owned)
+            .or_else(|| Self::snapshot_plan_hash(base_dir, milestone_id));
+
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),
             bead_id: bead_id.to_owned(),
             project_id: project_id.to_owned(),
             run_id: run_id.map(str::to_owned),
-            plan_hash: plan_hash.map(str::to_owned),
+            plan_hash: effective_plan_hash,
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -3015,11 +3039,29 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 });
                             }
                         }
-                        [index] if entries[*index].run_id.is_none() => {
+                        [index]
+                            if entries[*index].run_id.is_none()
+                                && entries[*index].started_at == started_at =>
+                        {
                             // Accept runless match: backfill run_id (and plan_hash)
                             // so a start recorded before the controller knew the
                             // run ID can be finalized with the now-known identity.
+                            // Require started_at to match to avoid backfilling the
+                            // wrong legacy attempt.
                             *index
+                        }
+                        [index] if entries[*index].run_id.is_none() => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!(
+                                    "milestones/{}/task-runs.ndjson",
+                                    milestone_id
+                                ),
+                                details: format!(
+                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; \
+                                     open runless attempt started_at={} does not match requested started_at={started_at}",
+                                    entries[*index].started_at,
+                                ),
+                            });
                         }
                         [index] => {
                             return Err(AppError::CorruptRecord {
@@ -3201,6 +3243,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         None => entry.plan_hash = Some(plan_hash.to_owned()),
                         _ => {}
                     }
+                } else if entry.plan_hash.is_none() {
+                    // Auto-populate plan_hash from the milestone snapshot when
+                    // both the caller and the existing row lack it.
+                    entry.plan_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
                 }
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;

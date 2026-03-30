@@ -426,19 +426,13 @@ pub fn record_bead_start(
             });
         }
 
-        // Auto-populate plan_hash from the milestone snapshot when the caller
-        // omits it — the system already knows which plan version is executing.
-        let effective_plan_hash = plan_hash
-            .map(str::to_owned)
-            .or_else(|| snapshot.plan_hash.clone());
-
         let started_entry = lineage_store.record_task_run_start(
             base_dir,
             milestone_id,
             bead_id,
             project_id,
             run_id,
-            effective_plan_hash.as_deref(),
+            plan_hash,
             now,
         )?;
 
@@ -560,20 +554,13 @@ pub fn update_task_run(
         }
 
         let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
-
-        // Auto-populate plan_hash from the milestone snapshot when the caller
-        // omits it — the system already knows which plan version is executing.
-        let effective_plan_hash = plan_hash
-            .map(str::to_owned)
-            .or_else(|| snapshot.plan_hash.clone());
-
         let finalized_run = lineage_store.update_task_run(
             base_dir,
             milestone_id,
             bead_id,
             project_id,
             run_id,
-            effective_plan_hash.as_deref(),
+            plan_hash,
             started_at,
             outcome,
             outcome_detail,
@@ -3854,6 +3841,8 @@ mod tests {
             now,
         )?;
 
+        // Use matching started_at so the runless match is accepted (Amendment 2
+        // requires started_at to match). The plan_hash conflict then rejects.
         let error = record_bead_completion(
             &snapshot_store,
             &journal_store,
@@ -3866,7 +3855,7 @@ mod tests {
             Some("plan-v2"),
             TaskRunOutcome::Succeeded,
             Some("should fail due to plan_hash conflict"),
-            now + chrono::Duration::seconds(10),
+            now,
             now + chrono::Duration::seconds(15),
         )
         .expect_err("conflicting plan_hash should prevent finalization");
@@ -4847,6 +4836,285 @@ mod tests {
             runs[0].plan_hash.as_deref(),
             Some("caller-provided-hash"),
             "explicit plan_hash must take precedence over snapshot"
+        );
+        Ok(())
+    }
+
+    /// Amendment 1: Terminal replay after plan evolution must not false-positive
+    /// reject due to auto-populated plan_hash from a newer snapshot.
+    #[test]
+    fn terminal_replay_after_plan_evolution_succeeds() -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "terminal-replay-evolve".to_owned(),
+                name: "Terminal Replay Evolve".to_owned(),
+                description: "replay after plan evolution must not conflict".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist plan v1
+        let snap_v1 = persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("terminal-replay-evolve", "Plan v1"),
+            now,
+        )?;
+        let hash_v1 = snap_v1.plan_hash.clone().expect("plan_hash v1");
+
+        // Start and complete bead with plan_hash=None (auto-populated to hash_v1)
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+        )?;
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some(hash_v1.as_str()),
+            "start should auto-populate plan_hash from snapshot"
+        );
+
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("completed under plan v1"),
+            now,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        // Persist plan v2 — snapshot.plan_hash advances
+        let mut bundle_v2 = sample_bundle("terminal-replay-evolve", "Plan v2");
+        bundle_v2.executive_summary = "Updated plan".to_owned();
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle_v2,
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        // Replay the SAME terminal completion with plan_hash=None.
+        // Must not fail even though snapshot now has hash_v2.
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("completed under plan v1"),
+            now,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some(hash_v1.as_str()),
+            "terminal entry must retain original plan_hash, not snapshot's newer value"
+        );
+        Ok(())
+    }
+
+    /// Amendment 2: Mismatched started_at must reject runless-to-named fallback.
+    #[test]
+    fn runless_match_rejected_when_started_at_mismatches() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "started-at-mismatch".to_owned(),
+                name: "Started At Mismatch".to_owned(),
+                description: "reject runless match with wrong started_at".to_owned(),
+            },
+            now,
+        )?;
+
+        // Start bead WITHOUT run_id
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            now,
+        )?;
+
+        // Try to complete with a run_id but DIFFERENT started_at
+        let error = record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-late"),
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("wrong timestamp"),
+            now + chrono::Duration::seconds(10),
+            now + chrono::Duration::seconds(15),
+        )
+        .expect_err("mismatched started_at should reject runless fallback");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match requested started_at"),
+            "expected started_at mismatch error, got: {error}"
+        );
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id, None);
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        Ok(())
+    }
+
+    /// Amendment 3: Replay of start after plan evolution must not conflict with
+    /// plan_hash already stored in the row from the previous snapshot.
+    #[test]
+    fn start_replay_after_plan_evolution_does_not_conflict(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "start-replay-evolve".to_owned(),
+                name: "Start Replay Evolve".to_owned(),
+                description: "start replay after plan change must not conflict".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist plan v1
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("start-replay-evolve", "Plan v1"),
+            now,
+        )?;
+
+        // Start bead with plan_hash=None (auto-populated to hash_v1)
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        let hash_v1 = runs[0]
+            .plan_hash
+            .clone()
+            .expect("plan_hash should be auto-populated");
+
+        // Persist plan v2 — snapshot.plan_hash advances
+        let mut bundle_v2 = sample_bundle("start-replay-evolve", "Plan v2");
+        bundle_v2.executive_summary = "Updated plan".to_owned();
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &bundle_v2,
+            now + chrono::Duration::seconds(1),
+        )?;
+
+        // Replay the same start with plan_hash=None — must not conflict.
+        // The lineage layer should see the row already has hash_v1 and skip
+        // auto-population, avoiding option_conflicts(hash_v1, hash_v2).
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].plan_hash.as_deref(),
+            Some(hash_v1.as_str()),
+            "row must retain original plan_hash from v1, not be overwritten by v2"
         );
         Ok(())
     }
