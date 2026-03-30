@@ -1,0 +1,92 @@
+{
+  "rollback_id": "8fe621aa-30ad-402c-a3ce-964ffac216a9",
+  "created_at": "2026-03-30T06:01:54.240446265Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "af47da036f69d0edf1f42ca71d9058c91ee50b83",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 5
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 4
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 5,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-4-436d5926",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 4,
+          "body": "Add a test in `tests/unit/process_backend_test.rs` that verifies when the backend binary truly does not exist (i.e., is not on PATH), `invoke()` returns `FailureClass::BinaryNotFound`. Currently the exit-code-127 test covers post-spawn classification, and retry_policy tests verify BinaryNotFound is terminal, but the actual spawn-failure → BinaryNotFound path in `process_backend.rs:986-987` (`ErrorKind::NotFound` branch) has no direct test. This is the critical non-retryable path that prevents wasting 5 retry attempts on a missing binary.",
+          "created_at": "2026-03-30T06:01:54.151046264Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "ec3aaba7bd816c2fc37c5b14e4b318afddc8e020b1ef7d1790f740ff47c9b897"
+        },
+        {
+          "amendment_id": "fr-4-edade531",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 4,
+          "body": "Map adapter-enforced process timeouts back to `AppError::InvocationTimeout` before they leave the service. `src/adapters/process_backend.rs:1037-1051` now returns `InvocationFailed { failure_class: Timeout }`, and `src/contexts/agent_execution/service.rs:211-213` plus `src/contexts/agent_execution/service.rs:369-373` pass that through unchanged. Existing consumers still branch on the timeout variant (for example `src/adapters/worktree.rs:892-900`), so a real CLI hang will now be treated as a generic invocation failure instead of following timeout-specific recovery/classification paths.",
+          "created_at": "2026-03-30T06:01:54.151049359Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "6ee3dfc3a3b279dd0b37385315783609277a9f979d5f6c5391e05c778306a497"
+        },
+        {
+          "amendment_id": "fr-4-5affc00d",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 4,
+          "body": "Make fatal availability/configuration failures terminal instead of retryable. The service always runs `check_availability()` first (`src/contexts/agent_execution/service.rs:166-169`); `ProcessBackendAdapter::check_availability()` reports missing binaries and missing `OPENROUTER_API_KEY` as `BackendUnavailable` (`src/adapters/process_backend.rs:1171-1193`); and `AppError::failure_class()` still maps `BackendUnavailable` to retryable `TransportFailure` (`src/shared/error.rs:300-305`). After the retry-budget increase in `src/contexts/workflow_composition/retry_policy.rs:45-57`, those fatal setup problems will now burn five attempts plus backoff instead of failing immediately.",
+          "created_at": "2026-03-30T06:01:54.151052175Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "39dda6dfddaeff1c5df31bccc67ddf2ba982fb1e727a5a659a2678975547b17b"
+        }
+      ],
+      "processed_count": 14
+    },
+    "status_summary": "running: final review restart round 5 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T05:40:52.275052371Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

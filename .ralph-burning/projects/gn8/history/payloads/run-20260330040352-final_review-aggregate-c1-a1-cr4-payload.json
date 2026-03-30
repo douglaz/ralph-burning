@@ -1,0 +1,113 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T06:01:54.151059999Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-4-436d5926",
+      "fr-4-edade531",
+      "fr-4-5affc00d"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-4-436d5926",
+        "normalized_body": "Add a test in `tests/unit/process_backend_test.rs` that verifies when the backend binary truly does not exist (i.e., is not on PATH), `invoke()` returns `FailureClass::BinaryNotFound`. Currently the exit-code-127 test covers post-spawn classification, and retry_policy tests verify BinaryNotFound is terminal, but the actual spawn-failure → BinaryNotFound path in `process_backend.rs:986-987` (`ErrorKind::NotFound` branch) has no direct test. This is the critical non-retryable path that prevents wasting 5 retry attempts on a missing binary.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-edade531",
+        "normalized_body": "Map adapter-enforced process timeouts back to `AppError::InvocationTimeout` before they leave the service. `src/adapters/process_backend.rs:1037-1051` now returns `InvocationFailed { failure_class: Timeout }`, and `src/contexts/agent_execution/service.rs:211-213` plus `src/contexts/agent_execution/service.rs:369-373` pass that through unchanged. Existing consumers still branch on the timeout variant (for example `src/adapters/worktree.rs:892-900`), so a real CLI hang will now be treated as a generic invocation failure instead of following timeout-specific recovery/classification paths.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-5affc00d",
+        "normalized_body": "Make fatal availability/configuration failures terminal instead of retryable. The service always runs `check_availability()` first (`src/contexts/agent_execution/service.rs:166-169`); `ProcessBackendAdapter::check_availability()` reports missing binaries and missing `OPENROUTER_API_KEY` as `BackendUnavailable` (`src/adapters/process_backend.rs:1171-1193`); and `AppError::failure_class()` still maps `BackendUnavailable` to retryable `TransportFailure` (`src/shared/error.rs:300-305`). After the retry-budget increase in `src/contexts/workflow_composition/retry_policy.rs:45-57`, those fatal setup problems will now burn five attempts plus backoff instead of failing immediately.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-34a6baf2",
+        "normalized_body": "Do not classify every non-zero child exit as retryable transport noise. `src/adapters/process_backend.rs:1442-1450` now hard-codes all exits, including `127`, to `TransportFailure`, and `tests/unit/process_backend_test.rs:2038-2066` locks that behavior in. That means wrapper CLIs that start successfully but then fail with exit 127 because an interpreter or subordinate executable is missing will still consume the full 5-attempt transport budget from `src/contexts/workflow_composition/retry_policy.rs:45-57`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-4-436d5926",
+        "normalized_body": "Add a test in `tests/unit/process_backend_test.rs` that verifies when the backend binary truly does not exist (i.e., is not on PATH), `invoke()` returns `FailureClass::BinaryNotFound`. Currently the exit-code-127 test covers post-spawn classification, and retry_policy tests verify BinaryNotFound is terminal, but the actual spawn-failure → BinaryNotFound path in `process_backend.rs:986-987` (`ErrorKind::NotFound` branch) has no direct test. This is the critical non-retryable path that prevents wasting 5 retry attempts on a missing binary.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-edade531",
+        "normalized_body": "Map adapter-enforced process timeouts back to `AppError::InvocationTimeout` before they leave the service. `src/adapters/process_backend.rs:1037-1051` now returns `InvocationFailed { failure_class: Timeout }`, and `src/contexts/agent_execution/service.rs:211-213` plus `src/contexts/agent_execution/service.rs:369-373` pass that through unchanged. Existing consumers still branch on the timeout variant (for example `src/adapters/worktree.rs:892-900`), so a real CLI hang will now be treated as a generic invocation failure instead of following timeout-specific recovery/classification paths.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-5affc00d",
+        "normalized_body": "Make fatal availability/configuration failures terminal instead of retryable. The service always runs `check_availability()` first (`src/contexts/agent_execution/service.rs:166-169`); `ProcessBackendAdapter::check_availability()` reports missing binaries and missing `OPENROUTER_API_KEY` as `BackendUnavailable` (`src/adapters/process_backend.rs:1171-1193`); and `AppError::failure_class()` still maps `BackendUnavailable` to retryable `TransportFailure` (`src/shared/error.rs:300-305`). After the retry-budget increase in `src/contexts/workflow_composition/retry_policy.rs:45-57`, those fatal setup problems will now burn five attempts plus backoff instead of failing immediately.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 4,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-4-34a6baf2"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

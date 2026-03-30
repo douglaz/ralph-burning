@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330040352-final_review-vote-0-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:28:44.123259444Z",
+  "payload": {
+    "summary": "All four amendments identify real, well-reasoned defects. The dual-timeout race makes artifact preservation dead code; the test gap fails to catch it; the non-Unix kill path leaks processes; and exit-127 misclassification creates false non-retryable failures. Each amendment provides clear technical reasoning and actionable fixes.",
+    "votes": [
+      {
+        "amendment_id": "fr-3-a95af876",
+        "decision": "accept",
+        "rationale": "The dual-timeout race is a genuine bug. Both layers use request.timeout but the service-layer timeout wraps the entire invoke() including build_command() and spawn() overhead, so it fires first. This makes the inner timeout's preserve_failed_artifacts call at lines 1193-1196 unreachable in production, silently losing diagnostic artifacts on timeout. Both proposed fixes (buffering the outer timeout or moving preservation to the cancel/cleanup path) are sound."
+      },
+      {
+        "amendment_id": "fr-3-e384feeb",
+        "decision": "accept",
+        "rationale": "The test only asserts the return type (FailureClass::Timeout) without verifying the critical side effect: artifact preservation to runtime/failed. This is a meaningful coverage gap. The artifact preservation path is currently unreachable (per fr-3-a95af876), and this test would not detect that regression. Asserting the existence of .failed.raw and Codex-specific files after timeout provides proper behavioral verification."
+      },
+      {
+        "amendment_id": "fr-3-1c23f8ce",
+        "decision": "accept",
+        "rationale": "This is a confirmed process leak on non-Unix platforms. send_sigkill() returns Err(Unsupported) under #[cfg(not(unix))], the error is silently discarded via `let _`, child.wait() then blocks indefinitely since the process was never terminated, and the Arc<ManagedChild> held by the background task prevents kill_on_drop from ever firing. The timeout returns to the caller while the backend process runs indefinitely, violating the hard-timeout guarantee."
+      },
+      {
+        "amendment_id": "fr-3-ccb079f3",
+        "decision": "accept",
+        "rationale": "Exit code 127 post-spawn is application-defined, not proof of a missing binary. Missing executables are already caught by resolve_binary() (BackendUnavailable) and command.spawn() (ErrorKind::NotFound → BinaryNotFound). Once the process has spawned and executed, 127 is just a conventional exit code that shells and wrapper scripts use for their own error semantics. Unconditionally mapping it to non-retryable BinaryNotFound bypasses the retry budget for potentially transient or recoverable errors, and should be treated as TransportFailure like other non-zero exits."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

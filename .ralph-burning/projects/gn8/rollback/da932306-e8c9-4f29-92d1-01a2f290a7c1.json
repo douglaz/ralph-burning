@@ -1,0 +1,92 @@
+{
+  "rollback_id": "da932306-e8c9-4f29-92d1-01a2f290a7c1",
+  "created_at": "2026-03-30T15:57:32.676452352Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "3edc5bc9bed58b41396d0321fc81d1d9e24fce8f",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 16
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 15
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 16,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-15-ea35568a",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 15,
+          "body": "The `classify_exit_failure` function in `process_backend.rs:1496-1501` only special-cases exit code 127 (BinaryNotFound). All other non-zero exits AND signal-killed processes (where `status.code()` returns `None`) are classified as `TransportFailure` (retryable, 5 attempts). While the spec explicitly says signal kills should be retryable, consider logging a warning when a process is killed by a signal (SIGSEGV=11, SIGABRT=6) since repeated signal kills strongly suggest a deterministic crash rather than a transient issue. A warning would help operators notice this pattern without changing retry behavior.",
+          "created_at": "2026-03-30T15:57:32.579402426Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "684db2cc634fbed5358d2e42c64efe87d67cf467ef3c0a8d29ae4b4f7e7f6ce2"
+        },
+        {
+          "amendment_id": "fr-15-34731127",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 15,
+          "body": "Treat failure to persist the pre-backoff snapshot as fatal in `src/contexts/workflow_composition/engine.rs:4622-4644` instead of ignoring `write_run_snapshot()`. The new crash-resume path only works if that `Failed`/`interrupted_run` snapshot actually reaches disk; today the write error is silently swallowed, so a kill or crash during backoff can still leave the project stranded in the old `Running` snapshot with no resumable state.",
+          "created_at": "2026-03-30T15:57:32.579405772Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "e7dd6fdcf91d472b8ff517ac2bfa2033a919067f68730fc2c8e9119cdbf84cfd"
+        },
+        {
+          "amendment_id": "fr-15-bd667ff0",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 15,
+          "body": "Preserve retry-attempt state across a crash during backoff. `src/contexts/workflow_composition/engine.rs:4622-4644` now writes resumable mid-retry snapshots, but `derive_resume_state()` rebuilds every failed resume with `attempt: 1` in `src/contexts/workflow_composition/engine.rs:5851-5857`. A restart during the backoff window therefore replenishes the retry budget and can exceed the configured max-attempt limit for the stage.",
+          "created_at": "2026-03-30T15:57:32.579408287Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "f67e7679cc4b556d111b8bc923b253d9a66a3576d70dd2988a65a38547adc831"
+        }
+      ],
+      "processed_count": 55
+    },
+    "status_summary": "running: final review restart round 16 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T15:34:45.281450901Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

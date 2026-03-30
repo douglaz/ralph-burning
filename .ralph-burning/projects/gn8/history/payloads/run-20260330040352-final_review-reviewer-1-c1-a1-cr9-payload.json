@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr9-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T11:00:02.261122968Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "Preserve invoke-time backend availability classifications in `src/contexts/agent_execution/service.rs:383-408`. `map_invoke_error` currently converts every non-`Invocation*` error into `InvocationFailed { failure_class: TransportFailure }`, which discards the new `BackendUnavailable.failure_class` metadata. That means invoke-time `BackendUnavailable { failure_class: Some(BinaryNotFound) }` from `src/adapters/openrouter_backend.rs:396-401` or `src/adapters/process_backend.rs:789-800` still burns the retry budget instead of failing terminally.",
+        "rationale": "The retry hardening is meant to distinguish fatal prerequisite loss from transient transport noise. Right now invoke-path `BackendUnavailable` errors are silently downgraded back to retryable transport failures."
+      },
+      {
+        "body": "Fix the process-backed OpenRouter command builder in `src/adapters/process_backend.rs:802-808` so a missing or blank `OPENROUTER_API_KEY` is treated as the same terminal infrastructure failure used elsewhere. This path currently only checks whether `std::env::var` returned `Ok`, so `\"\"` is accepted and a missing key becomes `InvocationFailed { failure_class: TransportFailure }`. That contradicts `src/adapters/process_backend.rs:1200-1208` and `src/adapters/openrouter_backend.rs:68-77`, and the stale expectation in `tests/unit/process_backend_test.rs:1394-1421` should be updated with it.",
+        "rationale": "Without this, the direct-process OpenRouter backend still retries a permanent misconfiguration and can even launch Codex with an empty API key."
+      }
+    ],
+    "summary": "Reviewed the retry/timeout changes and ran the affected unit suites (`process_backend_test`, `retry_policy_test`, `agent_execution_test`, `workflow_engine_test`). The tests passed, but I found two correctness gaps: invoke-time `BackendUnavailable` errors still lose their failure class in `AgentExecutionService`, and the process-backed OpenRouter path still treats a missing/blank API key as retryable transport failure."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 9
+}

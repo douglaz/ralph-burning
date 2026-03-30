@@ -1,0 +1,123 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:30:15.088991459Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-3-a95af876",
+      "fr-3-e384feeb",
+      "fr-3-1c23f8ce",
+      "fr-3-ccb079f3"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-3-a95af876",
+        "normalized_body": "The inner timeout in `spawn_and_wait()` (`process_backend.rs:1018`) and the outer timeout in `service.rs:204` both use `request.timeout` for the same duration, but the outer timeout starts first (before `build_command` and process spawn overhead). This means the service-layer timeout always fires before or simultaneously with the adapter-layer timeout, making the `preserve_failed_artifacts` call on the Timeout error path in `invoke()` (process_backend.rs:1193-1196) unreachable in production. On timeout, Codex schema/message temp files are left in their temp location instead of being preserved to `runtime/failed`, losing diagnostic artifacts.\n\nFix: Either (a) add a small buffer to the service-level timeout (e.g., `request.timeout + Duration::from_secs(30)`) so the inner timeout fires first and handles cleanup, or (b) move artifact preservation into the `cancel()` method or a dedicated timeout cleanup hook called by the service after timeout detection.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-e384feeb",
+        "normalized_body": "The test `spawn_and_wait_timeout_returns_timeout_failure` (process_backend_test.rs:1990) verifies that a timeout returns `FailureClass::Timeout` but does not assert that failed artifacts are actually preserved to `runtime/failed`. Add assertions checking that the `.failed.raw` file (and for Codex backends, the `.schema.json` / `.last-message.json` files) exist in the project's `runtime/failed` directory after a timeout failure.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-1c23f8ce",
+        "normalized_body": "src/adapters/process_backend.rs:1018-1023 and src/adapters/process_backend.rs:391-405 / 1434-1437: the new timeout path does not actually kill timed-out children on non-Unix platforms. `spawn_background_reap()` always calls `send_sigkill()`, but `send_sigkill()` returns `Unsupported` under `#[cfg(not(unix))]` and that error is ignored. The spawned task then sits in `child.wait()` forever while still owning the `ManagedChild`, so `kill_on_drop(true)` never fires either. On Windows a backend timeout will therefore return `FailureClass::Timeout` while the `claude`/`codex` process keeps running in the background, which violates the new hard-timeout guarantee and can leak orphaned backend processes.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-ccb079f3",
+        "normalized_body": "src/adapters/process_backend.rs:698-709, src/adapters/process_backend.rs:966-975, src/adapters/process_backend.rs:1248-1288, and src/adapters/process_backend.rs:1423-1430: `BinaryNotFound` is now inferred from exit status 127, but actual missing executables are already detected earlier by `resolve_binary()` and by `command.spawn()` returning `ErrorKind::NotFound`. Once the backend process has started, an exit code of 127 is just application-defined output, not proof that the backend binary was missing. Mapping every 127 to non-retryable `BinaryNotFound` means a wrapper script or CLI that exits 127 for its own error path will now fail the run immediately instead of using the new retry budget.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-3-a95af876",
+        "normalized_body": "The inner timeout in `spawn_and_wait()` (`process_backend.rs:1018`) and the outer timeout in `service.rs:204` both use `request.timeout` for the same duration, but the outer timeout starts first (before `build_command` and process spawn overhead). This means the service-layer timeout always fires before or simultaneously with the adapter-layer timeout, making the `preserve_failed_artifacts` call on the Timeout error path in `invoke()` (process_backend.rs:1193-1196) unreachable in production. On timeout, Codex schema/message temp files are left in their temp location instead of being preserved to `runtime/failed`, losing diagnostic artifacts.\n\nFix: Either (a) add a small buffer to the service-level timeout (e.g., `request.timeout + Duration::from_secs(30)`) so the inner timeout fires first and handles cleanup, or (b) move artifact preservation into the `cancel()` method or a dedicated timeout cleanup hook called by the service after timeout detection.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-e384feeb",
+        "normalized_body": "The test `spawn_and_wait_timeout_returns_timeout_failure` (process_backend_test.rs:1990) verifies that a timeout returns `FailureClass::Timeout` but does not assert that failed artifacts are actually preserved to `runtime/failed`. Add assertions checking that the `.failed.raw` file (and for Codex backends, the `.schema.json` / `.last-message.json` files) exist in the project's `runtime/failed` directory after a timeout failure.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-1c23f8ce",
+        "normalized_body": "src/adapters/process_backend.rs:1018-1023 and src/adapters/process_backend.rs:391-405 / 1434-1437: the new timeout path does not actually kill timed-out children on non-Unix platforms. `spawn_background_reap()` always calls `send_sigkill()`, but `send_sigkill()` returns `Unsupported` under `#[cfg(not(unix))]` and that error is ignored. The spawned task then sits in `child.wait()` forever while still owning the `ManagedChild`, so `kill_on_drop(true)` never fires either. On Windows a backend timeout will therefore return `FailureClass::Timeout` while the `claude`/`codex` process keeps running in the background, which violates the new hard-timeout guarantee and can leak orphaned backend processes.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-3-ccb079f3",
+        "normalized_body": "src/adapters/process_backend.rs:698-709, src/adapters/process_backend.rs:966-975, src/adapters/process_backend.rs:1248-1288, and src/adapters/process_backend.rs:1423-1430: `BinaryNotFound` is now inferred from exit status 127, but actual missing executables are already detected earlier by `resolve_binary()` and by `command.spawn()` returning `ErrorKind::NotFound`. Once the backend process has started, an exit code of 127 is just application-defined output, not proof that the backend binary was missing. Mapping every 127 to non-retryable `BinaryNotFound` means a wrapper script or CLI that exits 127 for its own error path will now fail the run immediately instead of using the new retry budget.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 3,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 4 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 3
+}

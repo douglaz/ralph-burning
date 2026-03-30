@@ -1391,13 +1391,12 @@ async fn invoke_requirements_contract_via_codex() {
 // ── invoke() for OpenRouter fails gracefully without API key ─────────────────
 
 #[tokio::test(flavor = "current_thread")]
-async fn invoke_openrouter_without_api_key_returns_transport_failure() {
+async fn invoke_openrouter_without_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
     let adapter = ProcessBackendAdapter::new();
     let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
 
-    // Remove OPENROUTER_API_KEY to trigger the missing-key error path
-    let _guard = std::env::var("OPENROUTER_API_KEY").ok();
-    unsafe { std::env::remove_var("OPENROUTER_API_KEY") };
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::remove();
 
     let error = adapter
         .invoke(request)
@@ -1405,7 +1404,16 @@ async fn invoke_openrouter_without_api_key_returns_transport_failure() {
         .expect_err("openrouter invoke without API key should fail");
 
     match &error {
-        AppError::InvocationFailed { details, .. } => {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "missing API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
             assert!(
                 details.contains("OPENROUTER_API_KEY"),
                 "should mention missing API key: {details}"
@@ -1413,10 +1421,71 @@ async fn invoke_openrouter_without_api_key_returns_transport_failure() {
         }
         other => panic!("expected InvocationFailed, got: {other:?}"),
     }
+}
 
-    // Restore if it was set
-    if let Some(key) = _guard {
-        unsafe { std::env::set_var("OPENROUTER_API_KEY", key) };
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_openrouter_with_blank_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::set("");
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("openrouter invoke with blank API key should fail");
+
+    match &error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "blank API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
+            assert!(
+                details.contains("OPENROUTER_API_KEY"),
+                "should mention missing API key: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invoke_openrouter_with_whitespace_only_api_key_returns_terminal_failure() {
+    let _lock = super::env_test_support::lock_openrouter_key_mutex();
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::OpenRouter);
+
+    let _key_guard = super::env_test_support::OpenRouterKeyGuard::set("   ");
+
+    let error = adapter
+        .invoke(request)
+        .await
+        .expect_err("openrouter invoke with whitespace-only API key should fail");
+
+    match &error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                *failure_class,
+                FailureClass::BinaryNotFound,
+                "whitespace-only API key should be terminal (BinaryNotFound), got: {failure_class:?}"
+            );
+            assert!(
+                details.contains("OPENROUTER_API_KEY"),
+                "should mention missing API key: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
     }
 }
 
@@ -1984,4 +2053,155 @@ async fn claude_envelope_with_usage_populates_token_counts() {
         result.metadata.token_counts.cache_creation_tokens,
         Some(100)
     );
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn spawn_and_wait_timeout_returns_timeout_failure() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Script that sleeps forever (will be killed by timeout).
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nsleep 99999\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (project_dir, mut request) = request_fixture(BackendFamily::Claude);
+    let invocation_id = request.invocation_id.clone();
+    // Set a very short timeout (will fire instantly with paused time).
+    request.timeout = Duration::from_secs(2);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::Timeout,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("exceeded timeout"),
+                "should mention timeout: {details}"
+            );
+        }
+        other => panic!("expected Timeout, got: {other:?}"),
+    }
+
+    // Verify artifact preservation: the .failed.raw sentinel file should
+    // exist in runtime/failed with a timeout reason.
+    let failed_raw = project_dir
+        .path()
+        .join("runtime/failed")
+        .join(format!("{invocation_id}.failed.raw"));
+    let contents = fs::read_to_string(&failed_raw).unwrap_or_else(|err| {
+        panic!("expected {failed_raw:?} to exist after timeout, but got: {err}")
+    });
+    assert!(
+        contents.contains("process timed out"),
+        "failed.raw should mention timeout reason: {contents}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn exit_code_127_returns_binary_not_found() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nexit 127\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    // Exit code 127 conventionally means "command not found" and is
+    // classified as BinaryNotFound (terminal) to avoid wasting retries.
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BinaryNotFound,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("127"),
+                "should contain exit code 127: {details}"
+            );
+        }
+        other => panic!("expected BinaryNotFound for exit 127, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn spawn_missing_binary_returns_binary_not_found() {
+    let empty_dir = tempdir().expect("create empty dir");
+    let _env_lock = lock_path_mutex();
+    // Replace PATH entirely with an empty directory so the binary cannot be found.
+    let _path_guard = PathGuard::replace(empty_dir.path());
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    // When the binary truly does not exist, spawn() returns ErrorKind::NotFound
+    // which is classified as BinaryNotFound (non-retryable / terminal).
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BinaryNotFound,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("failed to spawn"),
+                "should mention spawn failure: {details}"
+            );
+        }
+        other => panic!("expected BinaryNotFound for missing binary, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn clean_timeout_teardown_yields_timeout_without_warning() {
+    // Verify that when a killable process times out, confirm_teardown
+    // succeeds and the error is classified as Timeout (not TransportFailure)
+    // with no "teardown not confirmed" warning in the details.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nsleep 99999\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.timeout = Duration::from_secs(2);
+
+    let error = adapter.invoke(request).await.expect_err("should timeout");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                failure_class,
+                FailureClass::Timeout,
+                "clean teardown should yield Timeout, got {failure_class:?}"
+            );
+            assert!(
+                !details.contains("teardown not confirmed"),
+                "clean teardown should not warn about unconfirmed teardown: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
+    }
 }

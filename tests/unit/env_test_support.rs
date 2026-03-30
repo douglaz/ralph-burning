@@ -4,6 +4,41 @@ pub fn lock_path_mutex() -> std::sync::MutexGuard<'static, ()> {
     PATH_MUTEX.lock().unwrap_or_else(|error| error.into_inner())
 }
 
+pub static OPENROUTER_KEY_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+pub fn lock_openrouter_key_mutex() -> std::sync::MutexGuard<'static, ()> {
+    OPENROUTER_KEY_MUTEX
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+}
+
+pub struct OpenRouterKeyGuard {
+    original: Option<String>,
+}
+
+impl OpenRouterKeyGuard {
+    pub fn remove() -> Self {
+        let original = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::remove_var("OPENROUTER_API_KEY");
+        Self { original }
+    }
+
+    pub fn set(value: &str) -> Self {
+        let original = std::env::var("OPENROUTER_API_KEY").ok();
+        std::env::set_var("OPENROUTER_API_KEY", value);
+        Self { original }
+    }
+}
+
+impl Drop for OpenRouterKeyGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var("OPENROUTER_API_KEY", value),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+    }
+}
+
 pub struct PathGuard {
     original: Option<std::ffi::OsString>,
 }

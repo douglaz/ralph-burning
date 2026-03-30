@@ -4617,6 +4617,119 @@ where
                 );
 
                 if will_retry {
+                    let backoff = retry_policy.backoff_for_attempt(cursor.attempt);
+                    if !backoff.is_zero() {
+                        // Persist a resumable (Failed) snapshot before sleeping
+                        // so that a crash or kill during the backoff window does
+                        // not strand the project in Running state (which `run
+                        // resume` refuses to recover).  The next loop iteration
+                        // will re-set Running at the top of the stage dispatch.
+                        if let Some(resolution) = snapshot
+                            .active_run
+                            .as_ref()
+                            .and_then(|ar| ar.stage_resolution_snapshot.clone())
+                        {
+                            snapshot.last_stage_resolution_snapshot = Some(resolution);
+                        }
+                        preserve_interrupted_run(snapshot);
+                        snapshot.status = RunStatus::Failed;
+                        snapshot.active_run = None;
+                        snapshot.status_summary = format!(
+                            "retrying {}: backoff {}s before attempt {}",
+                            stage_id.display_name(),
+                            backoff.as_secs(),
+                            cursor.attempt + 1,
+                        );
+                        // The stage_failed journal event has already been
+                        // durably appended above.  The snapshot MUST reach
+                        // disk too — otherwise a crash during backoff leaves
+                        // journal saying "failed/retrying" while run.json is
+                        // still in a prior state, producing an unresumable
+                        // journal/snapshot divergence.
+                        //
+                        // If the write fails, we cannot just propagate with `?`
+                        // because that bypasses fail_run_result — leaving
+                        // run.json in its old Running state on disk (the exact
+                        // unresumable condition we are trying to prevent).
+                        // Instead, restore active_run so fail_run_result can
+                        // re-attempt the snapshot write and emit a run_failed
+                        // journal event.
+                        if let Err(snapshot_err) =
+                            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+                        {
+                            // Restore active_run so fail_run's
+                            // preserve_interrupted_run sees valid state.
+                            snapshot.active_run = snapshot.interrupted_run.take();
+                            snapshot.status = RunStatus::Running;
+                            let wrapper = AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "pre-backoff snapshot write failed at attempt {}: {}",
+                                    cursor.attempt, snapshot_err,
+                                ),
+                            };
+                            return fail_run_result(
+                                &wrapper,
+                                stage_id,
+                                run_id,
+                                seq,
+                                snapshot,
+                                journal_store,
+                                run_snapshot_write,
+                                base_dir,
+                                project_id,
+                                origin,
+                            )
+                            .await;
+                        }
+
+                        let _ = log_write.append_runtime_log(
+                            base_dir,
+                            project_id,
+                            &RuntimeLogEntry {
+                                timestamp: Utc::now(),
+                                level: LogLevel::Info,
+                                source: "engine".to_owned(),
+                                message: format!(
+                                    "retry_backoff: {} attempt={} delay={}s",
+                                    stage_id.as_str(),
+                                    cursor.attempt,
+                                    backoff.as_secs(),
+                                ),
+                            },
+                        );
+                        tokio::select! {
+                            () = tokio::time::sleep(backoff) => {}
+                            () = cancellation_token.cancelled() => {}
+                        }
+
+                        // Restore the active_run that was saved into
+                        // interrupted_run before sleep.  Without this,
+                        // carry_forward_active_run at the top of the next
+                        // loop iteration would hit CorruptRecord because
+                        // active_run is None.
+                        snapshot.active_run = snapshot.interrupted_run.take();
+                        snapshot.status = RunStatus::Running;
+                    }
+                    if cancellation_token.is_cancelled() {
+                        let cancellation_error = AppError::InvocationCancelled {
+                            backend: "engine".to_owned(),
+                            contract_id: stage_id.as_str().to_owned(),
+                        };
+                        return fail_run_result(
+                            &cancellation_error,
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
                     cursor = cursor.retry()?;
                     continue;
                 }
@@ -5017,7 +5130,18 @@ async fn fail_run(
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    // Best-effort: if this write fails (e.g. persistent disk I/O error
+    // when called from the pre-backoff recovery path), we still proceed
+    // to emit the run_failed journal event.  The journal is authoritative
+    // for derive_resume_state, so recording the failure there is more
+    // valuable than a consistent snapshot when the disk is degraded.
+    if let Err(snapshot_err) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+    {
+        eprintln!(
+            "fail_run: snapshot write failed for stage {}: {snapshot_err}",
+            stage_id.as_str(),
+        );
+    }
 
     *seq += 1;
     let run_failed =
@@ -5719,6 +5843,10 @@ fn derive_resume_state(
     let mut current_completion_round = snapshot.completion_rounds.max(1);
     let mut next_stage_index = 0usize;
     let mut last_completed_stage = None;
+    // Track the highest retryable-failed attempt per (stage, cycle) so that
+    // a crash during the backoff window does not reset the attempt counter
+    // back to 1 and replenish the retry budget.
+    let mut retryable_failed_attempts: HashMap<(StageId, u32), u32> = HashMap::new();
 
     for event in events {
         match event.event_type {
@@ -5727,6 +5855,33 @@ fn derive_resume_state(
                 current_cycle = detail_u32(event, "cycle").unwrap_or(current_cycle);
                 next_stage_index = stage_index_for(stage_plan, stage_id)? + 1;
                 last_completed_stage = Some(stage_id);
+                // A successful completion resets retry history for this
+                // stage+cycle so a future revisit (e.g. via completion
+                // round advance) starts with a fresh budget.
+                retryable_failed_attempts.remove(&(stage_id, current_cycle));
+            }
+            crate::contexts::project_run_record::model::JournalEventType::StageFailed => {
+                if let (Ok(stage_id), Some(cycle), Some(attempt)) = (
+                    detail_stage_id(event, "stage_id"),
+                    detail_u32(event, "cycle"),
+                    detail_u32(event, "attempt"),
+                ) {
+                    let will_retry = event
+                        .details
+                        .get("will_retry")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if will_retry {
+                        let entry =
+                            retryable_failed_attempts.entry((stage_id, cycle)).or_insert(0);
+                        *entry = (*entry).max(attempt);
+                    } else {
+                        // Terminal failure (non-retryable or retries exhausted):
+                        // clear the entry so a resumed run starts at attempt 1
+                        // rather than continuing from the stale counter.
+                        retryable_failed_attempts.remove(&(stage_id, cycle));
+                    }
+                }
             }
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
                 current_cycle = match detail_u32(event, "to_cycle") {
@@ -5737,6 +5892,10 @@ fn derive_resume_state(
                     })?,
                 };
                 next_stage_index = execution_stage_index;
+                // Drop retry history for cycles that are now behind the
+                // cursor — they can never be revisited, so keeping them
+                // wastes memory.
+                retryable_failed_attempts.retain(|&(_, c), _| c >= current_cycle);
             }
             crate::contexts::project_run_record::model::JournalEventType::CompletionRoundAdvanced => {
                 current_completion_round = match detail_u32(event, "to_round") {
@@ -5747,6 +5906,10 @@ fn derive_resume_state(
                     })?,
                 };
                 next_stage_index = planning_stage_index;
+                // New completion round = fresh execution of all stages;
+                // clear retry history so prior-round failures don't bleed
+                // into the new round's budget.
+                retryable_failed_attempts.clear();
             }
             crate::contexts::project_run_record::model::JournalEventType::RunCompleted => {
                 next_stage_index = stage_plan.len();
@@ -5776,10 +5939,18 @@ fn derive_resume_state(
     }
 
     let completion_round = current_completion_round;
+    let resume_stage_id = stage_plan[next_stage_index].stage_id;
+    let resume_cycle = current_cycle.max(1);
+    // If the last failure for this stage+cycle was retryable, resume at
+    // failed_attempt + 1 so we don't replenish the retry budget on restart.
+    let resume_attempt = retryable_failed_attempts
+        .get(&(resume_stage_id, resume_cycle))
+        .map(|&a| a + 1)
+        .unwrap_or(1);
     let cursor = StageCursor::new(
-        stage_plan[next_stage_index].stage_id,
-        current_cycle.max(1),
-        1,
+        resume_stage_id,
+        resume_cycle,
+        resume_attempt,
         completion_round,
     )?;
 
@@ -5914,9 +6085,16 @@ where
         .adapter()
         .check_availability(&panel.refiner)
         .await
-        .map_err(|e| AppError::BackendUnavailable {
-            backend: panel.refiner.backend.family.to_string(),
-            details: format!("required prompt-review refiner unavailable: {e}"),
+        .map_err(|e| {
+            let failure_class = match &e {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.refiner.backend.family.to_string(),
+                details: format!("required prompt-review refiner unavailable: {e}"),
+                failure_class,
+            }
         })?;
 
     // Required unavailable validators fail resolution; optional
@@ -6389,17 +6567,31 @@ where
         .adapter()
         .check_availability(&panel.planner)
         .await
-        .map_err(|error| AppError::BackendUnavailable {
-            backend: panel.planner.backend.family.to_string(),
-            details: format!("required final-review planner unavailable: {error}"),
+        .map_err(|error| {
+            let failure_class = match &error {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.planner.backend.family.to_string(),
+                details: format!("required final-review planner unavailable: {error}"),
+                failure_class,
+            }
         })?;
     agent_service
         .adapter()
         .check_availability(&panel.arbiter)
         .await
-        .map_err(|error| AppError::BackendUnavailable {
-            backend: panel.arbiter.backend.family.to_string(),
-            details: format!("required final-review arbiter unavailable: {error}"),
+        .map_err(|error| {
+            let failure_class = match &error {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.arbiter.backend.family.to_string(),
+                details: format!("required final-review arbiter unavailable: {error}"),
+                failure_class,
+            }
         })?;
 
     let mut available_reviewers = Vec::new();
@@ -7096,5 +7288,301 @@ mod tests {
                 details,
             } if details == "re-resolved final-review panel has no planner"
         ));
+    }
+
+    // ── derive_resume_state unit tests ─────────────────────────────────
+
+    mod resume_state_tests {
+        use chrono::Utc;
+
+        use crate::contexts::project_run_record::journal;
+        use crate::contexts::project_run_record::model::{JournalEvent, RunSnapshot};
+        use crate::contexts::workflow_composition::contracts::contract_for_stage;
+        use crate::contexts::workflow_composition::{
+            flow_semantics, stage_plan_for_flow, FlowPreset,
+        };
+        use crate::shared::domain::{
+            BackendFamily, BackendRole, FailureClass, ResolvedBackendTarget, RunId, StageId,
+        };
+
+        use super::super::{derive_resume_state, StagePlan};
+
+        fn make_stage_plan(stages: &[StageId]) -> Vec<StagePlan> {
+            stages
+                .iter()
+                .map(|&stage_id| StagePlan {
+                    stage_id,
+                    role: BackendRole::for_stage(stage_id),
+                    contract: contract_for_stage(stage_id),
+                    target: ResolvedBackendTarget::new(BackendFamily::Claude, "test"),
+                })
+                .collect()
+        }
+
+        #[test]
+        fn resume_after_retryable_failure_preserves_attempt() {
+            let run_id = RunId::new("test-run-1".to_owned()).unwrap();
+            let stages = stage_plan_for_flow(FlowPreset::Standard, false);
+            let stage_plan = make_stage_plan(&stages);
+            let semantics = flow_semantics(FlowPreset::Standard);
+
+            let events: Vec<JournalEvent> = vec![
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
+                journal::stage_completed_event(
+                    3,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    1,
+                    "payload-1",
+                    "artifact-1",
+                ),
+                journal::stage_entered_event(4, Utc::now(), &run_id, StageId::Implementation, 1, 1),
+                journal::stage_failed_event(
+                    5,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    1,
+                    FailureClass::TransportFailure,
+                    "transient failure 1",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    6,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    2,
+                    FailureClass::TransportFailure,
+                    "transient failure 2",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    7,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    3,
+                    FailureClass::TransportFailure,
+                    "transient failure 3",
+                    true,
+                ),
+            ];
+
+            let snapshot = RunSnapshot::initial();
+            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+
+            assert_eq!(resume.cursor.stage, StageId::Implementation);
+            assert_eq!(resume.cursor.cycle, 1);
+            // After 3 retryable failures, resume should be at attempt 4,
+            // not 1 (which would replenish the retry budget).
+            assert_eq!(resume.cursor.attempt, 4);
+        }
+
+        #[test]
+        fn resume_without_prior_failures_starts_at_attempt_1() {
+            let run_id = RunId::new("test-run-2".to_owned()).unwrap();
+            let stages = stage_plan_for_flow(FlowPreset::Standard, false);
+            let stage_plan = make_stage_plan(&stages);
+            let semantics = flow_semantics(FlowPreset::Standard);
+
+            let events: Vec<JournalEvent> = vec![
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
+                journal::stage_completed_event(
+                    3,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    1,
+                    "payload-1",
+                    "artifact-1",
+                ),
+            ];
+
+            let snapshot = RunSnapshot::initial();
+            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+
+            assert_eq!(resume.cursor.stage, StageId::Implementation);
+            assert_eq!(resume.cursor.attempt, 1);
+        }
+
+        #[test]
+        fn terminal_failure_clears_retry_tracking() {
+            // SC-RESUME-005: when a stage emits will_retry=false (terminal
+            // failure or retries exhausted), the retry counter must be cleared
+            // so that a resumed run starts at attempt 1, not at the stale
+            // counter value + 1.
+            let run_id = RunId::new("test-run-terminal".to_owned()).unwrap();
+            let stages = stage_plan_for_flow(FlowPreset::Standard, false);
+            let stage_plan = make_stage_plan(&stages);
+            let semantics = flow_semantics(FlowPreset::Standard);
+
+            let events: Vec<JournalEvent> = vec![
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
+                journal::stage_completed_event(
+                    3,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    1,
+                    "payload-1",
+                    "artifact-1",
+                ),
+                journal::stage_entered_event(4, Utc::now(), &run_id, StageId::Implementation, 1, 1),
+                // 4 retryable failures accumulate
+                journal::stage_failed_event(
+                    5,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    1,
+                    FailureClass::TransportFailure,
+                    "transient 1",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    6,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    2,
+                    FailureClass::TransportFailure,
+                    "transient 2",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    7,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    3,
+                    FailureClass::TransportFailure,
+                    "transient 3",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    8,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    4,
+                    FailureClass::TransportFailure,
+                    "transient 4",
+                    true,
+                ),
+                // Terminal failure: will_retry=false (retries exhausted)
+                journal::stage_failed_event(
+                    9,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    5,
+                    FailureClass::TransportFailure,
+                    "retries exhausted",
+                    false,
+                ),
+            ];
+
+            let snapshot = RunSnapshot::initial();
+            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+
+            assert_eq!(resume.cursor.stage, StageId::Implementation);
+            assert_eq!(resume.cursor.cycle, 1);
+            // After terminal failure (will_retry=false), resume must start
+            // at attempt 1, NOT 5+1=6 from the stale retryable counter.
+            assert_eq!(resume.cursor.attempt, 1);
+        }
+
+        #[test]
+        fn completion_round_advance_resets_retry_tracking() {
+            let run_id = RunId::new("test-run-3".to_owned()).unwrap();
+            let stages = stage_plan_for_flow(FlowPreset::Standard, false);
+            let stage_plan = make_stage_plan(&stages);
+            let semantics = flow_semantics(FlowPreset::Standard);
+
+            let events: Vec<JournalEvent> = vec![
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                // Round 1: planning fails at attempt 3 with will_retry
+                journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
+                journal::stage_failed_event(
+                    3,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    1,
+                    FailureClass::TransportFailure,
+                    "fail 1",
+                    true,
+                ),
+                journal::stage_failed_event(
+                    4,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    2,
+                    FailureClass::TransportFailure,
+                    "fail 2",
+                    true,
+                ),
+                // Planning eventually succeeds at attempt 3
+                journal::stage_completed_event(
+                    5,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Planning,
+                    1,
+                    3,
+                    "payload-1",
+                    "artifact-1",
+                ),
+                // Implementation succeeds
+                journal::stage_entered_event(6, Utc::now(), &run_id, StageId::Implementation, 1, 1),
+                journal::stage_completed_event(
+                    7,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    1,
+                    "payload-2",
+                    "artifact-2",
+                ),
+                // Completion round advances, revisiting planning
+                journal::completion_round_advanced_event(
+                    8,
+                    Utc::now(),
+                    &run_id,
+                    StageId::Implementation,
+                    1,
+                    2,
+                    0,
+                ),
+            ];
+
+            let snapshot = RunSnapshot::initial();
+            let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
+
+            assert_eq!(resume.cursor.stage, StageId::Planning);
+            // Round 2: planning should start at attempt 1, not 3
+            // (the prior round's failures should not carry over).
+            assert_eq!(resume.cursor.attempt, 1);
+        }
     }
 }

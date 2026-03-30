@@ -21,6 +21,10 @@ pub enum FailureClass {
     Timeout,
     Cancellation,
     QaReviewOutcomeFailure,
+    /// Terminal: required binary or infrastructure prerequisite is missing.
+    /// Also used for fatal configuration issues (e.g. missing API key) that
+    /// won't resolve between retry attempts.
+    BinaryNotFound,
 }
 
 impl FailureClass {
@@ -32,6 +36,7 @@ impl FailureClass {
             Self::Timeout => "timeout",
             Self::Cancellation => "cancellation",
             Self::QaReviewOutcomeFailure => "qa_review_outcome_failure",
+            Self::BinaryNotFound => "binary_not_found",
         }
     }
 }

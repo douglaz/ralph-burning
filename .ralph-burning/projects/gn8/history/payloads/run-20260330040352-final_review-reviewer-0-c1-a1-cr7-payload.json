@@ -1,0 +1,23 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-0-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T08:09:16.922357839Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "The `enforces_timeout()` trait method on `AgentExecutionPort` returns `true` for `OpenRouterBackendAdapter`, which uses `reqwest::Client::builder().timeout()`. However, reqwest's timeout applies to the entire request lifecycle (connection + transfer), not just a wall-clock invocation timeout. If the server accepts the connection and streams data very slowly (trickle attack), reqwest may not fire its timeout because bytes are still flowing. This means `enforces_timeout() -> true` adds a 30-second buffer to the service-level timeout under the assumption the adapter will fire first, but for slow-streaming responses the adapter may never fire and the service-level timeout fires 30 seconds late. Consider either (a) returning `false` for OpenRouter so the service timeout is the canonical enforcement, or (b) wrapping the OpenRouter invoke in an explicit `tokio::time::timeout` like the process backend does, so that `enforces_timeout() -> true` is actually guaranteed.",
+        "rationale": "The 30-second buffer is only safe if the adapter's timeout is guaranteed to fire before the service timeout. reqwest's timeout behavior with slow-streaming responses does not provide this guarantee, potentially allowing invocations to run 30 seconds longer than intended."
+      }
+    ],
+    "summary": "The changes are well-structured and correct for the core objectives: retry limits are raised (5/3/3), backoff is properly implemented with exponential growth capped at 60s, exit code 127 is classified as terminal BinaryNotFound, failure_class is now propagated through check_availability error chains, and the enforces_timeout trait method provides clean separation between adapter-level and service-level timeout enforcement. All 678 tests pass and clippy is clean. The backoff arithmetic fix (u64→u32) eliminates an unnecessary fallible conversion. One concern: the OpenRouter adapter claims enforces_timeout=true based on reqwest's timeout, but reqwest's timeout may not fire reliably for slow-streaming responses, potentially adding an unintended 30s delay before the service-level safety net kicks in."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

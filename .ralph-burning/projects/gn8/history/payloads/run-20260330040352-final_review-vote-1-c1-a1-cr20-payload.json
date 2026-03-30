@@ -1,0 +1,44 @@
+{
+  "payload_id": "run-20260330040352-final_review-vote-1-c1-a1-cr20-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T18:19:20.598572227Z",
+  "payload": {
+    "summary": "Reviewed the cited paths in `process_backend.rs` and `engine.rs`. Four amendments identify concrete defects in cross-platform compilation, process teardown/tracking, and timeout diagnostics. The workflow backoff amendment does not expose a real bug after tracing the current state transitions.",
+    "votes": [
+      {
+        "amendment_id": "fr-20-8020c938",
+        "decision": "accept",
+        "rationale": "`classify_exit_tests` is unconditional, but it imports `std::os::unix::process::ExitStatusExt` and uses `ExitStatus::from_raw`, which are Unix-only APIs. That test module will fail to compile on non-Unix targets. Gating the module with `#[cfg(unix)]` matches the production function's existing conditional handling and is the correct fix."
+      },
+      {
+        "amendment_id": "fr-20-abd81d04",
+        "decision": "reject",
+        "rationale": "I verified the backoff/cancellation path. After sleep, `snapshot.active_run = snapshot.interrupted_run.take()` restores the active run before the cancellation check. If cancellation then fires, `fail_run_result` -> `fail_run` calls `preserve_interrupted_run(snapshot)`, which unconditionally clones the restored `active_run` back into `interrupted_run`. The earlier `.take()` therefore does not leave this path in a broken state, so no change is warranted."
+      },
+      {
+        "amendment_id": "fr-20-34e3c3b6",
+        "decision": "accept",
+        "rationale": "The child is spawned without creating an isolated process group or Windows job object, and the teardown helpers only signal or kill the direct child PID/handle. If the backend forks or backgrounds descendants, timeout cleanup can kill and reap only the parent while descendants continue running into later retries. That is a real timeout-cleanup defect."
+      },
+      {
+        "amendment_id": "fr-20-7c859012",
+        "decision": "accept",
+        "rationale": "On timeout, the code drops the entry from `active_children` and returns as soon as teardown is not confirmed, but unlike `cancel()` it does not keep the handle alive in a background reap task. `kill_on_drop(true)` is only a best-effort drop-time kill and does not provide the same tracked, awaited cleanup. A slow-to-exit child can therefore become untracked while still alive."
+      },
+      {
+        "amendment_id": "fr-20-92204543",
+        "decision": "accept",
+        "rationale": "The timeout path remaps unconfirmed teardown to `TransportFailure`, but `invoke()` preserves failed artifacts only when the failure class is `Timeout`; otherwise it calls `cleanup()`, including in the stale-session retry path. That means the hardest timeout failures to debug delete the schema and last-message temp files. This is a real diagnostics-retention bug."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 20
+}

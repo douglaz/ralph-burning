@@ -284,6 +284,10 @@ async fn service_returns_backend_unavailable_as_transport_failure() {
         .await
         .expect_err("backend unavailable");
 
+    // The stub adapter returns BackendUnavailable with failure_class: None,
+    // which defaults to TransportFailure (retryable).  Adapters that detect
+    // fatal infrastructure issues (missing binary, missing API key) set
+    // failure_class: Some(BinaryNotFound) to make it terminal.
     assert!(matches!(error, AppError::BackendUnavailable { .. }));
     assert_eq!(error.failure_class(), Some(FailureClass::TransportFailure));
 }

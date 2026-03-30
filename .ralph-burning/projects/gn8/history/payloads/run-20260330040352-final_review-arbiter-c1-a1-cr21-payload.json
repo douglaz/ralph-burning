@@ -1,0 +1,24 @@
+{
+  "payload_id": "run-20260330040352-final_review-arbiter-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T18:59:22.691524646Z",
+  "payload": {
+    "rulings": [
+      {
+        "amendment_id": "fr-21-093a1416",
+        "decision": "reject",
+        "rationale": "The weight of evidence supports rejection. The planner and Reviewer 1 both confirmed that the TransportFailure classification for unconfirmed teardowns is intentional and documented in the code comments at lines 1079-1083. The core argument for rejection is sound: when teardown is unconfirmed, the process may still be alive — this is qualitatively different from a clean timeout and genuinely represents an infrastructure-level problem where the runtime cannot confirm process termination. Giving it 5 retries (TransportFailure budget) rather than 3 (Timeout budget) is a defensible design choice because the underlying cause (stuck process, OS-level process management) is more likely to be transient and benefit from additional retry headroom. Reviewer 2's argument that a timeout is 'fundamentally still a timeout' regardless of teardown status has merit as a modeling preference, but does not identify a bug — the current behavior is correct for its intended semantics. Meanwhile, the implementation cost of a new FailureClass::UnconfirmedTimeout variant is substantial: it would ripple through retry_policy, journal serialization/deserialization, derive_resume_state, and test fixtures. This cross-cutting change is disproportionate to the semantic refinement it provides, especially when the existing two-class model already handles the scenario adequately with explicit documentation of intent."
+      }
+    ],
+    "summary": "Only one amendment was disputed: fr-21-093a1416 (timeout classification for unconfirmed teardowns). Ruled REJECT, siding with the planner and Reviewer 1 (2-1 consensus). The existing TransportFailure classification is intentional, documented, and defensible — an unconfirmed teardown represents a genuine infrastructure problem where more retry headroom is appropriate. The proposed new FailureClass variant would introduce cross-cutting complexity across multiple subsystems for a modeling preference that does not address a concrete bug."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 21
+}

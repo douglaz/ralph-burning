@@ -902,6 +902,7 @@ async fn check_with_availability_reports_panel_member_failure() {
                 Err(AppError::BackendUnavailable {
                     backend: "codex".to_owned(),
                     details: "codex binary not found".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -972,6 +973,7 @@ async fn probe_with_availability_omits_unavailable_optional_member() {
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -1100,6 +1102,7 @@ async fn probe_with_availability_fails_on_required_unavailable_member() {
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -1181,6 +1184,7 @@ async fn probe_with_availability_fails_on_unavailable_planner() {
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -1249,6 +1253,7 @@ async fn check_with_availability_reports_all_role_aliases_for_shared_target() {
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -1411,6 +1416,7 @@ async fn probe_prompt_review_panel_failure_reports_refiner_source() {
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -1582,6 +1588,7 @@ async fn probe_failure_includes_config_source_for_planner() {
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -1649,6 +1656,7 @@ async fn probe_failure_includes_config_source_for_required_member() {
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -1897,6 +1905,7 @@ async fn check_with_availability_passes_when_optional_member_unavailable_but_min
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -1976,6 +1985,7 @@ async fn check_with_availability_fails_when_optional_omission_violates_minimum()
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -2208,6 +2218,7 @@ async fn probe_with_availability_final_review_failure_reports_planner_not_generi
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -2273,6 +2284,7 @@ async fn check_with_availability_aggregates_arbiter_failure_independently_of_rev
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -2361,6 +2373,7 @@ async fn check_with_availability_aggregates_refiner_failure_independently_of_val
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.as_str().to_owned(),
                 details: "binary not found".to_owned(),
+                failure_class: None,
             })
         }
         async fn invoke(
@@ -2913,6 +2926,7 @@ async fn probe_with_availability_optional_omission_below_minimum_reports_insuffi
                 Err(AppError::BackendUnavailable {
                     backend: "openrouter".to_owned(),
                     details: "OPENROUTER_API_KEY not set".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -3004,6 +3018,7 @@ async fn probe_with_availability_reports_correct_configured_index_after_optional
                 Err(AppError::BackendUnavailable {
                     backend: "claude".to_owned(),
                     details: "claude binary not found".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -3099,6 +3114,7 @@ async fn check_with_availability_reports_correct_configured_index_for_panel_memb
                 Err(AppError::BackendUnavailable {
                     backend: "codex".to_owned(),
                     details: "codex binary not found".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -3538,6 +3554,7 @@ async fn check_with_availability_implicit_completion_reports_correct_source() {
                 Err(AppError::BackendUnavailable {
                     backend: "codex".to_owned(),
                     details: "codex binary not found".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())
@@ -3617,6 +3634,7 @@ async fn probe_with_availability_implicit_completion_reports_correct_source() {
                 Err(AppError::BackendUnavailable {
                     backend: "codex".to_owned(),
                     details: "codex binary not found".to_owned(),
+                    failure_class: None,
                 })
             } else {
                 Ok(())

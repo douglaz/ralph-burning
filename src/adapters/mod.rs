@@ -78,4 +78,14 @@ impl AgentExecutionPort for BackendAdapter {
             Self::OpenRouter(adapter) => adapter.cancel(invocation_id).await,
         }
     }
+
+    fn enforces_timeout(&self) -> bool {
+        match self {
+            #[cfg(feature = "test-stub")]
+            Self::Stub(adapter) => adapter.enforces_timeout(),
+            Self::Process(adapter) => adapter.enforces_timeout(),
+            Self::Tmux(adapter) => adapter.enforces_timeout(),
+            Self::OpenRouter(adapter) => adapter.enforces_timeout(),
+        }
+    }
 }

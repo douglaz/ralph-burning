@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330040352-final_review-vote-0-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T06:21:31.174924104Z",
+  "payload": {
+    "summary": "Verified all four amendments against the source code. Two amendments identify real bugs worth fixing (diagnostic info loss in timeout promotion, and blanket BinaryNotFound reclassification of transient BackendUnavailable errors). Two amendments propose changes to a deliberately-designed stub function with clear documentation explaining the design rationale; the current design correctly distinguishes spawn-time failures from post-spawn exit codes.",
+    "votes": [
+      {
+        "amendment_id": "fr-5-6a034eb5",
+        "decision": "accept",
+        "rationale": "Verified in service.rs:374-381. The `..` pattern in the match arm silently drops the `details` field when promoting InvocationFailed{Timeout} to InvocationTimeout. The InvocationTimeout variant (error.rs:111-115) has no details field and its #[error] format only produces 'backend invocation timed out for contract ... via ... after N ms'. Adapter-level diagnostic context (e.g., stderr content, specific timeout messages from the child process) is permanently lost. This is a real information-loss bug. The minimal fix — emitting a tracing::warn! with the original details before promoting — preserves operator diagnostics with negligible code change."
+      },
+      {
+        "amendment_id": "fr-5-3b21e772",
+        "decision": "reject",
+        "rationale": "The stub is intentional and well-documented. The comment at process_backend.rs:1443-1449 explains the design: once a process has spawned, exit codes (including 127) are application-defined and must not be conflated with the OS-level NotFound that occurs at spawn(). Keeping a named function rather than inlining the constant clarifies this design intent and provides a named extension point for future signal-based classification. The indirection cost is zero after inlining by the compiler. This is a style preference, not a defect."
+      },
+      {
+        "amendment_id": "fr-5-5b9be0ac",
+        "decision": "reject",
+        "rationale": "The amendment's premise — that exit 127 from a running child should be treated as BinaryNotFound — contradicts the deliberate design documented at process_backend.rs:1443-1449. Once spawn() succeeds, exit code 127 is application-defined: a shell wrapper exiting 127 because an internal helper is missing is semantically different from the OS failing to find the binary at spawn time. The former is potentially transient (deploy in progress, path misconfiguration being fixed), while the latter is definitive. The code already handles the definitive case at the spawn() call site. Reclassifying post-spawn 127 would create false non-retryable failures for wrapper scripts that use 127 for their own error conditions, which is worse than burning a few retry attempts."
+      },
+      {
+        "amendment_id": "fr-5-27defa7f",
+        "decision": "accept",
+        "rationale": "This is a real bug. The blanket mapping in error.rs:300-308 classifies ALL BackendUnavailable errors as BinaryNotFound (non-retryable). But openrouter_backend.rs uses BackendUnavailable for clearly transient conditions: HTTP probe network failures (line 190-192), non-2xx probe responses including 429/5xx (lines 201-203), and client construction failures (lines 180-182). Since check_availability() is called on every invoke() (service.rs:166-169), a transient OpenRouter 503 or network timeout will be classified as terminal BinaryNotFound, bypassing the entire retry budget. The fix should either split BackendUnavailable into permanent (missing API key, wrong backend family) and transient (network/HTTP errors) variants, or restrict the BinaryNotFound classification to specific call sites like process spawn NotFound."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

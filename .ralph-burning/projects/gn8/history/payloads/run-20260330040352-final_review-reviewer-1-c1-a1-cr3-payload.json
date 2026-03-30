@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:26:34.523532946Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/process_backend.rs:1018-1023 and src/adapters/process_backend.rs:391-405 / 1434-1437: the new timeout path does not actually kill timed-out children on non-Unix platforms. `spawn_background_reap()` always calls `send_sigkill()`, but `send_sigkill()` returns `Unsupported` under `#[cfg(not(unix))]` and that error is ignored. The spawned task then sits in `child.wait()` forever while still owning the `ManagedChild`, so `kill_on_drop(true)` never fires either. On Windows a backend timeout will therefore return `FailureClass::Timeout` while the `claude`/`codex` process keeps running in the background, which violates the new hard-timeout guarantee and can leak orphaned backend processes.",
+        "rationale": "The repo already contains Windows-specific process lookup code, so this timeout hardening needs a cross-platform kill path rather than Unix-only signals."
+      },
+      {
+        "body": "src/adapters/process_backend.rs:698-709, src/adapters/process_backend.rs:966-975, src/adapters/process_backend.rs:1248-1288, and src/adapters/process_backend.rs:1423-1430: `BinaryNotFound` is now inferred from exit status 127, but actual missing executables are already detected earlier by `resolve_binary()` and by `command.spawn()` returning `ErrorKind::NotFound`. Once the backend process has started, an exit code of 127 is just application-defined output, not proof that the backend binary was missing. Mapping every 127 to non-retryable `BinaryNotFound` means a wrapper script or CLI that exits 127 for its own error path will now fail the run immediately instead of using the new retry budget.",
+        "rationale": "This can turn real backend failures into terminal failures and undermines the retry-hardening goal."
+      }
+    ],
+    "summary": "`cargo test --lib --tests` passed, but I found 2 correctness issues in the retry hardening changes: the new timeout kill path is Unix-only and leaks timed-out children on non-Unix platforms, and the new exit-code-127 classification can incorrectly convert backend-defined failures into terminal `BinaryNotFound` errors."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,170 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T07:04:12.379589035Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-6-2cb763cc",
+      "fr-6-ba44d45e",
+      "fr-6-332f0f81",
+      "fr-6-fe06dd51",
+      "fr-6-20911add"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-6-2cb763cc",
+        "normalized_body": "In `src/adapters/process_backend.rs:1200`, a missing `OPENROUTER_API_KEY` is classified as `FailureClass::BinaryNotFound`. This is semantically incorrect — a missing API key is not a missing binary. Consider introducing a dedicated `FailureClass` variant (e.g., `ConfigurationError`) or at minimum rename the usage site comment to clarify why `BinaryNotFound` is being repurposed as a general 'fatal infrastructure' signal. As-is, log messages and operator diagnostics will report 'binary_not_found' for a missing env var, which is confusing.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-ba44d45e",
+        "normalized_body": "The `classify_exit_failure` function at `src/adapters/process_backend.rs:1459` still returns `TransportFailure` unconditionally for all exit codes. The project prompt specifically called for differentiating exit 127 (binary not found via shell) and signal-killed processes. The comment above the function explains why exit 127 post-spawn shouldn't be `BinaryNotFound`, which is a reasonable design decision, but the function still takes `_status` (unused parameter) suggesting it was intended to be filled in. At minimum, consider removing the unused parameter or documenting this as an intentional no-op to avoid future confusion.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-332f0f81",
+        "normalized_body": "The `backoff_for_attempt` function at `src/contexts/workflow_composition/retry_policy.rs:110` computes `2u64.saturating_pow(attempt.saturating_sub(1))` then calls `saturating_mul(multiplier.try_into().unwrap_or(u32::MAX))`. The `try_into()` converts `u64` to `u32` — for attempt >= 33, `2^32` overflows `u32` and falls back to `u32::MAX`, which then gets multiplied with the base duration using `u32::MAX` as the multiplier. While the `.min(self.backoff_cap)` at the end caps the result, the intermediate `saturating_mul` with `u32::MAX` is wasteful and the `try_into().unwrap_or(u32::MAX)` pattern is fragile. Since `Duration::saturating_mul` takes `u32`, just compute the multiplier directly as `u32` with `2u32.saturating_pow(...)` to avoid the lossy conversion.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-fe06dd51",
+        "normalized_body": "`AgentExecutionService` no longer enforces the caller’s configured timeout for adapters that depend on the service-level guard. In `src/contexts/agent_execution/service.rs:196-221`, the timeout was changed from `request.timeout` to `request.timeout + 30s`, but adapters like the stub backend still only sleep/cancel cooperatively and do not apply their own hard deadline. That makes a 10ms request succeed after ~100ms instead of timing out; `tests/unit/agent_execution_test.rs:292-316` now fails under `cargo test --features test-stub --test unit agent_execution_test::service_times_out_and_requests_backend_cancellation`. This is a real regression in the timeout contract, not just a test issue.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-e8329596",
+        "normalized_body": "Exit-code classification still does not implement the requested fatal-path handling. `src/adapters/process_backend.rs:1452-1460` defines `classify_exit_failure`, but it ignores the `ExitStatus` and always returns `FailureClass::TransportFailure`; the call sites at `src/adapters/process_backend.rs:1282-1294` and `src/adapters/process_backend.rs:1304-1316` therefore retry exit 127 exactly like a transient transport failure. The new test at `tests/unit/process_backend_test.rs:2038-2068` even codifies this behavior, which contradicts the acceptance criterion that a missing binary / exit 127 should fail immediately without consuming the retry budget.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-20911add",
+        "normalized_body": "The new `BinaryNotFound` classification is dropped on some required availability-check paths, so those failures still retry as `TransportFailure`. In `src/contexts/workflow_composition/engine.rs:5954-5962` and `src/contexts/workflow_composition/engine.rs:6430-6446`, required prompt-review refiner / final-review planner / arbiter availability errors are rewrapped with `failure_class: None`. Because `AppError::failure_class()` defaults `BackendUnavailable { failure_class: None, .. }` to `TransportFailure` (`src/shared/error.rs:308-313`), a missing binary or missing API key from `check_availability()` becomes retryable again in those stages.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [
+      "fr-6-e8329596"
+    ],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-6-2cb763cc",
+        "normalized_body": "In `src/adapters/process_backend.rs:1200`, a missing `OPENROUTER_API_KEY` is classified as `FailureClass::BinaryNotFound`. This is semantically incorrect — a missing API key is not a missing binary. Consider introducing a dedicated `FailureClass` variant (e.g., `ConfigurationError`) or at minimum rename the usage site comment to clarify why `BinaryNotFound` is being repurposed as a general 'fatal infrastructure' signal. As-is, log messages and operator diagnostics will report 'binary_not_found' for a missing env var, which is confusing.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-ba44d45e",
+        "normalized_body": "The `classify_exit_failure` function at `src/adapters/process_backend.rs:1459` still returns `TransportFailure` unconditionally for all exit codes. The project prompt specifically called for differentiating exit 127 (binary not found via shell) and signal-killed processes. The comment above the function explains why exit 127 post-spawn shouldn't be `BinaryNotFound`, which is a reasonable design decision, but the function still takes `_status` (unused parameter) suggesting it was intended to be filled in. At minimum, consider removing the unused parameter or documenting this as an intentional no-op to avoid future confusion.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-332f0f81",
+        "normalized_body": "The `backoff_for_attempt` function at `src/contexts/workflow_composition/retry_policy.rs:110` computes `2u64.saturating_pow(attempt.saturating_sub(1))` then calls `saturating_mul(multiplier.try_into().unwrap_or(u32::MAX))`. The `try_into()` converts `u64` to `u32` — for attempt >= 33, `2^32` overflows `u32` and falls back to `u32::MAX`, which then gets multiplied with the base duration using `u32::MAX` as the multiplier. While the `.min(self.backoff_cap)` at the end caps the result, the intermediate `saturating_mul` with `u32::MAX` is wasteful and the `try_into().unwrap_or(u32::MAX)` pattern is fragile. Since `Duration::saturating_mul` takes `u32`, just compute the multiplier directly as `u32` with `2u32.saturating_pow(...)` to avoid the lossy conversion.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-fe06dd51",
+        "normalized_body": "`AgentExecutionService` no longer enforces the caller’s configured timeout for adapters that depend on the service-level guard. In `src/contexts/agent_execution/service.rs:196-221`, the timeout was changed from `request.timeout` to `request.timeout + 30s`, but adapters like the stub backend still only sleep/cancel cooperatively and do not apply their own hard deadline. That makes a 10ms request succeed after ~100ms instead of timing out; `tests/unit/agent_execution_test.rs:292-316` now fails under `cargo test --features test-stub --test unit agent_execution_test::service_times_out_and_requests_backend_cancellation`. This is a real regression in the timeout contract, not just a test issue.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-e8329596",
+        "normalized_body": "Exit-code classification still does not implement the requested fatal-path handling. `src/adapters/process_backend.rs:1452-1460` defines `classify_exit_failure`, but it ignores the `ExitStatus` and always returns `FailureClass::TransportFailure`; the call sites at `src/adapters/process_backend.rs:1282-1294` and `src/adapters/process_backend.rs:1304-1316` therefore retry exit 127 exactly like a transient transport failure. The new test at `tests/unit/process_backend_test.rs:2038-2068` even codifies this behavior, which contradicts the acceptance criterion that a missing binary / exit 127 should fail immediately without consuming the retry budget.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-6-20911add",
+        "normalized_body": "The new `BinaryNotFound` classification is dropped on some required availability-check paths, so those failures still retry as `TransportFailure`. In `src/contexts/workflow_composition/engine.rs:5954-5962` and `src/contexts/workflow_composition/engine.rs:6430-6446`, required prompt-review refiner / final-review planner / arbiter availability errors are rewrapped with `failure_class: None`. Because `AppError::failure_class()` defaults `BackendUnavailable { failure_class: None, .. }` to `TransportFailure` (`src/shared/error.rs:308-313`), a missing binary or missing API key from `check_availability()` becomes retryable again in those stages.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 6,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 6 amendment(s); restart required.",
+    "total_proposed_amendments": 6,
+    "total_reviewers": 2,
+    "unique_amendment_count": 6
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 6
+}

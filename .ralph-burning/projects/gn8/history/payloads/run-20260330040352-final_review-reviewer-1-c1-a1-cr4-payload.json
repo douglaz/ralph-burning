@@ -1,0 +1,31 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:53:50.498416315Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "Map adapter-enforced process timeouts back to `AppError::InvocationTimeout` before they leave the service. `src/adapters/process_backend.rs:1037-1051` now returns `InvocationFailed { failure_class: Timeout }`, and `src/contexts/agent_execution/service.rs:211-213` plus `src/contexts/agent_execution/service.rs:369-373` pass that through unchanged. Existing consumers still branch on the timeout variant (for example `src/adapters/worktree.rs:892-900`), so a real CLI hang will now be treated as a generic invocation failure instead of following timeout-specific recovery/classification paths.",
+        "rationale": "This is a behavioral regression in the public agent-execution contract: process-backed timeouts no longer surface as `InvocationTimeout`, so timeout-specific handling outside the workflow retry loop will silently stop working."
+      },
+      {
+        "body": "Make fatal availability/configuration failures terminal instead of retryable. The service always runs `check_availability()` first (`src/contexts/agent_execution/service.rs:166-169`); `ProcessBackendAdapter::check_availability()` reports missing binaries and missing `OPENROUTER_API_KEY` as `BackendUnavailable` (`src/adapters/process_backend.rs:1171-1193`); and `AppError::failure_class()` still maps `BackendUnavailable` to retryable `TransportFailure` (`src/shared/error.rs:300-305`). After the retry-budget increase in `src/contexts/workflow_composition/retry_policy.rs:45-57`, those fatal setup problems will now burn five attempts plus backoff instead of failing immediately.",
+        "rationale": "The new `BinaryNotFound` terminal rule does not protect the normal service path, so the change still retries non-transient bootstrap/configuration failures."
+      },
+      {
+        "body": "Do not classify every non-zero child exit as retryable transport noise. `src/adapters/process_backend.rs:1442-1450` now hard-codes all exits, including `127`, to `TransportFailure`, and `tests/unit/process_backend_test.rs:2038-2066` locks that behavior in. That means wrapper CLIs that start successfully but then fail with exit 127 because an interpreter or subordinate executable is missing will still consume the full 5-attempt transport budget from `src/contexts/workflow_composition/retry_policy.rs:45-57`.",
+        "rationale": "This leaves an important fatal path misclassified as transient, which is exactly the hammering behavior this task was supposed to eliminate for backend launcher failures."
+      }
+    ],
+    "summary": "Reviewed the retry/backoff/timeout hardening changes across the process backend, agent-execution service, retry policy, and workflow engine. I found three correctness issues: process-backed timeouts no longer propagate as `InvocationTimeout`, fatal availability failures are still routed through the expanded transport retry policy, and exit code 127 is still treated as retryable."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

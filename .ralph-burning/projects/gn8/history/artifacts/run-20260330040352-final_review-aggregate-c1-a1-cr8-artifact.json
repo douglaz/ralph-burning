@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330040352-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T10:39:20.918018627Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 3 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 5\n**Final Review Restarts:** 8/20\n\n## Accepted\n\n- `fr-8-d2366c9b`\n- `fr-8-f881e1e1`\n- `fr-8-19d961a9`\n\n## Rejected\n\n- `fr-8-63eaddd6`\n\n## Disputed\n\n- `fr-8-5aba0f56`\n\n## Final Accepted Amendments\n\n### `fr-8-d2366c9b`\n\nThe `backoff_for_attempt` function uses `2u32.saturating_pow(attempt.saturating_sub(1))` as the multiplier, then `self.backoff_base.saturating_mul(multiplier)`. When `attempt` is 0 (which shouldn't happen but isn't prevented by the type system), `saturating_sub(1)` wraps to `u32::MAX`, making `saturating_pow` return `u32::MAX`, and the resulting delay saturates to a massive duration before being capped. The cap at 60s saves this, but an `attempt == 0` would produce an unexpectedly large delay (60s) instead of 0s. Consider adding a guard: if `attempt == 0`, return `Duration::ZERO`.\n\n### `fr-8-f881e1e1`\n\nsrc/adapters/tmux.rs:564-585 still turns every non-zero backend exit into `FailureClass::TransportFailure`. That means `execution.mode = \"tmux\"` does not get the new exit-127 handling that was added in src/adapters/process_backend.rs:1460-1469, so a fatal \"command not found\" failure is still retried in tmux mode. The acceptance criteria call out exit 127 as terminal, so the tmux adapter needs the same classification logic instead of hard-coding `TransportFailure`.\n\n### `fr-8-19d961a9`\n\nsrc/contexts/agent_execution/service.rs:223-228 now makes the service timeout the canonical timeout for tmux, but src/adapters/tmux.rs:519-598 only runs `prepared.cleanup()` / `prepared.finish()` after `wait_for_session_exit()` returns. When the service timeout fires, that future is aborted before those lines run, and src/adapters/tmux.rs:601-658 only cleans up the tmux session itself. As a result, Codex/OpenRouter tmux timeouts leak the `PreparedCommand` temp files described in src/adapters/process_backend.rs:55-90 and skip failed-artifact preservation entirely.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

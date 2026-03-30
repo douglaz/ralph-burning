@@ -103,6 +103,7 @@ pub fn build_backend_adapter_for_selector(
             .map_err(|details| AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details,
+                failure_class: None,
             })?;
             Ok(BackendAdapter::Tmux(tmux))
         }

@@ -17,7 +17,7 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 
 use crate::adapters::fs::FileSystem;
-use crate::adapters::process_backend::{ChildOutput, ProcessBackendAdapter};
+use crate::adapters::process_backend::{classify_exit_failure, ChildOutput, ProcessBackendAdapter};
 use crate::contexts::agent_execution::model::{
     InvocationContract, InvocationEnvelope, InvocationRequest,
 };
@@ -98,6 +98,7 @@ impl TmuxAdapter {
                     "resolved tmux binary '{}' is no longer available or executable",
                     self.tmux_binary.display()
                 ),
+                failure_class: None,
             });
         }
         Self::check_tmux_available_in(&self.process.effective_search_paths())
@@ -150,6 +151,7 @@ impl TmuxAdapter {
             None => Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
                 details: OPENROUTER_TMUX_UNSUPPORTED_DETAILS.to_owned(),
+                failure_class: None,
             }),
         }
     }
@@ -180,6 +182,7 @@ impl TmuxAdapter {
             Err(AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details: format!("session '{session_name}' is not available for attachment"),
+                failure_class: None,
             })
         }
     }
@@ -264,6 +267,7 @@ impl TmuxAdapter {
             Err(error) => Err(AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details: format!("failed to query tmux session '{session_name}': {error}"),
+                failure_class: None,
             }),
         }
     }
@@ -445,6 +449,10 @@ impl TmuxAdapter {
 }
 
 impl AgentExecutionPort for TmuxAdapter {
+    fn enforces_timeout(&self) -> bool {
+        true
+    }
+
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,
@@ -507,12 +515,14 @@ impl AgentExecutionPort for TmuxAdapter {
             return Err(error);
         }
 
-        let exit_code = match self
-            .wait_for_session_exit(&session, &mut stdout_tail, &mut stderr_tail)
-            .await
+        let exit_code = match tokio::time::timeout(
+            request.timeout,
+            self.wait_for_session_exit(&session, &mut stdout_tail, &mut stderr_tail),
+        )
+        .await
         {
-            Ok(exit_code) => exit_code,
-            Err(error) => {
+            Ok(Ok(exit_code)) => exit_code,
+            Ok(Err(error)) => {
                 let _ = self.kill_session(&session.session_name).await;
                 self.remove_session_if_same(&request.invocation_id, &session)
                     .await;
@@ -520,6 +530,53 @@ impl AgentExecutionPort for TmuxAdapter {
                 prepared.cleanup().await;
                 session.cleanup();
                 return Err(error);
+            }
+            Err(_elapsed) => {
+                // Graceful shutdown: SIGTERM → grace period → SIGKILL, matching
+                // the cancel() flow so the child has a chance to flush output.
+                let cancel_failed = if let Err(cancel_err) =
+                    self.cancel(&request.invocation_id).await
+                {
+                    // cancel() already removed the session from tracking.
+                    // Attempt a direct kill as last resort, then clean up
+                    // the session's on-disk state.
+                    let _ = append_runtime_log(
+                        &request.project_root,
+                        "tmux.lifecycle",
+                        &format!(
+                            "timeout cleanup failed for invocation {}: {cancel_err}; \
+                                 attempting direct kill-session fallback",
+                            request.invocation_id,
+                        ),
+                    );
+                    let _ = self.kill_session(&session.session_name).await;
+                    let _ =
+                        Self::clear_active_session(&request.project_root, &request.invocation_id);
+                    session.cleanup();
+                    true
+                } else {
+                    false
+                };
+                prepared
+                    .preserve_failed_artifacts(&request, "tmux session timed out")
+                    .await;
+                let binary_display = prepared.binary().display().to_string();
+                // If cancel failed, report as TransportFailure (teardown was
+                // not confirmed) so the retry loop knows cleanup was unclean.
+                let failure_class = if cancel_failed {
+                    FailureClass::TransportFailure
+                } else {
+                    FailureClass::Timeout
+                };
+                return Err(AppError::InvocationFailed {
+                    backend: request.resolved_target.backend.family.to_string(),
+                    contract_id: request.contract.label(),
+                    failure_class,
+                    details: format!(
+                        "{binary_display} exceeded timeout of {}s",
+                        request.timeout.as_secs()
+                    ),
+                });
             }
         };
 
@@ -569,10 +626,11 @@ impl AgentExecutionPort for TmuxAdapter {
             }
 
             prepared.cleanup().await;
+            let failure_class = classify_exit_failure(output.status);
             return Err(AppError::InvocationFailed {
                 backend: request.resolved_target.backend.family.to_string(),
                 contract_id: request.contract.label(),
-                failure_class: FailureClass::TransportFailure,
+                failure_class,
                 details: format!(
                     "{} exited with code {}{}",
                     prepared.binary().display(),
@@ -740,6 +798,7 @@ impl ManagedTmuxSession {
         Err(AppError::BackendUnavailable {
             backend: "tmux".to_owned(),
             details: "tmux signal delivery requires unix".to_owned(),
+            failure_class: None,
         })
     }
 
@@ -753,6 +812,7 @@ impl ManagedTmuxSession {
         Err(AppError::BackendUnavailable {
             backend: "tmux".to_owned(),
             details: "tmux signal delivery requires unix".to_owned(),
+            failure_class: None,
         })
     }
 
@@ -892,6 +952,7 @@ fn build_wrapper_script(
             "binary path '{}' contains non-UTF-8 bytes and cannot be embedded in a shell script",
             binary.display()
         ),
+            failure_class: None,
         })?;
 
     let command = std::iter::once(shell_escape(binary_str))

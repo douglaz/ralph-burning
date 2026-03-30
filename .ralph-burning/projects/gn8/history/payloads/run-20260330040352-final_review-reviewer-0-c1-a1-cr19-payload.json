@@ -1,0 +1,23 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-0-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T17:45:08.850446043Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "In the snapshot write error recovery path (engine.rs ~line 4657-4683), if `fail_run`'s own snapshot write at line 5133 also fails (e.g. persistent disk I/O error), the `?` propagates the error without emitting a `run_failed` journal event and without any snapshot reaching disk — potentially leaving the project in an inconsistent state where the journal has a `stage_failed` event but the on-disk snapshot is stale. Consider wrapping `fail_run`'s snapshot write in a best-effort fallback (e.g. log the double-failure and still emit the journal event), or at minimum add a comment documenting this known limitation and why it's acceptable.",
+        "rationale": "The whole purpose of this change is to prevent the run from getting stranded in an unresumable state when a snapshot write fails. But the recovery path routes to `fail_run` which itself uses `?` on its snapshot write (line 5133). If the disk is persistently failing (not just a transient blip), the recovery path hits the same wall. The test only covers the case where the second write succeeds (the `BackoffFailingSnapshotWriteStore` discriminates by status_summary). While persistent disk failures are inherently hard to handle, the code should at least document this edge case since the entire change is motivated by snapshot-write resilience."
+      }
+    ],
+    "summary": "The diff contains two changes: (1) a jitter counter improvement in retry_policy.rs that adds a thread-local monotonic counter to ensure distinct jitter values on coarse-clock platforms, and (2) error handling for pre-backoff snapshot writes in engine.rs that routes write failures through `fail_run_result` instead of bare `?`, preventing the run from being stranded in an unresumable Running state. Both changes are well-reasoned. The state restoration logic (lines 4660-4663) correctly undoes the Failed/None mutations so `fail_run_result` can re-attempt. The jitter counter uses standard wrapping arithmetic with Knuth's multiplicative hash. The new test properly validates the behavior under `test-stub` feature flag and passes. The one substantive concern is that `fail_run` itself uses `?` on its snapshot write, so a persistent disk failure would bypass the journal event — the exact class of problem this change aims to prevent."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde_json::Value;
@@ -112,6 +112,14 @@ pub trait AgentExecutionPort {
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope>;
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()>;
+
+    /// Whether this adapter enforces `request.timeout` internally (e.g. via
+    /// process-level timeout).  When `true`, the service adds a buffer to
+    /// `service_timeout` so the adapter's timeout fires first.  When `false`
+    /// (default), the service-level timeout *is* the canonical timeout.
+    fn enforces_timeout(&self) -> bool {
+        false
+    }
 }
 
 pub trait RawOutputPort {
@@ -193,6 +201,17 @@ where
         let invoke_future = self.adapter.invoke(request.clone());
         tokio::pin!(invoke_future);
 
+        // When the adapter enforces its own hard timeout (e.g. process-level
+        // kill), adding a 30-second buffer lets the adapter fire first and
+        // handle artifact preservation / child cleanup.  When the adapter
+        // does *not* enforce a timeout, the service-level timeout is the
+        // canonical enforcement and must match `request.timeout` exactly.
+        let service_timeout = if self.adapter.enforces_timeout() {
+            request.timeout.saturating_add(Duration::from_secs(30))
+        } else {
+            request.timeout
+        };
+
         let mut envelope = tokio::select! {
             _ = request.cancellation_token.cancelled() => {
                 let _ = self.adapter.cancel(&invocation_id).await;
@@ -201,7 +220,7 @@ where
                     contract_id: request.contract.label(),
                 });
             }
-            result = tokio::time::timeout(request.timeout, &mut invoke_future) => {
+            result = tokio::time::timeout(service_timeout, &mut invoke_future) => {
                 match result {
                     Ok(result) => result.map_err(|error| map_invoke_error(error, &request))?,
                     Err(_) => {
@@ -210,6 +229,7 @@ where
                             backend: request.resolved_target.backend.family.to_string(),
                             contract_id: request.contract.label(),
                             timeout_ms,
+                            details: "service-level safety-net timeout fired".to_owned(),
                         });
                     }
                 }
@@ -355,15 +375,32 @@ fn map_availability_error(error: AppError, request: &InvocationRequest) -> AppEr
         other => AppError::BackendUnavailable {
             backend: request.resolved_target.backend.family.to_string(),
             details: other.to_string(),
+            failure_class: None,
         },
     }
 }
 
 fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
     match error {
+        // Adapter-enforced process timeouts arrive as InvocationFailed with
+        // FailureClass::Timeout.  Promote them to InvocationTimeout so that
+        // consumers (e.g. worktree rebase) can match on the canonical variant.
+        // The adapter-level details (e.g. "claude exceeded timeout of 600s")
+        // are preserved for operator diagnostics.
+        AppError::InvocationFailed {
+            failure_class: FailureClass::Timeout,
+            details,
+            ..
+        } => AppError::InvocationTimeout {
+            backend: request.resolved_target.backend.family.to_string(),
+            contract_id: request.contract.label(),
+            timeout_ms: request.timeout.as_millis().min(u64::MAX as u128) as u64,
+            details,
+        },
         AppError::InvocationFailed { .. }
         | AppError::InvocationTimeout { .. }
-        | AppError::InvocationCancelled { .. } => error,
+        | AppError::InvocationCancelled { .. }
+        | AppError::BackendUnavailable { .. } => error,
         other => AppError::InvocationFailed {
             backend: request.resolved_target.backend.family.to_string(),
             contract_id: request.contract.label(),

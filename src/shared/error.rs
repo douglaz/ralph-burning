@@ -91,7 +91,15 @@ pub enum AppError {
     #[error("{command} is not yet implemented")]
     NotYetImplemented { command: String },
     #[error("backend '{backend}' is unavailable: {details}")]
-    BackendUnavailable { backend: String, details: String },
+    BackendUnavailable {
+        backend: String,
+        details: String,
+        /// When set, overrides the default `TransportFailure` classification.
+        /// Use `Some(FailureClass::BinaryNotFound)` for fatal infrastructure
+        /// problems (missing binary, missing API key) that won't resolve
+        /// between retry attempts.
+        failure_class: Option<FailureClass>,
+    },
     #[error("backend '{backend}' cannot satisfy contract '{contract_id}': {details}")]
     CapabilityMismatch {
         backend: String,
@@ -106,12 +114,13 @@ pub enum AppError {
         details: String,
     },
     #[error(
-        "backend invocation timed out for contract '{contract_id}' via '{backend}' after {timeout_ms} ms"
+        "backend invocation timed out for contract '{contract_id}' via '{backend}' after {timeout_ms} ms: {details}"
     )]
     InvocationTimeout {
         backend: String,
         contract_id: String,
         timeout_ms: u64,
+        details: String,
     },
     #[error("backend invocation cancelled for contract '{contract_id}' via '{backend}'")]
     InvocationCancelled {
@@ -299,7 +308,9 @@ impl ContractError {
 impl AppError {
     pub fn failure_class(&self) -> Option<FailureClass> {
         match self {
-            Self::BackendUnavailable { .. } => Some(FailureClass::TransportFailure),
+            Self::BackendUnavailable { failure_class, .. } => {
+                Some(failure_class.unwrap_or(FailureClass::TransportFailure))
+            }
             Self::CapabilityMismatch { .. } => Some(FailureClass::DomainValidationFailure),
             Self::InvocationFailed { failure_class, .. } => Some(*failure_class),
             Self::InvocationTimeout { .. } => Some(FailureClass::Timeout),

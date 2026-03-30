@@ -26,6 +26,8 @@ use crate::shared::error::{AppError, AppResult};
 
 const CHILD_WAIT_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const CANCEL_GRACE_PERIOD: Duration = Duration::from_millis(500);
+/// Grace period for confirming process teardown after timeout-triggered kill.
+const TEARDOWN_GRACE_PERIOD: Duration = Duration::from_secs(2);
 
 pub(crate) struct PreparedCommand {
     binary: std::path::PathBuf,
@@ -61,6 +63,37 @@ impl PreparedCommand {
                 ..
             } => best_effort_cleanup(Some(schema_path), message_path).await,
         }
+    }
+
+    /// Preserve backend artifacts (schema/message temp files) into
+    /// `runtime/failed` without requiring child process output.
+    /// Used for timeout and spawn failures where no ChildOutput is available.
+    pub(crate) async fn preserve_failed_artifacts(
+        &self,
+        request: &InvocationRequest,
+        reason: &str,
+    ) {
+        let failed_dir = request.project_root.join("runtime/failed");
+        let _ = tokio::fs::create_dir_all(&failed_dir).await;
+
+        match &self.response_decoder {
+            ResponseDecoder::Claude { .. } => {}
+            ResponseDecoder::Codex {
+                schema_path,
+                message_path,
+                ..
+            } => {
+                let failed_schema_path =
+                    failed_dir.join(format!("{}.schema.json", request.invocation_id));
+                let failed_message_path =
+                    failed_dir.join(format!("{}.last-message.json", request.invocation_id));
+                best_effort_move_file(schema_path, &failed_schema_path).await;
+                best_effort_move_file(message_path, &failed_message_path).await;
+            }
+        }
+
+        let failed_raw_path = failed_dir.join(format!("{}.failed.raw", request.invocation_id));
+        let _ = tokio::fs::write(failed_raw_path, format!("[no child output — {reason}]\n")).await;
     }
 
     // Failure cleanup preserves backend artifacts for operator inspection.
@@ -376,6 +409,25 @@ impl ManagedChild {
         }
     }
 
+    /// Cross-platform forceful kill.  Uses SIGKILL on Unix; on non-Unix
+    /// falls back to tokio's `Child::kill()` which calls
+    /// `TerminateProcess` on Windows.
+    async fn force_kill(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            self.send_sigkill().await
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut state = self.state.lock().await;
+            match &mut *state {
+                ManagedChildState::Running(child) => child.kill().await,
+                ManagedChildState::Exited(_) => Ok(()),
+            }
+        }
+    }
+
     async fn wait(&self) -> std::io::Result<ExitStatus> {
         loop {
             let maybe_status = {
@@ -495,6 +547,7 @@ impl ProcessBackendAdapter {
                 details: format!(
                     "required binary '{binary_name}' not found (or not executable) in explicit search paths"
                 ),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
         Ok(std::path::PathBuf::from(binary_name))
@@ -736,20 +789,28 @@ impl ProcessBackendAdapter {
                 // Resolve the binary before writing temp files so that a
                 // missing binary does not leave orphaned schema artifacts.
                 let binary = self.resolve_binary("codex").map_err(|e| match e {
-                    AppError::BackendUnavailable { details, .. } => AppError::BackendUnavailable {
+                    AppError::BackendUnavailable {
+                        details,
+                        failure_class,
+                        ..
+                    } => AppError::BackendUnavailable {
                         backend: "openrouter".to_owned(),
                         details,
+                        failure_class,
                     },
                     other => other,
                 })?;
 
-                let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
-                    Self::invocation_failed(
-                        request,
-                        FailureClass::TransportFailure,
-                        "OPENROUTER_API_KEY is not set".to_owned(),
-                    )
-                })?;
+                let api_key = std::env::var("OPENROUTER_API_KEY")
+                    .ok()
+                    .filter(|k| !k.trim().is_empty())
+                    .ok_or_else(|| {
+                        Self::invocation_failed(
+                            request,
+                            FailureClass::BinaryNotFound,
+                            "OPENROUTER_API_KEY is not set".to_owned(),
+                        )
+                    })?;
 
                 let model_id = &request.resolved_target.model.model_id;
                 let session_resuming =
@@ -886,12 +947,14 @@ impl ProcessBackendAdapter {
                     "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
                     candidate.display()
                 ),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
 
         Err(AppError::BackendUnavailable {
             backend: backend.to_owned(),
             details: format!("required binary '{binary_name}' was not found on PATH"),
+            failure_class: Some(FailureClass::BinaryNotFound),
         })
     }
 
@@ -933,9 +996,23 @@ impl ProcessBackendAdapter {
 
         let binary_display = binary.display();
         let mut child = command.spawn().map_err(|error| {
+            // spawn() returns ENOENT for several reasons: missing binary,
+            // missing working directory, or missing script interpreter.
+            // Only classify as BinaryNotFound when the binary is
+            // positively confirmed missing.  If the working directory
+            // doesn't exist, ENOENT comes from the cwd — not the
+            // binary — and should be retryable (TransportFailure).
+            let failure_class = if error.kind() == std::io::ErrorKind::NotFound
+                && request.working_dir.exists()
+                && (!binary.is_absolute() || !binary.exists())
+            {
+                FailureClass::BinaryNotFound
+            } else {
+                FailureClass::TransportFailure
+            };
             Self::invocation_failed(
                 request,
-                FailureClass::TransportFailure,
+                failure_class,
                 format!("failed to spawn {binary_display}: {error}"),
             )
         })?;
@@ -970,9 +1047,57 @@ impl ProcessBackendAdapter {
             Ok::<Vec<u8>, std::io::Error>(buf)
         };
 
-        let (stdin_result, stdout_result, stderr_result) =
-            tokio::join!(stdin_future, stdout_future, stderr_future);
-        let status_result = active_child.wait().await;
+        let timeout_duration = request.timeout;
+        let io_and_wait = async {
+            let (stdin_result, stdout_result, stderr_result) =
+                tokio::join!(stdin_future, stdout_future, stderr_future);
+            let status_result = active_child.wait().await;
+            (stdin_result, stdout_result, stderr_result, status_result)
+        };
+
+        let (stdin_result, stdout_result, stderr_result, status_result) =
+            match tokio::time::timeout(timeout_duration, io_and_wait).await {
+                Ok(results) => results,
+                Err(_elapsed) => {
+                    // Timeout fired — kill the child and confirm teardown
+                    // before releasing the tracking handle.
+                    let teardown_confirmed =
+                        confirm_teardown(&active_child, TEARDOWN_GRACE_PERIOD).await;
+                    self.remove_child_if_same(&request.invocation_id, &active_child)
+                        .await;
+                    if !teardown_confirmed {
+                        // Child may still be alive — keep reaping in the
+                        // background so it doesn't outlive tracking, matching
+                        // the fallback used in the cancel() path.
+                        spawn_background_reap(
+                            request.invocation_id.clone(),
+                            Arc::clone(&active_child),
+                        );
+                    }
+                    let failure_class = if teardown_confirmed {
+                        FailureClass::Timeout
+                    } else {
+                        // Kill was not confirmed — the hung process may still
+                        // be alive, so report TransportFailure to signal an
+                        // unclean timeout.
+                        FailureClass::TransportFailure
+                    };
+                    return Err(Self::invocation_failed(
+                        request,
+                        failure_class,
+                        format!(
+                            "{binary_display} exceeded timeout of {}s{}",
+                            timeout_duration.as_secs(),
+                            if teardown_confirmed {
+                                ""
+                            } else {
+                                " (teardown not confirmed)"
+                            },
+                        ),
+                    ));
+                }
+            };
+
         self.remove_child_if_same(&request.invocation_id, &active_child)
             .await;
 
@@ -1069,6 +1194,10 @@ impl ProcessBackendAdapter {
 }
 
 impl AgentExecutionPort for ProcessBackendAdapter {
+    fn enforces_timeout(&self) -> bool {
+        true
+    }
+
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,
@@ -1094,6 +1223,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             return Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
                 details: "ProcessBackendAdapter availability checks are only supported for claude, codex, and openrouter".to_owned(),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         };
         Self::ensure_binary_available(
@@ -1101,14 +1231,20 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             backend.backend.family.as_str(),
             &self.effective_search_paths(),
         )?;
+        // A missing API key is a fatal infrastructure problem (like a missing
+        // binary) that won't resolve between retry attempts.  BinaryNotFound
+        // is reused here as the terminal "infrastructure prerequisite missing"
+        // signal rather than introducing a dedicated variant.
         if backend.backend.family == BackendFamily::OpenRouter
             && std::env::var("OPENROUTER_API_KEY")
                 .unwrap_or_default()
+                .trim()
                 .is_empty()
         {
             return Err(AppError::BackendUnavailable {
                 backend: "openrouter".to_owned(),
                 details: "OPENROUTER_API_KEY is not set".to_owned(),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
         Ok(())
@@ -1130,7 +1266,29 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         {
             Ok(output) => output,
             Err(error) => {
-                prepared.cleanup().await;
+                // Preserve artifacts for both clean timeouts (Timeout) and
+                // unconfirmed-teardown timeouts (TransportFailure with
+                // "exceeded timeout" in details).  The latter are the hardest
+                // to debug, so deleting their temp files is counterproductive.
+                let is_timeout_related = match &error {
+                    AppError::InvocationFailed {
+                        failure_class: FailureClass::Timeout,
+                        ..
+                    } => true,
+                    AppError::InvocationFailed { details, .. }
+                        if details.contains("exceeded timeout") =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                if is_timeout_related {
+                    prepared
+                        .preserve_failed_artifacts(&request, "process timed out")
+                        .await;
+                } else {
+                    prepared.cleanup().await;
+                }
                 return Err(error);
             }
         };
@@ -1164,7 +1322,28 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     {
                         Ok(output) => output,
                         Err(error) => {
-                            fresh_prepared.cleanup().await;
+                            let is_timeout_related = match &error {
+                                AppError::InvocationFailed {
+                                    failure_class: FailureClass::Timeout,
+                                    ..
+                                } => true,
+                                AppError::InvocationFailed { details, .. }
+                                    if details.contains("exceeded timeout") =>
+                                {
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if is_timeout_related {
+                                fresh_prepared
+                                    .preserve_failed_artifacts(
+                                        &fresh_request,
+                                        "process timed out (stale session retry)",
+                                    )
+                                    .await;
+                            } else {
+                                fresh_prepared.cleanup().await;
+                            }
                             return Err(error);
                         }
                     };
@@ -1175,6 +1354,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
+                        let failure_class = classify_exit_failure(fresh_output.status);
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
@@ -1186,7 +1366,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                         };
                         return Err(Self::invocation_failed(
                             &fresh_request,
-                            FailureClass::TransportFailure,
+                            failure_class,
                             format!(
                                 "{} exited with code {code}{detail}",
                                 fresh_prepared.binary().display(),
@@ -1198,6 +1378,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                let failure_class = classify_exit_failure(status);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1207,7 +1388,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 };
                 Err(Self::invocation_failed(
                     &request,
-                    FailureClass::TransportFailure,
+                    failure_class,
                     format!(
                         "{} exited with code {code}{detail}",
                         prepared.binary().display(),
@@ -1343,12 +1524,53 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
     }
 }
 
+/// Classify process exit status into the appropriate failure class.
+///
+/// Exit code 127 conventionally means "command not found" and is treated as
+/// `BinaryNotFound` (terminal) so the retry loop does not waste attempts on
+/// a missing binary.  All other non-zero exits and signal kills map to
+/// `TransportFailure` (retryable).
+///
+/// On Unix, when a process is killed by a signal (no exit code), a warning
+/// is logged with the signal number to help operators diagnose deterministic
+/// crashes (e.g. SIGSEGV, SIGABRT).  Retry behaviour is unchanged.
+pub(crate) fn classify_exit_failure(status: ExitStatus) -> FailureClass {
+    match status.code() {
+        Some(127) => FailureClass::BinaryNotFound,
+        Some(_) => FailureClass::TransportFailure,
+        None => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    tracing::warn!(
+                        signal = signal,
+                        "process killed by signal (retry will proceed as TransportFailure)"
+                    );
+                }
+            }
+            FailureClass::TransportFailure
+        }
+    }
+}
+
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
     tokio::spawn(async move {
-        let _ = child.send_sigkill().await;
+        let _ = child.force_kill().await;
         let _ = child.wait().await;
         drop(invocation_id);
     });
+}
+
+/// Attempt to force-kill the child and wait for exit within `grace_period`.
+/// Returns `true` if teardown was confirmed, `false` if kill or wait failed.
+async fn confirm_teardown(child: &Arc<ManagedChild>, grace_period: Duration) -> bool {
+    if child.force_kill().await.is_err() {
+        return false;
+    }
+    tokio::time::timeout(grace_period, child.wait())
+        .await
+        .is_ok_and(|r| r.is_ok())
 }
 
 async fn best_effort_cleanup(schema_path: Option<&Path>, message_path: &Path) {
@@ -2762,5 +2984,61 @@ mod tests {
         assert_eq!(counts.completion_tokens, Some(120));
         assert_eq!(counts.total_tokens, Some(620));
         assert_eq!(counts.cache_read_tokens, Some(300));
+    }
+
+    // ── classify_exit_failure unit tests ────────────────────────────────
+
+    #[cfg(unix)]
+    mod classify_exit_tests {
+        use super::super::classify_exit_failure;
+        use crate::shared::domain::FailureClass;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+
+        #[test]
+        fn exit_127_returns_binary_not_found() {
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(classify_exit_failure(status), FailureClass::BinaryNotFound);
+        }
+
+        #[test]
+        fn exit_1_returns_transport_failure() {
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn exit_0_returns_transport_failure() {
+            // Defensive: classify_exit_failure is only called on non-zero
+            // exits, but exit 0 should still not be BinaryNotFound.
+            let status = ExitStatus::from_raw(0);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn signal_killed_returns_transport_failure() {
+            // Signal 11 = SIGSEGV; status.code() returns None.
+            let status = ExitStatus::from_raw(11);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn signal_6_returns_transport_failure() {
+            // Signal 6 = SIGABRT
+            let status = ExitStatus::from_raw(6);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
     }
 }

@@ -137,6 +137,7 @@ where
                         .map_err(|e| AppError::BackendUnavailable {
                             backend: "github".to_owned(),
                             details: format!("failed to promote draft PR #{pr_number}: {e}"),
+                            failure_class: None,
                         })?;
                     DaemonTaskService::append_journal_event(
                         self.store,

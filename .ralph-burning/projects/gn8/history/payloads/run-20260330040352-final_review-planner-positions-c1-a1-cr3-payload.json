@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330040352-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:28:14.566075059Z",
+  "payload": {
+    "summary": "All four amendments identify genuine bugs or defects in the timeout and process management code. The dual-timeout race (fr-3-a95af876) makes artifact preservation dead code; the test gap (fr-3-e384feeb) fails to catch this; the non-Unix kill path (fr-3-1c23f8ce) leaks processes on Windows; and the exit-127 misclassification (fr-3-ccb079f3) creates false non-retryable failures for wrapper scripts.",
+    "votes": [
+      {
+        "amendment_id": "fr-3-a95af876",
+        "decision": "accept",
+        "rationale": "Confirmed by code review: service.rs:204 and process_backend.rs:1018 both use `request.timeout` as their duration, but the service-layer timeout wraps the entire invoke() call including build_command() and spawn() overhead. The outer timeout therefore fires first (or simultaneously), making the inner timeout's error path — and critically the `preserve_failed_artifacts` call at lines 1193-1196 — unreachable in production. This is a real bug: on timeout, diagnostic artifacts (schema files, last-message files) are silently lost instead of being preserved to runtime/failed. Either adding a buffer to the outer timeout or moving preservation into the cancel/cleanup path are both sound fixes."
+      },
+      {
+        "amendment_id": "fr-3-e384feeb",
+        "decision": "accept",
+        "rationale": "The existing test at process_backend_test.rs:1990 only asserts the return type (FailureClass::Timeout) and message text, but never checks that the side effect — artifact preservation to runtime/failed — actually occurred. This is a meaningful gap: the artifact preservation is currently unreachable (per fr-3-a95af876), and this test would not catch that regression. Adding assertions for .failed.raw and Codex-specific schema/message files after timeout would provide proper coverage of the preservation guarantee."
+      },
+      {
+        "amendment_id": "fr-3-1c23f8ce",
+        "decision": "accept",
+        "rationale": "Confirmed: `send_sigkill()` returns `Err(Unsupported)` under `#[cfg(not(unix))]`, and `spawn_background_reap()` ignores that error with `let _ = child.send_sigkill().await`. The subsequent `child.wait().await` then blocks indefinitely because the process was never killed. The Arc<ManagedChild> is held by the background task, so `kill_on_drop` never fires. This is a genuine process leak on Windows — the timeout returns FailureClass::Timeout to the caller while the backend process continues running indefinitely. The fix should use platform-appropriate process termination (e.g., TerminateProcess on Windows) or at minimum drop the ManagedChild to trigger kill_on_drop."
+      },
+      {
+        "amendment_id": "fr-3-ccb079f3",
+        "decision": "accept",
+        "rationale": "The amendment correctly identifies that exit code 127 is already handled at two earlier points: resolve_binary() returns BackendUnavailable for missing binaries in explicit search paths, and command.spawn() returns ErrorKind::NotFound which maps to BinaryNotFound. Once a process has successfully spawned and executed, exit code 127 is purely application-defined — shells and wrapper scripts commonly use 127 for their own error semantics (e.g., a CLI tool returning 127 for a subcommand-not-found error). Unconditionally mapping post-spawn exit 127 to non-retryable BinaryNotFound bypasses the retry budget for what may be a transient or recoverable application error. The classify_exit_failure function should treat 127 the same as other non-zero exits (TransportFailure) since the binary clearly existed if it was spawned."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,82 @@
+{
+  "payload_id": "run-20260330040352-plan_and_implement-c1-a1-cr1",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T04:19:39.587829840Z",
+  "payload": {
+    "data": {
+      "change_summary": "Hardened retry policy to prevent runs from exiting on transient backend failures. Increased retry limits (TransportFailure 3→5, SchemaValidationFailure 2→3, Timeout 2→3), added hard timeout enforcement on backend process invocations via tokio::time::timeout wrapping spawn_and_wait, introduced BinaryNotFound failure class for non-retryable exit code 127 and spawn NotFound errors, and added exponential backoff (5s base, 60s cap) between retry attempts with configurable policy support.",
+      "outstanding_risks": [
+        "The tokio test-util feature is now enabled unconditionally (not just for tests) since Cargo.toml uses a single dependency spec; this adds a small amount of compiled code but has no runtime impact",
+        "Backoff delays in production retry loops add 5-60s per retry attempt; in pathological cases (5 retries × 60s cap) this adds up to ~2.5 min of delay before exhaustion, which is acceptable but operators should be aware",
+        "The timeout enforcement wraps the entire I/O+wait block including stdin write; if stdin write itself is slow (very large prompts), the timeout budget is shared with the actual execution time"
+      ],
+      "steps": [
+        {
+          "description": "Increased retry limits in retry_policy.rs: TransportFailure 3→5, SchemaValidationFailure 2→3, Timeout 2→3",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Added hard timeout enforcement in process_backend.rs spawn_and_wait by wrapping I/O+wait in tokio::time::timeout using request.timeout, killing child on expiry via spawn_background_reap and returning FailureClass::Timeout",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Added BinaryNotFound variant to FailureClass enum (domain.rs) with terminal retry rule, classified spawn ErrorKind::NotFound and exit code 127 as BinaryNotFound via new classify_exit_failure helper in process_backend.rs",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Added configurable exponential backoff to RetryPolicy (backoff_base=5s, backoff_cap=60s, with_no_backoff() for tests) and integrated into engine.rs retry loop via retry_policy.backoff_for_attempt()",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Updated retry_policy_test.rs assertions for new limits and BinaryNotFound, added backoff_for_attempt and with_no_backoff tests",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Updated workflow_engine_test.rs retry_exhaustion test from 3→5 transient failures, added start_paused=true to 4 retry-related tests to avoid real backoff delays",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Added process_backend tests: spawn_and_wait_timeout_returns_timeout_failure and exit_code_127_returns_binary_not_found",
+          "order": 7,
+          "status": "completed"
+        },
+        {
+          "description": "Added tokio test-util feature to Cargo.toml for start_paused support",
+          "order": 8,
+          "status": "completed"
+        },
+        {
+          "description": "Verified all 677 tests pass, cargo clippy -D warnings clean, cargo fmt --check clean",
+          "order": 9,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 677 passed, 0 failed, 0 ignored",
+        "cargo clippy -- -D warnings: no warnings or errors",
+        "cargo fmt --check: no formatting differences",
+        "New test spawn_and_wait_timeout_returns_timeout_failure verifies timeout enforcement kills child and returns FailureClass::Timeout",
+        "New test exit_code_127_returns_binary_not_found verifies exit 127 is classified as BinaryNotFound",
+        "New test default_backoff_uses_exponential_growth_capped_at_60s verifies 5s→10s→20s→40s→60s→60s progression",
+        "New test no_backoff_returns_zero_for_all_attempts verifies with_no_backoff disables delays",
+        "Updated retry_exhaustion test now validates 5 attempts with will_retry true for first 4, false for 5th"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

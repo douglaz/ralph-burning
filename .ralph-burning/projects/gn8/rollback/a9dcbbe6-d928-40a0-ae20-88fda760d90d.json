@@ -1,0 +1,44 @@
+{
+  "rollback_id": "a9dcbbe6-d928-40a0-ae20-88fda760d90d",
+  "created_at": "2026-03-30T18:33:27.524726784Z",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "git_sha": "450163ce2994ab92de602ea12d75cfa29fcdc636",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "final_review",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 21
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 20
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 21,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [],
+      "processed_count": 75
+    },
+    "status_summary": "running: completed Plan and Implement, next Final Review",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "plan_and_implement",
+      "resolved_at": "2026-03-30T18:22:42.754743059Z",
+      "primary_target": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}
