@@ -1065,6 +1065,15 @@ impl ProcessBackendAdapter {
                         confirm_teardown(&active_child, TEARDOWN_GRACE_PERIOD).await;
                     self.remove_child_if_same(&request.invocation_id, &active_child)
                         .await;
+                    if !teardown_confirmed {
+                        // Child may still be alive — keep reaping in the
+                        // background so it doesn't outlive tracking, matching
+                        // the fallback used in the cancel() path.
+                        spawn_background_reap(
+                            request.invocation_id.clone(),
+                            Arc::clone(&active_child),
+                        );
+                    }
                     let failure_class = if teardown_confirmed {
                         FailureClass::Timeout
                     } else {
@@ -1257,7 +1266,23 @@ impl AgentExecutionPort for ProcessBackendAdapter {
         {
             Ok(output) => output,
             Err(error) => {
-                if error.failure_class() == Some(FailureClass::Timeout) {
+                // Preserve artifacts for both clean timeouts (Timeout) and
+                // unconfirmed-teardown timeouts (TransportFailure with
+                // "exceeded timeout" in details).  The latter are the hardest
+                // to debug, so deleting their temp files is counterproductive.
+                let is_timeout_related = match &error {
+                    AppError::InvocationFailed {
+                        failure_class: FailureClass::Timeout,
+                        ..
+                    } => true,
+                    AppError::InvocationFailed { details, .. }
+                        if details.contains("exceeded timeout") =>
+                    {
+                        true
+                    }
+                    _ => false,
+                };
+                if is_timeout_related {
                     prepared
                         .preserve_failed_artifacts(&request, "process timed out")
                         .await;
@@ -1297,7 +1322,19 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                     {
                         Ok(output) => output,
                         Err(error) => {
-                            if error.failure_class() == Some(FailureClass::Timeout) {
+                            let is_timeout_related = match &error {
+                                AppError::InvocationFailed {
+                                    failure_class: FailureClass::Timeout,
+                                    ..
+                                } => true,
+                                AppError::InvocationFailed { details, .. }
+                                    if details.contains("exceeded timeout") =>
+                                {
+                                    true
+                                }
+                                _ => false,
+                            };
+                            if is_timeout_related {
                                 fresh_prepared
                                     .preserve_failed_artifacts(
                                         &fresh_request,
@@ -2951,6 +2988,7 @@ mod tests {
 
     // ── classify_exit_failure unit tests ────────────────────────────────
 
+    #[cfg(unix)]
     mod classify_exit_tests {
         use super::super::classify_exit_failure;
         use crate::shared::domain::FailureClass;
