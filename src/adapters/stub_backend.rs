@@ -332,6 +332,7 @@ impl AgentExecutionPort for StubBackendAdapter {
             Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
                 details: "stub adapter configured as unavailable".to_owned(),
+                failure_class: None,
             })
         }
     }

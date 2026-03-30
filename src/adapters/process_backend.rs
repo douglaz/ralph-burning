@@ -545,6 +545,7 @@ impl ProcessBackendAdapter {
                 details: format!(
                     "required binary '{binary_name}' not found (or not executable) in explicit search paths"
                 ),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
         Ok(std::path::PathBuf::from(binary_name))
@@ -786,9 +787,14 @@ impl ProcessBackendAdapter {
                 // Resolve the binary before writing temp files so that a
                 // missing binary does not leave orphaned schema artifacts.
                 let binary = self.resolve_binary("codex").map_err(|e| match e {
-                    AppError::BackendUnavailable { details, .. } => AppError::BackendUnavailable {
+                    AppError::BackendUnavailable {
+                        details,
+                        failure_class,
+                        ..
+                    } => AppError::BackendUnavailable {
                         backend: "openrouter".to_owned(),
                         details,
+                        failure_class,
                     },
                     other => other,
                 })?;
@@ -936,12 +942,14 @@ impl ProcessBackendAdapter {
                     "required binary '{binary_name}' was found at '{}' but is not executable; fix the file permissions or install a working executable on PATH",
                     candidate.display()
                 ),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
 
         Err(AppError::BackendUnavailable {
             backend: backend.to_owned(),
             details: format!("required binary '{binary_name}' was not found on PATH"),
+            failure_class: Some(FailureClass::BinaryNotFound),
         })
     }
 
@@ -1173,6 +1181,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             return Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
                 details: "ProcessBackendAdapter availability checks are only supported for claude, codex, and openrouter".to_owned(),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         };
         Self::ensure_binary_available(
@@ -1188,6 +1197,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             return Err(AppError::BackendUnavailable {
                 backend: "openrouter".to_owned(),
                 details: "OPENROUTER_API_KEY is not set".to_owned(),
+                failure_class: Some(FailureClass::BinaryNotFound),
             });
         }
         Ok(())

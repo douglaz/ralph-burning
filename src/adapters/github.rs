@@ -114,6 +114,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if resp.status().is_success() {
@@ -137,6 +138,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: e.to_string(),
+                    failure_class: None,
                 })?;
 
             if !create_resp.status().is_success() && create_resp.status().as_u16() != 422 {
@@ -145,6 +147,7 @@ impl GithubClient {
                 return Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to create label '{label_name}': {status} {text}"),
+                    failure_class: None,
                 });
             }
         }
@@ -185,6 +188,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: e.to_string(),
+                    failure_class: None,
                 })?;
 
             if !resp.status().is_success() {
@@ -193,6 +197,7 @@ impl GithubClient {
                 return Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to poll issues: {status} {text}"),
+                    failure_class: None,
                 });
             }
 
@@ -202,6 +207,7 @@ impl GithubClient {
                     .map_err(|e| AppError::BackendUnavailable {
                         backend: "github".to_owned(),
                         details: format!("failed to parse issues response: {e}"),
+                        failure_class: None,
                     })?;
             let is_last_page = issues.len() < 100;
             all_issues.extend(issues);
@@ -240,6 +246,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -248,6 +255,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to read labels: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -257,6 +265,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to parse labels: {e}"),
+                    failure_class: None,
                 })?;
 
         Ok(labels.into_iter().map(|l| l.name).collect())
@@ -285,6 +294,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -293,6 +303,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to add label '{label}': {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -320,6 +331,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         // 404 is acceptable — label may already be absent
@@ -329,6 +341,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to remove label '{label}': {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -358,6 +371,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -366,6 +380,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to replace labels: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -397,6 +412,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: e.to_string(),
+                    failure_class: None,
                 })?;
 
             if !resp.status().is_success() {
@@ -405,6 +421,7 @@ impl GithubClient {
                 return Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to fetch issue comments: {status} {text}"),
+                    failure_class: None,
                 });
             }
 
@@ -414,6 +431,7 @@ impl GithubClient {
                     .map_err(|e| AppError::BackendUnavailable {
                         backend: "github".to_owned(),
                         details: format!("failed to parse comments: {e}"),
+                        failure_class: None,
                     })?;
             let is_last_page = comments.len() < 100;
             all_comments.extend(comments);
@@ -460,6 +478,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -468,6 +487,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to post comment: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -500,6 +520,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: e.to_string(),
+                    failure_class: None,
                 })?;
 
             if !resp.status().is_success() {
@@ -508,6 +529,7 @@ impl GithubClient {
                 return Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to fetch PR review comments: {status} {text}"),
+                    failure_class: None,
                 });
             }
 
@@ -517,6 +539,7 @@ impl GithubClient {
                     .map_err(|e| AppError::BackendUnavailable {
                         backend: "github".to_owned(),
                         details: format!("failed to parse PR review comments: {e}"),
+                        failure_class: None,
                     })?;
             let is_last_page = comments.len() < 100;
             all.extend(comments);
@@ -551,6 +574,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: e.to_string(),
+                    failure_class: None,
                 })?;
 
             if !resp.status().is_success() {
@@ -559,6 +583,7 @@ impl GithubClient {
                 return Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to fetch PR reviews: {status} {text}"),
+                    failure_class: None,
                 });
             }
 
@@ -568,6 +593,7 @@ impl GithubClient {
                     .map_err(|e| AppError::BackendUnavailable {
                         backend: "github".to_owned(),
                         details: format!("failed to parse PR reviews: {e}"),
+                        failure_class: None,
                     })?;
             let is_last_page = reviews.len() < 100;
             all.extend(reviews);
@@ -608,6 +634,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -616,12 +643,14 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to create draft PR: {status} {text}"),
+                failure_class: None,
             });
         }
 
         resp.json().await.map_err(|e| AppError::BackendUnavailable {
             backend: "github".to_owned(),
             details: format!("failed to parse PR response: {e}"),
+            failure_class: None,
         })
     }
 
@@ -644,6 +673,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         let status = resp.status();
@@ -653,6 +683,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to mark PR ready: {status} {body_text}"),
+                failure_class: None,
             });
         }
 
@@ -662,6 +693,7 @@ impl GithubClient {
             serde_json::from_str(&body_text).map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to parse GraphQL response: {e}"),
+                failure_class: None,
             })?;
 
         if let Some(errors) = parsed.get("errors") {
@@ -675,6 +707,7 @@ impl GithubClient {
                     return Err(AppError::BackendUnavailable {
                         backend: "github".to_owned(),
                         details: format!("GraphQL errors marking PR ready: {}", msgs.join("; ")),
+                        failure_class: None,
                     });
                 }
             }
@@ -688,6 +721,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("GraphQL response missing expected pullRequest.id: {body_text}"),
+                failure_class: None,
             });
         }
 
@@ -709,6 +743,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -717,6 +752,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to close PR: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -741,6 +777,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -749,12 +786,14 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to fetch PR state: {status} {text}"),
+                failure_class: None,
             });
         }
 
         resp.json().await.map_err(|e| AppError::BackendUnavailable {
             backend: "github".to_owned(),
             details: format!("failed to parse PR state: {e}"),
+            failure_class: None,
         })
     }
 
@@ -779,6 +818,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -787,6 +827,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to update PR body: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -818,6 +859,7 @@ impl GithubClient {
             .map_err(|e| AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: e.to_string(),
+                failure_class: None,
             })?;
 
         if !resp.status().is_success() {
@@ -826,6 +868,7 @@ impl GithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("failed to compare branches: {status} {text}"),
+                failure_class: None,
             });
         }
 
@@ -835,6 +878,7 @@ impl GithubClient {
                 .map_err(|e| AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: format!("failed to parse comparison: {e}"),
+                    failure_class: None,
                 })?;
 
         Ok(comparison.ahead_by > 0)
@@ -1251,6 +1295,7 @@ impl GithubPort for InMemoryGithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("simulated ensure_labels failure for {key}"),
+                failure_class: None,
             });
         }
         let mut ensured = self.labels_ensured.lock().unwrap();
@@ -1306,6 +1351,7 @@ impl GithubPort for InMemoryGithubClient {
             return Err(AppError::BackendUnavailable {
                 backend: "github".to_owned(),
                 details: format!("simulated add_label failure for issue {issue_number}"),
+                failure_class: None,
             });
         }
         let mut issues = self.issues.lock().unwrap();
@@ -1464,6 +1510,7 @@ impl GithubPort for InMemoryGithubClient {
             Err(AppError::BackendUnavailable {
                 backend: "github-inmemory".to_owned(),
                 details: format!("PR #{pr_number} not found"),
+                failure_class: None,
             })
         }
     }
@@ -1477,6 +1524,7 @@ impl GithubPort for InMemoryGithubClient {
             Err(AppError::BackendUnavailable {
                 backend: "github-inmemory".to_owned(),
                 details: format!("PR #{pr_number} not found"),
+                failure_class: None,
             })
         }
     }
@@ -1494,6 +1542,7 @@ impl GithubPort for InMemoryGithubClient {
             .ok_or_else(|| AppError::BackendUnavailable {
                 backend: "github-inmemory".to_owned(),
                 details: format!("PR #{pr_number} not found"),
+                failure_class: None,
             })
     }
 
@@ -1513,6 +1562,7 @@ impl GithubPort for InMemoryGithubClient {
             Err(AppError::BackendUnavailable {
                 backend: "github-inmemory".to_owned(),
                 details: format!("PR #{pr_number} not found"),
+                failure_class: None,
             })
         }
     }

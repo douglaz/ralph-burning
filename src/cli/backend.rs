@@ -291,6 +291,7 @@ async fn handle_probe(
                         "cannot construct backend adapter for probe: {}",
                         adapter_err
                     ),
+                    failure_class: None,
                 });
             }
         };

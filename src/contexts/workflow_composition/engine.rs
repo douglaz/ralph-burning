@@ -5958,6 +5958,7 @@ where
         .map_err(|e| AppError::BackendUnavailable {
             backend: panel.refiner.backend.family.to_string(),
             details: format!("required prompt-review refiner unavailable: {e}"),
+            failure_class: None,
         })?;
 
     // Required unavailable validators fail resolution; optional
@@ -6433,6 +6434,7 @@ where
         .map_err(|error| AppError::BackendUnavailable {
             backend: panel.planner.backend.family.to_string(),
             details: format!("required final-review planner unavailable: {error}"),
+            failure_class: None,
         })?;
     agent_service
         .adapter()
@@ -6441,6 +6443,7 @@ where
         .map_err(|error| AppError::BackendUnavailable {
             backend: panel.arbiter.backend.family.to_string(),
             details: format!("required final-review arbiter unavailable: {error}"),
+            failure_class: None,
         })?;
 
     let mut available_reviewers = Vec::new();

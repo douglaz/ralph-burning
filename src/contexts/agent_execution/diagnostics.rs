@@ -1129,6 +1129,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                         "required target '{}' ({}) unavailable: {} [source: {}]",
                         role_str, primary_target, err, primary_source
                     ),
+                    failure_class: None,
                 });
             }
         }
@@ -1153,6 +1154,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                                 err,
                                 primary_source
                             ),
+                            failure_class: None,
                         });
                     }
                 }
@@ -1170,6 +1172,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                             "required arbiter for '{}' unavailable: {} [source: {}]",
                             role_str, err, arbiter_source
                         ),
+                        failure_class: None,
                     });
                 }
             }
@@ -1203,6 +1206,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                                 err,
                                 members_source
                             ),
+                            failure_class: None,
                         });
                     }
                 }
@@ -1241,6 +1245,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             details: format!(
                 "required target '{panel}' ({target_label}) unavailable: {inner} [source: {config_source}]",
             ),
+            failure_class: None,
         }
     }
 
@@ -1272,6 +1277,7 @@ impl<'a> BackendDiagnosticsService<'a> {
                         "required target '{panel}.{member_label}[{idx}]' ({backend}) unavailable: \
                          backend disabled [source: {config_source}]",
                     ),
+                    failure_class: None,
                 };
             }
         }
@@ -1296,6 +1302,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             details: format!(
                 "required target '{panel}' ({member_label}) unavailable: {inner} [source: {config_source}]",
             ),
+            failure_class: None,
         }
     }
 

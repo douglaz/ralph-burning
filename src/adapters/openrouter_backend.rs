@@ -70,6 +70,7 @@ impl OpenRouterBackendAdapter {
             _ => Err(AppError::BackendUnavailable {
                 backend: BackendFamily::OpenRouter.to_string(),
                 details: "OPENROUTER_API_KEY is not set".to_owned(),
+                failure_class: None,
             }),
         }
     }
@@ -180,6 +181,7 @@ impl OpenRouterBackendAdapter {
             .map_err(|error| AppError::BackendUnavailable {
                 backend: BackendFamily::OpenRouter.to_string(),
                 details: format!("failed to build HTTP client: {error}"),
+                failure_class: None,
             })?;
 
         let response = client
@@ -190,6 +192,7 @@ impl OpenRouterBackendAdapter {
             .map_err(|error| AppError::BackendUnavailable {
                 backend: BackendFamily::OpenRouter.to_string(),
                 details: format!("availability probe failed: {error}"),
+                failure_class: None,
             })?;
 
         if response.status().is_success() {
@@ -201,6 +204,7 @@ impl OpenRouterBackendAdapter {
         Err(AppError::BackendUnavailable {
             backend: BackendFamily::OpenRouter.to_string(),
             details: format_http_error_details(status, &body),
+            failure_class: None,
         })
     }
 
@@ -329,6 +333,7 @@ impl OpenRouterBackendAdapter {
             401 | 403 => AppError::BackendUnavailable {
                 backend: request.resolved_target.backend.family.to_string(),
                 details,
+                failure_class: None,
             },
             429 => Self::invocation_failed(
                 request,
@@ -373,6 +378,7 @@ impl AgentExecutionPort for OpenRouterBackendAdapter {
                 details:
                     "OpenRouterBackendAdapter availability checks only support openrouter targets"
                         .to_owned(),
+                failure_class: None,
             });
         }
 

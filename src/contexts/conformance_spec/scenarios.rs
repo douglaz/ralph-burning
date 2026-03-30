@@ -11579,6 +11579,7 @@ fn register_workflow_panels(m: &mut HashMap<String, ScenarioExecutor>) {
         let err = crate::shared::error::AppError::BackendUnavailable {
             backend: "codex".to_owned(),
             details: "required backend is disabled or unavailable".to_owned(),
+            failure_class: None,
         };
         if !err.to_string().contains("unavailable") {
             return Err(format!("unexpected error: {err}"));
@@ -16101,6 +16102,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: "simulated label failure".to_owned(),
+                    failure_class: None,
                 })
             }
             async fn remove_label(&self, _o: &str, _r: &str, _n: u64, _l: &str) -> AppResult<()> {
@@ -16161,6 +16163,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: "not implemented".to_owned(),
+                    failure_class: None,
                 })
             }
             async fn mark_pr_ready(&self, _o: &str, _r: &str, _n: u64) -> AppResult<()> {
@@ -16178,6 +16181,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                 Err(AppError::BackendUnavailable {
                     backend: "github".to_owned(),
                     details: "not implemented".to_owned(),
+                    failure_class: None,
                 })
             }
             async fn update_pr_body(&self, _o: &str, _r: &str, _n: u64, _b: &str) -> AppResult<()> {
@@ -18309,6 +18313,7 @@ fn register_daemon_github(m: &mut HashMap<String, ScenarioExecutor>) {
                     backend: "stub".to_owned(),
                     contract_id: "daemon:rebase_resolution".to_owned(),
                     timeout_ms: 30_000,
+                    details: "stub timeout".to_owned(),
                 })
             }
         }

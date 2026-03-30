@@ -98,6 +98,7 @@ impl TmuxAdapter {
                     "resolved tmux binary '{}' is no longer available or executable",
                     self.tmux_binary.display()
                 ),
+                failure_class: None,
             });
         }
         Self::check_tmux_available_in(&self.process.effective_search_paths())
@@ -150,6 +151,7 @@ impl TmuxAdapter {
             None => Err(AppError::BackendUnavailable {
                 backend: backend.backend.family.to_string(),
                 details: OPENROUTER_TMUX_UNSUPPORTED_DETAILS.to_owned(),
+                failure_class: None,
             }),
         }
     }
@@ -180,6 +182,7 @@ impl TmuxAdapter {
             Err(AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details: format!("session '{session_name}' is not available for attachment"),
+                failure_class: None,
             })
         }
     }
@@ -264,6 +267,7 @@ impl TmuxAdapter {
             Err(error) => Err(AppError::BackendUnavailable {
                 backend: "tmux".to_owned(),
                 details: format!("failed to query tmux session '{session_name}': {error}"),
+                failure_class: None,
             }),
         }
     }
@@ -740,6 +744,7 @@ impl ManagedTmuxSession {
         Err(AppError::BackendUnavailable {
             backend: "tmux".to_owned(),
             details: "tmux signal delivery requires unix".to_owned(),
+            failure_class: None,
         })
     }
 
@@ -753,6 +758,7 @@ impl ManagedTmuxSession {
         Err(AppError::BackendUnavailable {
             backend: "tmux".to_owned(),
             details: "tmux signal delivery requires unix".to_owned(),
+            failure_class: None,
         })
     }
 
@@ -892,6 +898,7 @@ fn build_wrapper_script(
             "binary path '{}' contains non-UTF-8 bytes and cannot be embedded in a shell script",
             binary.display()
         ),
+            failure_class: None,
         })?;
 
     let command = std::iter::once(shell_escape(binary_str))

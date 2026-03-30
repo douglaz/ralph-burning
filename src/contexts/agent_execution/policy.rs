@@ -177,6 +177,7 @@ impl<'a> BackendPolicyService<'a> {
         Err(AppError::BackendUnavailable {
             backend: family.to_string(),
             details: "no opposite backend family is enabled".to_owned(),
+            failure_class: None,
         })
     }
 
@@ -213,6 +214,7 @@ impl<'a> BackendPolicyService<'a> {
                 return Err(AppError::BackendUnavailable {
                     backend: backend.to_string(),
                     details: "required backend is disabled or unavailable".to_owned(),
+                    failure_class: None,
                 });
             }
 
@@ -257,6 +259,7 @@ impl<'a> BackendPolicyService<'a> {
             return Err(AppError::BackendUnavailable {
                 backend: selection.family.to_string(),
                 details: "configured backend is disabled or unavailable".to_owned(),
+                failure_class: None,
             });
         }
 
@@ -273,6 +276,7 @@ impl<'a> BackendPolicyService<'a> {
             return Err(AppError::BackendUnavailable {
                 backend: family.to_string(),
                 details: "configured backend is disabled or unavailable".to_owned(),
+                failure_class: None,
             });
         }
 

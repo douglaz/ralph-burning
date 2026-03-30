@@ -217,6 +217,7 @@ where
                             backend: request.resolved_target.backend.family.to_string(),
                             contract_id: request.contract.label(),
                             timeout_ms,
+                            details: "service-level safety-net timeout fired".to_owned(),
                         });
                     }
                 }
@@ -362,6 +363,7 @@ fn map_availability_error(error: AppError, request: &InvocationRequest) -> AppEr
         other => AppError::BackendUnavailable {
             backend: request.resolved_target.backend.family.to_string(),
             details: other.to_string(),
+            failure_class: None,
         },
     }
 }
@@ -371,13 +373,17 @@ fn map_invoke_error(error: AppError, request: &InvocationRequest) -> AppError {
         // Adapter-enforced process timeouts arrive as InvocationFailed with
         // FailureClass::Timeout.  Promote them to InvocationTimeout so that
         // consumers (e.g. worktree rebase) can match on the canonical variant.
+        // The adapter-level details (e.g. "claude exceeded timeout of 600s")
+        // are preserved for operator diagnostics.
         AppError::InvocationFailed {
             failure_class: FailureClass::Timeout,
+            details,
             ..
         } => AppError::InvocationTimeout {
             backend: request.resolved_target.backend.family.to_string(),
             contract_id: request.contract.label(),
             timeout_ms: request.timeout.as_millis().min(u64::MAX as u128) as u64,
+            details,
         },
         AppError::InvocationFailed { .. }
         | AppError::InvocationTimeout { .. }

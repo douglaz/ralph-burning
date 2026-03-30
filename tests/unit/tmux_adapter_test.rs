@@ -545,7 +545,9 @@ async fn tmux_availability_check_fails_cleanly_when_binary_missing() {
         .expect_err("tmux should be unavailable");
 
     match error {
-        AppError::BackendUnavailable { backend, details } => {
+        AppError::BackendUnavailable {
+            backend, details, ..
+        } => {
             assert_eq!(backend, "tmux");
             assert!(details.contains("tmux"));
         }
@@ -573,7 +575,9 @@ async fn tmux_mode_rejects_openrouter_without_falling_back_to_direct_execution()
         .expect_err("tmux mode should reject openrouter availability");
 
     match &availability_error {
-        AppError::BackendUnavailable { backend, details } => {
+        AppError::BackendUnavailable {
+            backend, details, ..
+        } => {
             assert_eq!(backend, "openrouter");
             assert!(
                 details.contains("execution.mode = \"tmux\""),
