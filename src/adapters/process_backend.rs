@@ -1493,10 +1493,27 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
 /// `BinaryNotFound` (terminal) so the retry loop does not waste attempts on
 /// a missing binary.  All other non-zero exits and signal kills map to
 /// `TransportFailure` (retryable).
+///
+/// On Unix, when a process is killed by a signal (no exit code), a warning
+/// is logged with the signal number to help operators diagnose deterministic
+/// crashes (e.g. SIGSEGV, SIGABRT).  Retry behaviour is unchanged.
 pub(crate) fn classify_exit_failure(status: ExitStatus) -> FailureClass {
     match status.code() {
         Some(127) => FailureClass::BinaryNotFound,
-        _ => FailureClass::TransportFailure,
+        Some(_) => FailureClass::TransportFailure,
+        None => {
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::ExitStatusExt;
+                if let Some(signal) = status.signal() {
+                    tracing::warn!(
+                        signal = signal,
+                        "process killed by signal (retry will proceed as TransportFailure)"
+                    );
+                }
+            }
+            FailureClass::TransportFailure
+        }
     }
 }
 

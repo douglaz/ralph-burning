@@ -4640,8 +4640,7 @@ where
                             backoff.as_secs(),
                             cursor.attempt + 1,
                         );
-                        let _ =
-                            run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot);
+                        run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
 
                         let _ = log_write.append_runtime_log(
                             base_dir,
@@ -5792,6 +5791,10 @@ fn derive_resume_state(
     let mut current_completion_round = snapshot.completion_rounds.max(1);
     let mut next_stage_index = 0usize;
     let mut last_completed_stage = None;
+    // Track the highest retryable-failed attempt per (stage, cycle) so that
+    // a crash during the backoff window does not reset the attempt counter
+    // back to 1 and replenish the retry budget.
+    let mut retryable_failed_attempts: HashMap<(StageId, u32), u32> = HashMap::new();
 
     for event in events {
         match event.event_type {
@@ -5800,6 +5803,24 @@ fn derive_resume_state(
                 current_cycle = detail_u32(event, "cycle").unwrap_or(current_cycle);
                 next_stage_index = stage_index_for(stage_plan, stage_id)? + 1;
                 last_completed_stage = Some(stage_id);
+            }
+            crate::contexts::project_run_record::model::JournalEventType::StageFailed => {
+                if let (Ok(stage_id), Some(cycle), Some(attempt)) = (
+                    detail_stage_id(event, "stage_id"),
+                    detail_u32(event, "cycle"),
+                    detail_u32(event, "attempt"),
+                ) {
+                    let will_retry = event
+                        .details
+                        .get("will_retry")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false);
+                    if will_retry {
+                        let entry =
+                            retryable_failed_attempts.entry((stage_id, cycle)).or_insert(0);
+                        *entry = (*entry).max(attempt);
+                    }
+                }
             }
             crate::contexts::project_run_record::model::JournalEventType::CycleAdvanced => {
                 current_cycle = match detail_u32(event, "to_cycle") {
@@ -5849,10 +5870,18 @@ fn derive_resume_state(
     }
 
     let completion_round = current_completion_round;
+    let resume_stage_id = stage_plan[next_stage_index].stage_id;
+    let resume_cycle = current_cycle.max(1);
+    // If the last failure for this stage+cycle was retryable, resume at
+    // failed_attempt + 1 so we don't replenish the retry budget on restart.
+    let resume_attempt = retryable_failed_attempts
+        .get(&(resume_stage_id, resume_cycle))
+        .map(|&a| a + 1)
+        .unwrap_or(1);
     let cursor = StageCursor::new(
-        stage_plan[next_stage_index].stage_id,
-        current_cycle.max(1),
-        1,
+        resume_stage_id,
+        resume_cycle,
+        resume_attempt,
         completion_round,
     )?;
 
