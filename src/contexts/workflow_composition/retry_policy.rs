@@ -123,7 +123,7 @@ impl RetryPolicy {
         let delay = self.backoff_base.saturating_mul(multiplier);
         let capped = delay.min(self.backoff_cap);
         if self.jitter {
-            Self::apply_jitter(capped)
+            Self::apply_jitter(capped).min(self.backoff_cap)
         } else {
             capped
         }

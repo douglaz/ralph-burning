@@ -60,6 +60,36 @@ fn default_backoff_uses_exponential_growth_capped_at_60s() {
 }
 
 #[test]
+fn jitter_enabled_backoff_stays_within_expected_range() {
+    let policy = RetryPolicy::default_policy(); // jitter enabled by default
+                                                // Default base is 5s, attempt 1 multiplier is 1, so base delay = 5s.
+                                                // With ±25% jitter the expected range is [3.75s, 6.25s).
+    for _ in 0..20 {
+        let backoff = policy.backoff_for_attempt(1);
+        assert!(
+            backoff >= Duration::from_millis(3750) && backoff < Duration::from_millis(6250),
+            "jittered backoff {backoff:?} outside expected [3.75s, 6.25s) for attempt 1"
+        );
+    }
+}
+
+#[test]
+fn jitter_never_exceeds_backoff_cap() {
+    let policy = RetryPolicy::default_policy(); // jitter enabled, cap = 60s
+                                                // At high attempt numbers the pre-jitter delay saturates at the cap.
+                                                // After the re-cap fix, jitter must never push the result above 60s.
+    for attempt in 1..=10 {
+        for _ in 0..20 {
+            let backoff = policy.backoff_for_attempt(attempt);
+            assert!(
+                backoff <= Duration::from_secs(60),
+                "jittered backoff {backoff:?} exceeds 60s cap at attempt {attempt}"
+            );
+        }
+    }
+}
+
+#[test]
 fn no_backoff_returns_zero_for_all_attempts() {
     let policy = RetryPolicy::default_policy().with_no_backoff();
 

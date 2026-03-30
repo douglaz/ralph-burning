@@ -2165,3 +2165,43 @@ async fn spawn_missing_binary_returns_binary_not_found() {
         other => panic!("expected BinaryNotFound for missing binary, got: {other:?}"),
     }
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn clean_timeout_teardown_yields_timeout_without_warning() {
+    // Verify that when a killable process times out, confirm_teardown
+    // succeeds and the error is classified as Timeout (not TransportFailure)
+    // with no "teardown not confirmed" warning in the details.
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nsleep 99999\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    request.timeout = Duration::from_secs(2);
+
+    let error = adapter.invoke(request).await.expect_err("should timeout");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class,
+            details,
+            ..
+        } => {
+            assert_eq!(
+                failure_class,
+                FailureClass::Timeout,
+                "clean teardown should yield Timeout, got {failure_class:?}"
+            );
+            assert!(
+                !details.contains("teardown not confirmed"),
+                "clean teardown should not warn about unconfirmed teardown: {details}"
+            );
+        }
+        other => panic!("expected InvocationFailed, got: {other:?}"),
+    }
+}

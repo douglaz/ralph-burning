@@ -998,9 +998,13 @@ impl ProcessBackendAdapter {
         let mut child = command.spawn().map_err(|error| {
             // spawn() returns ENOENT for several reasons: missing binary,
             // missing working directory, or missing script interpreter.
-            // Only classify as BinaryNotFound when the binary itself is
-            // confirmed missing; other NotFound causes are retryable.
-            let failure_class = if error.kind() == std::io::ErrorKind::NotFound && !binary.exists()
+            // For bare names (OS PATH lookup), ENOENT means the binary
+            // was not found on PATH — always BinaryNotFound.  For
+            // absolute paths, only classify as BinaryNotFound when the
+            // file is confirmed missing; other NotFound causes (e.g.
+            // missing interpreter) are retryable as TransportFailure.
+            let failure_class = if error.kind() == std::io::ErrorKind::NotFound
+                && (!binary.is_absolute() || !binary.exists())
             {
                 FailureClass::BinaryNotFound
             } else {
