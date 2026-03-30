@@ -5130,7 +5130,18 @@ async fn fail_run(
     snapshot.status = RunStatus::Failed;
     snapshot.active_run = None;
     snapshot.status_summary = format!("failed at {}: {}", stage_id.display_name(), message);
-    run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
+    // Best-effort: if this write fails (e.g. persistent disk I/O error
+    // when called from the pre-backoff recovery path), we still proceed
+    // to emit the run_failed journal event.  The journal is authoritative
+    // for derive_resume_state, so recording the failure there is more
+    // valuable than a consistent snapshot when the disk is degraded.
+    if let Err(snapshot_err) = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)
+    {
+        eprintln!(
+            "fail_run: snapshot write failed for stage {}: {snapshot_err}",
+            stage_id.as_str(),
+        );
+    }
 
     *seq += 1;
     let run_failed =
