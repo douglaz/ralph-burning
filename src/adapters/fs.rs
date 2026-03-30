@@ -22,8 +22,9 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
     collapse_task_run_attempts, find_matching_running_task_run, matching_finalized_task_runs,
-    render_completion_journal_details, MilestoneId, MilestoneJournalEvent, MilestoneRecord,
-    MilestoneSnapshot, TaskRunEntry, TaskRunOutcome,
+    render_completion_journal_details, render_start_journal_details, MilestoneEventType,
+    MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot, TaskRunEntry,
+    TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2276,6 +2277,53 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 pub struct FsMilestoneJournalStore;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct StartJournalDetails {
+    project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    plan_hash: Option<String>,
+}
+
+impl StartJournalDetails {
+    fn parse(details: &str) -> Option<Self> {
+        serde_json::from_str(details).ok()
+    }
+
+    fn merge(existing: &Self, requested: &Self) -> Option<Self> {
+        if existing.project_id != requested.project_id
+            || FsTaskRunLineageStore::option_conflicts(
+                existing.run_id.as_deref(),
+                requested.run_id.as_deref(),
+            )
+            || FsTaskRunLineageStore::option_conflicts(
+                existing.plan_hash.as_deref(),
+                requested.plan_hash.as_deref(),
+            )
+        {
+            return None;
+        }
+
+        let mut merged = existing.clone();
+        if merged.run_id.is_none() {
+            merged.run_id = requested.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = requested.plan_hash.clone();
+        }
+        Some(merged)
+    }
+
+    fn render(&self) -> String {
+        render_start_journal_details(
+            &self.project_id,
+            self.run_id.as_deref(),
+            self.plan_hash.as_deref(),
+        )
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct CompletionJournalDetails {
     project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2418,6 +2466,27 @@ impl FsMilestoneJournalStore {
         repaired.details = Some(merged_details.render());
         Some(repaired)
     }
+
+    fn repairable_start_event(
+        existing: &MilestoneJournalEvent,
+        requested: &MilestoneJournalEvent,
+    ) -> Option<MilestoneJournalEvent> {
+        if existing.event_type != MilestoneEventType::BeadStarted
+            || requested.event_type != MilestoneEventType::BeadStarted
+            || existing.timestamp != requested.timestamp
+            || existing.bead_id != requested.bead_id
+        {
+            return None;
+        }
+
+        let existing_details = StartJournalDetails::parse(existing.details.as_deref()?)?;
+        let requested_details = StartJournalDetails::parse(requested.details.as_deref()?)?;
+        let merged_details = StartJournalDetails::merge(&existing_details, &requested_details)?;
+
+        let mut repaired = existing.clone();
+        repaired.details = Some(merged_details.render());
+        Some(repaired)
+    }
 }
 
 impl MilestoneJournalPort for FsMilestoneJournalStore {
@@ -2460,7 +2529,9 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
 
         if let Some((existing_index, repaired_event)) =
             journal.iter().enumerate().find_map(|(index, existing)| {
-                Self::repairable_completion_event(existing, event).map(|repaired| (index, repaired))
+                Self::repairable_start_event(existing, event)
+                    .or_else(|| Self::repairable_completion_event(existing, event))
+                    .map(|repaired| (index, repaired))
             })
         {
             if journal[existing_index].details == repaired_event.details {

@@ -448,7 +448,7 @@ pub fn record_bead_start(
         let event =
             MilestoneJournalEvent::new(MilestoneEventType::BeadStarted, started_entry.started_at)
                 .with_bead(bead_id)
-                .with_details(format!("project={project_id}"));
+                .with_details(started_entry.start_journal_details());
         let _ = journal_store.append_event_if_missing(base_dir, milestone_id, &event)?;
 
         Ok(())
@@ -3827,20 +3827,17 @@ mod tests {
             now,
         )?;
 
-        lineage_store.append_task_run(
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
             base,
             &record.id,
-            &TaskRunEntry {
-                milestone_id: record.id.to_string(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at: now,
-                finished_at: None,
-            },
+            "bead-1",
+            "project-1",
+            None,
+            Some("plan-v1"),
+            now,
         )?;
 
         let error = record_bead_completion(
@@ -3870,7 +3867,8 @@ mod tests {
         assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
 
         let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
-        assert_eq!(snapshot.status, MilestoneStatus::Planning);
+        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
 
         let journal = read_journal(&journal_store, base, &record.id)?;
         let completion_events: Vec<_> = journal
@@ -3904,20 +3902,17 @@ mod tests {
             now,
         )?;
 
-        lineage_store.append_task_run(
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
             base,
             &record.id,
-            &TaskRunEntry {
-                milestone_id: record.id.to_string(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at: now,
-                finished_at: None,
-            },
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            now,
         )?;
 
         record_bead_start(
@@ -3968,6 +3963,20 @@ mod tests {
             .collect();
         assert_eq!(start_events.len(), 1);
         assert_eq!(start_events[0].timestamp, now);
+        let start_details: serde_json::Value = serde_json::from_str(
+            start_events[0]
+                .details
+                .as_deref()
+                .expect("start event should carry details"),
+        )?;
+        assert_eq!(
+            start_details,
+            serde_json::json!({
+                "project_id": "project-1",
+                "run_id": "run-2",
+                "plan_hash": "plan-v1",
+            })
+        );
         Ok(())
     }
 
@@ -4042,6 +4051,107 @@ mod tests {
             .map_err(Box::<dyn std::error::Error>::from)?;
         assert_eq!(snapshot.status, MilestoneStatus::Active);
         assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
+        Ok(())
+    }
+
+    #[test]
+    fn start_journal_dedupe_keeps_same_timestamp_named_attempts_separate(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "same-started-at-start-journal-test".to_owned(),
+                name: "Same Started At Start Journal Test".to_owned(),
+                description:
+                    "distinct named starts at the same timestamp must keep separate journal rows"
+                        .to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-2"),
+            Some("plan-v1"),
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-2"),
+            Some("plan-v1"),
+            TaskRunOutcome::Succeeded,
+            Some("first run finished"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )?;
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-3"),
+            Some("plan-v2"),
+            now,
+        )?;
+
+        let start_events: Vec<_> = read_journal(&journal_store, base, &record.id)?
+            .into_iter()
+            .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
+            .collect();
+        assert_eq!(start_events.len(), 2);
+
+        let start_details: Vec<serde_json::Value> = start_events
+            .iter()
+            .map(|event| {
+                serde_json::from_str(
+                    event
+                        .details
+                        .as_deref()
+                        .expect("start event should carry details"),
+                )
+            })
+            .collect::<Result<_, _>>()?;
+        assert!(start_details.iter().any(|details| {
+            details
+                == &serde_json::json!({
+                    "project_id": "project-1",
+                    "run_id": "run-2",
+                    "plan_hash": "plan-v1",
+                })
+        }));
+        assert!(start_details.iter().any(|details| {
+            details
+                == &serde_json::json!({
+                    "project_id": "project-1",
+                    "run_id": "run-3",
+                    "plan_hash": "plan-v2",
+                })
+        }));
         Ok(())
     }
 

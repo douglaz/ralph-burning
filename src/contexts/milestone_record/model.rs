@@ -330,6 +330,14 @@ impl TaskRunEntry {
         merged
     }
 
+    pub fn start_journal_details(&self) -> String {
+        render_start_journal_details(
+            &self.project_id,
+            self.run_id.as_deref(),
+            self.plan_hash.as_deref(),
+        )
+    }
+
     pub fn completion_journal_details(&self) -> String {
         render_completion_journal_details(
             &self.project_id,
@@ -340,6 +348,28 @@ impl TaskRunEntry {
             self.outcome_detail.as_deref(),
         )
     }
+}
+
+#[derive(Serialize)]
+struct StartJournalDetailsPayload<'a> {
+    project_id: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_id: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    plan_hash: Option<&'a str>,
+}
+
+pub fn render_start_journal_details(
+    project_id: &str,
+    run_id: Option<&str>,
+    plan_hash: Option<&str>,
+) -> String {
+    serde_json::to_string(&StartJournalDetailsPayload {
+        project_id,
+        run_id,
+        plan_hash,
+    })
+    .expect("start journal details serialization should not fail")
 }
 
 #[derive(Serialize)]
@@ -1247,6 +1277,24 @@ mod tests {
                 "started_at": started_at,
                 "outcome": "succeeded",
                 "outcome_detail": "detail payload",
+            })
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn start_journal_details_support_delimited_identifiers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let details =
+            render_start_journal_details("project, one", Some("run, 1"), Some("plan, v2"));
+
+        let parsed: serde_json::Value = serde_json::from_str(&details)?;
+        assert_eq!(
+            parsed,
+            serde_json::json!({
+                "project_id": "project, one",
+                "run_id": "run, 1",
+                "plan_hash": "plan, v2",
             })
         );
         Ok(())
