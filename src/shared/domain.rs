@@ -541,6 +541,15 @@ impl FlowPreset {
         &Self::ALL
     }
 
+    pub fn supported_csv() -> String {
+        Self::all()
+            .iter()
+            .copied()
+            .map(Self::as_str)
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Standard => "standard",

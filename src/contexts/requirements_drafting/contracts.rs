@@ -22,6 +22,10 @@ use super::model::{
 };
 use super::renderers;
 
+fn is_built_in_flow(flow: FlowPreset) -> bool {
+    FlowPreset::all().contains(&flow)
+}
+
 /// A validated requirements contract output.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RequirementsValidatedBundle {
@@ -292,14 +296,7 @@ impl RequirementsContract {
                 if p.acceptance_criteria.is_empty() {
                     errors.push("acceptance_criteria must contain at least one item".to_string());
                 }
-                // Validate recommended_flow is a built-in preset
-                let valid_flows = [
-                    FlowPreset::Standard,
-                    FlowPreset::QuickDev,
-                    FlowPreset::DocsChange,
-                    FlowPreset::CiImprovement,
-                ];
-                if !valid_flows.contains(&p.recommended_flow) {
+                if !is_built_in_flow(p.recommended_flow) {
                     errors.push("recommended_flow must be a built-in preset".to_string());
                 }
                 if !errors.is_empty() {
@@ -388,13 +385,7 @@ impl RequirementsContract {
                 if p.acceptance_criteria.is_empty() {
                     errors.push("acceptance_criteria must contain at least one item".to_string());
                 }
-                let valid_flows = [
-                    FlowPreset::Standard,
-                    FlowPreset::QuickDev,
-                    FlowPreset::DocsChange,
-                    FlowPreset::CiImprovement,
-                ];
-                if !valid_flows.contains(&p.recommended_flow) {
+                if !is_built_in_flow(p.recommended_flow) {
                     errors.push("recommended_flow must be a built-in preset".to_string());
                 }
                 if !errors.is_empty() {

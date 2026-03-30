@@ -9,6 +9,7 @@ Feature: Flow discovery
     And the output should include "quick_dev"
     And the output should include "docs_change"
     And the output should include "ci_improvement"
+    And the output should include "minimal"
 
   @flow-show-each-preset
   Scenario Outline: show each preset
@@ -23,6 +24,7 @@ Feature: Flow discovery
       | quick_dev      | plan_and_implement |
       | docs_change    | docs_plan          |
       | ci_improvement | ci_plan            |
+      | minimal        | plan_and_implement |
 
   @flow-show-invalid-preset
   Scenario: show invalid preset

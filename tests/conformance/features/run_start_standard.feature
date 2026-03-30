@@ -140,10 +140,10 @@ Feature: Standard Preset Run Start Orchestration
     Then the output includes all stage events and payload/artifact records
 
   # SC-START-017
-  Scenario: Run start supports all four built-in flow presets
-    Given an initialized workspace with projects using flows "standard", "quick_dev", "docs_change", "ci_improvement"
+  Scenario: Run start supports all built-in flow presets
+    Given an initialized workspace with projects using all built-in flows, including "minimal"
     When the user runs "run start" for each project
-    Then all four flow presets complete successfully
+    Then all built-in flow presets complete successfully
 
   # SC-START-018
   Scenario: Prompt-review-disabled run start completes with 7 stages

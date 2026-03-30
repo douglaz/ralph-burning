@@ -100,6 +100,18 @@ fn conflicting_routing_labels_fail_resolution() {
 }
 
 #[test]
+fn label_vocabulary_contains_all_built_in_flow_labels() {
+    for preset in FlowPreset::all() {
+        let label = format!("rb:flow:{}", preset.as_str());
+        assert!(
+            ralph_burning::contexts::automation_runtime::repo_registry::LABEL_VOCABULARY
+                .contains(&label.as_str()),
+            "label vocabulary should include {label}"
+        );
+    }
+}
+
+#[test]
 fn task_state_machine_accepts_expected_transitions() {
     let mut task = sample_task();
     task.transition_to(TaskStatus::Claimed, Utc::now())

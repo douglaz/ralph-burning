@@ -72,10 +72,7 @@ const CI_IMPROVEMENT_STAGES: [StageId; 4] = [
     StageId::Review,
 ];
 
-const MINIMAL_STAGES: [StageId; 2] = [
-    StageId::PlanAndImplement,
-    StageId::FinalReview,
-];
+const MINIMAL_STAGES: [StageId; 2] = [StageId::PlanAndImplement, StageId::FinalReview];
 
 const STANDARD_REMEDIATION_TRIGGER_STAGES: [StageId; 2] = [StageId::Qa, StageId::Review];
 const STANDARD_LATE_STAGES: [StageId; 3] = [

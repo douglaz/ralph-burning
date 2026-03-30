@@ -6,6 +6,7 @@ use ralph_burning::contexts::requirements_drafting::model::{
     RequirementsStatus,
 };
 use ralph_burning::contexts::requirements_drafting::renderers;
+use ralph_burning::shared::domain::FlowPreset;
 use ralph_burning::shared::error::ContractError;
 
 use chrono::{TimeZone, Utc};
@@ -267,6 +268,25 @@ fn draft_contract_accepts_valid_json() {
         .evaluate(&valid)
         .expect("valid draft should pass");
     assert!(!bundle.artifact.is_empty());
+}
+
+#[test]
+fn draft_contract_accepts_all_built_in_recommended_flows() {
+    for preset in FlowPreset::all() {
+        let valid = json!({
+            "problem_summary": "We need a caching layer.",
+            "goals": ["Reduce latency by 50%"],
+            "non_goals": [],
+            "constraints": ["Must use existing infrastructure"],
+            "acceptance_criteria": ["P95 latency < 100ms"],
+            "risks_or_open_questions": [],
+            "recommended_flow": preset.as_str()
+        });
+
+        RequirementsContract::draft()
+            .evaluate(&valid)
+            .unwrap_or_else(|err| panic!("draft should accept built-in flow {}: {err}", preset));
+    }
 }
 
 #[test]
@@ -3103,6 +3123,27 @@ fn parity_slice1_synthesis_contract_validates_and_renders() {
     let bundle = contract.evaluate(&raw).expect("synthesis should validate");
     assert!(bundle.artifact.contains("# Synthesis"));
     assert!(bundle.artifact.contains("Build a REST API"));
+}
+
+#[test]
+fn synthesis_contract_accepts_all_built_in_recommended_flows() {
+    for preset in FlowPreset::all() {
+        let raw = json!({
+            "problem_summary": "Build a REST API",
+            "goals": ["Fast responses"],
+            "non_goals": [],
+            "constraints": [],
+            "acceptance_criteria": ["200ms p99 latency"],
+            "risks_or_open_questions": [],
+            "recommended_flow": preset.as_str()
+        });
+
+        RequirementsContract::synthesis()
+            .evaluate(&raw)
+            .unwrap_or_else(|err| {
+                panic!("synthesis should accept built-in flow {}: {err}", preset)
+            });
+    }
 }
 
 #[test]

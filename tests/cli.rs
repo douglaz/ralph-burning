@@ -522,10 +522,13 @@ fn flow_list_prints_all_presets() {
     assert!(output.status.success());
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("standard"));
-    assert!(stdout.contains("quick_dev"));
-    assert!(stdout.contains("docs_change"));
-    assert!(stdout.contains("ci_improvement"));
+    for preset in FlowPreset::all() {
+        assert!(
+            stdout.contains(preset.as_str()),
+            "flow list should include {}",
+            preset.as_str()
+        );
+    }
 }
 
 #[test]
@@ -555,6 +558,8 @@ fn flow_show_invalid_preset_exits_non_zero_with_clear_error() {
 
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains("unknown flow preset 'unknown_flow'"));
+    assert!(stderr.contains("supported presets:"));
+    assert!(stderr.contains("minimal"));
 }
 
 #[test]
@@ -4515,6 +4520,48 @@ fn run_start_completes_quick_dev_flow_end_to_end() {
     assert!(journal.contains("\"review\""));
     assert!(journal.contains("\"apply_fixes\""));
     assert!(journal.contains("\"final_review\""));
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_start_completes_minimal_flow_end_to_end() {
+    let temp_dir = initialize_workspace_fixture();
+    setup_project(&temp_dir, "minimal-run", "minimal");
+
+    let output = Command::new(binary())
+        .args(["run", "start"])
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+
+    assert!(
+        output.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let payload_files: Vec<_> = fs::read_dir(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/minimal-run/history/payloads"),
+    )
+    .expect("read payloads dir")
+    .filter_map(|e| e.ok())
+    .filter(|e| e.path().extension().is_some_and(|ext| ext == "json"))
+    .collect();
+    assert_eq!(payload_files.len(), 4);
+
+    let journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/minimal-run/journal.ndjson"),
+    )
+    .expect("read journal");
+    assert!(journal.contains("\"stage_id\":\"plan_and_implement\""));
+    assert!(journal.contains("\"stage_id\":\"final_review\""));
+    assert!(!journal.contains("\"stage_id\":\"review\""));
+    assert!(!journal.contains("\"stage_id\":\"apply_fixes\""));
 }
 
 #[cfg(feature = "test-stub")]
