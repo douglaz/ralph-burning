@@ -2904,21 +2904,18 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
-                let mut changed = Self::backfill_running_entry(
+                let changed = Self::backfill_running_entry(
                     &mut entries[existing_index],
                     bead_id,
                     project_id,
                     run_id,
                     plan_hash,
                 )?;
-                // Auto-populate plan_hash from snapshot when both caller and
-                // existing row lack it.
-                if entries[existing_index].plan_hash.is_none() {
-                    if let Some(snapshot_hash) = Self::snapshot_plan_hash(base_dir, milestone_id) {
-                        entries[existing_index].plan_hash = Some(snapshot_hash);
-                        changed = true;
-                    }
-                }
+                // NOTE: snapshot-based plan_hash backfill is intentionally NOT
+                // applied to existing rows. persist_plan() can advance
+                // snapshot.plan_hash after the original attempt started, so
+                // stamping the current snapshot hash would mislabel a v1
+                // attempt as v2. Only new entry creation auto-populates.
                 if changed {
                     Self::write_task_runs(&path, &entries)?;
                 }
@@ -3243,11 +3240,12 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         None => entry.plan_hash = Some(plan_hash.to_owned()),
                         _ => {}
                     }
-                } else if entry.plan_hash.is_none() {
-                    // Auto-populate plan_hash from the milestone snapshot when
-                    // both the caller and the existing row lack it.
-                    entry.plan_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
                 }
+                // NOTE: snapshot-based plan_hash backfill is intentionally NOT
+                // applied when finalizing an existing row. persist_plan() can
+                // advance snapshot.plan_hash after the attempt started, so the
+                // current snapshot hash may not match the plan the bead ran
+                // under. Only new entry creation auto-populates.
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);
