@@ -525,14 +525,16 @@ pub enum FlowPreset {
     QuickDev,
     DocsChange,
     CiImprovement,
+    Minimal,
 }
 
 impl FlowPreset {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::Standard,
         Self::QuickDev,
         Self::DocsChange,
         Self::CiImprovement,
+        Self::Minimal,
     ];
 
     pub fn all() -> &'static [Self] {
@@ -545,6 +547,7 @@ impl FlowPreset {
             Self::QuickDev => "quick_dev",
             Self::DocsChange => "docs_change",
             Self::CiImprovement => "ci_improvement",
+            Self::Minimal => "minimal",
         }
     }
 
@@ -560,6 +563,7 @@ impl FlowPreset {
             Self::CiImprovement => {
                 "CI improvement flow for automation planning, updates, and validation."
             }
+            Self::Minimal => "Minimal flow with plan+implement and final review only.",
         }
     }
 }
@@ -579,6 +583,7 @@ impl FromStr for FlowPreset {
             "quick_dev" => Ok(Self::QuickDev),
             "docs_change" => Ok(Self::DocsChange),
             "ci_improvement" => Ok(Self::CiImprovement),
+            "minimal" => Ok(Self::Minimal),
             _ => Err(AppError::InvalidFlowPreset {
                 flow_id: value.to_owned(),
             }),
