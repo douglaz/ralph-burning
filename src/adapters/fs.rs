@@ -2277,6 +2277,7 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 pub struct FsMilestoneJournalStore;
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StartJournalDetails {
     project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2324,6 +2325,7 @@ impl StartJournalDetails {
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
 struct CompletionJournalDetails {
     project_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
