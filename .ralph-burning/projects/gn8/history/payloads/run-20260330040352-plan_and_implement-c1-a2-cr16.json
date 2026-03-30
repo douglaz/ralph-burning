@@ -1,0 +1,60 @@
+{
+  "payload_id": "run-20260330040352-plan_and_implement-c1-a2-cr16",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 2,
+  "created_at": "2026-03-30T16:04:19.149276719Z",
+  "payload": {
+    "data": {
+      "change_summary": "Sixteenth remediation round addressing 3 amendments: (1) Added signal-kill warning logging in classify_exit_failure: on Unix, when status.code() is None (process killed by signal), extracts the signal number via std::os::unix::process::ExitStatusExt::signal() and emits a tracing::warn with the signal number for operator diagnosis. Retry behavior unchanged (TransportFailure). The match was refactored into three explicit arms: Some(127) → BinaryNotFound, Some(_) → TransportFailure, None → warn + TransportFailure. (2) Changed the pre-backoff snapshot write from `let _ = run_snapshot_write.write_run_snapshot(...)` to propagate the error via `?`. If the write fails, the run aborts immediately instead of silently continuing into a backoff window that cannot be crash-recovered. This matches the pattern used in fail_run() at engine.rs:5093. (3) Fixed derive_resume_state() to preserve retry-attempt state across crash: added a HashMap tracking the highest retryable-failed attempt per (stage_id, cycle) from StageFailed journal events with will_retry=true. The resume cursor now starts at failed_attempt+1 instead of hardcoded 1, preventing retry budget replenishment when the process is killed during the backoff window.",
+      "outstanding_risks": [
+        "Process group kill cannot be implemented due to #![forbid(unsafe_code)] — pre_exec(setsid) requires unsafe, and std::process::Command::process_group is nightly-only. Grandchildren spawned by claude/codex CLI may survive as orphans after the parent is killed on timeout/cancel.",
+        "The signal warning in classify_exit_failure uses cfg(unix) gating. On non-Unix platforms the None arm still returns TransportFailure without any warning logging. This is acceptable since non-Unix platforms (Windows) use different process termination semantics (TerminateProcess) that don't involve signals.",
+        "The pre-backoff snapshot write now propagates errors via ?, which aborts the entire run if the write fails. The snapshot has already been mutated (status=Failed, active_run=None) in memory but won't reach disk. The error propagates to the caller, and the on-disk snapshot remains in the previous Running state. This is the correct behavior — the operator sees the write error rather than the run silently entering an unrecoverable state.",
+        "The derive_resume_state attempt tracking only considers StageFailed events with will_retry=true. Terminal failures (will_retry=false) don't contribute to the attempt counter because a terminal failure means the run is finished, not mid-retry. If the same stage+cycle has both retryable and terminal failures (unlikely but possible with mixed failure classes), only the retryable attempts count toward the resume budget.",
+        "The BinaryNotFound failure class name is used for both missing binaries and missing API keys. Doc comments clarify this dual use as a general 'fatal infrastructure prerequisite' signal."
+      ],
+      "steps": [
+        {
+          "description": "Added signal-kill warning logging in classify_exit_failure (process_backend.rs:1496-1520): refactored the match from two arms (Some(127), _) to three explicit arms (Some(127) → BinaryNotFound, Some(_) → TransportFailure, None → warn + TransportFailure). The None arm uses cfg(unix) to import ExitStatusExt and call status.signal(), emitting a tracing::warn with the signal number. Updated doc comment to describe the warning behavior.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Changed pre-backoff snapshot write from `let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)` to `run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?` at engine.rs:4643. If the write fails, the error propagates immediately instead of silently continuing into a backoff window that leaves the project stranded in Running state on crash.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Added retryable_failed_attempts HashMap<(StageId, u32), u32> tracking in derive_resume_state (engine.rs:5796-5828): new StageFailed match arm extracts stage_id, cycle, and attempt from the event details, and updates the max attempt when will_retry is true. After the event loop, the resume cursor uses retryable_failed_attempts.get(&(resume_stage_id, resume_cycle)).map(|a| a + 1).unwrap_or(1) instead of hardcoded 1, preserving the retry budget across crash-during-backoff restarts.",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Verified all 683 tests pass, cargo clippy -- -D warnings clean, cargo fmt --check clean.",
+          "order": 4,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 683 passed, 0 failed, 0 ignored across all test binaries",
+        "cargo clippy: no warnings or errors (Checking ralph-burning → Finished dev profile)",
+        "cargo fmt --check: no formatting differences (exit 0, no output)",
+        "classify_exit_failure now has three explicit match arms: Some(127) → BinaryNotFound, Some(_) → TransportFailure, None → tracing::warn(signal) + TransportFailure. The cfg(unix) block imports ExitStatusExt at the call site, keeping the import scoped to the platform-specific code path.",
+        "Pre-backoff snapshot write at engine.rs:4643 now uses ? operator matching the pattern in fail_run() at engine.rs:5093. Both sites propagate write errors as AppResult failures.",
+        "derive_resume_state correctly tracks retryable failures: StageFailed events with will_retry=true update the per-(stage_id, cycle) max attempt. The resume cursor starts at max_attempt+1, so a crash during backoff after attempt 3 resumes at attempt 4 instead of resetting to 1.",
+        "Existing retry_success_on_second_attempt and retry_exhaustion tests exercise the backoff snapshot round-trip and would detect regressions in the active_run restore path. The derive_resume_state change is exercised by resume-from-failed tests which replay journal events to reconstruct the cursor.",
+        "All 72 workflow_engine_test tests pass with --features test-stub: retry exhaustion, resume-from-failed, cancellation during backoff, and preflight failure tests are all unaffected",
+        "All process_backend_test, tmux_adapter_test, and retry_policy_test tests pass — the classify_exit_failure refactor preserves the same classification behavior for all exit codes while adding the signal warning for the None (signal-killed) path"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

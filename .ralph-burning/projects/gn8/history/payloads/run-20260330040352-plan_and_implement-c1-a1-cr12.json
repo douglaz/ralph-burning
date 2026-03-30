@@ -1,0 +1,74 @@
+{
+  "payload_id": "run-20260330040352-plan_and_implement-c1-a1-cr12",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T12:10:05.336248013Z",
+  "payload": {
+    "data": {
+      "change_summary": "Twelfth remediation round addressing 5 amendments: (1) Added ±25% jitter to exponential backoff via RetryPolicy::apply_jitter() using system clock nanos as cheap randomness, with a jitter field that defaults to true and is disabled by with_no_backoff() and new with_no_jitter() for deterministic test assertions. (2+4) Fixed tmux timeout cleanup: if cancel() fails, the handler now attempts a direct kill_session fallback on the session (still in scope as Arc), clears on-disk state, calls session.cleanup(), and returns TransportFailure instead of Timeout to signal unclean teardown. (3) Replaced fire-and-forget spawn_background_reap in process backend timeout path with synchronous confirm_teardown() that force-kills and waits within a 2s grace period; if teardown is not confirmed, returns TransportFailure with '(teardown not confirmed)' in details. (5) Restricted BinaryNotFound at spawn() to cases where the binary file is confirmed missing via binary.exists(); if the binary exists but spawn still returns ENOENT (missing working dir, missing interpreter), classifies as TransportFailure (retryable).",
+      "outstanding_risks": [
+        "Process group kill cannot be implemented due to #![forbid(unsafe_code)] — pre_exec(setsid) requires unsafe, and std::process::Command::process_group is nightly-only. Grandchildren spawned by claude/codex CLI may survive as orphans after the parent is killed on timeout/cancel.",
+        "The confirm_teardown 2s grace period blocks the timeout handler synchronously. In the unlikely event that SIGKILL is delayed (e.g. kernel-level process freeze), this adds 2s to the already-exceeded timeout before the retry loop continues. This is acceptable since the alternative (fire-and-forget) left potentially live processes invisible to the system.",
+        "The jitter implementation uses SystemTime subsec_nanos which is not cryptographically random, but provides sufficient dispersion for retry staggering. Two processes calling within the same nanosecond would get identical jitter, but this is vanishingly unlikely in practice.",
+        "The binary.exists() check in the spawn error path has a TOCTOU window: the binary could be deleted between check_availability and spawn(), causing spawn to return NotFound with exists() returning false. This would correctly classify as BinaryNotFound, so the TOCTOU is benign."
+      ],
+      "steps": [
+        {
+          "description": "Added jitter field (bool, default true) to RetryPolicy struct. In backoff_for_attempt(), jitter-enabled policies pass the capped delay through apply_jitter() which uses SystemTime subsec_nanos to apply a [0.75, 1.25) multiplier, staggering concurrent retries. with_no_backoff() and new with_no_jitter() disable jitter for deterministic assertions.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Updated retry_policy_test::default_backoff_uses_exponential_growth_capped_at_60s to use with_no_jitter() so exact Duration assertions remain valid.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Fixed tmux timeout handler (tmux.rs:534): if cancel() returns Err, performs a direct kill_session fallback using the still-in-scope session Arc, clears on-disk active session state, calls session.cleanup(), and logs the failure via append_runtime_log. Returns TransportFailure instead of Timeout when cancel failed, signaling unclean teardown to the retry loop.",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Added confirm_teardown() function and TEARDOWN_GRACE_PERIOD (2s) constant in process_backend.rs. The function calls force_kill() then waits for exit within the grace period, returning true only if both succeed. Replaced fire-and-forget spawn_background_reap in the timeout path with synchronous confirm_teardown().",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Updated process backend timeout handler: child removal from active_children now happens after confirm_teardown() returns, not before. If teardown is not confirmed, returns TransportFailure (retryable) with '(teardown not confirmed)' in details instead of Timeout, so the retry loop knows the previous process may still be alive.",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Restricted BinaryNotFound at spawn() (process_backend.rs:997-1005): when spawn returns ErrorKind::NotFound, now checks binary.exists() before classifying. Only confirmed missing binary → BinaryNotFound (terminal); binary exists but spawn NotFound (missing working dir, missing interpreter) → TransportFailure (retryable).",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Verified all 680 tests pass, cargo clippy clean, cargo fmt --check clean.",
+          "order": 7,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 680 passed, 0 failed, 0 ignored",
+        "cargo clippy: no warnings or errors",
+        "cargo fmt --check: no formatting differences",
+        "default_backoff_uses_exponential_growth_capped_at_60s: uses with_no_jitter() for exact assertions (5s, 10s, 20s, 40s, 60s, 60s)",
+        "Production default_policy() has jitter=true; all workflow_engine_test tests use start_paused=true so jittered sleeps resolve instantly",
+        "tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill: passes — clean cancel returns Timeout; a failing cancel would trigger kill_session fallback and return TransportFailure",
+        "spawn_and_wait_timeout_returns_timeout_failure: passes — confirm_teardown successfully kills the child within 2s, returning confirmed Timeout",
+        "spawn_missing_binary_returns_binary_not_found: passes — binary does not exist on disk, so binary.exists() returns false and BinaryNotFound is produced",
+        "spawn_background_reap is retained for the cancel() path where fire-and-forget is acceptable"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 12
+}

@@ -1,0 +1,45 @@
+{
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T02:34:05.578513435Z",
+  "payload": {
+    "data": {
+      "change_summary": "Removed the unsafe default implementations for milestone journal/task-run atomic helpers, added a milestone-scoped writer lock in the filesystem snapshot adapter, and routed status, plan, bead-start, and task-run completion mutations through that lock so snapshot, lineage, and journal updates serialize correctly. `record_bead_start` now rejects terminal milestones before mutating lineage, and new regressions cover terminal-start rejection plus concurrent completion/start serialization.",
+      "outstanding_risks": [
+        "Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction, so a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage."
+      ],
+      "steps": [
+        {
+          "description": "Made milestone mutation atomicity explicit in the service traits by removing the non-locking default implementations for `append_event_if_missing` and `record_task_run_start`, and by requiring snapshot stores to provide a milestone-scoped write lock.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Implemented the filesystem-backed milestone mutation lock and updated `update_status`, `persist_plan`, `record_bead_start`, and `update_task_run` to run their snapshot/lineage/journal writes under that shared lock, including a pre-write terminal-milestone rejection in `record_bead_start`.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Added regression coverage for rejecting starts on completed milestones without stray lineage writes and for serializing a completion against a concurrent new start so snapshot state cannot be overwritten by stale writes.",
+          "order": 2,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record` passed with 77 tests.",
+        "`cargo clippy -- -D warnings` completed successfully."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

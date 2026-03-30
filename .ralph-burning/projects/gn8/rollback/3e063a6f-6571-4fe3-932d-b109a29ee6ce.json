@@ -1,0 +1,125 @@
+{
+  "rollback_id": "3e063a6f-6571-4fe3-932d-b109a29ee6ce",
+  "created_at": "2026-03-30T07:04:12.532347757Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "babe3e78b0c0098ff1d96c3b2550e6cfa12fca08",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 7
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 6
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 7,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-6-2cb763cc",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "In `src/adapters/process_backend.rs:1200`, a missing `OPENROUTER_API_KEY` is classified as `FailureClass::BinaryNotFound`. This is semantically incorrect — a missing API key is not a missing binary. Consider introducing a dedicated `FailureClass` variant (e.g., `ConfigurationError`) or at minimum rename the usage site comment to clarify why `BinaryNotFound` is being repurposed as a general 'fatal infrastructure' signal. As-is, log messages and operator diagnostics will report 'binary_not_found' for a missing env var, which is confusing.",
+          "created_at": "2026-03-30T07:04:12.379551063Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "096e319d604bb5061cb94022dec4369681325af9788a8283d8eb1e492556b906"
+        },
+        {
+          "amendment_id": "fr-6-ba44d45e",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "The `classify_exit_failure` function at `src/adapters/process_backend.rs:1459` still returns `TransportFailure` unconditionally for all exit codes. The project prompt specifically called for differentiating exit 127 (binary not found via shell) and signal-killed processes. The comment above the function explains why exit 127 post-spawn shouldn't be `BinaryNotFound`, which is a reasonable design decision, but the function still takes `_status` (unused parameter) suggesting it was intended to be filled in. At minimum, consider removing the unused parameter or documenting this as an intentional no-op to avoid future confusion.",
+          "created_at": "2026-03-30T07:04:12.379555241Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "821223b68a59b7e1eb94dac3fc720aaa39488ba084e1f44bd0fe57ed5e2035fe"
+        },
+        {
+          "amendment_id": "fr-6-332f0f81",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "The `backoff_for_attempt` function at `src/contexts/workflow_composition/retry_policy.rs:110` computes `2u64.saturating_pow(attempt.saturating_sub(1))` then calls `saturating_mul(multiplier.try_into().unwrap_or(u32::MAX))`. The `try_into()` converts `u64` to `u32` — for attempt >= 33, `2^32` overflows `u32` and falls back to `u32::MAX`, which then gets multiplied with the base duration using `u32::MAX` as the multiplier. While the `.min(self.backoff_cap)` at the end caps the result, the intermediate `saturating_mul` with `u32::MAX` is wasteful and the `try_into().unwrap_or(u32::MAX)` pattern is fragile. Since `Duration::saturating_mul` takes `u32`, just compute the multiplier directly as `u32` with `2u32.saturating_pow(...)` to avoid the lossy conversion.",
+          "created_at": "2026-03-30T07:04:12.379559259Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "edad696e6689f48401ce44f6cf505e8eb7e186ddeb87b31c76dd84a9c727afdd"
+        },
+        {
+          "amendment_id": "fr-6-fe06dd51",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "`AgentExecutionService` no longer enforces the caller’s configured timeout for adapters that depend on the service-level guard. In `src/contexts/agent_execution/service.rs:196-221`, the timeout was changed from `request.timeout` to `request.timeout + 30s`, but adapters like the stub backend still only sleep/cancel cooperatively and do not apply their own hard deadline. That makes a 10ms request succeed after ~100ms instead of timing out; `tests/unit/agent_execution_test.rs:292-316` now fails under `cargo test --features test-stub --test unit agent_execution_test::service_times_out_and_requests_backend_cancellation`. This is a real regression in the timeout contract, not just a test issue.",
+          "created_at": "2026-03-30T07:04:12.379563046Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "ee2f7a0d5632b0c23dd10eda7f36b78c1c36b4c8cdb036adc847a10a263cb47b"
+        },
+        {
+          "amendment_id": "fr-6-e8329596",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "Exit-code classification still does not implement the requested fatal-path handling. `src/adapters/process_backend.rs:1452-1460` defines `classify_exit_failure`, but it ignores the `ExitStatus` and always returns `FailureClass::TransportFailure`; the call sites at `src/adapters/process_backend.rs:1282-1294` and `src/adapters/process_backend.rs:1304-1316` therefore retry exit 127 exactly like a transient transport failure. The new test at `tests/unit/process_backend_test.rs:2038-2068` even codifies this behavior, which contradicts the acceptance criterion that a missing binary / exit 127 should fail immediately without consuming the retry budget.",
+          "created_at": "2026-03-30T07:04:12.379566412Z",
+          "batch_sequence": 5,
+          "source": "workflow_stage",
+          "dedup_key": "fd8cfc9eb9e30abc90f14be1aaf67fa78198cf3424d2398961ae43ad0796bd33"
+        },
+        {
+          "amendment_id": "fr-6-20911add",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "The new `BinaryNotFound` classification is dropped on some required availability-check paths, so those failures still retry as `TransportFailure`. In `src/contexts/workflow_composition/engine.rs:5954-5962` and `src/contexts/workflow_composition/engine.rs:6430-6446`, required prompt-review refiner / final-review planner / arbiter availability errors are rewrapped with `failure_class: None`. Because `AppError::failure_class()` defaults `BackendUnavailable { failure_class: None, .. }` to `TransportFailure` (`src/shared/error.rs:308-313`), a missing binary or missing API key from `check_availability()` becomes retryable again in those stages.",
+          "created_at": "2026-03-30T07:04:12.379569508Z",
+          "batch_sequence": 6,
+          "source": "workflow_stage",
+          "dedup_key": "a60f7fe62291a70349c64026757cb888dcbf08bd1a1a162f4fed4106de8afe0b"
+        }
+      ],
+      "processed_count": 19
+    },
+    "status_summary": "running: final review restart round 7 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T06:45:19.807057265Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

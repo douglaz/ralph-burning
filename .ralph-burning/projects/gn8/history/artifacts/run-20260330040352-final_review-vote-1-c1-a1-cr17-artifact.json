@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-vote-1-c1-a1-cr17-artifact",
+  "payload_id": "run-20260330040352-final_review-vote-1-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T17:01:06.301486132Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed five amendments. Four identify real correctness or robustness issues worth fixing; the timeout-test amendment misreads the implementation and does not establish an actual defect.\n\n## Votes\n\n- `fr-17-fd63d152`: Accept\n  Prior-cycle entries in `retryable_failed_attempts` become unreachable once `current_cycle` advances because lookups are keyed by `(stage, cycle)`. The map is local and the growth is bounded, but pruning stale entries on `CycleAdvanced` is a safe, low-risk cleanup that avoids carrying dead state through long journal replays.\n- `fr-17-a210d3ba`: Accept\n  `apply_jitter` currently derives jitter from `SystemTime::now().subsec_nanos() % 1000`, which is heavily time-correlated and can collapse to identical values when calls are closely spaced or clock granularity is coarse. That weakens the thundering-herd mitigation jitter is supposed to provide, so the randomness source should be improved.\n- `fr-17-3303d1eb`: Reject\n  The amendment's premise does not match the code. `ManagedChild::wait()` is not a blocking OS wait future; it polls `try_wait()` and sleeps on `CHILD_WAIT_POLL_INTERVAL`, and `confirm_teardown()` is likewise timer-based. With `start_paused`, this test is intentionally compatible with Tokio's paused-time model, so the claimed dependence on fragile `wait()`/EOF behavior is not established.\n- `fr-17-b2220aa1`: Accept\n  This is a real resume-state bug. `derive_resume_state` records retryable failures when `will_retry=true`, but it never removes that entry when the same stage later fails terminally with `will_retry=false`. On resume, the stale entry incorrectly advances to the old retry count instead of restarting at attempt 1 after a terminal failure.\n- `fr-17-39fd79cd`: Accept\n  In the retry path, the durable `stage_failed` journal entry is appended before the pre-backoff snapshot write. If that snapshot write is only warned on and the process dies during backoff, the journal records a retrying failure while `run.json` can remain `Running`, and `run resume` rejects that state. That undermines the purpose of the pre-backoff snapshot.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

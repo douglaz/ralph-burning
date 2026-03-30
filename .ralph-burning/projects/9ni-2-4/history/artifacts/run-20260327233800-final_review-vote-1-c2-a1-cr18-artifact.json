@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-vote-1-c2-a1-cr18-artifact",
+  "payload_id": "run-20260327233800-final_review-vote-1-c2-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T00:30:38.181535979Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAccept only fr-18-38a5b058. The other amendments either fight deliberate replay/canonicalization semantics or propose a schema-format change without fixing a concrete correctness defect.\n\n## Votes\n\n- `fr-18-4380a444`: Reject\n  finished_at is intentionally treated as the original completion time for an attempt. Terminal replays already backfill missing metadata without overwriting finished_at, and the service uses that preserved timestamp for journal repair; switching to max or always preferring the later terminal row would let a replay mutate canonical audit history.\n- `fr-18-27c5623f`: Reject\n  This does not identify a concrete correctness bug. The writer currently omits None option fields by design, and under Serde an Option field still deserializes from absence, so removing serde(default) would not provide the claimed corruption detection; removing skip_serializing_if would mostly just churn the on-disk format to explicit nulls.\n- `fr-18-38a5b058`: Accept\n  This is a real idempotence defect. A runless start replay bypasses the finalized-attempt guard, matching only considers non-terminal rows, and the duplicate Running row then wins same-started_at reconciliation, which can incorrectly move the milestone back to Active after the bead already finished.\n- `fr-18-fdce56f8`: Reject\n  These paths are not merely dead migration baggage; they are part of the current canonicalization and replay-repair model. Removing collapse/backfill would turn recoverable duplicate or paired rows into hard failures and would make find_runs_for_bead report raw storage artifacts instead of canonical attempt history.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 18
+}

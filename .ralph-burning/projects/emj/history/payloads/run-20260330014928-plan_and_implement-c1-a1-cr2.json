@@ -1,0 +1,62 @@
+{
+  "payload_id": "run-20260330014928-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T02:16:28.857857461Z",
+  "payload": {
+    "data": {
+      "change_summary": "Applied all four pending amendments from the final review: (1) replaced `v as u32` with `u32::try_from(v).ok()` in extract_codex_usage_from_stdout for safe overflow handling; (2) replaced `Some(p + c)` with `p.checked_add(c)` in both Claude and Codex total_tokens computations to prevent panic/wrap on overflow; (3) hardened extract_codex_usage_from_stdout to skip null, non-object, and empty usage values via `.filter(|u| u.is_object())` and an `is_none()` guard, with a regression test for `{\"usage\":null}` and `{\"usage\":{}}` trailing events; (4) moved the tracing::info! event in service.rs to fire immediately after metadata finalization, before persist_raw_output/extract_structured_payload/contract validation, so token/cache data is always traced even for malformed or contract-invalid responses.",
+      "outstanding_risks": [],
+      "steps": [
+        {
+          "description": "Replaced `.as_u64().map(|v| v as u32)` with `.as_u64().and_then(|v| u32::try_from(v).ok())` for all three token field extractions in extract_codex_usage_from_stdout (process_backend.rs:1299-1310)",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Replaced `Some(p + c)` with `p.checked_add(c)` in Claude usage total_tokens computation (process_backend.rs:186)",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Replaced `Some(i + o)` with `i.checked_add(o)` in Codex usage total_tokens computation (process_backend.rs:1312)",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Added `.filter(|u| u.is_object())` guard to usage value extraction and `if input.is_none() && output.is_none() && cached.is_none() { continue; }` to skip usage objects with no recognized token fields (process_backend.rs:1296,1314-1316)",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Added regression test codex_usage_skips_null_and_empty_usage_objects that verifies trailing `{\"usage\":null}` and `{\"usage\":{}}` events do not shadow a valid earlier usage record",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Moved tracing::info! event in service.rs from after contract validation (line 262) to immediately after metadata finalization (line 239), before persist_raw_output, extract_structured_payload, and contract evaluation",
+          "order": 6,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 330 lib + 128 cli + 1 tmux + 667 unit = 1126 tests passed, 0 failed (330 lib is up from 329 due to the new regression test)",
+        "cargo clippy -- -D warnings: clean, no warnings",
+        "cargo fmt --check: clean, no formatting issues",
+        "New test codex_usage_skips_null_and_empty_usage_objects passes: verifies trailing {\"usage\":null} and {\"usage\":{}} are skipped and valid earlier record (500/120/620/300) is returned",
+        "Existing test codex_usage_extracts_from_ndjson_stdout still passes with u32::try_from and checked_add changes",
+        "Existing test codex_usage_picks_last_event_with_usage still passes confirming reverse scan logic preserved",
+        "Existing test claude_envelope_with_usage_parses_token_counts still passes with checked_add change"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

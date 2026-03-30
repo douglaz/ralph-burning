@@ -1,0 +1,36 @@
+{
+  "payload_id": "run-20260327233800-review-c2-a1-cr10",
+  "stage_id": "review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T13:25:35.935210008Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 83 milestone_record tests pass (0 failures, 0 ignored)",
+        "cargo clippy -- -D warnings passes cleanly (no warnings)",
+        "cargo fmt --all --check passes (no formatting issues)",
+        "fr-9-f0ca9b46 VERIFIED: Shared render_completion_journal_details() in model.rs:347-379 is now the single rendering implementation. service.rs calls it via TaskRunEntry::completion_journal_details() at line 581. fs.rs CompletionJournalDetails::render() at line 2352 delegates directly to the same shared function. No duplicate implementations remain (confirmed by grep).",
+        "fr-9-1fa4f2f8 VERIFIED: CompletionJournalDetails::parse() in fs.rs:2281-2284 has an explanatory comment documenting that project_id/run_id/plan_hash are simple identifiers. render_completion_journal_details() in model.rs:354-365 has three debug_assert! statements enforcing that these fields never contain ', '.",
+        "fr-9-f4e1cccb VERIFIED: update_task_run fallback in fs.rs:2820-2864 now has explicit branches: [index] if entries[*index].run_id.is_none() accepts the single legacy runless row, [index] with a different run_id rejects (lines 2847-2854), and _ (multiple open matches including mixed legacy/named) rejects as ambiguous (lines 2856-2862). Regression test at service.rs:2900-2943 seeds [run_id=None, Running] + [run_id=run-2, Running], calls update with run_id=run-3, and asserts 'ambiguous task run update' error with no rows modified.",
+        "fr-9-6ff93073 VERIFIED: collapse_task_run_attempts() in model.rs:475-494 now groups entries by same_attempt via can_collapse_attempt_entries() (which allows collapsing duplicate terminals with matching outcomes) and merges each group via collapse_task_run_group(). Model test collapse_task_run_attempts_deduplicates_terminal_replays (model.rs:720-765) seeds 1 Running + 2 Succeeded rows for the same attempt and verifies collapse to 1 entry. Integration test find_runs_for_bead_deduplicates_replayed_terminal_rows (service.rs:1516-1589) seeds 3 NDJSON rows and verifies bead query returns 1 collapsed entry with merged metadata."
+      ],
+      "findings_or_gaps": [
+        "All four final-review amendments (fr-9-f0ca9b46, fr-9-1fa4f2f8, fr-9-f4e1cccb, fr-9-6ff93073) have been addressed with code changes and regression tests in completion round 10.",
+        "AppError::RunStartFailed is still used (service.rs line 555 approximately) for rejecting non-terminal outcomes in update_task_run, which is semantically a finalization rejection. A more specific error variant would be cleaner but this is cosmetic, not a correctness issue — carried forward from prior reviews.",
+        "The outstanding risk — milestone mutations span separate lineage, snapshot, and journal files without a cross-file transaction — remains. All paths are serialized by the milestone mutation lock and replay-safe, making this an acceptable trade-off for file-based storage.",
+        "The active_bead_ids() function in model.rs still contains its own internal latest_task_runs_per_bead() call while reconcile_snapshot_from_lineage computes latest runs separately. External callers of active_bead_ids would redundantly recompute, but this is minor and outside the scope of the current amendments."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

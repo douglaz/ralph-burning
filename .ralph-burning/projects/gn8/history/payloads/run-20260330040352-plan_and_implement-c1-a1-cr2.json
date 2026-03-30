@@ -1,0 +1,70 @@
+{
+  "payload_id": "run-20260330040352-plan_and_implement-c1-a1-cr2",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T04:48:14.459107388Z",
+  "payload": {
+    "data": {
+      "change_summary": "Remediation round addressing 5 amendments from QA review: (1) Fixed four 'resume from failed run' tests by bumping transient_failure counts from 3→5 and adding start_paused=true. (2) Carried BinaryNotFound through the availability path by mapping AppError::BackendUnavailable to FailureClass::BinaryNotFound in error.rs, ensuring missing binaries fail immediately without retrying. (3) Made backoff sleep cancellable by wrapping tokio::time::sleep in tokio::select! against cancellation_token.cancelled(), with an immediate cancellation check after the select. (4) Added preserve_failed_artifacts method to PreparedCommand that moves Codex temp files to runtime/failed without requiring ChildOutput, and routed timeout errors through this preserving path instead of the destructive cleanup path.",
+      "outstanding_risks": [
+        "The tokio test-util feature remains enabled unconditionally in Cargo.toml; this adds a small amount of compiled code to production builds but has no runtime impact",
+        "BackendUnavailable now maps universally to BinaryNotFound (non-retryable), which is correct for missing-binary and config-error cases but the variant name 'BinaryNotFound' is slightly misleading for pure configuration errors (e.g. missing API key). A more generic name like 'FatalInfrastructure' could be clearer but would require broader renaming"
+      ],
+      "steps": [
+        {
+          "description": "Fixed four resume-from-failed-run tests: bumped with_transient_failure counts from 3→5 (DocsUpdate, CiUpdate, Review, Implementation) and added #[tokio::test(start_paused = true)] to all four",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Changed AppError::BackendUnavailable failure_class mapping from TransportFailure to BinaryNotFound in src/shared/error.rs:302, making missing binary detection via check_availability non-retryable",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Updated agent_execution_test.rs test service_returns_backend_unavailable_as_transport_failure to assert BinaryNotFound instead of TransportFailure (renamed to service_returns_backend_unavailable_as_binary_not_found)",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Made backoff sleep cancellable in engine.rs:4637-4640 by wrapping tokio::time::sleep(backoff) in tokio::select! against cancellation_token.cancelled(), with an is_cancelled() check after the select to abort the retry when cancelled during backoff",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Added PreparedCommand::preserve_failed_artifacts() method in process_backend.rs that moves Codex schema/message temp files to runtime/failed and writes a descriptive marker file, without requiring ChildOutput",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Updated both spawn_and_wait Err branches in invoke() to call preserve_failed_artifacts for timeout errors instead of the destructive cleanup(), preserving artifacts for operator inspection",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Verified all 677 tests pass, cargo clippy -D warnings clean, cargo fmt --check clean",
+          "order": 7,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 677 passed, 0 failed, 0 ignored",
+        "cargo clippy -- -D warnings: no warnings or errors",
+        "cargo fmt --check: no formatting differences",
+        "Four resume-from-failed tests now use transient_failure(stage, 5) matching TransportFailure max_attempts=5, with start_paused=true for instant backoff in CI",
+        "service_returns_backend_unavailable_as_binary_not_found test verifies BackendUnavailable maps to BinaryNotFound",
+        "Backoff cancellation: tokio::select! races sleep against cancellation_token.cancelled(), post-select is_cancelled() check prevents retry after cancellation",
+        "Timeout errors in invoke() now route through preserve_failed_artifacts instead of cleanup, keeping Codex temp files in runtime/failed for inspection"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

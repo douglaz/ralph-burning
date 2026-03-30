@@ -1,0 +1,31 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T04:33:29.187265604Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/process_backend.rs:486-499 and 1121-1132 still report a missing CLI as AppError::BackendUnavailable, and src/contexts/agent_execution/service.rs:166-169 plus 362-372 preserve/remap that to TransportFailure; src/shared/error.rs:300-305 then keeps BackendUnavailable retryable. In practice, a normal missing `claude`/`codex` binary still burns all 5 transport retries, so the new BinaryNotFound rule only applies to rarer spawn/exit-code paths (src/adapters/process_backend.rs:935-944, 1381-1384) and the fast-fail acceptance criterion is not actually met. Carry BinaryNotFound through the availability/build-command path as well.",
+        "rationale": "The main fatal configuration failure this change was meant to short-circuit still retries repeatedly."
+      },
+      {
+        "body": "src/contexts/workflow_composition/engine.rs:4619-4639 adds a plain tokio::time::sleep(backoff) before retrying, but that sleep never watches the cancellation token. If cancellation arrives after will_retry is computed (for example right after stage_failed is logged), the run now sits idle for 5-60 seconds before the next loop notices cancellation. Make the backoff wait cancellable with tokio::select! or an equivalent re-check.",
+        "rationale": "This is a shutdown/cancellation regression introduced by the new retry backoff."
+      },
+      {
+        "body": "Timeouts currently take the generic cleanup path instead of the failure-preserving one. The new timeout branch in src/adapters/process_backend.rs:987-1001 returns an error directly from spawn_and_wait(), and invoke() handles every such error with prepared.cleanup() at src/adapters/process_backend.rs:1150-1163. For Codex/OpenRouter, cleanup() deletes the schema/last-message temp files (src/adapters/process_backend.rs:55-63) rather than moving them into runtime/failed like cleanup_failed_invocation() does (src/adapters/process_backend.rs:66-90). A hung backend therefore becomes less inspectable than an ordinary non-zero exit. Route timeout failures through a preserving cleanup path.",
+        "rationale": "Timeouts are precisely the failures operators need to debug; deleting the only backend artifacts makes postmortems much harder."
+      }
+    ],
+    "summary": "Reviewed the retry-policy, process-backend timeout, and engine backoff changes. I found three issues: missing binaries still retry as transport failures, the new backoff sleep ignores cancellation, and timeout failures delete Codex/OpenRouter diagnostic artifacts instead of preserving them."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

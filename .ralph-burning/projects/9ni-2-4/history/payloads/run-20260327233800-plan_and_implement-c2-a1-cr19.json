@@ -1,0 +1,51 @@
+{
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr19",
+  "stage_id": "plan_and_implement",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-30T00:36:32.339938770Z",
+  "payload": {
+    "data": {
+      "change_summary": "Closed the remaining runless start-replay gap in milestone task-run lineage. Added finalized-attempt matching that falls back to `started_at` when a terminal row has no `run_id`, wired `record_task_run_start` to reject same-attempt replays before appending a new row, and added model plus end-to-end regressions proving a replayed completed runless start no longer creates a new `Running` entry or flips the milestone back to `Active`.",
+      "outstanding_risks": [
+        "Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction, so a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage.",
+        "Manually corrupted lineage that already contains multiple simultaneous open attempts for the same bead still rejects new starts or runless completions as ambiguous until the bad state is repaired or richer caller metadata is supplied."
+      ],
+      "steps": [
+        {
+          "description": "Inspected the current `record_task_run_start` and task-run matching paths to confirm that finalized runless same-attempt replays were bypassing the existing guard and appending a fresh `Running` row.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Replaced the old finalized-run check with a shared finalized-attempt matcher in `model.rs`, then updated the filesystem lineage adapter to reject finalized same-attempt start replays by exact `run_id` or by matching `started_at` when the terminal row is still runless.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Added model regressions for finalized-attempt matching and an end-to-end service regression proving a replayed finalized runless start keeps the milestone `Ready`, leaves lineage at one completed attempt, and does not duplicate journal events.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Reformatted the workspace and revalidated the milestone_record path with unit tests and clippy.",
+          "order": 3,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record -- --nocapture` passed with 108 tests.",
+        "`cargo clippy -- -D warnings` completed successfully."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}

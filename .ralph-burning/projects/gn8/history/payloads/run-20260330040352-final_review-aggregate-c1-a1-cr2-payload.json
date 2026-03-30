@@ -1,0 +1,146 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T05:08:01.461589451Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-2-467b53d8",
+      "fr-2-77935ca0",
+      "fr-2-b5ae378d",
+      "fr-2-fa361db6",
+      "fr-2-b5e89a50"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-2-467b53d8",
+        "normalized_body": "BUG: Cancellation during retry backoff reports wrong failure class in run_failed journal event. In engine.rs:4642-4655, when cancellation is detected during the backoff sleep, `fail_run_result(&error, ...)` is called with the original backend error (e.g. TransportFailure). This causes `failure_label()` to return \"transport_failure\" instead of \"cancellation\". The pre-existing test `cancellation_between_retry_attempts_does_not_start_next_attempt` (workflow_engine_test.rs:3870) asserts `run_failed.details[\"failure_class\"] == \"cancellation\"` and will fail.\n\nThe sequence: (1) first attempt returns TransportFailure, (2) `will_retry` computed as true (token not cancelled yet), (3) CancelBetweenRetryAttemptsLogWriter triggers cancellation during stage_failed log write, (4) backoff select! detects cancellation, (5) fail_run_result called with original TransportFailure error → writes \"transport_failure\" not \"cancellation\".\n\nIn the old code (without the select!/cancellation check), the retry loop continued to the next attempt, where the stub adapter detected cancellation and returned InvocationCancelled, correctly producing \"cancellation\".\n\nFix: When cancellation is detected during backoff (engine.rs:4642), construct an AppError::InvocationCancelled and pass that to fail_run_result instead of the original `&error`.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-77935ca0",
+        "normalized_body": "`src/shared/error.rs:299-305` now maps every `AppError::BackendUnavailable` to `FailureClass::BinaryNotFound`. That variant is reused for non-binary outages and config/auth errors, for example `src/adapters/process_backend.rs:1164-1172` (missing `OPENROUTER_API_KEY`), `src/adapters/openrouter_backend.rs:326-333` (401/403), and `src/adapters/github.rs:613-624` (GitHub HTTP/JSON failures). After this change those unrelated failures are all mislabeled as `binary_not_found` and become terminal/non-retryable. Restrict `BinaryNotFound` to the actual spawn/exit-127 paths and keep other `BackendUnavailable` cases in their existing class.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-b5ae378d",
+        "normalized_body": "`src/contexts/workflow_composition/engine.rs:4620-4654` regresses cancellation handling during the new retry backoff. If `cancellation_token` fires inside the `tokio::select!`, the code falls through to `fail_run_result(&error, ...)`, so the run is recorded as the prior backend failure instead of `cancellation`. `cargo test --features test-stub --test unit workflow_engine_test::cancellation_between_retry_attempts_does_not_start_next_attempt` now fails with `transport_failure` vs `cancellation`. Return a cancellation error from this branch (or plumb cancellation into `fail_run_result`) before recording the terminal run failure.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-fa361db6",
+        "normalized_body": "`src/adapters/process_backend.rs:352-369`, `src/adapters/process_backend.rs:1021-1025`, and `src/adapters/process_backend.rs:1434-1437` only signal the direct child PID on timeout/cancel. Any grandchildren spawned by `claude`/`codex` survive as orphaned processes after the parent is SIGKILLed. The tmux adapter already targets the process group in `src/adapters/tmux.rs:990-1002`; process-backend needs equivalent process-group setup/teardown before we can say timed-out backend invocations are actually killed.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-b5e89a50",
+        "normalized_body": "`tests/unit/workflow_engine_test.rs:1089-1092`, `tests/unit/workflow_engine_test.rs:1157-1160`, `tests/unit/workflow_engine_test.rs:1468-1470`, and `tests/unit/workflow_engine_test.rs:3084-3086` still assert 4 stage entries after changing the stub failure count from 3 to 5. With the higher retry budget the failed run now enters the stage 5 times and the resumed run adds a 6th entry, so these tests fail under `cargo test --features test-stub --test unit workflow_engine_test::resume_from_failed_*`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-2-467b53d8",
+        "normalized_body": "BUG: Cancellation during retry backoff reports wrong failure class in run_failed journal event. In engine.rs:4642-4655, when cancellation is detected during the backoff sleep, `fail_run_result(&error, ...)` is called with the original backend error (e.g. TransportFailure). This causes `failure_label()` to return \"transport_failure\" instead of \"cancellation\". The pre-existing test `cancellation_between_retry_attempts_does_not_start_next_attempt` (workflow_engine_test.rs:3870) asserts `run_failed.details[\"failure_class\"] == \"cancellation\"` and will fail.\n\nThe sequence: (1) first attempt returns TransportFailure, (2) `will_retry` computed as true (token not cancelled yet), (3) CancelBetweenRetryAttemptsLogWriter triggers cancellation during stage_failed log write, (4) backoff select! detects cancellation, (5) fail_run_result called with original TransportFailure error → writes \"transport_failure\" not \"cancellation\".\n\nIn the old code (without the select!/cancellation check), the retry loop continued to the next attempt, where the stub adapter detected cancellation and returned InvocationCancelled, correctly producing \"cancellation\".\n\nFix: When cancellation is detected during backoff (engine.rs:4642), construct an AppError::InvocationCancelled and pass that to fail_run_result instead of the original `&error`.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-77935ca0",
+        "normalized_body": "`src/shared/error.rs:299-305` now maps every `AppError::BackendUnavailable` to `FailureClass::BinaryNotFound`. That variant is reused for non-binary outages and config/auth errors, for example `src/adapters/process_backend.rs:1164-1172` (missing `OPENROUTER_API_KEY`), `src/adapters/openrouter_backend.rs:326-333` (401/403), and `src/adapters/github.rs:613-624` (GitHub HTTP/JSON failures). After this change those unrelated failures are all mislabeled as `binary_not_found` and become terminal/non-retryable. Restrict `BinaryNotFound` to the actual spawn/exit-127 paths and keep other `BackendUnavailable` cases in their existing class.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-b5ae378d",
+        "normalized_body": "`src/contexts/workflow_composition/engine.rs:4620-4654` regresses cancellation handling during the new retry backoff. If `cancellation_token` fires inside the `tokio::select!`, the code falls through to `fail_run_result(&error, ...)`, so the run is recorded as the prior backend failure instead of `cancellation`. `cargo test --features test-stub --test unit workflow_engine_test::cancellation_between_retry_attempts_does_not_start_next_attempt` now fails with `transport_failure` vs `cancellation`. Return a cancellation error from this branch (or plumb cancellation into `fail_run_result`) before recording the terminal run failure.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-fa361db6",
+        "normalized_body": "`src/adapters/process_backend.rs:352-369`, `src/adapters/process_backend.rs:1021-1025`, and `src/adapters/process_backend.rs:1434-1437` only signal the direct child PID on timeout/cancel. Any grandchildren spawned by `claude`/`codex` survive as orphaned processes after the parent is SIGKILLed. The tmux adapter already targets the process group in `src/adapters/tmux.rs:990-1002`; process-backend needs equivalent process-group setup/teardown before we can say timed-out backend invocations are actually killed.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-b5e89a50",
+        "normalized_body": "`tests/unit/workflow_engine_test.rs:1089-1092`, `tests/unit/workflow_engine_test.rs:1157-1160`, `tests/unit/workflow_engine_test.rs:1468-1470`, and `tests/unit/workflow_engine_test.rs:3084-3086` still assert 4 stage entries after changing the stub failure count from 3 to 5. With the higher retry budget the failed run now enters the stage 5 times and the resumed run adds a 6th entry, so these tests fail under `cargo test --features test-stub --test unit workflow_engine_test::resume_from_failed_*`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 2,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 5 amendment(s); restart required.",
+    "total_proposed_amendments": 5,
+    "total_reviewers": 2,
+    "unique_amendment_count": 5
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

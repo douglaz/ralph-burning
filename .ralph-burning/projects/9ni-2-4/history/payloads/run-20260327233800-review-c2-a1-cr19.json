@@ -1,0 +1,41 @@
+{
+  "payload_id": "run-20260327233800-review-c2-a1-cr19",
+  "stage_id": "review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-30T00:38:15.343087365Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 108 milestone_record tests pass (0 failures, 0 ignored) — verified by running cargo test --lib contexts::milestone_record",
+        "cargo clippy -- -D warnings passes cleanly (no warnings)",
+        "cargo fmt --all --check passes (no formatting issues)",
+        "Amendment fr-18-38a5b058 FIXED: matching_finalized_task_runs (model.rs:448-479) now matches terminal entries by started_at when run_id is None, and record_task_run_start (fs.rs:2777-2808) calls this function before any running-entry check or new-row append. A runless start replay after completion is now rejected with 'already finalized' error.",
+        "Amendment fr-18-38a5b058 model tests verified: matching_finalized_task_runs_rejects_runless_replay_with_matching_started_at (model.rs:1080-1105) seeds a terminal entry with run_id=None and verifies it matches by started_at. matching_finalized_task_runs_falls_back_to_started_at_when_terminal_row_is_runless (model.rs:1108-1133) verifies fallback matching even when caller provides a run_id.",
+        "Amendment fr-18-38a5b058 integration test verified: replaying_a_finalized_runless_start_does_not_reactivate_the_milestone (service.rs:3044-3139) runs start→complete→replay-start, asserts 'already finalized' error, lineage has exactly 1 entry (Succeeded), snapshot remains Ready with completed_beads=1, and journal has exactly 1 start + 1 completion event.",
+        "Amendment fr-18-4380a444 (min finished_at): merge_attempt_entries (model.rs:324-329) still takes min of finished_at. This is consistent with the replay/repair design where the earliest completion time is the authoritative one.",
+        "Amendment fr-18-27c5623f (serde annotations): run_id, plan_hash, outcome_detail (model.rs:281, 284, 289) retain serde(default, skip_serializing_if). These are legitimately optional fields — run_id is absent for runless attempts, plan_hash may be unknown at start, outcome_detail only set on terminal entries.",
+        "Amendment fr-18-fdce56f8 (legacy collapse): collapse_task_run_attempts (model.rs) and related helpers remain active. These are load-bearing for the current NDJSON lifecycle where start and completion are separate rows that must be collapsed for queries and reconciliation.",
+        "model.rs: TaskRunEntry has all required fields — milestone_id (String, required), bead_id, project_id, run_id, plan_hash, outcome, outcome_detail, started_at, finished_at",
+        "service.rs: All mutation paths (update_status, persist_plan, record_bead_start, update_task_run) run under with_milestone_write_lock for serialized access",
+        "service.rs: reconcile_snapshot_from_lineage rebuilds counters from latest_task_runs_per_bead, preserves Paused status, transitions Active→Ready when no active beads remain, validates terminal invariants",
+        "All original acceptance criteria satisfied: milestone state answers 'what happened to bead X?' via find_runs_for_bead, controller can update linkage after each run outcome via update_task_run, no backward compatibility needed"
+      ],
+      "findings_or_gaps": [
+        "AppError::RunStartFailed is still used (service.rs ~line 549) for rejecting non-terminal outcomes in update_task_run, which is semantically a finalization rejection. A more specific error variant would be cleaner but this is cosmetic, not a correctness issue — carried forward from prior reviews.",
+        "The outstanding risk — milestone mutations span separate lineage, snapshot, and journal files without a cross-file transaction — remains. All paths are serialized by the milestone mutation lock and replay-safe, making this an acceptable trade-off for file-based storage.",
+        "The active_bead_ids() function in model.rs:402-408 still contains its own internal latest_task_runs_per_bead() call while reconcile_snapshot_from_lineage computes latest runs separately. External callers of active_bead_ids would redundantly recompute, but this is minor and not a correctness concern."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 19
+}

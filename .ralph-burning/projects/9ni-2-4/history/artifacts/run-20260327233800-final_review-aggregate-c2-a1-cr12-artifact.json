@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260327233800-final_review-aggregate-c2-a1-cr12-artifact",
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-29T20:26:40.663913035Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 12/20\n\n## Accepted\n\n- `fr-12-5e41079a`\n- `fr-12-eaae97d7`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-12-5e41079a`\n\n`src/contexts/milestone_record/model.rs:431-442` and `src/adapters/fs.rs:2815-2832` unconditionally reuse a sole legacy running row (`run_id == None`) when a new start arrives with `run_id = Some(...)`. That is safe for idempotent repair, but it is wrong for a real retry after upgrade: a stale pre-upgrade open row and a genuinely new run get merged into one attempt, because the old row is backfilled instead of appending a second `TaskRunEntry`. This loses retry history and violates the requirement that bead attempts remain auditable by run.\n\n### `fr-12-eaae97d7`\n\n`src/contexts/milestone_record/model.rs:302-310` plus `src/contexts/milestone_record/model.rs:465-490` make the no-`run_id` path depend on `started_at` uniqueness. Distinct attempts in the same `project_id` are considered the same attempt whenever their timestamps match, and terminal rows with the same outcome are then collapsed into one history entry. Because `run_id` is explicitly optional for backward compatibility, this means two retries can disappear from `find_runs_for_bead` if the caller reuses or truncates timestamps, which breaks the acceptance criterion that multiple retries remain visible.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 12
+}

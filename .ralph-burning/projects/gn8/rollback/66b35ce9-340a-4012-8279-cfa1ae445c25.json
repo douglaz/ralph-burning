@@ -1,0 +1,92 @@
+{
+  "rollback_id": "66b35ce9-340a-4012-8279-cfa1ae445c25",
+  "created_at": "2026-03-30T12:53:46.029306181Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "0a6da53f82e1a54e1026d47d40375eec477e61b7",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 14
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 13
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 14,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-13-787f9c72",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "In `src/contexts/agent_execution/service.rs:210`, `request.timeout + Duration::from_secs(30)` uses `Duration::add` which panics on overflow. Replace with `request.timeout.saturating_add(Duration::from_secs(30))` to prevent a panic if a timeout value near `Duration::MAX` is ever passed. While practically unlikely with real timeout values, this is a one-character fix that eliminates a theoretical panic path in production code.",
+          "created_at": "2026-03-30T12:53:45.952095505Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "bcd6d7079c90658a67026ab73af751447099bcbfd3e99a72ea994bb6e9a27fa8"
+        },
+        {
+          "amendment_id": "fr-13-43e2123e",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "`src/adapters/process_backend.rs:412-418`, `src/adapters/process_backend.rs:1058-1067`, and `src/adapters/process_backend.rs:1513-1518` only kill the immediate child PID when a timeout fires. That does not kill the child's subprocess tree, so a wrapper shell or CLI that forks can leave grandchildren running after the invocation returns `Timeout`. This means the hard-timeout path still leaks backend processes/resources and does not fully satisfy the requirement that hanging backend invocations be killed. Start the backend in its own process group/job and terminate the whole group on timeout/cancel.",
+          "created_at": "2026-03-30T12:53:45.952099442Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "ab3bb468b21e21e0c75e4a8838bd6ad5d7e128fd20d56740e3b7efcb19ed45d7"
+        },
+        {
+          "amendment_id": "fr-13-997cd9b5",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "`src/contexts/workflow_composition/engine.rs:4472-4481` persists the run as `Running`, then `src/contexts/workflow_composition/engine.rs:4563-4641` records `stage_failed` and sleeps for backoff without any further snapshot update. If the worker is killed or the host restarts during that new 5-60s backoff window, the project is stranded in a `Running` snapshot even though no process is active, and `src/contexts/workflow_composition/engine.rs:1147-1169` makes `run resume` refuse to recover it. Persist a resumable state before sleeping, or allow resume to recover stale `Running` snapshots after a retryable failure.",
+          "created_at": "2026-03-30T12:53:45.952103099Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "fe8c6be5fdbc7af5c9c770d232c555cbaf95b4053e4ae88079aadd4969180462"
+        }
+      ],
+      "processed_count": 47
+    },
+    "status_summary": "running: final review restart round 14 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T12:35:39.004270585Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

@@ -1,0 +1,99 @@
+{
+  "rollback_id": "32bc5e49-33c6-47e0-bffa-30193bf27aad",
+  "created_at": "2026-03-28T02:53:51.687201366Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "3867b380ba27fdd5bda724ee4d996dce14b108ba",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 8
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 7
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 8,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-7-8c8af466",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 7,
+          "body": "The concurrency test `start_and_completion_serialize_milestone_snapshot_updates` uses `recv_timeout(Duration::from_millis(100))` to assert thread 2 is blocked by the write lock. Under heavy CI load, thread 2 may not have been scheduled yet, making the assertion pass vacuously without proving the lock blocks. Consider using a synchronization barrier or a second entered_tx channel from thread 2 that fires before the lock attempt, so the test can confirm thread 2 actually reached the lock contention point before checking it hasn't completed.",
+          "created_at": "2026-03-28T02:53:51.606092803Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "43680c5747a0c943538780abfbe946dd8b524dda122faf5ee1dc4bf2acd505b2"
+        },
+        {
+          "amendment_id": "fr-7-0047ba65",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 7,
+          "body": "In `persist_plan`, `plan_hash.clone()` inside the closure is an unnecessary allocation. The closure is `FnOnce` so it could capture `plan_hash: String` by value (add `move` keyword or restructure) and use `Some(plan_hash)` directly. Same pattern exists with `outcome_detail.clone()` in `update_task_run`. Not a correctness issue but a needless copy on every call.",
+          "created_at": "2026-03-28T02:53:51.606095538Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "f0953825535121832cbbd387deb813cf3929e25f4ac1d97374aa33e434fed290"
+        },
+        {
+          "amendment_id": "fr-7-368e3c97",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 7,
+          "body": "`src/contexts/milestone_record/service.rs:168-199` recomputes `MilestoneProgress` by counting every lineage row after `collapse_task_run_attempts`, but `collapse_task_run_attempts` in `src/contexts/milestone_record/model.rs:399-430` only merges legacy start/completion pairs, not separate retries. Since `MilestoneProgress` is documented as bead counts in `src/contexts/milestone_record/model.rs:191-205`, a bead that fails once and then succeeds on retry will persist `failed_beads=1` and `completed_beads=1` for that one bead. That makes `status.json` report historical attempts as current milestone state. The aggregation needs to collapse retries to one current state per bead, or store attempt-history counters separately from bead-progress counters.",
+          "created_at": "2026-03-28T02:53:51.606099074Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "c826e7148f1550d617a906b6cbff531c054879ad866cc01172552ffe48873643"
+        }
+      ],
+      "processed_count": 23
+    },
+    "status_summary": "running: final review restart round 8 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-28T02:36:16.255531141Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

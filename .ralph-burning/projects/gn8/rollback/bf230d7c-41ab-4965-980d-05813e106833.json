@@ -1,0 +1,92 @@
+{
+  "rollback_id": "bf230d7c-41ab-4965-980d-05813e106833",
+  "created_at": "2026-03-30T11:08:28.047532282Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "0204fa92189e3d0a2ff7cb25c7c669904148824a",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 10
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 9
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 10,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-9-466cef86",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 9,
+          "body": "The backoff `backoff_for_attempt(cursor.attempt)` is called with the *current* attempt number (1-indexed, starting at 1) before `cursor.retry()` increments it. This means the very first retry (after attempt 1 fails) waits 5 seconds. For the common case of a transient JSON parse error that would succeed immediately on retry, this adds unnecessary latency. Consider using `backoff_for_attempt(cursor.attempt - 1)` or starting the base delay at attempt 2 so the first retry is immediate and backoff kicks in only on repeated failures.",
+          "created_at": "2026-03-30T11:08:27.961071172Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "ca84ca83539b091a4031d4e776b7e0b049d76d4602872402f38ea913d0ab2ef8"
+        },
+        {
+          "amendment_id": "fr-9-170e6cf9",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 9,
+          "body": "Preserve invoke-time backend availability classifications in `src/contexts/agent_execution/service.rs:383-408`. `map_invoke_error` currently converts every non-`Invocation*` error into `InvocationFailed { failure_class: TransportFailure }`, which discards the new `BackendUnavailable.failure_class` metadata. That means invoke-time `BackendUnavailable { failure_class: Some(BinaryNotFound) }` from `src/adapters/openrouter_backend.rs:396-401` or `src/adapters/process_backend.rs:789-800` still burns the retry budget instead of failing terminally.",
+          "created_at": "2026-03-30T11:08:27.961073867Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "146a9ccf984331c77f4c6e6fbc5cde55c053e74d3bd84888f7d0c288b944266e"
+        },
+        {
+          "amendment_id": "fr-9-84798097",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 9,
+          "body": "Fix the process-backed OpenRouter command builder in `src/adapters/process_backend.rs:802-808` so a missing or blank `OPENROUTER_API_KEY` is treated as the same terminal infrastructure failure used elsewhere. This path currently only checks whether `std::env::var` returned `Ok`, so `\"\"` is accepted and a missing key becomes `InvocationFailed { failure_class: TransportFailure }`. That contradicts `src/adapters/process_backend.rs:1200-1208` and `src/adapters/openrouter_backend.rs:68-77`, and the stale expectation in `tests/unit/process_backend_test.rs:1394-1421` should be updated with it.",
+          "created_at": "2026-03-30T11:08:27.961076953Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "f0c8a4762928c48702a501262007d1cf07b4972d122ea4401f79d7d60b697f84"
+        }
+      ],
+      "processed_count": 30
+    },
+    "status_summary": "running: final review restart round 10 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T10:44:03.871438611Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

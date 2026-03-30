@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260327233800-final_review-aggregate-c2-a1-cr20-artifact",
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr20-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T01:14:42.667654750Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 1\n**Final Review Restarts:** 20/20\n\n## Accepted\n\n- `fr-20-c613acbd`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-20-c613acbd`\n\nFix the `BeadStarted` journal dedupe collision introduced by allowing distinct named runs to share a `started_at`. `src/contexts/milestone_record/model.rs:469-482` now lets `run-3` start even when `run-2` already finalized at the same timestamp, but `src/contexts/milestone_record/service.rs:448-452` still records the start event as only `project={project_id}`. Because `src/adapters/fs.rs:2452-2457` treats `(timestamp, event_type, bead_id, details)` as the dedupe key, two same-project starts at the same timestamp collapse into one journal row and the later retry disappears from the milestone audit trail. Include `run_id`/`plan_hash` in `BeadStarted` details or otherwise widen the dedupe key for start events.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 20
+}

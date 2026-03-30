@@ -1,0 +1,114 @@
+{
+  "rollback_id": "4353f6cc-542b-4ac4-81cc-4ebc056042a6",
+  "created_at": "2026-03-30T04:41:33.458293949Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "1dd35a1d2aeb5bb0cb455c09d762acfeed0db989",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 2
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 1
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 2,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-1-2fc8a73c",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "Four \"resume from failed run\" tests in `tests/unit/workflow_engine_test.rs` are broken by the retry limit increase. The tests `resume_from_failed_run_skips_completed_stages` (line 3027), `resume_from_failed_docs_change_run_skips_completed_stages` (line 1033), `resume_from_failed_ci_improvement_run_skips_completed_stages` (line 1101), and `resume_from_failed_quick_dev_run_skips_completed_stages` (line 1407) all use `with_transient_failure(stage, 3)` but `TransportFailure` max_attempts is now 5. The 4th attempt succeeds, so `assert!(first_result.is_err())` fails. Fix: bump the transient failure count from 3 to 5 in each of these tests so the run exhausts retries and fails as expected.",
+          "created_at": "2026-03-30T04:41:33.341172970Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "adee94cbd974487cbe00dea450019aaad27a9630a2524390e3c5ee738e2d5427"
+        },
+        {
+          "amendment_id": "fr-1-171fc893",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "The same four broken \"resume from failed run\" tests also lack `start_paused = true` on their `#[tokio::test]` attribute. With the new exponential backoff, each test incurs ~35 seconds of real-time delay (5s + 10s + 20s between retries). All four tests need `#[tokio::test(start_paused = true)]` to avoid real wall-clock backoff delays in CI.",
+          "created_at": "2026-03-30T04:41:33.341176327Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "6019f7f4e34460cf869399160aa5ac1649f53691dc271b706d4f6c6c1e7ca3ff"
+        },
+        {
+          "amendment_id": "fr-1-5008e57c",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "src/adapters/process_backend.rs:486-499 and 1121-1132 still report a missing CLI as AppError::BackendUnavailable, and src/contexts/agent_execution/service.rs:166-169 plus 362-372 preserve/remap that to TransportFailure; src/shared/error.rs:300-305 then keeps BackendUnavailable retryable. In practice, a normal missing `claude`/`codex` binary still burns all 5 transport retries, so the new BinaryNotFound rule only applies to rarer spawn/exit-code paths (src/adapters/process_backend.rs:935-944, 1381-1384) and the fast-fail acceptance criterion is not actually met. Carry BinaryNotFound through the availability/build-command path as well.",
+          "created_at": "2026-03-30T04:41:33.341179933Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "04d6a1c351d3314d5ba96b6746136f91dc1c94a72c718c506bdffb9e4d4f0509"
+        },
+        {
+          "amendment_id": "fr-1-06c34f70",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "src/contexts/workflow_composition/engine.rs:4619-4639 adds a plain tokio::time::sleep(backoff) before retrying, but that sleep never watches the cancellation token. If cancellation arrives after will_retry is computed (for example right after stage_failed is logged), the run now sits idle for 5-60 seconds before the next loop notices cancellation. Make the backoff wait cancellable with tokio::select! or an equivalent re-check.",
+          "created_at": "2026-03-30T04:41:33.341182639Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "3ab78d356cdb1e5a54ed8fb84f25610cebaaed6f81ae60c4ad9dfde8766b38b6"
+        },
+        {
+          "amendment_id": "fr-1-8b4ded53",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "Timeouts currently take the generic cleanup path instead of the failure-preserving one. The new timeout branch in src/adapters/process_backend.rs:987-1001 returns an error directly from spawn_and_wait(), and invoke() handles every such error with prepared.cleanup() at src/adapters/process_backend.rs:1150-1163. For Codex/OpenRouter, cleanup() deletes the schema/last-message temp files (src/adapters/process_backend.rs:55-63) rather than moving them into runtime/failed like cleanup_failed_invocation() does (src/adapters/process_backend.rs:66-90). A hung backend therefore becomes less inspectable than an ordinary non-zero exit. Route timeout failures through a preserving cleanup path.",
+          "created_at": "2026-03-30T04:41:33.341186075Z",
+          "batch_sequence": 5,
+          "source": "workflow_stage",
+          "dedup_key": "70d1694161e4e9395f2c6ba847e18ad6c3094c3266f906a2b361c79833cba4a2"
+        }
+      ],
+      "processed_count": 0
+    },
+    "status_summary": "running: final review restart round 2 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T04:19:39.696832811Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

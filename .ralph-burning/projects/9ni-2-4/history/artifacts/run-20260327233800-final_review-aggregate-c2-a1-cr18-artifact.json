@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260327233800-final_review-aggregate-c2-a1-cr18-artifact",
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr18-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T00:30:38.198304243Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 18/20\n\n## Accepted\n\n- `fr-18-38a5b058`\n\n## Rejected\n\n- `fr-18-4380a444`\n- `fr-18-27c5623f`\n- `fr-18-fdce56f8`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-18-38a5b058`\n\nsrc/adapters/fs.rs:2777-2839 and src/contexts/milestone_record/model.rs:410-445 still treat a runless `record_bead_start` replay as a brand-new attempt once the original row has already been finalized. The finalized-attempt guard only runs when `run_id` is `Some`, and `find_matching_running_task_run` only looks at non-terminal rows. Replaying the original start after a runless completion therefore appends a second `Running` row; after snapshot reconciliation in src/contexts/milestone_record/service.rs:164-224, the milestone flips back to `Active` even though the bead already finished.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 18
+}

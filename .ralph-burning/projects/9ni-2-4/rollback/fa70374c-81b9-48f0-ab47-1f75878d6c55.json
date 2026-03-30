@@ -1,0 +1,77 @@
+{
+  "rollback_id": "fa70374c-81b9-48f0-ab47-1f75878d6c55",
+  "created_at": "2026-03-30T01:14:42.721593319Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "a190146f13f66d44bf9cc1dc2442cc914518d9bd",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 21
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "f47a86f5053bdcd9",
+      "prompt_hash_at_stage_start": "f47a86f5053bdcd9",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 20
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 21,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-20-c613acbd",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 20,
+          "body": "Fix the `BeadStarted` journal dedupe collision introduced by allowing distinct named runs to share a `started_at`. `src/contexts/milestone_record/model.rs:469-482` now lets `run-3` start even when `run-2` already finalized at the same timestamp, but `src/contexts/milestone_record/service.rs:448-452` still records the start event as only `project={project_id}`. Because `src/adapters/fs.rs:2452-2457` treats `(timestamp, event_type, bead_id, details)` as the dedupe key, two same-project starts at the same timestamp collapse into one journal row and the later retry disappears from the milestone audit trail. Include `run_id`/`plan_hash` in `BeadStarted` details or otherwise widen the dedupe key for start events.",
+          "created_at": "2026-03-30T01:14:42.667647226Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "2b4b40ef8bcad2cfa4ea471b3e2ee98ba7bcb789709bc080c9b251c6e6779d5b"
+        }
+      ],
+      "processed_count": 59
+    },
+    "status_summary": "running: final review restart round 21 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T01:02:47.882938026Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

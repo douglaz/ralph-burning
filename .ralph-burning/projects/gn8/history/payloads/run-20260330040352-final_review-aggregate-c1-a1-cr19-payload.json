@@ -1,0 +1,54 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr19-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T17:53:23.641130275Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-19-e7673fe5"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-19-e7673fe5",
+        "normalized_body": "In the snapshot write error recovery path (engine.rs ~line 4657-4683), if `fail_run`'s own snapshot write at line 5133 also fails (e.g. persistent disk I/O error), the `?` propagates the error without emitting a `run_failed` journal event and without any snapshot reaching disk — potentially leaving the project in an inconsistent state where the journal has a `stage_failed` event but the on-disk snapshot is stale. Consider wrapping `fail_run`'s snapshot write in a best-effort fallback (e.g. log the double-failure and still emit the journal event), or at minimum add a comment documenting this known limitation and why it's acceptable.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-19-e7673fe5",
+        "normalized_body": "In the snapshot write error recovery path (engine.rs ~line 4657-4683), if `fail_run`'s own snapshot write at line 5133 also fails (e.g. persistent disk I/O error), the `?` propagates the error without emitting a `run_failed` journal event and without any snapshot reaching disk — potentially leaving the project in an inconsistent state where the journal has a `stage_failed` event but the on-disk snapshot is stale. Consider wrapping `fail_run`'s snapshot write in a best-effort fallback (e.g. log the double-failure and still emit the journal event), or at minimum add a comment documenting this known limitation and why it's acceptable.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 19,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 1 amendment(s); restart required.",
+    "total_proposed_amendments": 1,
+    "total_reviewers": 2,
+    "unique_amendment_count": 1
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 19
+}

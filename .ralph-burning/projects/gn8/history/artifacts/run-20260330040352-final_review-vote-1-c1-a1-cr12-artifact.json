@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330040352-final_review-vote-1-c1-a1-cr12-artifact",
+  "payload_id": "run-20260330040352-final_review-vote-1-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T12:27:37.853565490Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nAll four amendments are technically valid. The retry-policy implementation can exceed its documented cap, the spawn-time ENOENT classification is unreliable in ambient-PATH mode in both directions, and the current tests do not fully cover the timeout and jitter behavior required by the bead acceptance criteria.\n\n## Votes\n\n- `fr-12-47fc743b`: Accept\n  The gap is real. The current tests cover the clean timeout path and the no-jitter backoff path, but they do not cover the timeout branch that maps failed teardown confirmation to TransportFailure, and they do not verify that jitter stays within the documented +/-25% range. The bead acceptance criteria also explicitly call for new tests covering timeout enforcement and retry backoff. The exact shape of the confirm_teardown coverage can vary, but the missing verification is valid.\n- `fr-12-42da6128`: Accept\n  Valid. In ambient-PATH mode resolve_binary() returns a bare name, while the ENOENT handler uses !binary.exists(), which checks the current working directory rather than PATH. That can misclassify ENOENT caused by a missing working directory or missing script interpreter as terminal BinaryNotFound when the binary itself is not what failed. Classification should only trust exists() when the binary path was explicitly resolved, or should perform real PATH resolution first.\n- `fr-12-0499120d`: Accept\n  Valid. backoff_for_attempt() clamps to backoff_cap and then applies jitter, so the returned duration can exceed the configured maximum. With the default policy, a capped 60s delay can be expanded to nearly 75s, which contradicts the code's documented maximum. The fix is to apply jitter before the final cap or clamp again after jitter.\n- `fr-12-bff334e0`: Accept\n  Valid. The same !binary.exists() check fails in the opposite direction as well: if PATH lookup would fail for a bare binary name but an unrelated ./claude or ./codex file exists in the repo, the code can treat a true missing-binary condition as TransportFailure instead of BinaryNotFound. That wastes retries on a terminal failure. This is the complementary misclassification case to fr-12-42da6128 and is worth accepting on its own merits.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 12
+}

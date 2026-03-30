@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260327233800-final_review-aggregate-c2-a1-cr13-artifact",
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr13-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-29T21:01:23.085517357Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 13/20\n\n## Accepted\n\n- `fr-13-36f0aa72`\n- `fr-13-a74a46a6`\n\n## Rejected\n\n- `fr-13-ca8af530`\n- `fr-13-8f43b7ad`\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-13-36f0aa72`\n\nFix same-timestamp retry ordering in `latest_task_runs_per_bead`. In `src/contexts/milestone_record/model.rs:379-389`, `compare_task_run_recency` treats a terminal row as newer than a later retry whenever both attempts share the same `started_at`, because it compares `finished_at` before anything else. `reconcile_snapshot_from_lineage` in `src/contexts/milestone_record/service.rs:163-204` uses that result to derive `active_bead` and progress, so a retry that starts at the same timestamp as an earlier failed/skipped attempt can leave the milestone in `ready` with `in_progress_beads=0` even though a new run is active. This needs a deterministic tie-break that preserves the newest attempt when timestamps collide, plus a regression test covering same-timestamp retries affecting snapshot state.\n\n### `fr-13-a74a46a6`\n\nAdd a recovery path for start retries when `run_id` is absent. `record_bead_start` writes lineage/snapshot before it appends the `BeadStarted` journal event (`src/contexts/milestone_record/service.rs:428-451`). If that final append fails, the retry logic only reuses the existing running row when a runless caller supplies the exact original `started_at` (`src/contexts/milestone_record/model.rs:435-442`); otherwise `record_task_run_start` falls through to the \"already active\" error (`src/adapters/fs.rs:2815-2858`). For legacy callers still passing `run_id=None`, a transient journal failure leaves the start operation unrecoverable by a normal retry. The start matching/backfill logic should be widened so runless callers can repair the partial write, and this needs a regression test.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330040352-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T15:54:08.622109441Z",
+  "payload": {
+    "summary": "All four amendments identify legitimate issues in the crash-resume and retry machinery. Two are correctness bugs (fr-15-34731127 silently swallowing the critical pre-backoff snapshot write, fr-15-bd667ff0 resetting attempt counters on resume), one is a minor durability/observability gap (fr-15-1822a124 missing write after restoring active_run), and one is a useful diagnostic improvement (fr-15-ea35568a logging signal-killed processes). I agree with the planner positions on all four.",
+    "votes": [
+      {
+        "amendment_id": "fr-15-1822a124",
+        "decision": "accept",
+        "rationale": "Verified at engine.rs:4671-4672: after `snapshot.active_run = snapshot.interrupted_run.take()` and `snapshot.status = RunStatus::Running`, there is no write_run_snapshot call before control flows to the top of the next loop iteration. A crash in this window leaves on-disk state as Failed with interrupted_run populated, which is recoverable but inconsistent with in-memory state. External status polling or monitoring would see stale 'Failed' status. Adding a write_run_snapshot here is cheap (one extra disk write per retry cycle) and closes the observability gap. Low risk, clear benefit."
+      },
+      {
+        "amendment_id": "fr-15-ea35568a",
+        "decision": "accept",
+        "rationale": "Verified at process_backend.rs: classify_exit_failure matches only exit code 127 as BinaryNotFound; everything else including signal-killed processes (where status.code() returns None) maps to TransportFailure with 5 retry attempts. Keeping signal kills retryable is correct per spec, but processes killed by SIGSEGV (11) or SIGABRT (6) almost always indicate deterministic bugs (segfaults, assertion failures). Retrying 5 times wastes time and masks the root cause. A warning log when status.code() is None (signal kill) would provide valuable operational signal without changing retry semantics. Minimal code change, clear diagnostic value."
+      },
+      {
+        "amendment_id": "fr-15-34731127",
+        "decision": "accept",
+        "rationale": "Confirmed critical bug at engine.rs:4643-4644: `let _ = run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)` silently discards the Result. The entire crash-resume mechanism depends on this write succeeding — it persists the Failed status and interrupted_run that run resume (line 1155-1158) requires. If this write fails (disk full, I/O error), on-disk state remains Running with no interrupted_run. A subsequent crash during backoff leaves the project stranded: run resume rejects Running status with 'project already has a running run'. This write failure MUST be propagated as fatal. The `let _` pattern here is a genuine defect, not a deliberate choice."
+      },
+      {
+        "amendment_id": "fr-15-bd667ff0",
+        "decision": "accept",
+        "rationale": "Confirmed at engine.rs:5852-5855: derive_resume_state unconditionally creates the StageCursor with attempt=1, ignoring the interrupted run's actual attempt count. When a crash occurs during the backoff window (between writing the Failed snapshot at line 4643 and restoring Running at line 4672), run resume rebuilds the cursor starting at attempt 1 regardless of prior progress. A stage that was on attempt 4 of 5 gets a full fresh budget of 5 attempts. With repeated crashes during backoff, max_attempts can be exceeded indefinitely. The fix should propagate the attempt count from snapshot.interrupted_run into the rebuilt cursor, using attempt+1 as the starting value for the next attempt."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

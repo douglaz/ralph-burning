@@ -1,0 +1,123 @@
+{
+  "payload_id": "run-20260330014928-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T02:13:42.191187391Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-1-240e9722",
+      "fr-1-34d48b79",
+      "fr-1-7f5493dc",
+      "fr-1-23e1a360"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-1-240e9722",
+        "normalized_body": "In `extract_codex_usage_from_stdout` (process_backend.rs:1300-1310), the `.as_u64().map(|v| v as u32)` pattern silently truncates values exceeding u32::MAX. Use `u32::try_from(v).ok()` instead of `v as u32` to match the safety guarantees of the Claude path, which uses serde's native u32 deserialization (and would reject overflow). Apply the same fix to all three token field extractions in this function.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-34d48b79",
+        "normalized_body": "In both Claude usage extraction (process_backend.rs:186) and Codex usage extraction (process_backend.rs:1312), `Some(p + c)` can panic in debug builds or wrap in release builds if prompt_tokens + completion_tokens exceeds u32::MAX. Use `p.checked_add(c)` instead of `Some(p + c)` for the total_tokens computation.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-7f5493dc",
+        "normalized_body": "In `src/adapters/process_backend.rs:1288-1321`, make `extract_codex_usage_from_stdout` skip lines where `usage` is missing, null, non-object, or contains none of the recognized token fields. The current reverse scan stops on any `usage` key and returns all-`None` counts, so a trailing event like `{\"usage\":null}` or `{\"usage\":{}}` will discard a valid earlier `turn.completed` usage record. Add a regression test for that shape.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-23e1a360",
+        "normalized_body": "Move or duplicate the new `tracing::info!` in `src/contexts/agent_execution/service.rs:240-277` so it fires immediately after metadata finalization, before `persist_raw_output`, `extract_structured_payload`, and contract validation. As written, any failure in those later steps returns before the log call, so malformed or contract-invalid invocations still emit no token/cache trace event.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-1-240e9722",
+        "normalized_body": "In `extract_codex_usage_from_stdout` (process_backend.rs:1300-1310), the `.as_u64().map(|v| v as u32)` pattern silently truncates values exceeding u32::MAX. Use `u32::try_from(v).ok()` instead of `v as u32` to match the safety guarantees of the Claude path, which uses serde's native u32 deserialization (and would reject overflow). Apply the same fix to all three token field extractions in this function.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-34d48b79",
+        "normalized_body": "In both Claude usage extraction (process_backend.rs:186) and Codex usage extraction (process_backend.rs:1312), `Some(p + c)` can panic in debug builds or wrap in release builds if prompt_tokens + completion_tokens exceeds u32::MAX. Use `p.checked_add(c)` instead of `Some(p + c)` for the total_tokens computation.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-7f5493dc",
+        "normalized_body": "In `src/adapters/process_backend.rs:1288-1321`, make `extract_codex_usage_from_stdout` skip lines where `usage` is missing, null, non-object, or contains none of the recognized token fields. The current reverse scan stops on any `usage` key and returns all-`None` counts, so a trailing event like `{\"usage\":null}` or `{\"usage\":{}}` will discard a valid earlier `turn.completed` usage record. Add a regression test for that shape.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-23e1a360",
+        "normalized_body": "Move or duplicate the new `tracing::info!` in `src/contexts/agent_execution/service.rs:240-277` so it fires immediately after metadata finalization, before `persist_raw_output`, `extract_structured_payload`, and contract validation. As written, any failure in those later steps returns before the log call, so malformed or contract-invalid invocations still emit no token/cache trace event.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 1,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 4 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

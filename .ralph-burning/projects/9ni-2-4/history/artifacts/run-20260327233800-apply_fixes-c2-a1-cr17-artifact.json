@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-apply_fixes-c2-a1-cr17-artifact",
+  "payload_id": "run-20260327233800-apply_fixes-c2-a1-cr17",
+  "stage_id": "apply_fixes",
+  "created_at": "2026-03-29T22:41:34.759532853Z",
+  "content": "# Apply Fixes\n\n## Change Summary\n\nNo additional code edits were required in this apply-fixes round. The completion-round-17 review approved the milestone task-run lineage implementation without amendments, so I left the code unchanged and carried forward the validated state from the latest reviewed build.\n\n## Steps\n\n0. [Completed] Reviewed the approved completion-round-17 validation output and confirmed there were no follow-up fixes or amendments to apply.\n1. [Completed] Left the existing milestone task-run lineage implementation unchanged because the approved review found no remaining defects requiring code changes.\n2. [Completed] Carried forward the approved validation evidence for formatting, milestone_record tests, and clippy from the latest reviewed implementation.\n\n## Validation Evidence\n\n- Approved review evidence confirms `cargo fmt --all --check` passes with no formatting issues.\n- Approved review evidence confirms `cargo test --lib contexts::milestone_record` passes with 103 tests.\n- Approved review evidence confirms `cargo clippy -- -D warnings` passes cleanly.\n\n## Outstanding Risks\n\n- Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction; milestone-scoped locking and replay-safe updates mitigate this, but a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage.\n- Malformed or manually edited lineage can still contain multiple simultaneous runless open attempts for the same bead/project; the normal start path now prevents stale legacy-open contradictions for new named retries, but deterministic finalization of already-corrupt data still depends on repair or richer caller metadata.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 17
+}

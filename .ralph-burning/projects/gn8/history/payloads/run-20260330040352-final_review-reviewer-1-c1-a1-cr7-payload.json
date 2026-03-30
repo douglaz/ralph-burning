@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T08:21:34.255703070Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/tmux.rs:452-453 advertises `enforces_timeout() == true`, but `TmuxAdapter::invoke()` never applies `request.timeout`; it just waits in `wait_for_session_exit()` until the service cancels it (`src/adapters/tmux.rs:518-520`, `src/adapters/tmux.rs:342-379`). Because `AgentExecutionService` adds a 30-second buffer whenever that flag is true (`src/contexts/agent_execution/service.rs:204-223`), tmux runs now exceed the configured timeout by about 30 seconds before cancellation. This regresses the hard-timeout behavior for the `process`/`openrouter` selector in tmux mode (`src/composition/agent_execution_builder.rs:95-108`).",
+        "rationale": "Reproduced with `cargo test --quiet --test unit tmux_adapter_timeout_cleans_up_session_with_sigterm_then_sigkill`, which passed but took 30.71s for a 200ms timeout."
+      },
+      {
+        "body": "src/adapters/openrouter_backend.rs:64-74 still reports a missing `OPENROUTER_API_KEY` as `BackendUnavailable { failure_class: None }`. `AppError::failure_class()` maps that to `TransportFailure` (`src/shared/error.rs:309-313`), and `RetryPolicy` now retries transport failures 5 times (`src/contexts/workflow_composition/retry_policy.rs:45-57`). In non-tmux `openrouter` mode (`src/composition/agent_execution_builder.rs:114`), a missing API key will therefore still burn the full retry budget instead of failing immediately as a terminal prerequisite error.",
+        "rationale": "The branch introduced `BinaryNotFound` specifically for fatal prerequisites and already uses it in the process-backed OpenRouter path, so the direct OpenRouter adapter is still inconsistent."
+      }
+    ],
+    "summary": "Reviewed the retry/timeout hardening changes against `origin/master`, read the key adapter/service/retry files, and ran targeted unit tests. Found 2 correctness gaps: tmux mode now waits an extra ~30 seconds past the configured timeout, and direct OpenRouter execution still retries a missing API key as a transport failure."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

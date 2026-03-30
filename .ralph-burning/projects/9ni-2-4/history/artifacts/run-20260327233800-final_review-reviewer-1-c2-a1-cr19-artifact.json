@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-final_review-reviewer-1-c2-a1-cr19-artifact",
+  "payload_id": "run-20260327233800-final_review-reviewer-1-c2-a1-cr19-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T00:46:21.212469750Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nWorking-tree `git diff` was empty, so I reviewed the committed 9ni.2.4 changes in `src/contexts/milestone_record/model.rs`, `src/contexts/milestone_record/service.rs`, and `src/adapters/fs.rs`, and ran `cargo test milestone_record` successfully. I found two correctness issues, both in the new legacy repair/dedup paths.\n\n## Amendments\n\n1. `src/contexts/milestone_record/model.rs:299-309`, `src/contexts/milestone_record/model.rs:410-479`, `src/contexts/milestone_record/model.rs:499-555`, and `src/adapters/fs.rs:2757-2833` still use `started_at` as a fallback attempt identifier whenever `run_id` is missing. That legacy path makes `record_task_run_start` reuse or reject a row purely because the timestamp matches, so two distinct runless retries that happen to share the same timestamp are silently collapsed into one attempt. This breaks the new audit requirement that every retry for a bead remain visible; remove the started-at backfill/collapse logic and treat each persisted attempt as authoritative instead of reconstructing legacy pairs.\n   Rationale: With the current code, a caller that reuses a clock value (tests, replays, coarse external timestamps, or any path where `run_id` is unavailable) can lose lineage data: the second retry is never recorded even though it is a separate attempt.\n2. `src/adapters/fs.rs:2295-2322` and `src/adapters/fs.rs:2390-2469` merge completion journal events based only on `timestamp + event_type + bead_id` plus loosely compatible details. If two different attempts for the same bead/project complete at the same timestamp and at least one lacks a `run_id`, `append_event_if_missing` will repair/overwrite the first event instead of appending a second one. Tighten the dedupe key to a real attempt identity (for example `run_id`, or `started_at` when that is the explicit identifier) or drop this repair path.\n   Rationale: This loses completion history in `journal.ndjson`, which undermines retry auditing and makes milestone activity non-reproducible from the persisted journal.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 19
+}

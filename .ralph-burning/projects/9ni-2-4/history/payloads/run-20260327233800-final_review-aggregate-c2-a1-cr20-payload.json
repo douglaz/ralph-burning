@@ -1,0 +1,54 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr20-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-30T01:14:42.667654750Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-20-c613acbd"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-20-c613acbd",
+        "normalized_body": "Fix the `BeadStarted` journal dedupe collision introduced by allowing distinct named runs to share a `started_at`. `src/contexts/milestone_record/model.rs:469-482` now lets `run-3` start even when `run-2` already finalized at the same timestamp, but `src/contexts/milestone_record/service.rs:448-452` still records the start event as only `project={project_id}`. Because `src/adapters/fs.rs:2452-2457` treats `(timestamp, event_type, bead_id, details)` as the dedupe key, two same-project starts at the same timestamp collapse into one journal row and the later retry disappears from the milestone audit trail. Include `run_id`/`plan_hash` in `BeadStarted` details or otherwise widen the dedupe key for start events.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-20-c613acbd",
+        "normalized_body": "Fix the `BeadStarted` journal dedupe collision introduced by allowing distinct named runs to share a `started_at`. `src/contexts/milestone_record/model.rs:469-482` now lets `run-3` start even when `run-2` already finalized at the same timestamp, but `src/contexts/milestone_record/service.rs:448-452` still records the start event as only `project={project_id}`. Because `src/adapters/fs.rs:2452-2457` treats `(timestamp, event_type, bead_id, details)` as the dedupe key, two same-project starts at the same timestamp collapse into one journal row and the later retry disappears from the milestone audit trail. Include `run_id`/`plan_hash` in `BeadStarted` details or otherwise widen the dedupe key for start events.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 20,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 1 amendment(s); restart required.",
+    "total_proposed_amendments": 1,
+    "total_reviewers": 2,
+    "unique_amendment_count": 1
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 20
+}

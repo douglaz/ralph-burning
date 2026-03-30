@@ -1,0 +1,88 @@
+{
+  "rollback_id": "210ed874-5ffa-429c-870a-579df68c6e22",
+  "created_at": "2026-03-29T20:26:40.743374114Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "c15d817dea1a47e64f2a59e7bac550f6d2373ce0",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 13
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 12
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 13,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-12-5e41079a",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 12,
+          "body": "`src/contexts/milestone_record/model.rs:431-442` and `src/adapters/fs.rs:2815-2832` unconditionally reuse a sole legacy running row (`run_id == None`) when a new start arrives with `run_id = Some(...)`. That is safe for idempotent repair, but it is wrong for a real retry after upgrade: a stale pre-upgrade open row and a genuinely new run get merged into one attempt, because the old row is backfilled instead of appending a second `TaskRunEntry`. This loses retry history and violates the requirement that bead attempts remain auditable by run.",
+          "created_at": "2026-03-29T20:26:40.663903056Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "e55847d4a16a6e8315fea9bd3036c8cbe5619842c054148219f57141ec7a72f8"
+        },
+        {
+          "amendment_id": "fr-12-eaae97d7",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 12,
+          "body": "`src/contexts/milestone_record/model.rs:302-310` plus `src/contexts/milestone_record/model.rs:465-490` make the no-`run_id` path depend on `started_at` uniqueness. Distinct attempts in the same `project_id` are considered the same attempt whenever their timestamps match, and terminal rows with the same outcome are then collapsed into one history entry. Because `run_id` is explicitly optional for backward compatibility, this means two retries can disappear from `find_runs_for_bead` if the caller reuses or truncates timestamps, which breaks the acceptance criterion that multiple retries remain visible.",
+          "created_at": "2026-03-29T20:26:40.663907304Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "ce9f7dea9fb0b3edc4fff0f306aad8919f4b57d9feac2bf201b013c80f25506c"
+        }
+      ],
+      "processed_count": 39
+    },
+    "status_summary": "running: final review restart round 13 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-29T20:08:00.108478030Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

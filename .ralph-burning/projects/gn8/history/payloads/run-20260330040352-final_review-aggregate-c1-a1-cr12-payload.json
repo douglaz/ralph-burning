@@ -1,0 +1,123 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr12-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T12:27:37.872140459Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-12-47fc743b",
+      "fr-12-42da6128",
+      "fr-12-0499120d",
+      "fr-12-bff334e0"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-12-47fc743b",
+        "normalized_body": "Add test coverage for timeout enforcement and jitter as required by acceptance criteria. Specifically: (a) a test for `confirm_teardown` verifying that a killed process returns `teardown_confirmed=true` and a process that resists kill returns false; (b) a test for the unclean-timeout → TransportFailure mapping in the process backend timeout path; (c) a test verifying that jitter-enabled backoff produces values within the documented ±25% range (i.e., `backoff_for_attempt(1)` on the default policy returns a Duration in `[3.75s, 6.25s)`). The diff adds zero new test functions despite the acceptance criteria explicitly stating 'new tests cover timeout enforcement and retry backoff'.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-42da6128",
+        "normalized_body": "In process_backend.rs ~line 1003, the `!binary.exists()` guard on the spawn ENOENT handler is unreliable when `binary` is a bare name (e.g., `PathBuf(\"claude\")`) because `Path::exists()` resolves relative to CWD, not PATH. When no explicit search paths are configured, `resolve_binary` returns the bare name for OS PATH lookup. If spawn returns ENOENT because the working directory or script interpreter is missing (not the binary itself), and `./claude` also doesn't exist in CWD, the error is misclassified as `BinaryNotFound` (terminal) instead of `TransportFailure` (retryable). Fix: use `which::which()` or replicate PATH resolution before the `exists()` check, or guard with `self.search_paths.is_some()` so the check only applies when the binary path is known to be absolute.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-0499120d",
+        "normalized_body": "src/contexts/workflow_composition/retry_policy.rs:122-142 applies jitter after `delay.min(self.backoff_cap)`. That lets `backoff_for_attempt()` exceed the configured cap: with the default settings, attempt 5 is capped to 60s and then multiplied by up to 1.25, so the engine can sleep for roughly 75s even though `DEFAULT_BACKOFF_CAP_SECS` at lines 32-33 is documented as the maximum. Re-cap after jitter, or apply jitter before the final `min()`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-bff334e0",
+        "normalized_body": "src/adapters/process_backend.rs:526-553 and 997-1008 misclassify some real missing-binary failures. In ambient-PATH mode `resolve_binary()` returns a bare name like `claude`, but the new spawn error path uses `!binary.exists()` to decide whether ENOENT should be `BinaryNotFound`. `Path::exists()` on a bare name checks the current working directory, not PATH, so an unrelated `./claude` or `./codex` file in the repo can turn a true PATH miss into `TransportFailure` and consume the full retry budget instead of failing terminally.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-12-47fc743b",
+        "normalized_body": "Add test coverage for timeout enforcement and jitter as required by acceptance criteria. Specifically: (a) a test for `confirm_teardown` verifying that a killed process returns `teardown_confirmed=true` and a process that resists kill returns false; (b) a test for the unclean-timeout → TransportFailure mapping in the process backend timeout path; (c) a test verifying that jitter-enabled backoff produces values within the documented ±25% range (i.e., `backoff_for_attempt(1)` on the default policy returns a Duration in `[3.75s, 6.25s)`). The diff adds zero new test functions despite the acceptance criteria explicitly stating 'new tests cover timeout enforcement and retry backoff'.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-42da6128",
+        "normalized_body": "In process_backend.rs ~line 1003, the `!binary.exists()` guard on the spawn ENOENT handler is unreliable when `binary` is a bare name (e.g., `PathBuf(\"claude\")`) because `Path::exists()` resolves relative to CWD, not PATH. When no explicit search paths are configured, `resolve_binary` returns the bare name for OS PATH lookup. If spawn returns ENOENT because the working directory or script interpreter is missing (not the binary itself), and `./claude` also doesn't exist in CWD, the error is misclassified as `BinaryNotFound` (terminal) instead of `TransportFailure` (retryable). Fix: use `which::which()` or replicate PATH resolution before the `exists()` check, or guard with `self.search_paths.is_some()` so the check only applies when the binary path is known to be absolute.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-0499120d",
+        "normalized_body": "src/contexts/workflow_composition/retry_policy.rs:122-142 applies jitter after `delay.min(self.backoff_cap)`. That lets `backoff_for_attempt()` exceed the configured cap: with the default settings, attempt 5 is capped to 60s and then multiplied by up to 1.25, so the engine can sleep for roughly 75s even though `DEFAULT_BACKOFF_CAP_SECS` at lines 32-33 is documented as the maximum. Re-cap after jitter, or apply jitter before the final `min()`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-12-bff334e0",
+        "normalized_body": "src/adapters/process_backend.rs:526-553 and 997-1008 misclassify some real missing-binary failures. In ambient-PATH mode `resolve_binary()` returns a bare name like `claude`, but the new spawn error path uses `!binary.exists()` to decide whether ENOENT should be `BinaryNotFound`. `Path::exists()` on a bare name checks the current working directory, not PATH, so an unrelated `./claude` or `./codex` file in the repo can turn a true PATH miss into `TransportFailure` and consume the full retry budget instead of failing terminally.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 12,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 4 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 12
+}

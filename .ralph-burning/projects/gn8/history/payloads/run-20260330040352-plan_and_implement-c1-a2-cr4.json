@@ -1,0 +1,61 @@
+{
+  "payload_id": "run-20260330040352-plan_and_implement-c1-a2-cr4",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 2,
+  "created_at": "2026-03-30T05:40:52.169926640Z",
+  "payload": {
+    "data": {
+      "change_summary": "Fourth remediation round addressing 4 QA amendments: (1) Removed exit code 127 → BinaryNotFound mapping from classify_exit_failure — once a process is running, any exit code is application-defined, not proof of a missing binary. BinaryNotFound is now only produced at spawn() via ErrorKind::NotFound. Updated test to assert TransportFailure. (2) Fixed the inner/outer timeout race by adding a 30-second buffer to the service-level timeout in service.rs (service_timeout = request.timeout + Duration::from_secs(30)), ensuring the adapter-level timeout always fires first and can run preserve_failed_artifacts before the service safety-net triggers. (3) Added cross-platform force_kill() method to ManagedChild that uses SIGKILL on Unix and tokio's Child::kill() (TerminateProcess) on non-Unix, and updated spawn_background_reap to call force_kill() instead of send_sigkill(), fixing the non-Unix hang where send_sigkill returned Unsupported and the reaper task blocked forever. (4) Enhanced the spawn_and_wait_timeout test with artifact preservation assertions verifying the .failed.raw sentinel file exists in runtime/failed with 'process timed out' content.",
+      "outstanding_risks": [
+        "Process group kill cannot be implemented due to #![forbid(unsafe_code)] — pre_exec(setsid) requires unsafe, and std::process::Command::process_group is nightly-only. Grandchildren spawned by claude/codex CLI may survive as orphans after the parent is killed on timeout/cancel. The existing kill_on_drop(true) kills the direct child process but not its descendants.",
+        "BackendUnavailable (missing binary via check_availability) maps to TransportFailure and will be retried 5 times before failing. Each retry will fail immediately (the binary won't appear), so wall-clock impact is limited to ~2.5 min of backoff delays. A future improvement could add a failure_class field to BackendUnavailable to allow non-retryable classification."
+      ],
+      "steps": [
+        {
+          "description": "Removed exit code 127 → BinaryNotFound mapping from classify_exit_failure in process_backend.rs: the function now always returns TransportFailure regardless of exit code. BinaryNotFound is only produced at the spawn() call site when the OS reports ErrorKind::NotFound, which is the correct and unambiguous signal for a missing binary. Renamed test to exit_code_127_returns_transport_failure and updated assertion to match.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Fixed inner/outer timeout race in service.rs: imported Duration, computed service_timeout = request.timeout + Duration::from_secs(30), and used it for the tokio::time::timeout wrapper around the invoke future. The adapter's inner timeout at request.timeout now always fires first under normal conditions, giving preserve_failed_artifacts a chance to run before the service-level safety net triggers.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Added cross-platform force_kill() method to ManagedChild: on Unix it delegates to send_sigkill(); on non-Unix it acquires the state mutex and calls tokio Child::kill() which maps to TerminateProcess on Windows. Updated spawn_background_reap to call force_kill() instead of send_sigkill(), fixing the non-Unix hang where the Unsupported error was silently ignored and the reaper blocked forever on child.wait().",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Enhanced spawn_and_wait_timeout_returns_timeout_failure test with artifact preservation assertions: after verifying the Timeout error, the test now reads the .failed.raw file from runtime/failed/{invocation_id}.failed.raw and asserts it contains 'process timed out'.",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Verified all tests pass (677 passed, 1 pre-existing flaky checkpoint_test failure unrelated to changes), cargo clippy clean, cargo fmt --check clean. Individually confirmed: retry_policy_test (5/5), workflow_engine_test (72/72), process_backend_test (all pass including renamed exit_code_127_returns_transport_failure and enhanced timeout test), agent_execution_test with test-stub feature (passes).",
+          "order": 5,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 676 passed, 1 failed (pre-existing flaky checkpoint_test::worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits — passes when run in isolation on master), 0 ignored",
+        "cargo clippy: no warnings or errors",
+        "cargo fmt --check: no formatting differences",
+        "exit_code_127_returns_transport_failure: exit code 127 from a running process now correctly maps to TransportFailure (was BinaryNotFound), preserving the retry budget for CLI wrappers that use exit 127 for application errors",
+        "spawn_and_wait_timeout_returns_timeout_failure: timeout produces .failed.raw artifact at runtime/failed/process-claude.failed.raw containing 'process timed out' — confirms preserve_failed_artifacts is reachable and executes correctly",
+        "service_returns_backend_unavailable_as_transport_failure: passes with --features test-stub, confirming BackendUnavailable still maps to TransportFailure",
+        "All 72 workflow_engine_test tests pass with --features test-stub, including retry_exhaustion (5 attempts), resume-from-failed (6 stage entries), cancellation_between_retry_attempts (InvocationCancelled), and all backoff-related tests with start_paused=true",
+        "All 5 retry_policy_test tests pass: default limits, retryable/terminal classification, exponential backoff growth capped at 60s, no_backoff returns zero"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 4
+}
