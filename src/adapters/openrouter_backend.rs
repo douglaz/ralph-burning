@@ -355,6 +355,10 @@ impl OpenRouterBackendAdapter {
 }
 
 impl AgentExecutionPort for OpenRouterBackendAdapter {
+    fn enforces_timeout(&self) -> bool {
+        true
+    }
+
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,

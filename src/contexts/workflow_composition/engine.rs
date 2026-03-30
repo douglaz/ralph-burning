@@ -5955,10 +5955,16 @@ where
         .adapter()
         .check_availability(&panel.refiner)
         .await
-        .map_err(|e| AppError::BackendUnavailable {
-            backend: panel.refiner.backend.family.to_string(),
-            details: format!("required prompt-review refiner unavailable: {e}"),
-            failure_class: None,
+        .map_err(|e| {
+            let failure_class = match &e {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.refiner.backend.family.to_string(),
+                details: format!("required prompt-review refiner unavailable: {e}"),
+                failure_class,
+            }
         })?;
 
     // Required unavailable validators fail resolution; optional
@@ -6431,19 +6437,31 @@ where
         .adapter()
         .check_availability(&panel.planner)
         .await
-        .map_err(|error| AppError::BackendUnavailable {
-            backend: panel.planner.backend.family.to_string(),
-            details: format!("required final-review planner unavailable: {error}"),
-            failure_class: None,
+        .map_err(|error| {
+            let failure_class = match &error {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.planner.backend.family.to_string(),
+                details: format!("required final-review planner unavailable: {error}"),
+                failure_class,
+            }
         })?;
     agent_service
         .adapter()
         .check_availability(&panel.arbiter)
         .await
-        .map_err(|error| AppError::BackendUnavailable {
-            backend: panel.arbiter.backend.family.to_string(),
-            details: format!("required final-review arbiter unavailable: {error}"),
-            failure_class: None,
+        .map_err(|error| {
+            let failure_class = match &error {
+                AppError::BackendUnavailable { failure_class, .. } => *failure_class,
+                _ => None,
+            };
+            AppError::BackendUnavailable {
+                backend: panel.arbiter.backend.family.to_string(),
+                details: format!("required final-review arbiter unavailable: {error}"),
+                failure_class,
+            }
         })?;
 
     let mut available_reviewers = Vec::new();

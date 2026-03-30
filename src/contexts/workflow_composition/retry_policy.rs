@@ -107,10 +107,8 @@ impl RetryPolicy {
         if self.backoff_base.is_zero() {
             return Duration::ZERO;
         }
-        let multiplier = 2u64.saturating_pow(attempt.saturating_sub(1));
-        let delay = self
-            .backoff_base
-            .saturating_mul(multiplier.try_into().unwrap_or(u32::MAX));
+        let multiplier = 2u32.saturating_pow(attempt.saturating_sub(1));
+        let delay = self.backoff_base.saturating_mul(multiplier);
         delay.min(self.backoff_cap)
     }
 }

@@ -2036,7 +2036,7 @@ async fn spawn_and_wait_timeout_returns_timeout_failure() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn exit_code_127_returns_transport_failure() {
+async fn exit_code_127_returns_binary_not_found() {
     let bin_dir = tempdir().expect("create bin dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
@@ -2051,11 +2051,11 @@ async fn exit_code_127_returns_transport_failure() {
 
     let error = adapter.invoke(request).await.expect_err("should fail");
 
-    // Once a process is running, exit code 127 is application-defined.
-    // BinaryNotFound is only produced at spawn() via ErrorKind::NotFound.
+    // Exit code 127 conventionally means "command not found" and is
+    // classified as BinaryNotFound (terminal) to avoid wasting retries.
     match error {
         AppError::InvocationFailed {
-            failure_class: FailureClass::TransportFailure,
+            failure_class: FailureClass::BinaryNotFound,
             details,
             ..
         } => {
@@ -2064,7 +2064,7 @@ async fn exit_code_127_returns_transport_failure() {
                 "should contain exit code 127: {details}"
             );
         }
-        other => panic!("expected TransportFailure for exit 127, got: {other:?}"),
+        other => panic!("expected BinaryNotFound for exit 127, got: {other:?}"),
     }
 }
 

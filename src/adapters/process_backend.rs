@@ -1156,6 +1156,10 @@ impl ProcessBackendAdapter {
 }
 
 impl AgentExecutionPort for ProcessBackendAdapter {
+    fn enforces_timeout(&self) -> bool {
+        true
+    }
+
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,
@@ -1189,6 +1193,10 @@ impl AgentExecutionPort for ProcessBackendAdapter {
             backend.backend.family.as_str(),
             &self.effective_search_paths(),
         )?;
+        // A missing API key is a fatal infrastructure problem (like a missing
+        // binary) that won't resolve between retry attempts.  BinaryNotFound
+        // is reused here as the terminal "infrastructure prerequisite missing"
+        // signal rather than introducing a dedicated variant.
         if backend.backend.family == BackendFamily::OpenRouter
             && std::env::var("OPENROUTER_API_KEY")
                 .unwrap_or_default()
@@ -1451,13 +1459,15 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
 
 /// Classify process exit status into the appropriate failure class.
 ///
-/// All non-zero exits and signal kills map to `TransportFailure` (retryable).
-/// `BinaryNotFound` is only produced at the spawn() call site when the OS
-/// reports `ErrorKind::NotFound` — once a process is running, any exit code
-/// (including 127) is application-defined and should not be treated as a
-/// missing-binary signal.
-fn classify_exit_failure(_status: ExitStatus) -> FailureClass {
-    FailureClass::TransportFailure
+/// Exit code 127 conventionally means "command not found" and is treated as
+/// `BinaryNotFound` (terminal) so the retry loop does not waste attempts on
+/// a missing binary.  All other non-zero exits and signal kills map to
+/// `TransportFailure` (retryable).
+fn classify_exit_failure(status: ExitStatus) -> FailureClass {
+    match status.code() {
+        Some(127) => FailureClass::BinaryNotFound,
+        _ => FailureClass::TransportFailure,
+    }
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {

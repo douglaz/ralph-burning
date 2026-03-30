@@ -112,6 +112,14 @@ pub trait AgentExecutionPort {
     async fn invoke(&self, request: InvocationRequest) -> AppResult<InvocationEnvelope>;
 
     async fn cancel(&self, invocation_id: &str) -> AppResult<()>;
+
+    /// Whether this adapter enforces `request.timeout` internally (e.g. via
+    /// process-level timeout).  When `true`, the service adds a buffer to
+    /// `service_timeout` so the adapter's timeout fires first.  When `false`
+    /// (default), the service-level timeout *is* the canonical timeout.
+    fn enforces_timeout(&self) -> bool {
+        false
+    }
 }
 
 pub trait RawOutputPort {
@@ -193,12 +201,16 @@ where
         let invoke_future = self.adapter.invoke(request.clone());
         tokio::pin!(invoke_future);
 
-        // The adapter enforces its own hard timeout at `request.timeout`,
-        // which handles artifact preservation and child cleanup.  The
-        // service-level timeout is a safety net that fires only if the
-        // adapter's timeout somehow stalls.  Adding a 30-second buffer
-        // ensures the adapter always fires first under normal conditions.
-        let service_timeout = request.timeout + Duration::from_secs(30);
+        // When the adapter enforces its own hard timeout (e.g. process-level
+        // kill), adding a 30-second buffer lets the adapter fire first and
+        // handle artifact preservation / child cleanup.  When the adapter
+        // does *not* enforce a timeout, the service-level timeout is the
+        // canonical enforcement and must match `request.timeout` exactly.
+        let service_timeout = if self.adapter.enforces_timeout() {
+            request.timeout + Duration::from_secs(30)
+        } else {
+            request.timeout
+        };
 
         let mut envelope = tokio::select! {
             _ = request.cancellation_token.cancelled() => {

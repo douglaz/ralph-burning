@@ -449,6 +449,10 @@ impl TmuxAdapter {
 }
 
 impl AgentExecutionPort for TmuxAdapter {
+    fn enforces_timeout(&self) -> bool {
+        self.process.enforces_timeout()
+    }
+
     async fn check_capability(
         &self,
         backend: &ResolvedBackendTarget,
