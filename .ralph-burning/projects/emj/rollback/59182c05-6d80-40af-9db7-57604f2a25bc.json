@@ -1,0 +1,103 @@
+{
+  "rollback_id": "59182c05-6d80-40af-9db7-57604f2a25bc",
+  "created_at": "2026-03-30T02:13:42.311661365Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "e9f0fb41a8042b866b236e67c0d50100563fbde1",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330014928",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 2
+      },
+      "started_at": "2026-03-30T01:49:28.195156129Z",
+      "prompt_hash_at_cycle_start": "3ec351f1dd95ccae",
+      "prompt_hash_at_stage_start": "3ec351f1dd95ccae",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 1
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 2,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-1-240e9722",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "In `extract_codex_usage_from_stdout` (process_backend.rs:1300-1310), the `.as_u64().map(|v| v as u32)` pattern silently truncates values exceeding u32::MAX. Use `u32::try_from(v).ok()` instead of `v as u32` to match the safety guarantees of the Claude path, which uses serde's native u32 deserialization (and would reject overflow). Apply the same fix to all three token field extractions in this function.",
+          "created_at": "2026-03-30T02:13:42.191170769Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "ccc31656f2b70a3b871c4d9c945e94646f00bef31e02949fc3223643a8b94c31"
+        },
+        {
+          "amendment_id": "fr-1-34d48b79",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "In both Claude usage extraction (process_backend.rs:186) and Codex usage extraction (process_backend.rs:1312), `Some(p + c)` can panic in debug builds or wrap in release builds if prompt_tokens + completion_tokens exceeds u32::MAX. Use `p.checked_add(c)` instead of `Some(p + c)` for the total_tokens computation.",
+          "created_at": "2026-03-30T02:13:42.191174386Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "30f4497eb1290529b3e5843ca152e9aa063841b9034a7d0b8682e1ea59b2d035"
+        },
+        {
+          "amendment_id": "fr-1-7f5493dc",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "In `src/adapters/process_backend.rs:1288-1321`, make `extract_codex_usage_from_stdout` skip lines where `usage` is missing, null, non-object, or contains none of the recognized token fields. The current reverse scan stops on any `usage` key and returns all-`None` counts, so a trailing event like `{\"usage\":null}` or `{\"usage\":{}}` will discard a valid earlier `turn.completed` usage record. Add a regression test for that shape.",
+          "created_at": "2026-03-30T02:13:42.191177382Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "4c834507fb6b923ad03aed61dd2ccf3cb65ea8997f62c78d0e707544f4a19a64"
+        },
+        {
+          "amendment_id": "fr-1-23e1a360",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 1,
+          "body": "Move or duplicate the new `tracing::info!` in `src/contexts/agent_execution/service.rs:240-277` so it fires immediately after metadata finalization, before `persist_raw_output`, `extract_structured_payload`, and contract validation. As written, any failure in those later steps returns before the log call, so malformed or contract-invalid invocations still emit no token/cache trace event.",
+          "created_at": "2026-03-30T02:13:42.191179746Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "1588d460a17586b0be411f287088ff1479c3a18655ee08610eb056a9c45f740e"
+        }
+      ],
+      "processed_count": 0
+    },
+    "status_summary": "running: final review restart round 2 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T02:03:10.375231884Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

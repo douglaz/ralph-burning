@@ -1,0 +1,51 @@
+{
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr16",
+  "stage_id": "plan_and_implement",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T22:14:38.550723012Z",
+  "payload": {
+    "data": {
+      "change_summary": "Closed the three pending milestone-record gaps in one pass. The filesystem adapter now keeps milestone-specific locks under a hidden lock namespace instead of creating `milestones/<id>/` just to lock, `persist_plan` and `update_task_run` read `status.json` before any side-effecting writes so typoed milestone IDs no longer strand a future create, task-run reads now reject any row whose embedded `milestone_id` disagrees with the file being read, and runless retries now auto-finalize the superseded open attempt before appending the new one so a later `run_id=None` completion stays unambiguous and auditable.",
+      "outstanding_risks": [
+        "Milestone mutations still span separate lineage, snapshot, and journal files without a cross-file transaction; milestone-scoped locking and replay-safe updates mitigate this, but a crash between file writes can still leave snapshot or journal state temporarily behind `task-runs.ndjson` until the same operation is replayed or state is reconciled from lineage.",
+        "Malformed or manually edited lineage can still contain multiple simultaneous runless open attempts for the same bead/project; this round prevents the normal start path from creating that state going forward, but deterministic finalization of already-corrupt data still depends on repair or richer caller metadata."
+      ],
+      "steps": [
+        {
+          "description": "Inspected the current milestone_record model, service, and filesystem adapter paths against the three pending amendments to isolate the exact retry, lock-placement, and lineage-read failure modes.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Updated `src/adapters/fs.rs` to move milestone lock files out of the milestone directory, validate `TaskRunEntry.milestone_id` on every read, and auto-fail a superseded runless open attempt before appending a new runless retry.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Adjusted `src/contexts/milestone_record/service.rs` so `persist_plan` and `update_task_run` read the snapshot before any write-side effects, and added milestone_record regressions for missing-milestone safety, misfiled lineage rejection, and runless retry completion.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Reformatted the workspace and revalidated the milestone_record path with targeted tests and clippy.",
+          "order": 3,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record` passed with 102 tests.",
+        "`cargo clippy -- -D warnings` completed successfully."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 16
+}

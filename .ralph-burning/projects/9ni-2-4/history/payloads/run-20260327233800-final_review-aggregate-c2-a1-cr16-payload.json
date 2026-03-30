@@ -1,0 +1,100 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr16-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T22:34:44.704960965Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-16-381b2bc1",
+      "fr-16-20005d1b",
+      "fr-16-20943f79"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-16-381b2bc1",
+        "normalized_body": "MilestoneId::new() in model.rs should reject dot-prefixed names (e.g., `.locks`, `.hidden`) to prevent collision with the new MILESTONE_LOCKS_DIR (`.locks`) directory. Currently, creating a milestone with id `.locks` would place its data directory at `milestones/.locks/`, which is the same path used for lock files of all other milestones. Add a validation rule like `normalized.starts_with('.')` to the existing rejection checks in MilestoneId::new().",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-20005d1b",
+        "normalized_body": "Tighten `FsTaskRunLineageStore::update_task_run` so a completion with `run_id` only finalizes an exact matching attempt. Today `src/adapters/fs.rs:2894-2928` falls back to the lone unfinished runless row when no exact `run_id` match exists, and `record_bead_completion` no longer supplies `started_at` to disambiguate (`src/contexts/milestone_record/service.rs:457-492`). That means a completion for a brand-new named retry can be written onto an older open attempt instead of failing fast, which corrupts the bead audit trail.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-20943f79",
+        "normalized_body": "Handle stale legacy/open attempts when starting a new named retry. In `src/adapters/fs.rs:2827-2836`, superseding only happens when the new start is itself runless; if a new explicit `run_id` starts after an older runless row, the old row is left permanently `running`. `find_runs_for_bead` then returns contradictory history for the same bead (`src/adapters/fs.rs:3111-3127`), e.g. one attempt still `running` even after a later retry already `succeeded`. Either mark the older row as superseded at start time or reject the new start until the old row is resolved.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-16-381b2bc1",
+        "normalized_body": "MilestoneId::new() in model.rs should reject dot-prefixed names (e.g., `.locks`, `.hidden`) to prevent collision with the new MILESTONE_LOCKS_DIR (`.locks`) directory. Currently, creating a milestone with id `.locks` would place its data directory at `milestones/.locks/`, which is the same path used for lock files of all other milestones. Add a validation rule like `normalized.starts_with('.')` to the existing rejection checks in MilestoneId::new().",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-20005d1b",
+        "normalized_body": "Tighten `FsTaskRunLineageStore::update_task_run` so a completion with `run_id` only finalizes an exact matching attempt. Today `src/adapters/fs.rs:2894-2928` falls back to the lone unfinished runless row when no exact `run_id` match exists, and `record_bead_completion` no longer supplies `started_at` to disambiguate (`src/contexts/milestone_record/service.rs:457-492`). That means a completion for a brand-new named retry can be written onto an older open attempt instead of failing fast, which corrupts the bead audit trail.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-20943f79",
+        "normalized_body": "Handle stale legacy/open attempts when starting a new named retry. In `src/adapters/fs.rs:2827-2836`, superseding only happens when the new start is itself runless; if a new explicit `run_id` starts after an older runless row, the old row is left permanently `running`. `find_runs_for_bead` then returns contradictory history for the same bead (`src/adapters/fs.rs:3111-3127`), e.g. one attempt still `running` even after a later retry already `succeeded`. Either mark the older row as superseded at start time or reject the new start until the old row is resolved.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 16,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

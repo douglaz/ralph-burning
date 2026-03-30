@@ -1,0 +1,47 @@
+{
+  "payload_id": "run-20260327233800-review-c2-a1-cr2",
+  "stage_id": "review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T00:17:22.916673751Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 65 milestone_record tests pass (0 failures)",
+        "cargo clippy -- -D warnings passes with no warnings",
+        "cargo fmt --all --check passes (no formatting issues)",
+        "model.rs: TaskRunEntry has all required fields — milestone_id (line 275), bead_id (278), project_id (280), run_id (282), plan_hash (285), outcome (288), outcome_detail (290), started_at (293), finished_at (296) — all new optional fields use serde(default, skip_serializing_if) for backward compatibility",
+        "model.rs: MilestoneProgress now has skipped_beads counter (line 203) with serde(default) for backward compat, and remaining() accounts for it (line 213)",
+        "model.rs: MilestoneEventType::BeadSkipped variant added (line 240)",
+        "service.rs: record_bead_completion (line 329) now delegates entirely to update_task_run (line 344-357) — no second append, single completion path",
+        "service.rs: update_task_run (line 390) accepts snapshot_store, journal_store, and lineage_store; validates outcome is terminal (line 404-410); updates lineage via adapter; then mutates snapshot counters (lines 424-442) with correct Succeeded/Failed/Skipped handling; clears active_bead (443-449); and emits the appropriate journal event type (BeadCompleted/BeadFailed/BeadSkipped)",
+        "fs.rs: update_task_run (line 2344) uses AdvisoryFileLock (line 2357) via flock for the read-modify-write cycle, same lock used by append_task_run (line 2339)",
+        "fs.rs: update_task_run matching logic (lines 2387-2469) uses run_id when provided for exact match (line 2401-2446), falls back to open-match disambiguation when run_id is None, and rejects ambiguous matches with descriptive errors",
+        "fs.rs: update_task_run rejects already-finalized entries (lines 2472-2480), preventing duplicate terminal updates",
+        "Test: update_task_run_modifies_outcome verifies snapshot counters, active_bead, run_id backfill, plan_hash, journal event after update",
+        "Test: skipped_runs_are_tracked_without_counting_as_failures verifies skipped_beads=1, failed_beads=0, BeadSkipped journal event",
+        "Test: completion_flow_rejects_duplicate_finalization verifies already-finalized error",
+        "Test: lineage_updates_require_run_id_when_multiple_open_attempts_exist verifies ambiguity rejection and exact run_id matching",
+        "Test: multiple_retries_visible_for_same_bead verifies 2 entries with distinct outcomes after start→fail→start→succeed cycle",
+        "Test: bead_start_and_completion_tracking verifies end-to-end flow including runs.len()==1 (no duplicate append)",
+        "Test: task_run_entry_backward_compat_without_new_fields verifies old JSON without new fields deserializes correctly",
+        "Test: find_runs_for_bead_filters_correctly verifies chronological filtering and empty results for unknown beads"
+      ],
+      "findings_or_gaps": [
+        "Outstanding risk acknowledged by implementor: task-run completion spans lineage, snapshot, and journal writes without a cross-file transaction; a crash between writes could leave artifacts temporarily inconsistent. This is acceptable given the file-based storage model and the advisory locking already in place — a future repair/recovery mechanism could address this if needed.",
+        "The non-terminal outcome guard in update_task_run uses AppError::RunStartFailed (line 405-409) which is semantically misleading for a finalization rejection — a more specific error variant like RunFinalizeFailed would be clearer, but this is a minor naming concern, not a correctness issue.",
+        "find_runs_for_bead sorts by started_at then finished_at (lines 2511-2514), which is correct for chronological ordering but does not acquire the advisory lock during reads. This is acceptable since reads don't need mutual exclusion for correctness in single-writer scenarios, but worth noting for future multi-writer considerations."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

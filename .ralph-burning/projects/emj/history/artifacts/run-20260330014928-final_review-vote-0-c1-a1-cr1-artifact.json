@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330014928-final_review-vote-0-c1-a1-cr1-artifact",
+  "payload_id": "run-20260330014928-final_review-vote-0-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T02:12:26.648579899Z",
+  "content": "# Final Review Votes\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll four amendments identify genuine, verified defects in the token usage extraction and logging code. Each fix is small, well-scoped, and improves correctness or observability without risk of regression. I confirmed every claim against the actual source at the referenced line numbers.\n\n## Votes\n\n- `fr-1-240e9722`: Accept\n  Verified at lines 1299-1310: `.as_u64().map(|v| v as u32)` is used for all three token fields. This silently truncates any value above u32::MAX to a wrong number. The Claude path uses serde's native `Option<u32>` deserialization (confirmed at line 1255), which rejects overflow entirely. `u32::try_from(v).ok()` returns None on overflow, which is consistent and correct. Trivial fix, no downside.\n- `fr-1-34d48b79`: Accept\n  Verified at line 186 (Claude path: `Some(p + c)` where p,c are u32) and line 1312 (Codex path: `Some(i + o)` where i,o are u32). Both are unchecked u32 additions that panic in debug builds and wrap silently in release builds. While token counts exceeding u32::MAX is unlikely today, the fix is a single-character change (`checked_add`) that eliminates a real panic path and a silent data corruption path. No reason not to fix this.\n- `fr-1-7f5493dc`: Accept\n  Verified at lines 1296-1321: `value.get(\"usage\")` on `{\"usage\":null}` returns `Some(Value::Null)`, which passes the `let Some(usage)` guard. All subsequent `.get(\"input_tokens\")` etc. on a Null value return None, so the function returns an all-None TokenCounts and stops the reverse scan. A valid earlier `turn.completed` event with real token counts is never reached. This is a confirmed data-loss bug. The fix (skip lines where usage is not an object with at least one recognized field) is correct and the requested regression test will prevent recurrence.\n- `fr-1-23e1a360`: Accept\n  Verified at lines 240-277: `extract_raw_output` (240), `persist_raw_output` (241), `extract_structured_payload` (248), and contract validation (252-256) all use `?` and can return early before the tracing::info! at line 263. Failed or malformed invocations — precisely the ones where token/cost data is most needed for debugging — produce no trace event. Moving or duplicating the log to fire before line 240 (after metadata finalization at line 238) is the correct fix. The metadata including token_counts is already finalized by that point.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 1
+}

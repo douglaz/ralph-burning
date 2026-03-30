@@ -1,0 +1,110 @@
+{
+  "rollback_id": "3441359a-bc2b-444d-8fce-3a6c92a2324a",
+  "created_at": "2026-03-28T13:14:56.859346406Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "0f1089df1300b8c4d2d8a46e0f4644186c272de6",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 10
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 9
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 10,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-9-f0ca9b46",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 9,
+          "body": "Extract the duplicated journal details rendering logic into a single shared function. `CompletionJournalDetails::render()` in `src/adapters/fs.rs:2347` and `completion_event_details()` in `src/contexts/milestone_record/service.rs:239` produce the same comma-delimited format independently. If either is modified without the other, the journal repair path (`repairable_completion_event`) will silently fail to merge entries — falling through to append duplicates instead of backfilling. Consolidate into one function (e.g., on `TaskRunEntry` or a shared helper) called by both sites.",
+          "created_at": "2026-03-28T13:14:56.760391031Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "e6331f46f100c1f5c00e2fef4d18cdf933afe33cc8e8a89341471d059cf1d082"
+        },
+        {
+          "amendment_id": "fr-9-1fa4f2f8",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 9,
+          "body": "Guard against field values containing the `, ` delimiter in `CompletionJournalDetails::parse()` (src/adapters/fs.rs:2280). The `outcome_detail` field is free-form text and can plausibly contain commas followed by spaces. While the current `split_once(\", detail=\")` approach handles a trailing detail value correctly, the intermediate `split_required` calls for `project=`, `run=`, and `plan_hash=` would misparse if any of those values contained `, `. Add a brief code comment or debug_assert documenting the assumption that project_id/run_id/plan_hash are simple identifiers that never contain `, `.",
+          "created_at": "2026-03-28T13:14:56.760395389Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "28c30ae5c3f07863b2f1db17f983ba8fb87e07bcdf99aa7f00e781b4fea26da8"
+        },
+        {
+          "amendment_id": "fr-9-f4e1cccb",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 9,
+          "body": "`src/adapters/fs.rs:2813-2833` violates the port contract documented at `src/contexts/milestone_record/service.rs:107-109`. When `update_task_run` is called with a `run_id` that has no exact match, it falls back to any single runless running row without checking whether other running rows for the same `bead_id`/`project_id` are also present. In a mixed legacy/corrupt state like `[run_id=None, running] + [run_id=run-2, running]`, calling `update_task_run(..., run_id=run-3, ...)` currently finalizes the runless row and leaves `run-2` running, even though the request is ambiguous and should be rejected. That can rewrite the wrong attempt and mis-state lineage.",
+          "created_at": "2026-03-28T13:14:56.760399958Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "46743a4d20ac73e312fdf31a9d5d7008a7a1ef7b020dea7401cb234720d1c6e9"
+        },
+        {
+          "amendment_id": "fr-9-6ff93073",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 9,
+          "body": "`src/contexts/milestone_record/model.rs:431-468` and `src/adapters/fs.rs:3013-3021` only collapse legacy start+terminal pairs; they do not deduplicate repeated terminal rows for the same attempt. As a result, `find_runs_for_bead` will report replayed completions as separate retries if the NDJSON already contains duplicate terminal entries for one run. I reproduced this with one running row plus two identical succeeded rows for the same `started_at`, and `find_runs_for_bead` returned 2 entries. That breaks the new \"what happened to bead X?\" audit query by overstating retries/outcomes.",
+          "created_at": "2026-03-28T13:14:56.760403685Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "b773088b14010ee32c8a8bb1bfe445cd725a6da00c1adc87a44e2ee71af1b4aa"
+        }
+      ],
+      "processed_count": 30
+    },
+    "status_summary": "running: final review restart round 10 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-28T12:55:27.076580638Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

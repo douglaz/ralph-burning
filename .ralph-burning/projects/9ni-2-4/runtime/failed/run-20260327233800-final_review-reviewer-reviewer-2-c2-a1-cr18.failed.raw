@@ -1,0 +1,187 @@
+=== stdout ===
+=== stderr ===
+OpenAI Codex v0.117.0 (research preview)
+--------
+workdir: /home/master/p/ralphs/ralph-burning
+model: gpt-5.4
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: xhigh
+reasoning summaries: none
+session id: 019d3bdc-c1e7-74a0-b923-ecdeb49f59b5
+--------
+user
+Contract: final_review:reviewer
+Role: Reviewer
+
+# Final Review Proposals
+
+You are a code reviewer. Review the changes in this project for correctness, safety, and robustness.
+
+Run `git diff` to see all changes, then read the key implementation files end-to-end. For each issue found, cite specific files and line numbers.
+
+Ignore style and cosmetics — only report real bugs, safety problems, correctness gaps, and significant maintainability risks.
+
+## Project Prompt
+
+# Task: Track bead-to-task run linkage inside milestone state
+
+## Bead ID: ralph-burning-9ni.2.4
+
+## Goal
+
+Record which Ralph task/project/run attempted which bead, with enough detail to audit retries and outcomes later.
+
+## Requirements
+
+The `TaskRunEntry` model in `src/contexts/milestone_record/model.rs` must capture:
+- milestone_id (currently implicit from storage path — should be explicit in the entry for self-contained queries)
+- bead_id (already present)
+- current task/project id (already present as `project_id`)
+- run_id if available (MISSING — add this field)
+- outcome summary (already present as `TaskRunOutcome`, but add optional `outcome_detail` for richer context)
+- prompt version or plan hash if relevant (MISSING — add `plan_hash` field)
+
+## Changes Required
+
+1. **Extend `TaskRunEntry`** in `src/contexts/milestone_record/model.rs`:
+   - Add `run_id: Option<String>` — the specific run ID within the project
+   - Add `plan_hash: Option<String>` — plan version/hash at time of execution
+   - Add `outcome_detail: Option<String>` — human-readable outcome summary
+
+2. **Add `update_task_run` to `TaskRunLineagePort`** in `src/contexts/milestone_record/service.rs`:
+   - Allow updating an existing entry's outcome (controller needs this after each run)
+   - Signature: update by bead_id + project_id, setting new outcome + finished_at
+
+3. **Add `find_runs_for_bead` query** in service layer:
+   - Filter task runs by bead_id to answer "what happened to bead X?"
+   - Return all attempts in chronological order
+
+4. **Implement FS adapter** for the new port method in `src/adapters/fs.rs`
+
+5. **Update `record_bead_start` and `record_bead_completion`** to accept and pass through the new fields
+
+6. **Add tests** for:
+   - TaskRunEntry serialization with new fields
+   - find_runs_for_bead query
+   - update_task_run flow
+   - Multiple retries for same bead are all visible
+
+## Acceptance Criteria
+
+- Milestone state can answer "what happened to bead X?" without reconstructing from unrelated artifacts
+- Controller can update linkage after each run outcome
+- No backward compatibility with old NDJSON schemas is required — there is no existing milestone data on disk. New fields (run_id, plan_hash, outcome_detail, milestone_id) should be required (non-optional) where they are known at write time. Remove any legacy parsing, backfill-on-read, or repair paths that only exist to handle a hypothetical migration from an older schema.
+
+## Non-Goals
+
+- Controller state machine (covered by 8.1)
+- Lifecycle transitions (covered by 2.5)
+- Status aggregation queries (covered by 2.3)
+
+## Dependencies (already closed)
+
+- ralph-burning-9ni.2.2: Milestone store and service layer ✅
+
+## Authoritative JSON Schema
+
+The JSON schema below is authoritative. Return only JSON that conforms exactly to it.
+
+```json
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "FinalReviewProposal": {
+      "description": "A raw amendment proposal returned by a final-review reviewer.",
+      "properties": {
+        "body": {
+          "description": "The free-form amendment body. This is canonicalized and deduplicated by the orchestration layer before voting.",
+          "type": "string"
+        },
+        "rationale": {
+          "description": "Optional reviewer-provided rationale for why this amendment matters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Payload returned by each final-review reviewer during proposal collection.",
+  "properties": {
+    "amendments": {
+      "description": "Proposed amendments. An empty list means \"no amendments\".",
+      "items": {
+        "$ref": "#/definitions/FinalReviewProposal"
+      },
+      "type": "array"
+    },
+    "summary": {
+      "description": "Summary of the reviewer pass.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "amendments",
+    "summary"
+  ],
+  "title": "FinalReviewProposalPayload",
+  "type": "object"
+}
+```
+
+Return ONLY valid JSON matching the following schema:
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "definitions": {
+    "FinalReviewProposal": {
+      "description": "A raw amendment proposal returned by a final-review reviewer.",
+      "properties": {
+        "body": {
+          "description": "The free-form amendment body. This is canonicalized and deduplicated by the orchestration layer before voting.",
+          "type": "string"
+        },
+        "rationale": {
+          "description": "Optional reviewer-provided rationale for why this amendment matters.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "body"
+      ],
+      "type": "object"
+    }
+  },
+  "description": "Payload returned by each final-review reviewer during proposal collection.",
+  "properties": {
+    "amendments": {
+      "description": "Proposed amendments. An empty list means \"no amendments\".",
+      "items": {
+        "$ref": "#/definitions/FinalReviewProposal"
+      },
+      "type": "array"
+    },
+    "summary": {
+      "description": "Summary of the reviewer pass.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "amendments",
+    "summary"
+  ],
+  "title": "FinalReviewProposalPayload",
+  "type": "object"
+}
+
+ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Apr 3rd, 2026 3:36 AM.
+ERROR: You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Apr 3rd, 2026 3:36 AM.

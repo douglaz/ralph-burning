@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260327233800-plan_and_implement-c2-a1-cr3-artifact",
+  "payload_id": "run-20260327233800-plan_and_implement-c2-a1-cr3",
+  "stage_id": "plan_and_implement",
+  "created_at": "2026-03-28T00:38:11.057732054Z",
+  "content": "# Plan and Implement\n\n## Change Summary\n\nNormalized legacy milestone task-run history in the filesystem adapter by collapsing old start/completion row pairs for bead queries, ignoring superseded legacy start rows during completion updates, and including `run_id` in duplicate-finalization errors. Added regression coverage for legacy query collapse and no-`run_id` retry finalization, and documented that `task-runs.ndjson` remains the repair source of truth because snapshot and journal writes are still non-transactional follow-ups.\n\n## Steps\n\n0. [Completed] Patched `FsTaskRunLineageStore` to detect legacy paired attempts by bead, project, and `started_at`, collapse them in `find_runs_for_bead`, exclude superseded legacy running rows from update disambiguation, and include `run_id` in already-finalized errors.\n1. [Completed] Documented the non-transactional lineage, snapshot, and journal update order in the milestone service so interrupted completions clearly point operators at `task-runs.ndjson` as the durable repair source.\n2. [Completed] Added milestone_record regression tests covering legacy paired-row query collapse, legacy no-`run_id` retry finalization, and the improved duplicate-finalization diagnostic.\n3. [Completed] Ran formatting, milestone_record unit tests, and clippy validation after the changes.\n\n## Validation Evidence\n\n- `cargo fmt --all` completed successfully.\n- `cargo test --lib contexts::milestone_record` passed with 67 tests.\n- `cargo clippy -- -D warnings` completed successfully.\n\n## Outstanding Risks\n\n- Task-run finalization still updates lineage, snapshot, and journal files separately; an interrupted write can leave snapshot or journal state behind the lineage file until a repair or reconciliation pass rebuilds from `task-runs.ndjson`.\n",
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

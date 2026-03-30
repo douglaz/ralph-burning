@@ -1,0 +1,73 @@
+{
+  "payload_id": "run-20260330014928-apply_fixes-c1-a2-cr2",
+  "stage_id": "apply_fixes",
+  "cycle": 1,
+  "attempt": 2,
+  "created_at": "2026-03-30T02:54:18.319308805Z",
+  "payload": {
+    "data": {
+      "change_summary": "All three follow-up amendments from the conditionally-approved review were already applied in the prior attempt. This attempt verifies the fixes remain clean: (1) ProcessBackendAdapter invoke test `claude_envelope_with_usage_populates_token_counts` feeds a Claude envelope with full usage and asserts all five token_counts fields through the adapter; (2) two OpenRouter invoke tests `invoke_maps_anthropic_cache_tokens_to_envelope` and `invoke_maps_openai_prompt_tokens_details_cached_tokens_to_envelope` verify both Anthropic-native and OpenAI prompt_tokens_details cache token formats through the full adapter output; (3) AgentExecutionService tracing test `service_emits_invocation_completed_trace_with_token_fields` captures the structured 'invocation completed' event using a SharedWriter-backed tracing_subscriber and asserts all 12 required fields are present.",
+      "outstanding_risks": [],
+      "steps": [
+        {
+          "description": "Verified ProcessBackendAdapter invoke test claude_envelope_with_usage_populates_token_counts passes (asserts prompt=1200, completion=350, total=1550, cache_read=800, cache_creation=100)",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Verified OpenRouter invoke test invoke_maps_anthropic_cache_tokens_to_envelope passes (asserts cache_read=150, cache_creation=30 from Anthropic-native fields)",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Verified OpenRouter invoke test invoke_maps_openai_prompt_tokens_details_cached_tokens_to_envelope passes (asserts cache_read=200 from prompt_tokens_details.cached_tokens)",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Verified AgentExecutionService tracing test service_emits_invocation_completed_trace_with_token_fields passes (asserts all 12 structured fields including tokens_reported=true and cache_reported=false)",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Verified full test suite: cargo test (332 lib + 128 cli + 1 tmux + 668 unit = 1129 total, 0 failures)",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Verified cargo test --features test-stub agent_execution_test: 12 tests passed including tracing test",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Verified cargo clippy -- -D warnings: clean",
+          "order": 7,
+          "status": "completed"
+        },
+        {
+          "description": "Verified cargo fmt --check: clean",
+          "order": 8,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 332 lib + 128 cli + 1 tmux + 668 unit = 1129 tests passed, 0 failed, 0 ignored",
+        "cargo test --features test-stub -- agent_execution_test: 12 passed, 0 failed (includes service_emits_invocation_completed_trace_with_token_fields)",
+        "cargo clippy -- -D warnings: clean, no warnings",
+        "cargo fmt --check: clean, no formatting issues",
+        "Invoke-level Claude test claude_envelope_with_usage_populates_token_counts: passes with prompt=1200, completion=350, total=1550, cache_read=800, cache_creation=100",
+        "Invoke-level OpenRouter test invoke_maps_anthropic_cache_tokens_to_envelope: passes with cache_read=150, cache_creation=30",
+        "Invoke-level OpenRouter test invoke_maps_openai_prompt_tokens_details_cached_tokens_to_envelope: passes with cache_read=200, cache_creation=None",
+        "Tracing test service_emits_invocation_completed_trace_with_token_fields: passes, asserts all 12 fields present in captured trace output"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}
