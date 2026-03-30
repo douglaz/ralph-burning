@@ -237,6 +237,26 @@ where
         envelope.metadata.model_used = request.resolved_target.model.clone();
         envelope.timestamp = Utc::now();
 
+        // Emit structured trace immediately after metadata finalization, before
+        // any fallible post-processing (persist, extract, validate) so that
+        // token/cache data is always recorded even for malformed responses.
+        let tc = &envelope.metadata.token_counts;
+        tracing::info!(
+            invocation_id = %envelope.metadata.invocation_id,
+            backend = %envelope.metadata.backend_used,
+            model = %envelope.metadata.model_used,
+            attempt = envelope.metadata.attempt_number,
+            duration_ms = duration.as_millis() as u64,
+            prompt_tokens = tc.prompt_tokens.map(|v| v as i64).unwrap_or(-1),
+            completion_tokens = tc.completion_tokens.map(|v| v as i64).unwrap_or(-1),
+            cache_read_tokens = tc.cache_read_tokens.map(|v| v as i64).unwrap_or(-1),
+            cache_creation_tokens = tc.cache_creation_tokens.map(|v| v as i64).unwrap_or(-1),
+            tokens_reported = tc.prompt_tokens.is_some() || tc.completion_tokens.is_some(),
+            cache_reported = tc.cache_read_tokens.is_some() || tc.cache_creation_tokens.is_some(),
+            session_reused = envelope.metadata.session_reused,
+            "invocation completed"
+        );
+
         let raw_output = extract_raw_output(&envelope.raw_output_reference)?;
         let stored_reference = self.raw_output_store.persist_raw_output(
             &request.project_root,
@@ -258,23 +278,6 @@ where
         envelope.raw_output_reference = stored_reference;
         envelope.parsed_payload = parsed_payload;
         envelope.timestamp = started_at + duration;
-
-        let tc = &envelope.metadata.token_counts;
-        tracing::info!(
-            invocation_id = %envelope.metadata.invocation_id,
-            backend = %envelope.metadata.backend_used,
-            model = %envelope.metadata.model_used,
-            attempt = envelope.metadata.attempt_number,
-            duration_ms = duration.as_millis() as u64,
-            prompt_tokens = tc.prompt_tokens.map(|v| v as i64).unwrap_or(-1),
-            completion_tokens = tc.completion_tokens.map(|v| v as i64).unwrap_or(-1),
-            cache_read_tokens = tc.cache_read_tokens.map(|v| v as i64).unwrap_or(-1),
-            cache_creation_tokens = tc.cache_creation_tokens.map(|v| v as i64).unwrap_or(-1),
-            tokens_reported = tc.prompt_tokens.is_some() || tc.completion_tokens.is_some(),
-            cache_reported = tc.cache_read_tokens.is_some() || tc.cache_creation_tokens.is_some(),
-            session_reused = envelope.metadata.session_reused,
-            "invocation completed"
-        );
 
         self.session_manager.record_session(
             &request.project_root,

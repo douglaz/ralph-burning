@@ -183,7 +183,7 @@ impl PreparedCommand {
                         let prompt = u.input_tokens;
                         let completion = u.output_tokens;
                         let total = match (prompt, completion) {
-                            (Some(p), Some(c)) => Some(p + c),
+                            (Some(p), Some(c)) => p.checked_add(c),
                             _ => None,
                         };
                         TokenCounts {
@@ -1281,8 +1281,11 @@ pub(crate) struct ChildOutput {
 /// Extract token usage from Codex CLI NDJSON stdout.
 ///
 /// Codex emits newline-delimited JSON events to stdout. We scan lines in
-/// reverse looking for the last event containing a `usage` object with token
-/// fields like `input_tokens`, `output_tokens`, and `cached_input_tokens`.
+/// reverse looking for the last event containing a `usage` object with at
+/// least one recognized token field (`input_tokens`, `output_tokens`, or
+/// `cached_input_tokens`). Lines where `usage` is null, non-object, or
+/// contains none of the recognized fields are skipped so they don't shadow
+/// a valid earlier record.
 fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
     let text = String::from_utf8_lossy(stdout);
     for line in text.lines().rev() {
@@ -1293,23 +1296,26 @@ fn extract_codex_usage_from_stdout(stdout: &[u8]) -> TokenCounts {
         let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
             continue;
         };
-        let Some(usage) = value.get("usage") else {
+        let Some(usage) = value.get("usage").filter(|u| u.is_object()) else {
             continue;
         };
         let input = usage
             .get("input_tokens")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(|v| u32::try_from(v).ok());
         let output = usage
             .get("output_tokens")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(|v| u32::try_from(v).ok());
         let cached = usage
             .get("cached_input_tokens")
             .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
+            .and_then(|v| u32::try_from(v).ok());
+        if input.is_none() && output.is_none() && cached.is_none() {
+            continue;
+        }
         let total = match (input, output) {
-            (Some(i), Some(o)) => Some(i + o),
+            (Some(i), Some(o)) => i.checked_add(o),
             _ => None,
         };
         return TokenCounts {
@@ -2741,5 +2747,20 @@ mod tests {
         assert_eq!(counts.completion_tokens, Some(7));
         assert_eq!(counts.total_tokens, Some(49));
         assert_eq!(counts.cache_read_tokens, None);
+    }
+
+    #[test]
+    fn codex_usage_skips_null_and_empty_usage_objects() {
+        // A trailing event with `"usage": null` or `"usage": {}` must not
+        // shadow a valid earlier usage record.
+        let stdout = br#"{"type":"turn.completed","usage":{"input_tokens":500,"output_tokens":120,"cached_input_tokens":300}}
+{"type":"done","usage":null}
+{"type":"cleanup","usage":{}}
+"#;
+        let counts = extract_codex_usage_from_stdout(stdout);
+        assert_eq!(counts.prompt_tokens, Some(500));
+        assert_eq!(counts.completion_tokens, Some(120));
+        assert_eq!(counts.total_tokens, Some(620));
+        assert_eq!(counts.cache_read_tokens, Some(300));
     }
 }
