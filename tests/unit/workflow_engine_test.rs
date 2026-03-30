@@ -1088,7 +1088,7 @@ async fn resume_from_failed_docs_change_run_skips_completed_stages() {
     );
     assert_eq!(
         stage_events(&events, JournalEventType::StageEntered, "docs_update").len(),
-        4
+        6
     );
 
     let run_resumed = events
@@ -1156,7 +1156,7 @@ async fn resume_from_failed_ci_improvement_run_skips_completed_stages() {
     );
     assert_eq!(
         stage_events(&events, JournalEventType::StageEntered, "ci_update").len(),
-        4
+        6
     );
 
     let run_resumed = events
@@ -1467,7 +1467,7 @@ async fn resume_from_failed_quick_dev_run_skips_completed_stages() {
     );
     assert_eq!(
         stage_events(&events, JournalEventType::StageEntered, "review").len(),
-        4
+        6
     );
 
     let run_resumed = events
@@ -3083,7 +3083,7 @@ async fn resume_from_failed_run_skips_completed_stages() {
 
     let implementation_entered =
         stage_events(&events, JournalEventType::StageEntered, "implementation");
-    assert_eq!(implementation_entered.len(), 4);
+    assert_eq!(implementation_entered.len(), 6);
 
     let run_started = events
         .iter()

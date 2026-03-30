@@ -4640,8 +4640,12 @@ where
                         }
                     }
                     if cancellation_token.is_cancelled() {
+                        let cancellation_error = AppError::InvocationCancelled {
+                            backend: "engine".to_owned(),
+                            contract_id: stage_id.as_str().to_owned(),
+                        };
                         return fail_run_result(
-                            &error,
+                            &cancellation_error,
                             stage_id,
                             run_id,
                             seq,
