@@ -2565,11 +2565,22 @@ impl FsTaskRunLineageStore {
 
     /// Read the snapshot's plan_hash for backfill-only auto-population.
     /// Returns `None` if no snapshot exists or no plan has been persisted.
+    /// Logs a warning for unexpected errors (corrupt JSON, permission failures)
+    /// so operators can detect issues that silently prevent auto-population.
     fn snapshot_plan_hash(base_dir: &Path, milestone_id: &MilestoneId) -> Option<String> {
-        FsMilestoneSnapshotStore
-            .read_snapshot(base_dir, milestone_id)
-            .ok()
-            .and_then(|s| s.plan_hash)
+        match FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id) {
+            Ok(snapshot) => snapshot.plan_hash,
+            Err(AppError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => {
+                tracing::warn!(
+                    milestone_id = %milestone_id,
+                    error = %err,
+                    "failed to read milestone snapshot for plan_hash auto-population; \
+                     treating as no snapshot"
+                );
+                None
+            }
+        }
     }
 
     fn read_task_runs_from_path(
