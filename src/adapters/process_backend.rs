@@ -407,6 +407,25 @@ impl ManagedChild {
         }
     }
 
+    /// Cross-platform forceful kill.  Uses SIGKILL on Unix; on non-Unix
+    /// falls back to tokio's `Child::kill()` which calls
+    /// `TerminateProcess` on Windows.
+    async fn force_kill(&self) -> std::io::Result<()> {
+        #[cfg(unix)]
+        {
+            self.send_sigkill().await
+        }
+
+        #[cfg(not(unix))]
+        {
+            let mut state = self.state.lock().await;
+            match &mut *state {
+                ManagedChildState::Running(child) => child.kill().await,
+                ManagedChildState::Exited(_) => Ok(()),
+            }
+        }
+    }
+
     async fn wait(&self) -> std::io::Result<ExitStatus> {
         loop {
             let maybe_status = {
@@ -1422,18 +1441,18 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
 
 /// Classify process exit status into the appropriate failure class.
 ///
-/// - Exit 127 (binary/command not found by shell) → `BinaryNotFound` (non-retryable)
-/// - All other non-zero exits and signal kills → `TransportFailure` (retryable)
-fn classify_exit_failure(status: ExitStatus) -> FailureClass {
-    match status.code() {
-        Some(127) => FailureClass::BinaryNotFound,
-        _ => FailureClass::TransportFailure,
-    }
+/// All non-zero exits and signal kills map to `TransportFailure` (retryable).
+/// `BinaryNotFound` is only produced at the spawn() call site when the OS
+/// reports `ErrorKind::NotFound` — once a process is running, any exit code
+/// (including 127) is application-defined and should not be treated as a
+/// missing-binary signal.
+fn classify_exit_failure(_status: ExitStatus) -> FailureClass {
+    FailureClass::TransportFailure
 }
 
 fn spawn_background_reap(invocation_id: String, child: Arc<ManagedChild>) {
     tokio::spawn(async move {
-        let _ = child.send_sigkill().await;
+        let _ = child.force_kill().await;
         let _ = child.wait().await;
         drop(invocation_id);
     });

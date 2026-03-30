@@ -1,5 +1,5 @@
 use std::path::Path;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde_json::Value;
@@ -193,6 +193,13 @@ where
         let invoke_future = self.adapter.invoke(request.clone());
         tokio::pin!(invoke_future);
 
+        // The adapter enforces its own hard timeout at `request.timeout`,
+        // which handles artifact preservation and child cleanup.  The
+        // service-level timeout is a safety net that fires only if the
+        // adapter's timeout somehow stalls.  Adding a 30-second buffer
+        // ensures the adapter always fires first under normal conditions.
+        let service_timeout = request.timeout + Duration::from_secs(30);
+
         let mut envelope = tokio::select! {
             _ = request.cancellation_token.cancelled() => {
                 let _ = self.adapter.cancel(&invocation_id).await;
@@ -201,7 +208,7 @@ where
                     contract_id: request.contract.label(),
                 });
             }
-            result = tokio::time::timeout(request.timeout, &mut invoke_future) => {
+            result = tokio::time::timeout(service_timeout, &mut invoke_future) => {
                 match result {
                     Ok(result) => result.map_err(|error| map_invoke_error(error, &request))?,
                     Err(_) => {

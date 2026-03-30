@@ -1999,7 +1999,8 @@ async fn spawn_and_wait_timeout_returns_timeout_failure() {
     );
 
     let adapter = ProcessBackendAdapter::new();
-    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    let (project_dir, mut request) = request_fixture(BackendFamily::Claude);
+    let invocation_id = request.invocation_id.clone();
     // Set a very short timeout (will fire instantly with paused time).
     request.timeout = Duration::from_secs(2);
 
@@ -2018,10 +2019,24 @@ async fn spawn_and_wait_timeout_returns_timeout_failure() {
         }
         other => panic!("expected Timeout, got: {other:?}"),
     }
+
+    // Verify artifact preservation: the .failed.raw sentinel file should
+    // exist in runtime/failed with a timeout reason.
+    let failed_raw = project_dir
+        .path()
+        .join("runtime/failed")
+        .join(format!("{invocation_id}.failed.raw"));
+    let contents = fs::read_to_string(&failed_raw).unwrap_or_else(|err| {
+        panic!("expected {failed_raw:?} to exist after timeout, but got: {err}")
+    });
+    assert!(
+        contents.contains("process timed out"),
+        "failed.raw should mention timeout reason: {contents}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn exit_code_127_returns_binary_not_found() {
+async fn exit_code_127_returns_transport_failure() {
     let bin_dir = tempdir().expect("create bin dir");
     let _env_lock = lock_path_mutex();
     let _path_guard = PathGuard::prepend(bin_dir.path());
@@ -2036,9 +2051,11 @@ async fn exit_code_127_returns_binary_not_found() {
 
     let error = adapter.invoke(request).await.expect_err("should fail");
 
+    // Once a process is running, exit code 127 is application-defined.
+    // BinaryNotFound is only produced at spawn() via ErrorKind::NotFound.
     match error {
         AppError::InvocationFailed {
-            failure_class: FailureClass::BinaryNotFound,
+            failure_class: FailureClass::TransportFailure,
             details,
             ..
         } => {
@@ -2047,6 +2064,6 @@ async fn exit_code_127_returns_binary_not_found() {
                 "should contain exit code 127: {details}"
             );
         }
-        other => panic!("expected BinaryNotFound for exit 127, got: {other:?}"),
+        other => panic!("expected TransportFailure for exit 127, got: {other:?}"),
     }
 }
