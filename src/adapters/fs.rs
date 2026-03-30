@@ -22,9 +22,9 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
     collapse_task_run_attempts, find_matching_running_task_run, matching_finalized_task_runs,
-    render_completion_journal_details, render_start_journal_details, MilestoneEventType,
-    MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot, TaskRunEntry,
-    TaskRunOutcome,
+    render_completion_journal_details, render_start_journal_details, CompletionJournalDetails,
+    MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot,
+    StartJournalDetails, TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2276,16 +2276,6 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct StartJournalDetails {
-    project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<String>,
-}
-
 impl StartJournalDetails {
     fn parse(details: &str) -> Option<Self> {
         serde_json::from_str(details).ok()
@@ -2322,20 +2312,6 @@ impl StartJournalDetails {
             self.plan_hash.as_deref(),
         )
     }
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct CompletionJournalDetails {
-    project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<String>,
-    started_at: DateTime<Utc>,
-    outcome: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    outcome_detail: Option<String>,
 }
 
 impl CompletionJournalDetails {
@@ -3765,9 +3741,9 @@ mod tests {
     use crate::shared::domain::ProjectId;
     use tempfile::tempdir;
 
-    /// Ensure `StartJournalDetails` (fs.rs) stays in sync with
-    /// `render_start_journal_details` (model.rs). If a field is added to the
-    /// render payload but not to the parsing struct, the round-trip will lose it.
+    /// Verify that `render_start_journal_details` output round-trips through
+    /// `StartJournalDetails` parse→render. Both paths use the same canonical
+    /// struct from model.rs, so drift is structurally impossible.
     #[test]
     fn start_journal_details_round_trips_with_model_render() {
         use crate::contexts::milestone_record::model::render_start_journal_details;
@@ -3784,8 +3760,9 @@ mod tests {
         assert_eq!(parsed.render(), rendered);
     }
 
-    /// Ensure `CompletionJournalDetails` (fs.rs) stays in sync with
-    /// `render_completion_journal_details` (model.rs).
+    /// Verify that `render_completion_journal_details` output round-trips
+    /// through `CompletionJournalDetails` parse→render. Both paths use the
+    /// same canonical struct from model.rs, so drift is structurally impossible.
     #[test]
     fn completion_journal_details_round_trips_with_model_render() {
         use crate::contexts::milestone_record::model::render_completion_journal_details;

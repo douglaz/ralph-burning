@@ -350,13 +350,17 @@ impl TaskRunEntry {
     }
 }
 
-#[derive(Serialize)]
-struct StartJournalDetailsPayload<'a> {
-    project_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<&'a str>,
+/// Canonical owned representation of start journal details.
+/// Used for both serialization (render) and deserialization (parse) so the
+/// field set cannot drift between the model layer and the adapter layer.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StartJournalDetails {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
 }
 
 pub fn render_start_journal_details(
@@ -364,25 +368,29 @@ pub fn render_start_journal_details(
     run_id: Option<&str>,
     plan_hash: Option<&str>,
 ) -> String {
-    serde_json::to_string(&StartJournalDetailsPayload {
-        project_id,
-        run_id,
-        plan_hash,
+    serde_json::to_string(&StartJournalDetails {
+        project_id: project_id.to_owned(),
+        run_id: run_id.map(str::to_owned),
+        plan_hash: plan_hash.map(str::to_owned),
     })
     .expect("start journal details serialization should not fail")
 }
 
-#[derive(Serialize)]
-struct CompletionJournalDetailsPayload<'a> {
-    project_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<&'a str>,
-    started_at: DateTime<Utc>,
-    outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome_detail: Option<&'a str>,
+/// Canonical owned representation of completion journal details.
+/// Used for both serialization (render) and deserialization (parse) so the
+/// field set cannot drift between the model layer and the adapter layer.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompletionJournalDetails {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_detail: Option<String>,
 }
 
 pub fn render_completion_journal_details(
@@ -393,13 +401,13 @@ pub fn render_completion_journal_details(
     outcome: impl fmt::Display,
     outcome_detail: Option<&str>,
 ) -> String {
-    serde_json::to_string(&CompletionJournalDetailsPayload {
-        project_id,
-        run_id,
-        plan_hash,
+    serde_json::to_string(&CompletionJournalDetails {
+        project_id: project_id.to_owned(),
+        run_id: run_id.map(str::to_owned),
+        plan_hash: plan_hash.map(str::to_owned),
         started_at,
         outcome: outcome.to_string(),
-        outcome_detail,
+        outcome_detail: outcome_detail.map(str::to_owned),
     })
     .expect("completion journal details serialization should not fail")
 }
