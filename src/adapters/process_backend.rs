@@ -998,12 +998,12 @@ impl ProcessBackendAdapter {
         let mut child = command.spawn().map_err(|error| {
             // spawn() returns ENOENT for several reasons: missing binary,
             // missing working directory, or missing script interpreter.
-            // For bare names (OS PATH lookup), ENOENT means the binary
-            // was not found on PATH — always BinaryNotFound.  For
-            // absolute paths, only classify as BinaryNotFound when the
-            // file is confirmed missing; other NotFound causes (e.g.
-            // missing interpreter) are retryable as TransportFailure.
+            // Only classify as BinaryNotFound when the binary is
+            // positively confirmed missing.  If the working directory
+            // doesn't exist, ENOENT comes from the cwd — not the
+            // binary — and should be retryable (TransportFailure).
             let failure_class = if error.kind() == std::io::ErrorKind::NotFound
+                && request.working_dir.exists()
                 && (!binary.is_absolute() || !binary.exists())
             {
                 FailureClass::BinaryNotFound
@@ -2947,5 +2947,60 @@ mod tests {
         assert_eq!(counts.completion_tokens, Some(120));
         assert_eq!(counts.total_tokens, Some(620));
         assert_eq!(counts.cache_read_tokens, Some(300));
+    }
+
+    // ── classify_exit_failure unit tests ────────────────────────────────
+
+    mod classify_exit_tests {
+        use super::super::classify_exit_failure;
+        use crate::shared::domain::FailureClass;
+        use std::os::unix::process::ExitStatusExt;
+        use std::process::ExitStatus;
+
+        #[test]
+        fn exit_127_returns_binary_not_found() {
+            let status = ExitStatus::from_raw(127 << 8);
+            assert_eq!(classify_exit_failure(status), FailureClass::BinaryNotFound);
+        }
+
+        #[test]
+        fn exit_1_returns_transport_failure() {
+            let status = ExitStatus::from_raw(1 << 8);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn exit_0_returns_transport_failure() {
+            // Defensive: classify_exit_failure is only called on non-zero
+            // exits, but exit 0 should still not be BinaryNotFound.
+            let status = ExitStatus::from_raw(0);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn signal_killed_returns_transport_failure() {
+            // Signal 11 = SIGSEGV; status.code() returns None.
+            let status = ExitStatus::from_raw(11);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
+
+        #[test]
+        fn signal_6_returns_transport_failure() {
+            // Signal 6 = SIGABRT
+            let status = ExitStatus::from_raw(6);
+            assert_eq!(
+                classify_exit_failure(status),
+                FailureClass::TransportFailure
+            );
+        }
     }
 }
