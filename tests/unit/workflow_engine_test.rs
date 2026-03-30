@@ -2706,7 +2706,7 @@ fn stage_events<'a>(
         .collect()
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_exhaustion_transitions_run_to_failed_state() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -2715,7 +2715,7 @@ async fn retry_exhaustion_transitions_run_to_failed_state() {
     let pid = create_standard_project(base_dir, "retry-exhaustion");
 
     let agent_service = build_agent_service_with_adapter(
-        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 3),
+        StubBackendAdapter::default().with_transient_failure(StageId::Implementation, 5),
     );
     let config = EffectiveConfig::load(base_dir).unwrap();
 
@@ -2744,17 +2744,19 @@ async fn retry_exhaustion_transitions_run_to_failed_state() {
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
     let implementation_entered =
         stage_events(&events, JournalEventType::StageEntered, "implementation");
-    assert_eq!(implementation_entered.len(), 3);
+    assert_eq!(implementation_entered.len(), 5);
 
     let implementation_failed =
         stage_events(&events, JournalEventType::StageFailed, "implementation");
-    assert_eq!(implementation_failed.len(), 3);
+    assert_eq!(implementation_failed.len(), 5);
     assert_eq!(implementation_failed[0].details["will_retry"], true);
     assert_eq!(implementation_failed[1].details["will_retry"], true);
-    assert_eq!(implementation_failed[2].details["will_retry"], false);
+    assert_eq!(implementation_failed[2].details["will_retry"], true);
+    assert_eq!(implementation_failed[3].details["will_retry"], true);
+    assert_eq!(implementation_failed[4].details["will_retry"], false);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn retry_success_on_second_attempt_completes_run() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3763,7 +3765,7 @@ async fn resume_from_paused_prompt_review_run_continues_from_planning() {
     assert_eq!(run_resumed.details["resume_stage"], "prompt_review");
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cancellation_halts_retry_loop() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();
@@ -3811,7 +3813,7 @@ async fn cancellation_halts_retry_loop() {
     assert_eq!(implementation_failed[0].details["will_retry"], false);
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn cancellation_between_retry_attempts_does_not_start_next_attempt() {
     let tmp = tempdir().unwrap();
     let base_dir = tmp.path();

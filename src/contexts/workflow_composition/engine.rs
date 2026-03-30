@@ -4617,6 +4617,25 @@ where
                 );
 
                 if will_retry {
+                    let backoff = retry_policy.backoff_for_attempt(cursor.attempt);
+                    if !backoff.is_zero() {
+                        let _ = log_write.append_runtime_log(
+                            base_dir,
+                            project_id,
+                            &RuntimeLogEntry {
+                                timestamp: Utc::now(),
+                                level: LogLevel::Info,
+                                source: "engine".to_owned(),
+                                message: format!(
+                                    "retry_backoff: {} attempt={} delay={}s",
+                                    stage_id.as_str(),
+                                    cursor.attempt,
+                                    backoff.as_secs(),
+                                ),
+                            },
+                        );
+                        tokio::time::sleep(backoff).await;
+                    }
                     cursor = cursor.retry()?;
                     continue;
                 }

@@ -1985,3 +1985,68 @@ async fn claude_envelope_with_usage_populates_token_counts() {
         Some(100)
     );
 }
+
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn spawn_and_wait_timeout_returns_timeout_failure() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    // Script that sleeps forever (will be killed by timeout).
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nsleep 99999\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, mut request) = request_fixture(BackendFamily::Claude);
+    // Set a very short timeout (will fire instantly with paused time).
+    request.timeout = Duration::from_secs(2);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::Timeout,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("exceeded timeout"),
+                "should mention timeout: {details}"
+            );
+        }
+        other => panic!("expected Timeout, got: {other:?}"),
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn exit_code_127_returns_binary_not_found() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    write_executable(
+        &bin_dir.path().join("claude"),
+        "#!/bin/sh\ncat > /dev/null\nexit 127\n",
+    );
+
+    let adapter = ProcessBackendAdapter::new();
+    let (_dir, request) = request_fixture(BackendFamily::Claude);
+
+    let error = adapter.invoke(request).await.expect_err("should fail");
+
+    match error {
+        AppError::InvocationFailed {
+            failure_class: FailureClass::BinaryNotFound,
+            details,
+            ..
+        } => {
+            assert!(
+                details.contains("127"),
+                "should contain exit code 127: {details}"
+            );
+        }
+        other => panic!("expected BinaryNotFound for exit 127, got: {other:?}"),
+    }
+}

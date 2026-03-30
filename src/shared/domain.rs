@@ -21,6 +21,7 @@ pub enum FailureClass {
     Timeout,
     Cancellation,
     QaReviewOutcomeFailure,
+    BinaryNotFound,
 }
 
 impl FailureClass {
@@ -32,6 +33,7 @@ impl FailureClass {
             Self::Timeout => "timeout",
             Self::Cancellation => "cancellation",
             Self::QaReviewOutcomeFailure => "qa_review_outcome_failure",
+            Self::BinaryNotFound => "binary_not_found",
         }
     }
 }

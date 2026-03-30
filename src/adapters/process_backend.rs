@@ -933,9 +933,14 @@ impl ProcessBackendAdapter {
 
         let binary_display = binary.display();
         let mut child = command.spawn().map_err(|error| {
+            let failure_class = if error.kind() == std::io::ErrorKind::NotFound {
+                FailureClass::BinaryNotFound
+            } else {
+                FailureClass::TransportFailure
+            };
             Self::invocation_failed(
                 request,
-                FailureClass::TransportFailure,
+                failure_class,
                 format!("failed to spawn {binary_display}: {error}"),
             )
         })?;
@@ -970,9 +975,33 @@ impl ProcessBackendAdapter {
             Ok::<Vec<u8>, std::io::Error>(buf)
         };
 
-        let (stdin_result, stdout_result, stderr_result) =
-            tokio::join!(stdin_future, stdout_future, stderr_future);
-        let status_result = active_child.wait().await;
+        let timeout_duration = request.timeout;
+        let io_and_wait = async {
+            let (stdin_result, stdout_result, stderr_result) =
+                tokio::join!(stdin_future, stdout_future, stderr_future);
+            let status_result = active_child.wait().await;
+            (stdin_result, stdout_result, stderr_result, status_result)
+        };
+
+        let (stdin_result, stdout_result, stderr_result, status_result) =
+            match tokio::time::timeout(timeout_duration, io_and_wait).await {
+                Ok(results) => results,
+                Err(_elapsed) => {
+                    // Timeout fired — kill the child and clean up.
+                    spawn_background_reap(request.invocation_id.clone(), active_child.clone());
+                    self.remove_child_if_same(&request.invocation_id, &active_child)
+                        .await;
+                    return Err(Self::invocation_failed(
+                        request,
+                        FailureClass::Timeout,
+                        format!(
+                            "{binary_display} exceeded timeout of {}s",
+                            timeout_duration.as_secs(),
+                        ),
+                    ));
+                }
+            };
+
         self.remove_child_if_same(&request.invocation_id, &active_child)
             .await;
 
@@ -1175,6 +1204,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                             .status
                             .code()
                             .map_or("signal".to_owned(), |c| c.to_string());
+                        let failure_class = classify_exit_failure(fresh_output.status);
                         fresh_prepared
                             .cleanup_failed_invocation(&fresh_request, &fresh_output)
                             .await;
@@ -1186,7 +1216,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                         };
                         return Err(Self::invocation_failed(
                             &fresh_request,
-                            FailureClass::TransportFailure,
+                            failure_class,
                             format!(
                                 "{} exited with code {code}{detail}",
                                 fresh_prepared.binary().display(),
@@ -1198,6 +1228,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
 
                 let stdout_error = extract_stdout_error(&output.stdout);
                 let code = status.code().map_or("signal".to_owned(), |c| c.to_string());
+                let failure_class = classify_exit_failure(status);
                 prepared.cleanup_failed_invocation(&request, &output).await;
                 let detail = match (stderr.is_empty(), stdout_error) {
                     (false, Some(out)) => format!(": {stderr}; stdout error: {out}"),
@@ -1207,7 +1238,7 @@ impl AgentExecutionPort for ProcessBackendAdapter {
                 };
                 Err(Self::invocation_failed(
                     &request,
-                    FailureClass::TransportFailure,
+                    failure_class,
                     format!(
                         "{} exited with code {code}{detail}",
                         prepared.binary().display(),
@@ -1340,6 +1371,17 @@ fn extract_stdout_error(stdout: &[u8]) -> Option<String> {
             .map(|s| s.to_owned())
     } else {
         None
+    }
+}
+
+/// Classify process exit status into the appropriate failure class.
+///
+/// - Exit 127 (binary/command not found by shell) → `BinaryNotFound` (non-retryable)
+/// - All other non-zero exits and signal kills → `TransportFailure` (retryable)
+fn classify_exit_failure(status: ExitStatus) -> FailureClass {
+    match status.code() {
+        Some(127) => FailureClass::BinaryNotFound,
+        _ => FailureClass::TransportFailure,
     }
 }
 
