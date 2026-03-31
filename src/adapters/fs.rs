@@ -22,9 +22,9 @@ use crate::contexts::automation_runtime::repo_registry::{
 use crate::contexts::automation_runtime::DaemonStorePort;
 use crate::contexts::milestone_record::model::{
     collapse_task_run_attempts, find_matching_running_task_run, matching_finalized_task_runs,
-    render_completion_journal_details, render_start_journal_details, MilestoneEventType,
-    MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot, TaskRunEntry,
-    TaskRunOutcome,
+    render_completion_journal_details, render_start_journal_details, CompletionJournalDetails,
+    MilestoneEventType, MilestoneId, MilestoneJournalEvent, MilestoneRecord, MilestoneSnapshot,
+    StartJournalDetails, TaskRunEntry, TaskRunOutcome,
 };
 use crate::contexts::milestone_record::service::{
     MilestoneJournalPort, MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
@@ -2276,15 +2276,6 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct StartJournalDetails {
-    project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<String>,
-}
-
 impl StartJournalDetails {
     fn parse(details: &str) -> Option<Self> {
         serde_json::from_str(details).ok()
@@ -2304,6 +2295,10 @@ impl StartJournalDetails {
             return None;
         }
 
+        // Explicit field-by-field merge: fill absent optional fields from
+        // `requested`.  Each optional field must be listed here — adding a
+        // new optional field to StartJournalDetails requires adding a merge
+        // line below.  The round-trip test catches any omission.
         let mut merged = existing.clone();
         if merged.run_id.is_none() {
             merged.run_id = requested.run_id.clone();
@@ -2323,19 +2318,6 @@ impl StartJournalDetails {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-struct CompletionJournalDetails {
-    project_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<String>,
-    started_at: DateTime<Utc>,
-    outcome: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    outcome_detail: Option<String>,
-}
-
 impl CompletionJournalDetails {
     fn parse(details: &str) -> Option<Self> {
         serde_json::from_str(details).ok()
@@ -2343,7 +2325,6 @@ impl CompletionJournalDetails {
 
     fn merge(existing: &Self, requested: &Self) -> Option<Self> {
         // Repair in place only when both journal rows refer to the same attempt.
-        // Named runs use run_id; runless retries are disambiguated by started_at.
         if existing.project_id != requested.project_id
             || existing.started_at != requested.started_at
             || existing.outcome != requested.outcome
@@ -2363,6 +2344,10 @@ impl CompletionJournalDetails {
             return None;
         }
 
+        // Explicit field-by-field merge: fill absent optional fields from
+        // `requested`.  Each optional field must be listed here — adding a
+        // new optional field to CompletionJournalDetails requires adding a
+        // merge line below.  The round-trip test catches any omission.
         let mut merged = existing.clone();
         if merged.run_id.is_none() {
             merged.run_id = requested.run_id.clone();
@@ -2646,33 +2631,23 @@ impl FsTaskRunLineageStore {
     fn plan_hash_conflict_details(
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
+        run_id: &str,
         existing_plan_hash: &str,
         requested_plan_hash: &str,
     ) -> String {
-        let run_suffix = run_id
-            .map(|run_id| format!(" run={run_id}"))
-            .unwrap_or_default();
         format!(
-            "conflicting plan_hash for bead={bead_id} project={project_id}{run_suffix}: existing={existing_plan_hash} requested={requested_plan_hash}"
+            "conflicting plan_hash for bead={bead_id} project={project_id} run={run_id}: existing={existing_plan_hash} requested={requested_plan_hash}"
         )
     }
 
     fn backfill_terminal_entry(
         entry: &mut TaskRunEntry,
-        run_id: Option<&str>,
         plan_hash: Option<&str>,
         outcome_detail: Option<&str>,
         finished_at: DateTime<Utc>,
     ) -> bool {
         let mut changed = false;
 
-        if let Some(run_id) = run_id {
-            if entry.run_id.is_none() {
-                entry.run_id = Some(run_id.to_owned());
-                changed = true;
-            }
-        }
         if let Some(plan_hash) = plan_hash {
             if entry.plan_hash.is_none() {
                 entry.plan_hash = Some(plan_hash.to_owned());
@@ -2697,39 +2672,51 @@ impl FsTaskRunLineageStore {
         entry: &mut TaskRunEntry,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
-        plan_hash: Option<&str>,
+        run_id: &str,
+        plan_hash: &str,
     ) -> AppResult<bool> {
         let mut changed = false;
 
-        if let Some(run_id) = run_id {
-            if entry.run_id.is_none() {
-                entry.run_id = Some(run_id.to_owned());
+        match entry.plan_hash.as_deref() {
+            Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                return Err(AppError::RunStartFailed {
+                    reason: Self::plan_hash_conflict_details(
+                        bead_id,
+                        project_id,
+                        entry.run_id.as_deref().unwrap_or(run_id),
+                        existing_plan_hash,
+                        plan_hash,
+                    ),
+                });
+            }
+            None => {
+                entry.plan_hash = Some(plan_hash.to_owned());
                 changed = true;
             }
-        }
-        if let Some(plan_hash) = plan_hash {
-            match entry.plan_hash.as_deref() {
-                Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
-                    return Err(AppError::RunStartFailed {
-                        reason: Self::plan_hash_conflict_details(
-                            bead_id,
-                            project_id,
-                            entry.run_id.as_deref().or(run_id),
-                            existing_plan_hash,
-                            plan_hash,
-                        ),
-                    });
-                }
-                None => {
-                    entry.plan_hash = Some(plan_hash.to_owned());
-                    changed = true;
-                }
-                _ => {}
-            }
+            _ => {}
         }
 
         Ok(changed)
+    }
+
+    /// One-time upgrade repair: mark any running entries with `run_id: None`
+    /// as failed.  Prior code versions allowed starting beads without a run ID;
+    /// the current write paths require `run_id: &str` at the port boundary, so
+    /// these legacy entries can never be finalized normally.  Failing them on
+    /// first write access prevents them from blocking new starts or producing
+    /// confusing "ambiguous" errors.
+    fn fail_legacy_runless_entries(entries: &mut [TaskRunEntry], now: DateTime<Utc>) -> bool {
+        let mut changed = false;
+        for entry in entries.iter_mut() {
+            if entry.run_id.is_none() && !entry.outcome.is_terminal() {
+                entry.outcome = TaskRunOutcome::Failed;
+                entry.outcome_detail =
+                    Some("superseded: run_id is now required (upgrade repair)".to_owned());
+                entry.finished_at = Some(now);
+                changed = true;
+            }
+        }
+        changed
     }
 
     fn fail_superseded_running_attempt(
@@ -2755,29 +2742,23 @@ impl FsTaskRunLineageStore {
         changed
     }
 
+    /// Find a unique terminal entry among `matching_indices` that can be
+    /// treated as a replay match.  Matches by exact `run_id` only — legacy
+    /// entries with `run_id: None` are never matched.
     fn unique_terminal_replay_match(
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
-        requested_run_id: Option<&str>,
+        requested_run_id: &str,
     ) -> Option<usize> {
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
             .copied()
             .filter(|candidate_index| {
                 let candidate = &entries[*candidate_index];
-                if !candidate.outcome.is_terminal() {
-                    return false;
-                }
-                if let Some(run_id) = requested_run_id {
-                    if candidate
-                        .run_id
-                        .as_deref()
-                        .is_some_and(|candidate_run_id| candidate_run_id != run_id)
-                    {
-                        return false;
-                    }
-                }
-
+                candidate.outcome.is_terminal()
+                    && candidate.run_id.as_deref() == Some(requested_run_id)
+            })
+            .filter(|candidate_index| {
                 matching_indices.iter().copied().all(|other_index| {
                     other_index == *candidate_index
                         || Self::is_legacy_start_for(entries, other_index, *candidate_index)
@@ -2828,13 +2809,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
-        plan_hash: Option<&str>,
+        run_id: &str,
+        plan_hash: &str,
         started_at: DateTime<Utc>,
     ) -> AppResult<TaskRunEntry> {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, started_at);
+        if legacy_repaired {
+            Self::write_task_runs(&path, &entries)?;
+        }
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
         let running_attempts_for_bead =
             Self::running_task_runs_for_bead(&canonical_task_runs, bead_id);
@@ -2852,13 +2837,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        let finalized_attempts = matching_finalized_task_runs(
-            &canonical_task_runs,
-            bead_id,
-            project_id,
-            run_id,
-            started_at,
-        );
+        let finalized_attempts =
+            matching_finalized_task_runs(&canonical_task_runs, bead_id, project_id, run_id);
         match finalized_attempts.as_slice() {
             [] => {}
             [entry] => {
@@ -2885,23 +2865,29 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             }
         }
 
-        if let Some(existing_entry) = find_matching_running_task_run(
-            &canonical_task_runs,
-            bead_id,
-            project_id,
-            run_id,
-            started_at,
-        ) {
+        if let Some(existing_entry) =
+            find_matching_running_task_run(&canonical_task_runs, bead_id, project_id, run_id)
+        {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
-                if Self::backfill_running_entry(
+                // Pre-merge metadata from the canonical (collapsed) entry
+                // into the raw row.  In duplicate-row states the first raw
+                // row may be the stale copy while the canonical entry
+                // already holds the most complete metadata from all
+                // duplicates.
+                let pre_merge = entries[existing_index].clone();
+                entries[existing_index] =
+                    TaskRunEntry::merge_attempt_entries(&entries[existing_index], &existing_entry);
+                let mut changed = entries[existing_index] != pre_merge;
+                changed |= Self::backfill_running_entry(
                     &mut entries[existing_index],
                     bead_id,
                     project_id,
                     run_id,
                     plan_hash,
-                )? {
+                )?;
+                if changed {
                     Self::write_task_runs(&path, &entries)?;
                 }
                 return Ok(entries[existing_index].clone());
@@ -2911,9 +2897,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
 
         if running_attempts_for_bead.len() > 1 {
-            let run_suffix = run_id
-                .map(|run_id| format!(" run '{run_id}'"))
-                .unwrap_or_default();
+            let run_suffix = format!(" run '{run_id}'");
             return Err(AppError::RunStartFailed {
                 reason: format!(
                     "cannot start bead '{bead_id}': ambiguous existing running attempts{run_suffix}"
@@ -2929,8 +2913,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             milestone_id: milestone_id.to_string(),
             bead_id: bead_id.to_owned(),
             project_id: project_id.to_owned(),
-            run_id: run_id.map(str::to_owned),
-            plan_hash: plan_hash.map(str::to_owned),
+            run_id: Some(run_id.to_owned()),
+            plan_hash: Some(plan_hash.to_owned()),
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -2947,7 +2931,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
+        run_id: &str,
         plan_hash: Option<&str>,
         started_at: DateTime<Utc>,
         outcome: TaskRunOutcome,
@@ -2957,6 +2941,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, finished_at);
+        if legacy_repaired {
+            Self::write_task_runs(&path, &entries)?;
+        }
         if entries.is_empty() {
             return Err(AppError::CorruptRecord {
                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
@@ -2981,7 +2969,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
 
         let mut duplicate_indices_to_remove = Vec::new();
-        let target_index = if let Some(run_id) = run_id {
+        let target_index = {
             let exact_matches: Vec<usize> = matching_indices
                 .iter()
                 .copied()
@@ -3000,28 +2988,31 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         .collect();
                     match open_matches.as_slice() {
                         [] => {
-                            if let Some(index) = Self::unique_terminal_replay_match(
+                            // Pre-filter to rows matching started_at so that
+                            // unrelated completed attempts for the same
+                            // bead/project are excluded from the uniqueness
+                            // check (they would otherwise cause
+                            // is_legacy_start_for to reject valid candidates).
+                            let attempt_indices: Vec<usize> = matching_indices
+                                .iter()
+                                .copied()
+                                .filter(|index| entries[*index].started_at == started_at)
+                                .collect();
+                            match Self::unique_terminal_replay_match(
                                 &entries,
-                                &matching_indices,
-                                Some(run_id),
+                                &attempt_indices,
+                                run_id,
                             ) {
-                                index
-                            } else {
-                                return Err(AppError::CorruptRecord {
-                                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                    details: format!(
-                                        "no matching task run for bead={bead_id} project={project_id} run={run_id}"
-                                    ),
-                                });
+                                Some(index) => index,
+                                None => {
+                                    return Err(AppError::CorruptRecord {
+                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                        details: format!(
+                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}"
+                                        ),
+                                    });
+                                }
                             }
-                        }
-                        [index] if entries[*index].run_id.is_none() => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only a legacy runless attempt is still open"
-                                ),
-                            });
                         }
                         [index] => {
                             return Err(AppError::CorruptRecord {
@@ -3033,10 +3024,15 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             });
                         }
                         _ => {
+                            let open_run_ids: Vec<&str> = open_matches
+                                .iter()
+                                .map(|idx| entries[*idx].run_id.as_deref().unwrap_or("<none>"))
+                                .collect();
                             return Err(AppError::CorruptRecord {
                                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                                 details: format!(
-                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
+                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}; open runs: [{}]",
+                                    open_run_ids.join(", ")
                                 ),
                             });
                         }
@@ -3075,68 +3071,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     }
                 }
             }
-        } else {
-            let matching_attempt_indices: Vec<usize> = matching_indices
-                .iter()
-                .copied()
-                .filter(|index| entries[*index].started_at == started_at)
-                .collect();
-
-            if matching_attempt_indices.is_empty() {
-                return Err(AppError::CorruptRecord {
-                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                    details: format!(
-                        "no matching task run for bead={bead_id} project={project_id} started_at={started_at}"
-                    ),
-                });
-            }
-
-            let open_matches: Vec<usize> = matching_attempt_indices
-                .iter()
-                .copied()
-                .filter(|index| {
-                    !entries[*index].outcome.is_terminal()
-                        && !Self::is_superseded_legacy_start(&entries, *index)
-                })
-                .collect();
-
-            match open_matches.as_slice() {
-                [index] => *index,
-                [] => {
-                    let terminal_matches: Vec<usize> = matching_attempt_indices
-                        .iter()
-                        .copied()
-                        .filter(|index| entries[*index].outcome.is_terminal())
-                        .collect();
-                    match terminal_matches.as_slice() {
-                        [index] => *index,
-                        _ => {
-                            if let Some(index) = Self::unique_terminal_replay_match(
-                                &entries,
-                                &matching_attempt_indices,
-                                None,
-                            ) {
-                                index
-                            } else {
-                                return Err(AppError::CorruptRecord {
-                                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                    details: format!(
-                                        "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
-                                    ),
-                                });
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    return Err(AppError::CorruptRecord {
-                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                        details: format!(
-                            "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
-                        ),
-                    });
-                }
-            }
         };
 
         let mut should_write = !duplicate_indices_to_remove.is_empty();
@@ -3152,14 +3086,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let finalized_entry = {
             let entry = &mut entries[target_index];
             if entry.outcome.is_terminal() {
-                let run_suffix = entry
-                    .run_id
-                    .as_deref()
-                    .or(run_id)
-                    .map(|run_id| format!(" run={run_id}"))
-                    .unwrap_or_default();
+                let run_suffix = entry.run_id.as_deref().unwrap_or(run_id);
+                let run_suffix = format!(" run={run_suffix}");
                 let incompatible_terminal_update = entry.outcome != outcome
-                    || Self::option_conflicts(entry.run_id.as_deref(), run_id)
+                    || Self::option_conflicts(entry.run_id.as_deref(), Some(run_id))
                     || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
                     || Self::option_conflicts(
                         entry.outcome_detail.as_deref(),
@@ -3177,15 +3107,11 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
 
                 should_write |= Self::backfill_terminal_entry(
                     entry,
-                    run_id,
                     plan_hash,
                     outcome_detail.as_deref(),
                     finished_at,
                 );
             } else {
-                if let Some(run_id) = run_id {
-                    entry.run_id.get_or_insert_with(|| run_id.to_owned());
-                }
                 if let Some(plan_hash) = plan_hash {
                     match entry.plan_hash.as_deref() {
                         Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
@@ -3194,7 +3120,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 details: Self::plan_hash_conflict_details(
                                     bead_id,
                                     project_id,
-                                    entry.run_id.as_deref().or(run_id),
+                                    entry.run_id.as_deref().unwrap_or(run_id),
                                     existing_plan_hash,
                                     plan_hash,
                                 ),
@@ -3709,6 +3635,110 @@ mod tests {
     use crate::contexts::automation_runtime::{DaemonStorePort, WriterLockReleaseOutcome};
     use crate::shared::domain::ProjectId;
     use tempfile::tempdir;
+
+    /// Verify that `render_start_journal_details` output round-trips through
+    /// `StartJournalDetails` parse→render. Both paths use the same canonical
+    /// struct from model.rs, so drift is structurally impossible.
+    #[test]
+    fn start_journal_details_round_trips_with_model_render() {
+        use crate::contexts::milestone_record::model::render_start_journal_details;
+
+        // Render via the model's canonical function
+        let rendered = render_start_journal_details("proj-1", Some("run-42"), Some("hash-abc"));
+        // Parse through the fs adapter's struct
+        let parsed = StartJournalDetails::parse(&rendered)
+            .expect("StartJournalDetails must parse model-rendered JSON");
+        assert_eq!(parsed.project_id, "proj-1");
+        assert_eq!(parsed.run_id.as_deref(), Some("run-42"));
+        assert_eq!(parsed.plan_hash.as_deref(), Some("hash-abc"));
+        // Re-render and confirm stability
+        assert_eq!(parsed.render(), rendered);
+    }
+
+    /// Verify that `render_completion_journal_details` output round-trips
+    /// through `CompletionJournalDetails` parse→render. Both paths use the
+    /// same canonical struct from model.rs, so drift is structurally impossible.
+    #[test]
+    fn completion_journal_details_round_trips_with_model_render() {
+        use crate::contexts::milestone_record::model::render_completion_journal_details;
+        use chrono::{TimeZone, Utc};
+
+        let ts = Utc.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap();
+        let rendered = render_completion_journal_details(
+            "proj-2",
+            Some("run-99"),
+            Some("hash-xyz"),
+            ts,
+            "succeeded",
+            Some("All checks passed"),
+        );
+        let parsed = CompletionJournalDetails::parse(&rendered)
+            .expect("CompletionJournalDetails must parse model-rendered JSON");
+        assert_eq!(parsed.project_id, "proj-2");
+        assert_eq!(parsed.run_id.as_deref(), Some("run-99"));
+        assert_eq!(parsed.plan_hash.as_deref(), Some("hash-xyz"));
+        assert_eq!(parsed.started_at, ts);
+        assert_eq!(parsed.outcome, "succeeded");
+        assert_eq!(parsed.outcome_detail.as_deref(), Some("All checks passed"));
+        // Re-render and confirm stability
+        assert_eq!(parsed.render(), rendered);
+    }
+
+    /// Regression: merge() must fill ALL optional fields from the requested
+    /// struct during journal repair. If a future field is added to the shared
+    /// structs but merge doesn't copy it, the merged render will differ from
+    /// the fully-populated requested render, failing this test.
+    #[test]
+    fn journal_merge_fills_all_optional_fields() {
+        use crate::contexts::milestone_record::model::{
+            render_completion_journal_details, render_start_journal_details,
+        };
+        use chrono::{TimeZone, Utc};
+
+        // --- StartJournalDetails ---
+        let existing_json = render_start_journal_details("proj-1", None, None);
+        let requested_json =
+            render_start_journal_details("proj-1", Some("run-42"), Some("hash-abc"));
+
+        let existing =
+            StartJournalDetails::parse(&existing_json).expect("existing start must parse");
+        let requested =
+            StartJournalDetails::parse(&requested_json).expect("requested start must parse");
+        let merged = StartJournalDetails::merge(&existing, &requested)
+            .expect("merge must succeed when no conflicts");
+
+        assert_eq!(
+            merged.render(),
+            requested_json,
+            "merged start details must match fully-populated requested"
+        );
+
+        // --- CompletionJournalDetails ---
+        let ts = Utc.with_ymd_and_hms(2026, 3, 30, 12, 0, 0).unwrap();
+        let existing_json =
+            render_completion_journal_details("proj-2", None, None, ts, "succeeded", None);
+        let requested_json = render_completion_journal_details(
+            "proj-2",
+            Some("run-99"),
+            Some("hash-xyz"),
+            ts,
+            "succeeded",
+            Some("All checks passed"),
+        );
+
+        let existing = CompletionJournalDetails::parse(&existing_json)
+            .expect("existing completion must parse");
+        let requested = CompletionJournalDetails::parse(&requested_json)
+            .expect("requested completion must parse");
+        let merged = CompletionJournalDetails::merge(&existing, &requested)
+            .expect("merge must succeed when no conflicts");
+
+        assert_eq!(
+            merged.render(),
+            requested_json,
+            "merged completion details must match fully-populated requested"
+        );
+    }
 
     #[test]
     fn release_writer_lock_detects_replaced_file_via_inode() {

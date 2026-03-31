@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr3-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T20:31:20.493486761Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed `origin/master..HEAD`, read the changed lineage/model/service code, and ran targeted unit tests for the new cases. The runless-to-named completion fix and the journal-detail drift guard look sound, but there is 1 remaining correctness gap: replay/finalization still does not repair existing `plan_hash=None` lineage rows from the milestone snapshot.\n\n## Amendments\n\n1. `plan_hash` auto-population is still incomplete for the repair/replay paths. In `src/adapters/fs.rs:2907-2918`, replaying an existing running row only backfills the caller-supplied `plan_hash` and explicitly skips any snapshot fallback. In `src/adapters/fs.rs:3215-3248`, terminal replays/finalizations do the same. The result is that any pre-fix lineage row already stored with `plan_hash: None` stays unlabeled forever when start/completion is replayed with `plan_hash=None`, even in the safe case where the milestone snapshot already had the canonical hash before this attempt started. That leaves lineage incomplete on the exact recovery path this task is trying to fix. Add a safe snapshot-backed repair path for existing rows as well, and cover it with a test that finalizes a legacy `plan_hash=None` row after replay under an unchanged snapshot.\n   Rationale: The new happy-path test in `src/contexts/milestone_record/service.rs:4697-4779` only proves auto-population for newly appended rows; it never exercises `update_task_run` against an existing row whose stored `plan_hash` is missing, so this remaining data-loss case is still untested.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 3
+}

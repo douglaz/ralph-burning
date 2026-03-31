@@ -566,10 +566,7 @@ impl TraceCapture {
     }
 
     fn snapshot(&self) -> Vec<CapturedEvent> {
-        self.0
-            .lock()
-            .expect("trace capture lock poisoned")
-            .clone()
+        self.0.lock().expect("trace capture lock poisoned").clone()
     }
 }
 
@@ -584,19 +581,23 @@ struct CaptureVisitor<'a> {
 
 impl Visit for CaptureVisitor<'_> {
     fn record_i64(&mut self, field: &Field, value: i64) {
-        self.fields.insert(field.name().to_owned(), value.to_string());
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
     }
 
     fn record_u64(&mut self, field: &Field, value: u64) {
-        self.fields.insert(field.name().to_owned(), value.to_string());
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
     }
 
     fn record_bool(&mut self, field: &Field, value: bool) {
-        self.fields.insert(field.name().to_owned(), value.to_string());
+        self.fields
+            .insert(field.name().to_owned(), value.to_string());
     }
 
     fn record_str(&mut self, field: &Field, value: &str) {
-        self.fields.insert(field.name().to_owned(), value.to_owned());
+        self.fields
+            .insert(field.name().to_owned(), value.to_owned());
     }
 
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
@@ -633,9 +634,8 @@ fn trace_capture() -> TraceCapture {
     TRACE_CAPTURE
         .get_or_init(|| {
             let sink = TraceCapture::default();
-            let subscriber = tracing_subscriber::registry().with(CaptureLayer {
-                sink: sink.clone(),
-            });
+            let subscriber =
+                tracing_subscriber::registry().with(CaptureLayer { sink: sink.clone() });
             tracing::subscriber::set_global_default(subscriber)
                 .expect("initialize global test trace capture");
             sink
@@ -668,7 +668,9 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
     let captured = capture.snapshot();
     let event = captured
         .iter()
-        .find(|event| event.fields.get("invocation_id").map(String::as_str) == Some("trace-invoke-1"))
+        .find(|event| {
+            event.fields.get("invocation_id").map(String::as_str) == Some("trace-invoke-1")
+        })
         .expect("expected captured event for invocation_id=trace-invoke-1");
 
     assert_eq!(
@@ -691,7 +693,10 @@ async fn service_emits_invocation_completed_trace_with_token_fields() {
         "session_reused=",
     ] {
         let key = field.trim_end_matches('=');
-        assert!(event.fields.contains_key(key), "missing field '{key}' in trace event: {event:?}");
+        assert!(
+            event.fields.contains_key(key),
+            "missing field '{key}' in trace event: {event:?}"
+        );
     }
 
     assert!(

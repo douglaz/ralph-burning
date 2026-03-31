@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr15-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T01:08:13.888372614Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nReviewed the milestone lineage/journal changes in `src/adapters/fs.rs` and the related service/model coverage, and ran `cargo test milestone_record::service` plus `cargo test milestone_record::model`. One blocking correctness gap remains in the new-row `plan_hash` auto-population path.\n\n## Amendments\n\n1. `src/adapters/fs.rs:3044-3055` now auto-populates new rows from the live milestone snapshot whenever the caller omits `plan_hash`, and `src/adapters/fs.rs:3343-3355` later treats that stored value as authoritative. That still breaks lineage when the plan changes after dispatch but before `record_task_run_start` runs: a bead dispatched under v1 can be recorded as v2 if `persist_plan` advances the snapshot first, and finalization with the later-discovered true v1 hash then fails with a false `conflicting plan_hash` error. The new comment already describes this race, so the amendment is still incomplete. Add a regression test for `dispatch under v1 -> snapshot advances to v2 -> start without plan_hash -> complete with explicit v1`, and avoid stamping the current snapshot hash onto a new row unless it is known to match the dispatched attempt.\n   Rationale: This is a correctness issue, not just metadata drift: the row can carry the wrong lineage and the run can become impossible to finalize once the controller supplies the real plan hash.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 15
+}

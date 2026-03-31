@@ -1,0 +1,99 @@
+{
+  "payload_id": "run-20260330192702-plan_and_implement-c1-a1-cr11",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T23:16:09.692249068Z",
+  "payload": {
+    "data": {
+      "change_summary": "Addressed all 4 pending amendments. (1) Replaced debug_assert! in unique_terminal_replay_match with a runtime check that returns None when requested_run_id is Some but requested_started_at is None, enforcing the started_at guard contract in all build modes including release. (2) Documented the known limitation that plan_hash auto-population on new entries can race with persist_plan() — if a plan is persisted between bead dispatch and record_task_run_start, the entry gets the newer hash. The long-term fix is for callers to supply plan_hash explicitly. (3) Added a snapshot_plan_hash_at_creation provenance field to TaskRunEntry that records the milestone snapshot's plan_hash at entry creation time. A new safe_plan_hash_backfill helper uses this provenance to safely backfill plan_hash on existing rows: if the current snapshot matches the creation-time snapshot, it's safe to fill; if the plan has evolved, backfill is skipped. Legacy entries (where the provenance field is None) are never backfilled. This is applied in the backfill_running_entry path, the non-terminal finalization path, and the terminal replay path. (4) Pre-filtered the matching_indices passed to unique_terminal_replay_match in the named-run terminal fallback path by started_at, so unrelated completed attempts for the same bead/project are excluded before the uniqueness check. This allows named terminal replays to succeed when multiple completed attempts exist, as long as started_at uniquely identifies the target attempt.",
+      "outstanding_risks": [
+        "Pre-existing formatting drift in tests/unit/agent_execution_test.rs is unrelated to these changes but will appear in cargo fmt --check across the full workspace.",
+        "Pre-existing flaky checkpoint_test failures (worktree_adapter_creates_finds_and_resets_checkpoint_commits, worktree_adapter_excludes_runtime_workspace_from_checkpoint_commits) are environment-dependent and unrelated to these changes.",
+        "The snapshot_plan_hash_at_creation field is a schema addition to TaskRunEntry ndjson rows. Legacy rows default to None via serde(default), which is safe — they are treated as 'unknown provenance, skip backfill'. New rows going forward record the provenance and can benefit from safe backfill."
+      ],
+      "steps": [
+        {
+          "description": "Amendment 1: Replaced debug_assert! in unique_terminal_replay_match (fs.rs:2824) with a runtime if-check that returns None when requested_run_id is Some but requested_started_at is None, enforcing the contract in all build modes",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 2: Added documentation comment at the new-entry plan_hash auto-population site (fs.rs:3015-3019) documenting the known race: if persist_plan() is called between bead dispatch and record_task_run_start, the entry gets the newer snapshot hash. Long-term fix: callers should supply plan_hash explicitly",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Added snapshot_plan_hash_at_creation field to TaskRunEntry in model.rs with #[serde(default, skip_serializing_if)] — records the milestone snapshot's plan_hash at entry creation time as provenance for safe backfill decisions",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Added safe_plan_hash_backfill helper method on FsTaskRunLineageStore (fs.rs:2615-2647) that fills plan_hash from the current snapshot only when: entry.plan_hash is None, snapshot_plan_hash_at_creation is Some, and the current snapshot matches the creation-time snapshot. Legacy entries (provenance=None) are never backfilled",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Applied safe_plan_hash_backfill in three code paths: backfill_running_entry (record_task_run_start replay), non-terminal finalization (update_task_run open row), and terminal replay (update_task_run backfill_terminal_entry)",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Updated new-entry creation in record_task_run_start to record current_snapshot_hash in the snapshot_plan_hash_at_creation field of new TaskRunEntry instances",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 4: Pre-filtered matching_indices by started_at in the named-run terminal fallback path (fs.rs:3148-3153) before calling unique_terminal_replay_match, so unrelated completed attempts for the same bead/project are excluded from the uniqueness check",
+          "order": 7,
+          "status": "completed"
+        },
+        {
+          "description": "Added snapshot_plan_hash_at_creation: None to all 57 existing TaskRunEntry struct literal constructions across model.rs and service.rs test code",
+          "order": 8,
+          "status": "completed"
+        },
+        {
+          "description": "Added test safe_backfill_fills_plan_hash_when_snapshot_unchanged: preseeds an entry with provenance matching current snapshot, completes it, verifies plan_hash is filled",
+          "order": 9,
+          "status": "completed"
+        },
+        {
+          "description": "Added test safe_backfill_skips_when_snapshot_evolved: preseeds an entry with v1 provenance, evolves plan to v2, completes the entry, verifies plan_hash stays None",
+          "order": 10,
+          "status": "completed"
+        },
+        {
+          "description": "Added test named_terminal_replay_succeeds_with_multiple_attempts: preseeds two completed runless attempts at different started_at times, verifies named terminal replay targets the correct attempt by started_at",
+          "order": 11,
+          "status": "completed"
+        },
+        {
+          "description": "Ran cargo test (357 lib + 128 integration + 1 doc + 682 unit = 1168 total, 1 pre-existing flaky failure), cargo clippy -- -D warnings (clean), cargo fmt --check (only pre-existing drift)",
+          "order": 12,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 1168 total tests (357 lib + 128 integration + 1 doc + 682 unit), 1 pre-existing flaky checkpoint failure unrelated to changes",
+        "cargo clippy -- -D warnings: no warnings or errors",
+        "cargo fmt --check: all changed files clean; only pre-existing formatting diffs in unrelated tests/unit/agent_execution_test.rs",
+        "Runtime guard in unique_terminal_replay_match returns None immediately when (Some(run_id), None) is passed, preventing started_at guard bypass in release builds",
+        "snapshot_plan_hash_at_creation provides provenance for safe backfill: new entries record what the snapshot was, enabling safe_plan_hash_backfill to detect plan evolution",
+        "safe_backfill_fills_plan_hash_when_snapshot_unchanged: entry with matching provenance gets plan_hash filled on finalization",
+        "safe_backfill_skips_when_snapshot_evolved: entry with v1 provenance stays plan_hash=None when snapshot has advanced to v2",
+        "named_terminal_replay_succeeds_with_multiple_attempts: two completed runless attempts → named replay targeting attempt A by started_at succeeds, backfills run_id and outcome_detail",
+        "Legacy entries (snapshot_plan_hash_at_creation=None via serde default) are never backfilled, preserving backward compatibility",
+        "All prior round tests continue to pass: terminal_replay_after_plan_evolution_succeeds, runless_match_rejected_when_started_at_mismatches, start_replay_after_plan_evolution_does_not_conflict, legacy_open_row_without_plan_hash_not_mislabeled_after_plan_evolution, terminal_replay_legacy_row_without_plan_hash_stays_unset, terminal_runless_replay_rejected_when_started_at_mismatches, journal_merge_fills_all_optional_fields, json_fill_none_fills_absent_option_from_overlay, plan_hash_auto_populated_from_snapshot, explicit_plan_hash_takes_precedence_over_snapshot, runless_start_completed_with_named_run_id, completion_with_conflicting_plan_hash_rejects_runless_match, start_journal_details_round_trips_with_model_render, completion_journal_details_round_trips_with_model_render"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

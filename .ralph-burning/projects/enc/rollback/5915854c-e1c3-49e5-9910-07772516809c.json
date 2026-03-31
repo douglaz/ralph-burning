@@ -1,0 +1,81 @@
+{
+  "rollback_id": "5915854c-e1c3-49e5-9910-07772516809c",
+  "created_at": "2026-03-30T22:43:09.042932018Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "881609ad21f110b845f3bd1f40a62b0a2e2877a7",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 10
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "2a786de7c1b1a6f1",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 9
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 10,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-9-ed4ab282",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 9,
+          "body": "In `unique_terminal_replay_match` (fs.rs:2823-2828), when `requested_run_id` is `Some` but `requested_started_at` is `None`, a runless terminal candidate is accepted without any temporal guard. This can only happen from the call site at line 3194-3199 (the no-run_id path), which passes `None` for both — so it is currently safe. However, the function signature allows callers to pass `(Some(run_id), None)`, which would bypass the started_at guard entirely and permit backfilling the wrong legacy terminal row. Add a debug_assert or doc-comment contract stating that when `requested_run_id` is `Some`, `requested_started_at` should also be `Some` to enforce the invariant, or make the guard unconditional (reject all runless terminal candidates when `requested_started_at` is `None` and `requested_run_id` is `Some`).",
+          "created_at": "2026-03-30T22:43:08.981754543Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "80263e203c099e2a6bb8fd5161dedaa3f11899f66a8ad1e071f6978228b44493"
+        },
+        {
+          "amendment_id": "fr-9-b6508003",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 9,
+          "body": "The `json_fill_none` function (fs.rs:2289-2318) uses `entry(key).or_insert(value)` which means overlay values are only inserted when the key is completely absent from the base map. Since the structs use `skip_serializing_if = \"Option::is_none\"`, a `None` field is omitted from the base map (key absent), and a `Some` value from the overlay will correctly fill it. However, if a future field is added without `skip_serializing_if` (e.g., a field that serializes to `null`), the base map WILL contain the key (with a `null` value) and the overlay's non-null value will NOT fill it. Add a test that explicitly verifies `json_fill_none` fills a `None` optional field when the overlay has a `Some` value, and document that all new `Option` fields on these structs MUST use `#[serde(default, skip_serializing_if = \"Option::is_none\")]` for `json_fill_none` to work correctly.",
+          "created_at": "2026-03-30T22:43:08.981759802Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "f642f9a842afe95423795efebb07773ae142b6ae1eed73481384d13aad60b23a"
+        }
+      ],
+      "processed_count": 13
+    },
+    "status_summary": "running: final review restart round 10 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T22:30:41.661431439Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

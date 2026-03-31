@@ -1,0 +1,81 @@
+{
+  "rollback_id": "72049195-70da-4807-b4a2-5d5609a8d018",
+  "created_at": "2026-03-30T21:45:30.261542291Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "8cfec418c5b27b9f029a24eaa50e6d2dae1cc150",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 7
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "2a786de7c1b1a6f1",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 6
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 7,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-6-bcd2cab6",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "`update_task_run` still accepts the wrong finalized runless attempt when the caller later supplies a `run_id`. In `src/adapters/fs.rs:3013-3017`, the no-exact-match path falls back to `unique_terminal_replay_match`, and that helper (`src/adapters/fs.rs:2756-2788`) never checks `started_at` for runless terminal rows. A replay of a legacy finalized attempt with the wrong `started_at` will therefore backfill `run_id` onto that terminal row instead of rejecting it, even though Amendment 2 required `started_at` to disambiguate runless-to-named backfills. Add the same `started_at` guard for terminal fallback that you added for open matches, and cover it with a regression test.",
+          "created_at": "2026-03-30T21:45:30.184630387Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "a2a349b1d002bc9679bd95de2a7d0b620d4d42f5942a9533be2a75548b097de1"
+        },
+        {
+          "amendment_id": "fr-6-926ed414",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 6,
+          "body": "The journal-detail drift fix is not complete yet. `StartJournalDetails` and `CompletionJournalDetails` are now shared model structs (`src/contexts/milestone_record/model.rs:353-394`), but the adapter still hand-merges only the current optional fields in `src/adapters/fs.rs:2284-2305` and `src/adapters/fs.rs:2322-2354`. If a new field is added to the shared structs later, the code will still compile and the new round-trip tests will still pass, but `append_event_if_missing` will silently drop that field during journal repair because `merge` never copies it. Add a merge-coverage test or refactor the merge logic so future field additions fail loudly instead of truncating repaired events.",
+          "created_at": "2026-03-30T21:45:30.184634786Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "7bd4bd84ca8f08bd20ad3133ddb82fd8f9b9b4eab946be26d54ff124ffe440a8"
+        }
+      ],
+      "processed_count": 8
+    },
+    "status_summary": "running: final review restart round 7 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T21:29:13.317467707Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

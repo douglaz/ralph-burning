@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330192702-final_review-aggregate-c1-a1-cr14-artifact",
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr14-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T00:53:40.787681088Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 1 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 4\n**Final Review Restarts:** 14/20\n\n## Accepted\n\n- `fr-14-cb88579a`\n\n## Rejected\n\n- `fr-14-793a2f7a`\n- `fr-14-9bc460db`\n\n## Disputed\n\n- `fr-14-ab7143b0`\n\n## Final Accepted Amendments\n\n### `fr-14-cb88579a`\n\nIssue 3 fix deviates from spec: The spec says 'Auto-populate plan_hash from the milestone snapshot' for new rows when caller's plan_hash is None, and backfill existing open entries from the snapshot. The implementation does the OPPOSITE — it explicitly removes auto-population (line 3039: `let effective_plan_hash = plan_hash.map(str::to_owned)`) and only records `snapshot_plan_hash_at_creation` as provenance metadata. The `safe_plan_hash_backfill` method only fills plan_hash on existing open entries during replay when the snapshot hash hasn't changed, but never on initial creation. The spec's acceptance criterion 'Lineage entries auto-populate plan_hash from the milestone snapshot when callers omit it' is NOT met. The diff comments justify this as 'the snapshot read races with persist_plan()' — this is a valid concern but the spec explicitly accepted this trade-off and required auto-population. Either the spec needs to be amended to match the conservative provenance-only approach, or the code needs to auto-populate plan_hash on new row creation as the spec requires.\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 14
+}

@@ -1,0 +1,34 @@
+{
+  "payload_id": "run-20260330192702-final_review-vote-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T01:10:46.733302895Z",
+  "payload": {
+    "summary": "All three amendments target real issues. Amendment 1 correctly identifies that a contract violation (programming bug) is silently converted into a misleading generic error. Amendment 2 is a low-risk documentation improvement that prevents future confusion about a deliberate spec deviation. Amendment 3 identifies a real race condition that is currently only documented in a comment but not tested or guarded against. I accept all three with specific rationale.",
+    "votes": [
+      {
+        "amendment_id": "fr-15-65fc1567",
+        "decision": "accept",
+        "rationale": "Verified in fs.rs:2832-2838. The contract violation (requested_run_id.is_some() && requested_started_at.is_none()) returns None, and both call sites (lines 3135 and 3263) map None to generic CorruptRecord errors that say 'no matching task run' or 'ambiguous task run update' — neither of which describes the actual problem (a caller bug). The issue spec explicitly requires runtime checks that return errors. Changing the return type to Result<Option<usize>, AppError> is the correct fix to propagate a distinct, diagnosable error. The tracing::warn is insufficient because (a) operators see the misleading CorruptRecord message, not the log, and (b) warn implies a recoverable situation, whereas this is a programming invariant violation that should be error-level at minimum. The first call site (line 3135) always passes (Some(run_id), Some(started_at)) so the guard never fires there, but the function's contract still needs to be properly enforced for correctness and future callers."
+      },
+      {
+        "amendment_id": "fr-15-f8b418d4",
+        "decision": "accept",
+        "rationale": "Verified in fs.rs:2608-2616 and the test at service.rs:5162-5259. The safe_plan_hash_backfill None branch has a good internal comment explaining the ambiguity, but neither the test name nor its assertion messages reference the fact that this is a deliberate deviation from Issue 3's acceptance criteria ('Lineage entries auto-populate plan_hash from the milestone snapshot when callers omit it'). The test asserts plan_hash stays None for legacy entries even when a snapshot exists — this is correct behavior but contradicts the literal spec wording. Adding a brief comment in both locations noting this as a known spec deviation is trivially low-risk, costs nothing, and prevents future reviewers from treating the None-provenance skip as a bug. Pure maintainability improvement."
+      },
+      {
+        "amendment_id": "fr-15-994e9490",
+        "decision": "accept",
+        "rationale": "Verified in fs.rs:3038-3047 and 3343-3355. The race is mechanically real: (1) bead dispatched under plan v1, (2) persist_plan advances snapshot to v2, (3) record_task_run_start called without explicit plan_hash, (4) line 3047 stamps the entry with v2 via or_else(|| current_snapshot_hash.clone()), (5) finalization supplies the true v1 hash, (6) line 3345 fires CorruptRecord because existing v2 != supplied v1. The code already acknowledges this at lines 3038-3043 ('Known limitation'), which confirms the authors recognize the defect but haven't guarded against it. A regression test for this exact scenario is necessary to prevent the issue from being silently closed as 'documented.' The broader fix — not stamping snapshot hash when it cannot be verified against the dispatched plan — is also correct in principle: the storage layer should not assume the current snapshot equals the dispatched plan version. Even if the full fix requires caller cooperation (passing plan_hash explicitly), the regression test alone is valuable and the amendment's direction is sound."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

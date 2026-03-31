@@ -1,0 +1,90 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T01:34:45.226647896Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-16-8d96fcd0",
+      "fr-16-ec78c103"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-16-8d96fcd0",
+        "normalized_body": "In `unique_terminal_replay_match` (fs.rs:2838-2844), the contract violation guard logs `tracing::error!` and returns `None`, which causes the caller to return a generic `CorruptRecord` error (\"no matching task run\" or \"ambiguous task run update\"). Issue 2 requires \"runtime checks that return errors\" — the current path does return an error, but the error message seen by the caller describes data corruption rather than the actual programmer contract violation (run_id supplied without started_at). Consider returning an explicit `Err` from `unique_terminal_replay_match` (changing the return type to `AppResult<Option<usize>>`) so the contract violation surfaces as its own distinct error rather than being masked by a misleading CorruptRecord wrapper. This prevents future debugging confusion if the contract is ever violated.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-c6b392f9",
+        "normalized_body": "`src/adapters/fs.rs:3040-3058` deliberately stops backfilling `plan_hash` when a new `TaskRunEntry` is created, and `src/adapters/fs.rs:2583-2622` only backfills existing rows when `snapshot_plan_hash_at_creation` matches the current snapshot, skipping every `snapshot_plan_hash_at_creation == None` row. That leaves Issue 3 unimplemented: callers that omit `plan_hash` still produce `TaskRunEntry { plan_hash: None }` for new starts and for many existing/open rows, even though the accepted contract requires adapter-level snapshot backfill in both cases. The updated tests in `src/contexts/milestone_record/service.rs:4727-4817`, `src/contexts/milestone_record/service.rs:5274-5285`, and `src/contexts/milestone_record/service.rs:5635-5844` now assert the opposite behavior, so the regression is masked instead of covered.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-ec78c103",
+        "normalized_body": "In `src/adapters/fs.rs:3118-3176`, the `run_id` update path returns an error as soon as it sees a single open runless row whose `started_at` differs from the request. That means a replay of an older completed runless attempt is still rejected once a newer retry has started: the code never falls through to the terminal replay matcher at `src/adapters/fs.rs:3127-3152`, even if a completed row exists with the requested `started_at`. The accepted Issue 2 fix requires started-at-based disambiguation for terminal replays too; this branch still breaks the partial-write repair path described in `src/contexts/milestone_record/service.rs:527-530`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-16-8d96fcd0",
+        "normalized_body": "In `unique_terminal_replay_match` (fs.rs:2838-2844), the contract violation guard logs `tracing::error!` and returns `None`, which causes the caller to return a generic `CorruptRecord` error (\"no matching task run\" or \"ambiguous task run update\"). Issue 2 requires \"runtime checks that return errors\" — the current path does return an error, but the error message seen by the caller describes data corruption rather than the actual programmer contract violation (run_id supplied without started_at). Consider returning an explicit `Err` from `unique_terminal_replay_match` (changing the return type to `AppResult<Option<usize>>`) so the contract violation surfaces as its own distinct error rather than being masked by a misleading CorruptRecord wrapper. This prevents future debugging confusion if the contract is ever violated.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-16-ec78c103",
+        "normalized_body": "In `src/adapters/fs.rs:3118-3176`, the `run_id` update path returns an error as soon as it sees a single open runless row whose `started_at` differs from the request. That means a replay of an older completed runless attempt is still rejected once a newer retry has started: the code never falls through to the terminal replay matcher at `src/adapters/fs.rs:3127-3152`, even if a completed row exists with the requested `started_at`. The accepted Issue 2 fix requires started-at-based disambiguation for terminal replays too; this branch still breaks the partial-write repair path described in `src/contexts/milestone_record/service.rs:527-530`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 16,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-16-c6b392f9"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 16
+}

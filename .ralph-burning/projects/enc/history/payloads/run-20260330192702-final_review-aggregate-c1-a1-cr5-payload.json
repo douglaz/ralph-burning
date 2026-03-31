@@ -1,0 +1,67 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T21:23:56.977118744Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-5-39bc594e"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-5-f1c7b7b6",
+        "normalized_body": "src/adapters/fs.rs:2927-2931 and src/adapters/fs.rs:3257-3261 explicitly disable snapshot-based `plan_hash` backfill whenever an existing lineage row is replayed or finalized, while the new auto-population at src/adapters/fs.rs:2956-2968 only runs for brand-new inserts. That leaves any pre-existing `TaskRunEntry { plan_hash: None }` permanently unlinked when callers keep omitting `plan_hash` on retry/completion, even if the milestone snapshot already has the canonical plan hash. A legacy row created by the old bug still completes with `plan_hash=None`, so Issue 3 is only fixed for new rows, not repairs.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-5-39bc594e",
+        "normalized_body": "src/adapters/fs.rs:2279-2339 still duplicates the journal detail schema instead of reusing the canonical payload types in src/contexts/milestone_record/model.rs:353-386, and the new regression tests at src/adapters/fs.rs:3768-3812 only round-trip one concrete payload. That does not guarantee drift detection: a future optional or conditionally serialized field can be added to the model payload without affecting these fixtures, so the duplicated fs structs still compile and the tests still pass. Amendment 1 asked for drift to fail at compile/test time; this guard is still example-based rather than structural.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [
+      "fr-5-f1c7b7b6"
+    ],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-5-39bc594e",
+        "normalized_body": "src/adapters/fs.rs:2279-2339 still duplicates the journal detail schema instead of reusing the canonical payload types in src/contexts/milestone_record/model.rs:353-386, and the new regression tests at src/adapters/fs.rs:3768-3812 only round-trip one concrete payload. That does not guarantee drift detection: a future optional or conditionally serialized field can be added to the model payload without affecting these fixtures, so the duplicated fs structs still compile and the tests still pass. Amendment 1 asked for drift to fail at compile/test time; this guard is still example-based rather than structural.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 5,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 1 amendment(s); restart required.",
+    "total_proposed_amendments": 2,
+    "total_reviewers": 2,
+    "unique_amendment_count": 2
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

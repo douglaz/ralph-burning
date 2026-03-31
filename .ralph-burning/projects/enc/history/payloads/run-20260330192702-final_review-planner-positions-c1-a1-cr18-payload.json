@@ -1,0 +1,34 @@
+{
+  "payload_id": "run-20260330192702-final_review-planner-positions-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T02:09:31.569848236Z",
+  "payload": {
+    "summary": "Evaluated three amendments against the actual code in fs.rs and the test suite. Amendment fr-18-fb16fc87 correctly identifies a subtle ordering dependency that should be documented. Amendment fr-18-df19f0ba raises a legitimate error-variant semantics concern. Amendment fr-18-ffc497f2 materially mischaracterizes the code: the first cited test (lines 4727-4816) actually ASSERTS that safe_plan_hash_backfill succeeds at completion time (line 4813-4816), directly contradicting the amendment's claim that the test \"explicitly asserts non-backfilling behavior.\" Issue 3 backfill IS implemented for new entries; only legacy entries without provenance are deliberately excluded with extensive inline documentation.",
+    "votes": [
+      {
+        "amendment_id": "fr-18-fb16fc87",
+        "decision": "accept",
+        "rationale": "The ordering dependency is real and subtle: safe_plan_hash_backfill's is_terminal() guard is vacuous at its call site (line 3395) because entry.outcome is still Running — the terminal outcome is only assigned on line 3396. The code is correct today because the backfill SHOULD run on entries transitioning to terminal, but a future refactor that moves safe_plan_hash_backfill after the outcome assignment would silently break the backfill path. A brief inline comment documenting this ordering invariant is low-cost and high-value for maintainability."
+      },
+      {
+        "amendment_id": "fr-18-df19f0ba",
+        "decision": "accept",
+        "rationale": "The error message already says 'contract violation' in its details string, which partially mitigates the concern. However, the error VARIANT is AppError::CorruptRecord, which in monitoring/alerting systems is what operators key on — not the details text. An operator seeing CorruptRecord will investigate the ndjson file for data corruption rather than looking at calling code for an API contract violation. Either introducing a distinct variant (e.g., AppError::InternalContractViolation) or at minimum removing the file path from the error (since no file is corrupt) would improve error triage accuracy. This is a genuine code quality issue that affects operational debuggability."
+      },
+      {
+        "amendment_id": "fr-18-ffc497f2",
+        "decision": "reject",
+        "rationale": "The amendment's core claim — 'Issue 3 is still not implemented' — is factually inaccurate. The test at lines 4727-4816, which the amendment cites as asserting 'non-backfilling behavior', actually asserts the OPPOSITE at lines 4813-4816: plan_hash IS successfully backfilled at completion time via safe_plan_hash_backfill ('safe_plan_hash_backfill should fill plan_hash at completion time'). For new entries with snapshot provenance, backfill works correctly — plan_hash is deferred from start to completion time to avoid the dispatch-v1/snapshot-v2 race, which is a safety-motivated timing choice, not a missing implementation. The only deliberate deviation is for legacy entries without provenance (test at 5392-5506), which is extensively documented inline with clear reasoning about correctness vs. completeness. The amendment conflates these two distinct cases and mischaracterizes the test evidence."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 18
+}

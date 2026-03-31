@@ -1,0 +1,81 @@
+{
+  "rollback_id": "e54edc30-ff8f-416c-aafc-5fead5690ef5",
+  "created_at": "2026-03-31T02:11:52.385366626Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "d202ac34e8c3bd88e5dda09acd54e884bcc40abc",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 19
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "9940a3f3264d3b28",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 18
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 19,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-18-fb16fc87",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 18,
+          "body": "In `safe_plan_hash_backfill` (fs.rs ~line 3395), the call site in the `update_task_run` open-entry finalization path calls `safe_plan_hash_backfill` AFTER setting `entry.plan_hash` from the caller's explicit value (line 3389: `entry.plan_hash = Some(plan_hash.to_owned())`). This means `safe_plan_hash_backfill` will always short-circuit on `entry.plan_hash.is_some()` when the caller supplied a plan_hash. This is correct behavior. However, there is a subtle ordering issue: `safe_plan_hash_backfill` checks `entry.outcome.is_terminal()` to skip terminal entries, but it is called on line 3395 BEFORE `entry.outcome = outcome` is set on line 3396. Since this code path is inside the `else` branch (meaning the entry is NOT yet terminal — it's being transitioned TO terminal), the `is_terminal()` check will see the old Running outcome, which means the terminal guard in `safe_plan_hash_backfill` is vacuous here. The backfill still proceeds correctly because the entry is about to become terminal, and this is exactly when you'd want the last chance to backfill. Document this ordering dependency with a brief inline comment so future refactors don't reorder the calls and break the invariant.",
+          "created_at": "2026-03-31T02:11:52.306558494Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "199a338d6fbe84054c9752cfd0ca4e90f73ad603a33543809a4c0a732b690ac8"
+        },
+        {
+          "amendment_id": "fr-18-df19f0ba",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 18,
+          "body": "The `unique_terminal_replay_match` contract enforcement (fs.rs ~line 2839) uses `AppError::CorruptRecord` for what is actually an internal programming invariant violation (caller passed `(Some(run_id), None)` for started_at). `CorruptRecord` implies corrupt on-disk data. Consider using a distinct error variant or at minimum adjust the error message prefix to say 'internal contract violation' rather than naming the ndjson file, since the file is not corrupt — the caller violated the API contract. This matters for error triage: an operator seeing 'CorruptRecord' in logs may investigate the data file rather than the calling code.",
+          "created_at": "2026-03-31T02:11:52.306562943Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "232b8cb8b5330748786cf02717a6cb3805bebc8b11bc2aef84ffea6ea862ae6c"
+        }
+      ],
+      "processed_count": 36
+    },
+    "status_summary": "running: final review restart round 19 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-31T01:59:06.954112342Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

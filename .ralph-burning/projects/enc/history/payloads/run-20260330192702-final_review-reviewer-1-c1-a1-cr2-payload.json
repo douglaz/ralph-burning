@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T20:10:55.432886771Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "`plan_hash` backfill on existing open rows can stamp the wrong plan version after a later `persist_plan()`. In `src/adapters/fs.rs:2914-2919` and `src/adapters/fs.rs:3246-3249`, replaying a start/completion for an existing row with `entry.plan_hash == None` pulls the hash from the current snapshot. But `persist_plan()` can advance `snapshot.plan_hash` at any time (`src/contexts/milestone_record/service.rs:365-376`), so a legacy attempt that originally ran under plan v1 can be relabeled as v2 if the plan changed before the replay. The new tests only cover rows that already had the original hash stored. Add a regression test for a missing-hash legacy row across plan evolution, and avoid snapshot-based backfill unless the original plan version is known.",
+        "rationale": "This corrupts lineage by attributing historical execution to a newer plan than the one that actually ran."
+      },
+      {
+        "body": "The terminal-replay repair path still does not auto-populate `plan_hash` when the finalized row already exists without one. `update_task_run()` routes terminal replays through `backfill_terminal_entry()` (`src/adapters/fs.rs:3218-3224`), but `backfill_terminal_entry()` only copies a caller-supplied hash (`src/adapters/fs.rs:2670-2689`). If a legacy finalized row is replayed with `plan_hash=None`, the repair write can fill `run_id`, `outcome_detail`, and `finished_at` while leaving `plan_hash` unset, so amendment 3 is still incomplete for repair flows. Add a regression test with a preseeded terminal row whose `plan_hash` is missing and the caller omits it.",
+        "rationale": "Existing finalized lineage rows can remain permanently unlinked to any plan version even after a successful repair replay."
+      }
+    ],
+    "summary": "Reviewed the committed diff in `src/adapters/fs.rs` and `src/contexts/milestone_record/service.rs`, read the relevant milestone-lineage code paths end-to-end, and ran `cargo test --quiet` successfully. I found two correctness gaps, both in legacy repair handling for `plan_hash`."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

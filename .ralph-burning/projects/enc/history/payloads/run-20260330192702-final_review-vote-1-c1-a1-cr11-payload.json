@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T23:38:05.881061882Z",
+  "payload": {
+    "summary": "Three amendments identify concrete plan provenance defects in the lineage flow. I reject the proposed pre-plan backfill change because it is not actually safe and would mislabel runs that started before any plan existed; I accept the other three, including the documented start-time snapshot race, because they describe real correctness bugs in stored lineage/journal history.",
+    "votes": [
+      {
+        "amendment_id": "fr-11-8183a7c6",
+        "decision": "reject",
+        "rationale": "This proposal overstates what can be inferred from the stored data. `snapshot_plan_hash_at_creation == None` is also how legacy rows are represented, so the code cannot distinguish 'new row created before first plan' from 'old row with unknown provenance'. More importantly, an attempt that started before any plan existed did not start under a later plan, so stamping the current snapshot hash on revisitation would misattribute history. Running status does not make that safe, and multiple plan persists could have happened before the revisit."
+      },
+      {
+        "amendment_id": "fr-11-fb2ec5ae",
+        "decision": "accept",
+        "rationale": "`record_task_run_start` is using a mutable current snapshot as provenance when `plan_hash` is omitted. If dispatch/selection happened under plan v1 and the snapshot advances to v2 before start is recorded, the lineage row and `BeadStarted` journal event are stamped with v2 even though the attempt belongs to v1. The inline comment documents the problem, but documented corruption is still a real bug. The source of truth for start provenance needs to be the immutable dispatch-time plan identity, not a fresh snapshot read."
+      },
+      {
+        "amendment_id": "fr-11-4bfe4027",
+        "decision": "accept",
+        "rationale": "This is a real duplicate-repair bug. The matching logic first finds an existing running attempt from the collapsed canonical view, but then mutates only the first raw row that satisfies `same_attempt`. In duplicate states that row can be the stale copy while another duplicate already carries the populated `plan_hash` and snapshot provenance. Replaying `record_bead_start` with `plan_hash` omitted can therefore return and preserve the stale raw row, leaving both the lineage file and start journal unrepaired even though the canonical attempt was already complete."
+      },
+      {
+        "amendment_id": "fr-11-60e3c49b",
+        "decision": "accept",
+        "rationale": "`merge_attempt_entries` drops `snapshot_plan_hash_at_creation`, yet both canonical collapsing and duplicate cleanup rely on that helper. If the surviving primary row is the stale duplicate and the only provenance-bearing copy is in a duplicate being removed, the merge permanently erases the provenance needed by `safe_plan_hash_backfill`. That breaks the intended repair path on duplicate/replay flows and is a straightforward correctness defect."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}

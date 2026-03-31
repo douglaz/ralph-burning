@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr17-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T01:43:16.189695374Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the diff across src/adapters/fs.rs and src/contexts/milestone_record/service.rs (2 files, ~225 lines changed). All three issues from the project prompt are addressed:\n\n**Issue 1 (journal detail structs):** Fully resolved in a prior round — fs.rs imports and reuses `StartJournalDetails` and `CompletionJournalDetails` from model.rs. No duplicate structs remain. Both use `#[serde(default)]` on optional fields (no `deny_unknown_fields`). Merge logic is field-by-field with explicit conflict rules.\n\n**Issue 2 (runless-to-named completion):** The diff correctly converts `unique_terminal_replay_match` from returning `Option<usize>` to `AppResult<Option<usize>>`, replacing the previous `tracing::error` + return `None` with a proper runtime error for the `(Some(run_id), None)` contract violation — satisfying the requirement to replace debug_assert-style guards. The new fall-through path at the `[open_index] if run_id.is_none()` match arm correctly attempts terminal replay matching instead of immediately erroring when started_at doesn't match the open runless row. New test `terminal_replay_falls_through_past_mismatched_open_runless_row` covers this scenario.\n\n**Issue 3 (plan_hash auto-populate):** Fully implemented with `snapshot_plan_hash` and `safe_plan_hash_backfill` functions. Backfill-only semantics (never overwrites existing), terminal replay explicitly excluded, plan evolution detected via `snapshot_plan_hash_at_creation` provenance field.\n\nAll 683 tests pass. No `debug_assert!` guards remain in changed files. No `deny_unknown_fields` anywhere.\n\nThe changes are correct, safe, and well-scoped.\n\n## Amendments\n\n1. In `unique_terminal_replay_match`, the `AppError::CorruptRecord` error uses `file: \"unique_terminal_replay_match\"` (a function name) rather than a file path. All other `CorruptRecord` errors in fs.rs use actual file paths like `milestones/{id}/task-runs.ndjson`. This should use the task-runs.ndjson path for consistency and to help operators locate the problematic file. The caller has `milestone_id` available and could pass it in, or the function could accept it as a parameter.\n   Rationale: When this error surfaces in logs or user-facing output, `file: \"unique_terminal_replay_match\"` gives no indication of which file is corrupt, making debugging harder. Every other CorruptRecord in the file points to a real path. This is a minor but real diagnostic gap — not cosmetic.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 17
+}

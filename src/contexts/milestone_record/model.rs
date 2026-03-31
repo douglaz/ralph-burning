@@ -350,13 +350,22 @@ impl TaskRunEntry {
     }
 }
 
-#[derive(Serialize)]
-struct StartJournalDetailsPayload<'a> {
-    project_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<&'a str>,
+/// Canonical owned representation of start journal details.
+/// Used for both serialization (render) and deserialization (parse) so the
+/// field set cannot drift between the model layer and the adapter layer.
+///
+/// **Forward-compatibility**: unknown fields are silently ignored during
+/// deserialization so that journal entries written by a *newer* binary
+/// (which may add fields) can still be parsed by an *older* binary after
+/// a rollback.  This means merge can proceed and repair the row in place
+/// rather than falling through to a fresh duplicate write.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct StartJournalDetails {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
 }
 
 pub fn render_start_journal_details(
@@ -364,25 +373,34 @@ pub fn render_start_journal_details(
     run_id: Option<&str>,
     plan_hash: Option<&str>,
 ) -> String {
-    serde_json::to_string(&StartJournalDetailsPayload {
-        project_id,
-        run_id,
-        plan_hash,
+    serde_json::to_string(&StartJournalDetails {
+        project_id: project_id.to_owned(),
+        run_id: run_id.map(str::to_owned),
+        plan_hash: plan_hash.map(str::to_owned),
     })
     .expect("start journal details serialization should not fail")
 }
 
-#[derive(Serialize)]
-struct CompletionJournalDetailsPayload<'a> {
-    project_id: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    run_id: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    plan_hash: Option<&'a str>,
-    started_at: DateTime<Utc>,
-    outcome: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    outcome_detail: Option<&'a str>,
+/// Canonical owned representation of completion journal details.
+/// Used for both serialization (render) and deserialization (parse) so the
+/// field set cannot drift between the model layer and the adapter layer.
+///
+/// **Forward-compatibility**: unknown fields are silently ignored during
+/// deserialization so that journal entries written by a *newer* binary
+/// (which may add fields) can still be parsed by an *older* binary after
+/// a rollback.  This means merge can proceed and repair the row in place
+/// rather than falling through to a fresh duplicate write.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct CompletionJournalDetails {
+    pub project_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
+    pub started_at: DateTime<Utc>,
+    pub outcome: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome_detail: Option<String>,
 }
 
 pub fn render_completion_journal_details(
@@ -393,13 +411,13 @@ pub fn render_completion_journal_details(
     outcome: impl fmt::Display,
     outcome_detail: Option<&str>,
 ) -> String {
-    serde_json::to_string(&CompletionJournalDetailsPayload {
-        project_id,
-        run_id,
-        plan_hash,
+    serde_json::to_string(&CompletionJournalDetails {
+        project_id: project_id.to_owned(),
+        run_id: run_id.map(str::to_owned),
+        plan_hash: plan_hash.map(str::to_owned),
         started_at,
         outcome: outcome.to_string(),
-        outcome_detail,
+        outcome_detail: outcome_detail.map(str::to_owned),
     })
     .expect("completion journal details serialization should not fail")
 }
@@ -445,79 +463,48 @@ pub fn find_matching_running_task_run(
     entries: &[TaskRunEntry],
     bead_id: &str,
     project_id: &str,
-    run_id: Option<&str>,
-    started_at: DateTime<Utc>,
+    run_id: &str,
 ) -> Option<TaskRunEntry> {
-    let matching_running_entries: Vec<TaskRunEntry> = entries
+    entries
         .iter()
         .filter(|entry| {
             entry.bead_id == bead_id
                 && entry.project_id == project_id
                 && !entry.outcome.is_terminal()
         })
+        .find(|entry| entry.run_id.as_deref() == Some(run_id))
         .cloned()
-        .collect();
-
-    if let Some(run_id) = run_id {
-        matching_running_entries
-            .iter()
-            .find(|entry| entry.run_id.as_deref() == Some(run_id))
-            .cloned()
-            .or_else(|| match matching_running_entries.as_slice() {
-                [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
-                    Some(entry.clone())
-                }
-                _ => None,
-            })
-    } else {
-        match matching_running_entries.as_slice() {
-            [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
-                Some(entry.clone())
-            }
-            _ => None,
-        }
-    }
 }
 
 pub fn matching_finalized_task_runs(
     entries: &[TaskRunEntry],
     bead_id: &str,
     project_id: &str,
-    run_id: Option<&str>,
-    started_at: DateTime<Utc>,
+    run_id: &str,
 ) -> Vec<TaskRunEntry> {
-    let matching_finalized_entries: Vec<TaskRunEntry> = entries
+    entries
         .iter()
         .filter(|entry| {
             entry.bead_id == bead_id
                 && entry.project_id == project_id
                 && entry.outcome.is_terminal()
         })
+        .filter(|entry| entry.run_id.as_deref() == Some(run_id))
         .cloned()
-        .collect();
-
-    if let Some(run_id) = run_id {
-        let exact_matches: Vec<TaskRunEntry> = matching_finalized_entries
-            .iter()
-            .filter(|entry| entry.run_id.as_deref() == Some(run_id))
-            .cloned()
-            .collect();
-        if !exact_matches.is_empty() {
-            return exact_matches;
-        }
-
-        return matching_finalized_entries
-            .into_iter()
-            .filter(|entry| entry.run_id.is_none() && entry.started_at == started_at)
-            .collect();
-    }
-
-    matching_finalized_entries
-        .into_iter()
-        .filter(|entry| entry.started_at == started_at)
         .collect()
 }
 
+/// Collapse duplicate raw ndjson rows into canonical entries.
+///
+/// # Legacy backward-compatibility
+///
+/// The `find_collapse_group_index` → `unique_open_legacy_group_index` →
+/// `legacy_group_accepts_completion` pipeline retains runless (run_id=None)
+/// matching by `started_at`.  This is a **read-only** backward-compat path:
+/// old ndjson files may contain rows written before `run_id` became required,
+/// and those rows still need correct grouping when the file is read.  No new
+/// rows are written without `run_id` — the write paths in `record_task_run_start`
+/// and `update_task_run` require `run_id: &str` at the port boundary.
 pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {
     let mut collapsed_groups: Vec<Vec<TaskRunEntry>> = Vec::new();
 
@@ -795,6 +782,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: Some("plan-a".to_owned()),
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -806,6 +794,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("done".to_owned()),
                 started_at,
@@ -833,6 +822,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -844,6 +834,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: None,
                 started_at,
@@ -855,6 +846,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("replayed".to_owned()),
                 started_at,
@@ -878,6 +870,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
             plan_hash: None,
+
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -903,6 +896,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
@@ -914,6 +908,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v2".to_owned()),
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("retry passed".to_owned()),
                 started_at: started_at + chrono::Duration::seconds(10),
@@ -925,6 +920,7 @@ mod tests {
                 project_id: "project-3".to_owned(),
                 run_id: Some("run-3".to_owned()),
                 plan_hash: Some("plan-v3".to_owned()),
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: started_at + chrono::Duration::seconds(30),
@@ -958,6 +954,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
@@ -969,6 +966,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v2".to_owned()),
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -988,190 +986,6 @@ mod tests {
     }
 
     #[test]
-    fn find_matching_running_task_run_backfills_named_replay_with_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: None,
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        let matched = find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at,
-        )
-        .expect("matching started_at should let a replay backfill a runless row");
-        assert_eq!(matched.started_at, started_at);
-        assert_eq!(matched.run_id, None);
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_reuses_sole_runless_attempt_for_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: Some("plan-v1".to_owned()),
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        let matched =
-            find_matching_running_task_run(&entries, "bead-1", "project-1", None, started_at)
-                .expect("matching started_at should reuse the same runless attempt");
-        assert_eq!(matched.started_at, started_at);
-        assert_eq!(matched.plan_hash.as_deref(), Some("plan-v1"));
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_treats_new_started_at_as_new_attempt(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: Some("plan-v1".to_owned()),
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            None,
-            started_at + chrono::Duration::seconds(30),
-        )
-        .is_none());
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at + chrono::Duration::seconds(30),
-        )
-        .is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_rejects_mixed_legacy_and_named_open_attempts(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![
-            TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: None,
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at,
-                finished_at: None,
-            },
-            TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: Some("run-2".to_owned()),
-                plan_hash: None,
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at: started_at + chrono::Duration::seconds(1),
-                finished_at: None,
-            },
-        ];
-
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at + chrono::Duration::seconds(2),
-        )
-        .is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn matching_finalized_task_runs_rejects_runless_replay_with_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let matches = matching_finalized_task_runs(
-            &[TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                outcome: TaskRunOutcome::Succeeded,
-                outcome_detail: Some("done".to_owned()),
-                started_at,
-                finished_at: Some(started_at + chrono::Duration::seconds(1)),
-            }],
-            "bead-1",
-            "project-1",
-            None,
-            started_at,
-        );
-
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].run_id, None);
-        assert_eq!(matches[0].outcome, TaskRunOutcome::Succeeded);
-        Ok(())
-    }
-
-    #[test]
-    fn matching_finalized_task_runs_falls_back_to_started_at_when_terminal_row_is_runless(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let matches = matching_finalized_task_runs(
-            &[TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                outcome: TaskRunOutcome::Succeeded,
-                outcome_detail: Some("done".to_owned()),
-                started_at,
-                finished_at: Some(started_at + chrono::Duration::seconds(1)),
-            }],
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at,
-        );
-
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].run_id, None);
-        assert_eq!(matches[0].started_at, started_at);
-        Ok(())
-    }
-
-    #[test]
     fn matching_finalized_task_runs_ignores_different_named_run_at_same_started_at(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
@@ -1182,6 +996,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("done".to_owned()),
                 started_at,
@@ -1189,8 +1004,7 @@ mod tests {
             }],
             "bead-1",
             "project-1",
-            Some("run-3"),
-            started_at,
+            "run-3",
         );
 
         assert!(matches.is_empty());
@@ -1208,6 +1022,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1219,6 +1034,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first retry".to_owned()),
                 started_at,
@@ -1230,6 +1046,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1241,6 +1058,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("second retry".to_owned()),
                 started_at,
@@ -1297,6 +1115,74 @@ mod tests {
                 "plan_hash": "plan, v2",
             })
         );
+        Ok(())
+    }
+
+    #[test]
+    fn merge_attempt_entries_fills_all_optional_fields() -> Result<(), Box<dyn std::error::Error>> {
+        use chrono::{TimeZone, Utc};
+
+        let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 1, 0).unwrap();
+
+        // Primary: all optional fields are None, earlier started_at, no finished_at.
+        let primary = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: None,
+            plan_hash: None,
+
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at: t1,
+            finished_at: None,
+        };
+
+        // Secondary: all optional fields populated, later started_at, has finished_at.
+        let secondary = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: Some("run-1".into()),
+            plan_hash: Some("hash-abc".into()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: Some("detail".into()),
+            started_at: t2,
+            finished_at: Some(t2),
+        };
+
+        let merged = TaskRunEntry::merge_attempt_entries(&primary, &secondary);
+
+        // Every optional field should be filled from secondary.
+        assert_eq!(merged.run_id.as_deref(), Some("run-1"));
+        assert_eq!(merged.plan_hash.as_deref(), Some("hash-abc"));
+        assert_eq!(merged.outcome_detail.as_deref(), Some("detail"));
+        // started_at takes the minimum.
+        assert_eq!(merged.started_at, t1);
+        // finished_at filled from secondary.
+        assert_eq!(merged.finished_at, Some(t2));
+
+        // Now verify existing values are NOT overwritten.
+        let primary_full = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: Some("original-run".into()),
+            plan_hash: Some("original-hash".into()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: Some("original-detail".into()),
+            started_at: t1,
+            finished_at: Some(t1),
+        };
+
+        let merged2 = TaskRunEntry::merge_attempt_entries(&primary_full, &secondary);
+        assert_eq!(merged2.run_id.as_deref(), Some("original-run"));
+        assert_eq!(merged2.plan_hash.as_deref(), Some("original-hash"));
+        assert_eq!(merged2.outcome_detail.as_deref(), Some("original-detail"));
+        assert_eq!(merged2.started_at, t1);
+        assert_eq!(merged2.finished_at, Some(t1));
+
         Ok(())
     }
 }

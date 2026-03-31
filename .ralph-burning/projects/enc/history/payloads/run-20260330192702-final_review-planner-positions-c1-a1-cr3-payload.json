@@ -1,0 +1,29 @@
+{
+  "payload_id": "run-20260330192702-final_review-planner-positions-c1-a1-cr3-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T20:33:19.140261796Z",
+  "payload": {
+    "summary": "Evaluated two amendments against the codebase. Amendment fr-3-7544fce3 (deny_unknown_fields) identifies a legitimate defense-in-depth gap: the round-trip tests catch struct drift in CI, but runtime deserialization silently drops unknown fields. The suggestion to add deny_unknown_fields (or a test-only equivalent) is valid. Amendment fr-3-0471f60c (plan_hash snapshot backfill for replay) contradicts a deliberate, well-documented, and well-tested design decision. The system intentionally avoids snapshot-based plan_hash backfill on existing rows because persist_plan() can advance the snapshot after an attempt starts, making retroactive stamping unsafe. Five dedicated tests confirm this behavior is working as designed.",
+    "votes": [
+      {
+        "amendment_id": "fr-3-7544fce3",
+        "decision": "accept",
+        "rationale": "Valid defense-in-depth observation. Neither StartJournalDetails nor CompletionJournalDetails uses #[serde(deny_unknown_fields)], so production deserialization silently ignores unknown fields — the same failure mode the round-trip tests were introduced to catch. While the round-trip tests cover the CI path, adding deny_unknown_fields (or a test-only assertion as the amendment suggests) would close the runtime gap. The forward-compatibility concern is real (journal files from newer versions would fail to parse), but the amendment explicitly acknowledges this and proposes test-only gating as a mitigation. Low risk, clear benefit."
+      },
+      {
+        "amendment_id": "fr-3-0471f60c",
+        "decision": "reject",
+        "rationale": "The behavior described is intentional, not a bug. The system deliberately avoids snapshot-based plan_hash backfill on existing rows during replay because persist_plan() can advance snapshot.plan_hash after an attempt started — retroactive stamping would mislabel which plan version actually ran. This design decision is explicitly documented in code comments at lines 2914-2918 and 3244-3248, and is verified by at least three dedicated tests: legacy_open_row_without_plan_hash_not_mislabeled_after_plan_evolution, terminal_replay_legacy_row_without_plan_hash_stays_unset, and terminal_replay_after_plan_evolution_succeeds. The amendment's 'safe case' (snapshot unchanged since attempt start) would require tracking timing relationships between plan persistence and attempt start, adding significant complexity for marginal benefit. The current design correctly errs on the side of not mislabeling, which is the safer default."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 3
+}

@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr11-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T23:25:37.461084035Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nAll three issues from the project prompt are addressed. Issue 1 (journal struct drift) was resolved in a prior round by unifying the structs and adding round-trip tests. Issue 2 (runless-to-named rejection) is fixed via the started_at pre-filter and backfill logic. Issue 3 (plan_hash auto-population) is implemented with snapshot auto-population at creation and safe_plan_hash_backfill with provenance tracking. All 683 tests pass. The debug_assert→runtime guard change in unique_terminal_replay_match is a reasonable production safety improvement. One edge case identified: entries created before any plan exists get snapshot_plan_hash_at_creation=None and can never be backfilled, even when a plan is later persisted and the entry is revisited while still Running.\n\n## Amendments\n\n1. In `safe_plan_hash_backfill` (fs.rs:2628-2649), when the entry was created BEFORE any plan was persisted, both `plan_hash` and `snapshot_plan_hash_at_creation` are `None`. If a plan is later persisted and then the entry is revisited (via `update_task_run` or re-`record_task_run_start`), the backfill correctly refuses because `snapshot_plan_hash_at_creation` is `None` (legacy guard). However, this means entries created in a no-plan-yet state can NEVER be auto-populated from the snapshot, even though the system now knows which plan is executing. The acceptance criterion says 'Lineage entries auto-populate plan_hash from the milestone snapshot when callers omit it' — this edge case (start before plan, complete after plan) is not covered. Consider: when `snapshot_plan_hash_at_creation` is `None` AND `plan_hash` is `None` AND the entry is still Running (not terminal), it is safe to populate both `plan_hash` and `snapshot_plan_hash_at_creation` from the current snapshot during revisitation, since no prior plan version existed to conflict with.\n   Rationale: The safe_plan_hash_backfill provenance guard is correct for entries created after a plan exists, but it creates a dead zone for entries created before any plan. In workflows where beads are dispatched before persist_plan is called (e.g., the first cycle of a milestone), these entries will permanently lack plan_hash linkage despite the plan becoming known later. The fix is small and safe: only Running entries with both fields None qualify, and there's no evolution risk since no plan existed at creation.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 11
+}

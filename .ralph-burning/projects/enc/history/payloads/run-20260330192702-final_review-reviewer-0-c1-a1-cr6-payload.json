@@ -1,0 +1,23 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr6-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T21:32:30.439774746Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "The `render_start_journal_details` and `render_completion_journal_details` functions now allocate owned Strings for every field (`.to_owned()`, `.map(str::to_owned)`) on every call, whereas the prior `&'a str` / borrowed payload approach was zero-copy for serialization. This is functionally correct and the allocation cost is negligible for the current usage pattern, but the API could retain a borrowing render path (e.g. a `StartJournalDetails::from_parts` constructor that borrows into a `Cow` or just accepts owned values at the call site) to avoid the regression for any future hot-path usage. This is a low-priority observation, not a blocking issue.",
+        "rationale": "Performance regression is negligible now but worth noting since the original code was explicitly designed to avoid allocation. If this render path is ever called in a tight loop (e.g. bulk migration), the extra allocations would add up."
+      }
+    ],
+    "summary": "Reviewed all changes across the 6 implementation rounds. The diff touches 2 files: `src/contexts/milestone_record/model.rs` and `src/adapters/fs.rs`.\n\n**Issue 1 (Journal detail struct drift):** Fixed correctly. The duplicate `StartJournalDetails` and `CompletionJournalDetails` struct definitions in `fs.rs` are removed; both render and parse paths now use the same canonical structs defined in `model.rs` with `#[serde(deny_unknown_fields)]` and `Deserialize`. Drift is structurally impossible — adding a field to the model struct forces the adapter to handle it since they share the type. Round-trip tests confirm serialization stability.\n\n**Issue 2 (Runless-to-named completion):** Fixed correctly. `update_task_run` at lines 3028-3037 accepts a runless match when `started_at` matches, then backfills `run_id` at line 3213. Mismatched `started_at` is properly rejected (line 3039-3050). Tests cover both the happy path (`runless_start_completed_with_named_run_id`) and the rejection path (`runless_match_rejected_when_started_at_mismatches`), plus conflicting plan_hash rejection (`completion_with_conflicting_plan_hash_rejects_runless_match`).\n\n**Issue 3 (plan_hash auto-population):** Fixed correctly. `record_task_run_start` at lines 2932-2936 reads `snapshot_plan_hash()` when the caller omits `plan_hash`. The helper (lines 2546-2560) properly distinguishes not-found (silent None) from unexpected errors (logs warning). Auto-population is intentionally NOT applied during finalization (comment at lines 3233-3237), which is correct because the plan may have evolved between start and finish. Tests cover auto-population (`plan_hash_auto_populated_from_snapshot`), explicit precedence (`explicit_plan_hash_takes_precedence_over_snapshot`), and plan evolution replay (`terminal_replay_after_plan_evolution_succeeds`).\n\nAll 351 tests pass. The implementation is sound with no bugs found. One minor observation noted as an amendment below."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 6
+}

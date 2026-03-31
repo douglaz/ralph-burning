@@ -1,0 +1,70 @@
+{
+  "payload_id": "run-20260330192702-plan_and_implement-c1-a1-cr7",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T21:54:39.341355027Z",
+  "payload": {
+    "data": {
+      "change_summary": "Addressed both pending amendments. (1) Added a started_at guard to unique_terminal_replay_match in fs.rs: when the caller supplies a run_id but the terminal candidate is runless, the candidate's started_at must match the requested started_at, preventing backfill of the wrong legacy terminal attempt after plan evolution. The new parameter is passed as Some(started_at) from the named-run caller and None from the runless caller. (2) Refactored both StartJournalDetails::merge and CompletionJournalDetails::merge to use a generic json_fill_none helper that fills absent optional fields via JSON-level merge (serialize both, insert missing keys from overlay, deserialize back). This is structurally complete: adding a new optional field to the shared struct automatically includes it in journal-repair merges without manual enumeration, eliminating the risk of silently truncated fields. Added regression tests for both: terminal_runless_replay_rejected_when_started_at_mismatches verifies the started_at guard on terminal fallback, and journal_merge_fills_all_optional_fields verifies that merge(minimal, full) produces output identical to the fully-populated render via round-trip comparison.",
+      "outstanding_risks": [
+        "Pre-existing formatting drift in tests/unit/agent_execution_test.rs is unrelated to these changes but will appear in cargo fmt --check across the full workspace.",
+        "The conflict checks in merge (option_conflicts on run_id, plan_hash, outcome_detail) still enumerate fields explicitly. If a new optional field with conflict semantics is added, the conflict check must be added manually. However, the fill step is now structurally complete — the field will be merged even without a conflict check, defaulting to 'existing wins' semantics which is safe."
+      ],
+      "steps": [
+        {
+          "description": "Amendment 1: Added requested_started_at: Option<DateTime<Utc>> parameter to unique_terminal_replay_match (fs.rs:2756). Inside the filter, when a terminal candidate has run_id=None and the caller supplies a run_id, the guard checks candidate.started_at == requested_started_at, rejecting mismatches",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 1: Updated the named-run caller (fs.rs:3013) to pass Some(started_at) and the runless caller (fs.rs:3140) to pass None, preserving existing behavior for the runless path",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 2: Added generic json_fill_none<T: Serialize + DeserializeOwned> helper function (fs.rs:2279) that serializes base and overlay to JSON maps, inserts missing keys from overlay into base, and deserializes back. This is structurally complete — no per-field enumeration needed",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 2: Replaced manual field-by-field copy in StartJournalDetails::merge and CompletionJournalDetails::merge with calls to json_fill_none. Conflict checks remain explicit per-field",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Added regression test terminal_runless_replay_rejected_when_started_at_mismatches in service.rs: preseeds a finalized runless entry at time T, attempts named-run terminal replay at T+10s, verifies rejection",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Added regression test journal_merge_fills_all_optional_fields in fs.rs: for both Start and Completion types, merges a minimal (all-None) existing with a fully-populated requested, verifies merged render equals requested render via round-trip comparison",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Ran cargo test (1165 total: 353 lib + 128 integration + 1 doc + 683 unit, 0 failed), cargo clippy -- -D warnings (clean), cargo fmt --check on modified files (clean)",
+          "order": 7,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 1165 total tests passed (353 lib + 128 integration + 1 doc + 683 unit), 0 failed",
+        "cargo clippy -- -D warnings: no warnings or errors",
+        "cargo fmt --check: fs.rs, service.rs, model.rs all clean; only pre-existing formatting diffs in unrelated tests/unit/agent_execution_test.rs",
+        "terminal_runless_replay_rejected_when_started_at_mismatches: preseeds finalized runless entry at T, named-run replay at T+10s → rejected (is_err() assertion passes)",
+        "journal_merge_fills_all_optional_fields: merge(minimal_start, full_start).render() == full_start_render; merge(minimal_completion, full_completion).render() == full_completion_render",
+        "json_fill_none structural guarantee: serializes both structs to JSON maps, inserts missing keys from overlay — any new #[serde(default, skip_serializing_if)] field is automatically absent in the minimal struct's JSON and present in the full struct's JSON, so it gets filled without code changes",
+        "All prior round tests continue to pass: terminal_replay_after_plan_evolution_succeeds, runless_match_rejected_when_started_at_mismatches, start_replay_after_plan_evolution_does_not_conflict, legacy_open_row_without_plan_hash_not_mislabeled_after_plan_evolution, terminal_replay_legacy_row_without_plan_hash_stays_unset, plan_hash_auto_populated_from_snapshot, explicit_plan_hash_takes_precedence_over_snapshot, runless_start_completed_with_named_run_id, completion_with_conflicting_plan_hash_rejects_runless_match, start_journal_details_round_trips_with_model_render, completion_journal_details_round_trips_with_model_render"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 7
+}

@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T22:54:37.621263103Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/fs.rs:2976-2991 and src/adapters/fs.rs:3297-3319 still leave `plan_hash` unset on existing lineage rows when callers omit it. New rows use `snapshot_plan_hash()`, but replaying or finalizing a preexisting row only copies an explicit caller-supplied `plan_hash` and then explicitly skips snapshot backfill. A legacy or partial row created with `plan_hash=None` therefore stays unlabeled forever even when the milestone snapshot already has the canonical hash, so issue 3 is still unimplemented for repair/replay paths. Please add a safe backfill path for existing rows as well, or persist enough provenance to distinguish plan evolution before deciding to skip it.",
+        "rationale": "The accepted amendment was to auto-populate `plan_hash` from the milestone snapshot when callers omit it. The current code and regression tests intentionally preserve `None`, so lineage can still lose plan linkage after completion/replay."
+      },
+      {
+        "body": "src/adapters/fs.rs:3059-3098 calls `unique_terminal_replay_match()` with every row for the same bead/project, and src/adapters/fs.rs:2859-2862 only accepts a candidate if every other row is a legacy start pair for that candidate. That makes named terminal replays fail as soon as the same bead/project has any other completed attempt: a runless terminal row for attempt A cannot be repaired/backfilled after later attempt B exists, even when `started_at` uniquely identifies attempt A. Filter the terminal fallback by `started_at` (or otherwise exclude unrelated attempts) before invoking the uniqueness check.",
+        "rationale": "Without this, older runless terminal rows become unrepairable after retries, which defeats the lineage backfill/idempotent replay logic in exactly the historical-repair cases this work is trying to support."
+      }
+    ],
+    "summary": "Reviewed the milestone-lineage changes and ran `cargo test` successfully. I found two remaining correctness gaps: existing rows still skip snapshot-based `plan_hash` repair, and named terminal replays are falsely rejected once the same bead/project has another historical attempt."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 10
+}

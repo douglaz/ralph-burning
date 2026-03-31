@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-vote-1-c1-a1-cr8-artifact",
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T22:25:45.237972565Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real robustness issues in the journal-repair path. The first is an observability gap that can silently turn serde failures into duplicate journal entries, and the second is a real forward-compatibility tradeoff from strict parsing that is not currently documented near the relevant types.\n\n## Votes\n\n- `fr-8-866eda73`: Accept\n  `json_fill_none` in `src/adapters/fs.rs` collapses `to_value`/`from_value` failures into `None`, and its callers already use `None` to mean an ordinary merge rejection. In `repairable_start_event` and `repairable_completion_event`, that makes a serde failure indistinguishable from a legitimate conflict and falls through to appending a duplicate event. The current structs are simple, so the immediate risk is low, but the helper is explicitly designed to absorb future optional fields; at minimum, emitting a warning on serde failure is technically justified.\n- `fr-8-772de23c`: Accept\n  `#[serde(deny_unknown_fields)]` on the milestone journal detail structs means an older binary cannot parse a newer entry once an extra field has been written. In this codebase that parse failure does not corrupt data, but it does disable the in-place repair merge and can cause duplicate start/completion events to accumulate after rollback. The existing comments explain the anti-drift intent, but they do not document this rollback/forward-compatibility tradeoff, so accepting the amendment at least as a documentation improvement is warranted; switching to lenient runtime parsing is a separate design choice.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 8
+}
