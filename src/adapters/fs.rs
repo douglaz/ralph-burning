@@ -2831,13 +2831,14 @@ impl FsTaskRunLineageStore {
         matching_indices: &[usize],
         requested_run_id: Option<&str>,
         requested_started_at: Option<DateTime<Utc>>,
+        milestone_id: &MilestoneId,
     ) -> AppResult<Option<usize>> {
         // Enforce the contract in all build modes: when the caller supplies a
         // run_id, started_at must also be present so the guard on runless
         // terminal candidates is never bypassed.
         if requested_run_id.is_some() && requested_started_at.is_none() {
             return Err(AppError::CorruptRecord {
-                file: "unique_terminal_replay_match".to_string(),
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                 details: "contract violation: requested_run_id is Some but \
                           requested_started_at is None — this would bypass \
                           the started_at guard on runless terminal candidates"
@@ -3141,6 +3142,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 &attempt_indices,
                                 Some(run_id),
                                 Some(started_at),
+                                milestone_id,
                             )? {
                                 Some(index) => index,
                                 None => {
@@ -3181,6 +3183,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 &attempt_indices,
                                 Some(run_id),
                                 Some(started_at),
+                                milestone_id,
                             )? {
                                 Some(index) => index,
                                 None => {
@@ -3292,6 +3295,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 &matching_attempt_indices,
                                 None,
                                 None,
+                                milestone_id,
                             )? {
                                 Some(index) => index,
                                 None => {
