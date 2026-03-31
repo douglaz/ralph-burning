@@ -2837,12 +2837,22 @@ impl FsTaskRunLineageStore {
         // run_id, started_at must also be present so the guard on runless
         // terminal candidates is never bypassed.
         if requested_run_id.is_some() && requested_started_at.is_none() {
+            // NOTE: This is an internal programming error (caller violated the
+            // API contract), NOT corrupt on-disk data.  We reuse CorruptRecord
+            // because adding a dedicated variant is not warranted for a path
+            // that should never be reached.  The "internal contract violation"
+            // prefix and the "caller:" file tag distinguish this from genuine
+            // data-corruption errors during operator triage.
             return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                details: "contract violation: requested_run_id is Some but \
-                          requested_started_at is None — this would bypass \
-                          the started_at guard on runless terminal candidates"
-                    .to_string(),
+                file: "caller:unique_terminal_replay_match".to_string(),
+                details: format!(
+                    "internal contract violation (milestone {}): \
+                     requested_run_id is Some but requested_started_at is None — \
+                     this would bypass the started_at guard on runless terminal \
+                     candidates. This indicates a bug in the calling code, not \
+                     corrupt data.",
+                    milestone_id,
+                ),
             });
         }
         let terminal_matches: Vec<usize> = matching_indices
@@ -3392,6 +3402,16 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                 }
                 // Safe plan_hash backfill: only when provenance confirms no
                 // plan evolution since the entry was created.
+                //
+                // ORDERING: this call MUST precede `entry.outcome = outcome`
+                // below.  safe_plan_hash_backfill's is_terminal() guard skips
+                // already-terminal entries; at this point the entry is still
+                // Running (about to transition), so the guard correctly
+                // allows one last backfill opportunity before finalization.
+                // Moving the outcome assignment above this line would cause
+                // the terminal guard to fire prematurely, permanently
+                // preventing provenance-based plan_hash backfill on
+                // finalization.
                 Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
