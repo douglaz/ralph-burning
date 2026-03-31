@@ -1351,4 +1351,82 @@ mod tests {
         );
         Ok(())
     }
+
+    #[test]
+    fn merge_attempt_entries_fills_all_optional_fields() -> Result<(), Box<dyn std::error::Error>> {
+        use chrono::{TimeZone, Utc};
+
+        let t1 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 0, 0).unwrap();
+        let t2 = Utc.with_ymd_and_hms(2026, 1, 1, 0, 1, 0).unwrap();
+
+        // Primary: all optional fields are None, earlier started_at, no finished_at.
+        let primary = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: None,
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: None,
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: None,
+            started_at: t1,
+            finished_at: None,
+        };
+
+        // Secondary: all optional fields populated, later started_at, has finished_at.
+        let secondary = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: Some("run-1".into()),
+            plan_hash: Some("hash-abc".into()),
+            snapshot_plan_hash_at_creation: Some("snap-abc".into()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: Some("detail".into()),
+            started_at: t2,
+            finished_at: Some(t2),
+        };
+
+        let merged = TaskRunEntry::merge_attempt_entries(&primary, &secondary);
+
+        // Every optional field should be filled from secondary.
+        assert_eq!(merged.run_id.as_deref(), Some("run-1"));
+        assert_eq!(merged.plan_hash.as_deref(), Some("hash-abc"));
+        assert_eq!(
+            merged.snapshot_plan_hash_at_creation.as_deref(),
+            Some("snap-abc")
+        );
+        assert_eq!(merged.outcome_detail.as_deref(), Some("detail"));
+        // started_at takes the minimum.
+        assert_eq!(merged.started_at, t1);
+        // finished_at filled from secondary.
+        assert_eq!(merged.finished_at, Some(t2));
+
+        // Now verify existing values are NOT overwritten.
+        let primary_full = TaskRunEntry {
+            milestone_id: "ms".into(),
+            bead_id: "bead".into(),
+            project_id: "proj".into(),
+            run_id: Some("original-run".into()),
+            plan_hash: Some("original-hash".into()),
+            snapshot_plan_hash_at_creation: Some("original-snap".into()),
+            outcome: TaskRunOutcome::Running,
+            outcome_detail: Some("original-detail".into()),
+            started_at: t1,
+            finished_at: Some(t1),
+        };
+
+        let merged2 = TaskRunEntry::merge_attempt_entries(&primary_full, &secondary);
+        assert_eq!(merged2.run_id.as_deref(), Some("original-run"));
+        assert_eq!(merged2.plan_hash.as_deref(), Some("original-hash"));
+        assert_eq!(
+            merged2.snapshot_plan_hash_at_creation.as_deref(),
+            Some("original-snap")
+        );
+        assert_eq!(merged2.outcome_detail.as_deref(), Some("original-detail"));
+        assert_eq!(merged2.started_at, t1);
+        assert_eq!(merged2.finished_at, Some(t1));
+
+        Ok(())
+    }
 }

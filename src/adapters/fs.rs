@@ -2606,18 +2606,13 @@ impl FsTaskRunLineageStore {
                 }
             }
             None => {
-                // No provenance: entry was created before any plan was
-                // persisted.  It is safe to adopt the current snapshot —
-                // no prior plan version existed to conflict with.
-                let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-                if let Some(hash) = current_hash {
-                    entry.snapshot_plan_hash_at_creation = Some(hash.clone());
-                    entry.plan_hash = Some(hash);
-                    true
-                } else {
-                    // Still no plan persisted — nothing to backfill.
-                    false
-                }
+                // No provenance recorded.  This could mean the entry was
+                // created before any plan existed, OR it could be a legacy
+                // entry created by an older code version that didn't record
+                // the field.  We cannot distinguish the two cases, so
+                // backfilling would risk silently relabeling a legacy entry
+                // with a newer plan version.  Skip.
+                false
             }
         }
     }
@@ -2835,6 +2830,11 @@ impl FsTaskRunLineageStore {
         // run_id, started_at must also be present so the guard on runless
         // terminal candidates is never bypassed.
         if requested_run_id.is_some() && requested_started_at.is_none() {
+            tracing::warn!(
+                "unique_terminal_replay_match: contract violation — \
+                 requested_run_id is Some but requested_started_at is None; \
+                 this bypasses the started_at guard on runless terminal candidates"
+            );
             return None;
         }
         let terminal_matches: Vec<usize> = matching_indices
@@ -3031,19 +3031,12 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
-        // Auto-populate plan_hash from the milestone snapshot when the caller
-        // omits it — the system already knows which plan version is executing.
-        //
-        // Known limitation: if persist_plan() is called between the moment the
-        // bead is dispatched and the moment record_task_run_start is called,
-        // the entry gets stamped with the *newer* snapshot hash even though the
-        // bead was dispatched under the older plan. The long-term fix is for
-        // callers to always supply plan_hash explicitly when they know which
-        // plan version dispatched the bead.
+        // Record the current snapshot hash for provenance tracking, but do NOT
+        // auto-populate plan_hash from it.  The snapshot read here races with
+        // persist_plan() — the bead may have been dispatched under an older
+        // plan version, so only the caller-supplied plan_hash is trustworthy.
         let current_snapshot_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-        let effective_plan_hash = plan_hash
-            .map(str::to_owned)
-            .or_else(|| current_snapshot_hash.clone());
+        let effective_plan_hash = plan_hash.map(str::to_owned);
 
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),
