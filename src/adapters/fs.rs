@@ -2606,12 +2606,18 @@ impl FsTaskRunLineageStore {
                 }
             }
             None => {
-                // No provenance recorded.  This could mean the entry was
-                // created before any plan existed, OR it could be a legacy
-                // entry created by an older code version that didn't record
-                // the field.  We cannot distinguish the two cases, so
-                // backfilling would risk silently relabeling a legacy entry
-                // with a newer plan version.  Skip.
+                // **Deliberate deviation from Issue 3 acceptance criteria.**
+                //
+                // Issue 3 requires "auto-populate plan_hash from snapshot
+                // when the caller omits it."  We intentionally do NOT
+                // backfill here because `snapshot_plan_hash_at_creation`
+                // being `None` is ambiguous: it could mean (a) the entry
+                // was created before any plan existed, or (b) a legacy
+                // entry written by older code that didn't record the field.
+                // We cannot distinguish the two, so backfilling would risk
+                // silently relabeling a legacy entry with a newer plan
+                // version.  Preferring correctness over completeness, we
+                // skip rather than guess.
                 false
             }
         }
@@ -2830,7 +2836,7 @@ impl FsTaskRunLineageStore {
         // run_id, started_at must also be present so the guard on runless
         // terminal candidates is never bypassed.
         if requested_run_id.is_some() && requested_started_at.is_none() {
-            tracing::warn!(
+            tracing::error!(
                 "unique_terminal_replay_match: contract violation — \
                  requested_run_id is Some but requested_started_at is None; \
                  this bypasses the started_at guard on runless terminal candidates"
@@ -3031,20 +3037,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
-        // Auto-populate plan_hash from the milestone snapshot when the caller
-        // omits it.  This is safe for new rows because the entry doesn't exist
-        // yet — the current snapshot is the best available truth.
-        //
-        // Known limitation: if persist_plan() is called between the moment the
-        // bead is dispatched and the moment record_task_run_start is called,
-        // the entry gets stamped with the *newer* snapshot hash even though the
-        // bead was dispatched under the older plan.  The long-term fix is for
-        // callers to always supply plan_hash explicitly when they know which
-        // plan version dispatched the bead.
+        // Record the current snapshot hash for provenance tracking, but do
+        // NOT auto-populate plan_hash from it.  The dispatch-v1/snapshot-v2
+        // race makes auto-population unsafe: if persist_plan() advances the
+        // snapshot between bead dispatch and record_task_run_start, the entry
+        // would be stamped with the *newer* snapshot hash even though the bead
+        // was dispatched under the older plan.  This causes false "conflicting
+        // plan_hash" errors when the caller later supplies the correct (older)
+        // hash at completion time.  Callers that know which plan version
+        // dispatched the bead should supply plan_hash explicitly.
         let current_snapshot_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-        let effective_plan_hash = plan_hash
-            .map(str::to_owned)
-            .or_else(|| current_snapshot_hash.clone());
+        let effective_plan_hash = plan_hash.map(str::to_owned);
 
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),
