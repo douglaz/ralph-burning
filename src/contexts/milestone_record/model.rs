@@ -464,7 +464,6 @@ pub fn find_matching_running_task_run(
     bead_id: &str,
     project_id: &str,
     run_id: &str,
-    _started_at: DateTime<Utc>,
 ) -> Option<TaskRunEntry> {
     entries
         .iter()
@@ -482,7 +481,6 @@ pub fn matching_finalized_task_runs(
     bead_id: &str,
     project_id: &str,
     run_id: &str,
-    _started_at: DateTime<Utc>,
 ) -> Vec<TaskRunEntry> {
     entries
         .iter()
@@ -496,6 +494,17 @@ pub fn matching_finalized_task_runs(
         .collect()
 }
 
+/// Collapse duplicate raw ndjson rows into canonical entries.
+///
+/// # Legacy backward-compatibility
+///
+/// The `find_collapse_group_index` → `unique_open_legacy_group_index` →
+/// `legacy_group_accepts_completion` pipeline retains runless (run_id=None)
+/// matching by `started_at`.  This is a **read-only** backward-compat path:
+/// old ndjson files may contain rows written before `run_id` became required,
+/// and those rows still need correct grouping when the file is read.  No new
+/// rows are written without `run_id` — the write paths in `record_task_run_start`
+/// and `update_task_run` require `run_id: &str` at the port boundary.
 pub fn collapse_task_run_attempts(entries: Vec<TaskRunEntry>) -> Vec<TaskRunEntry> {
     let mut collapsed_groups: Vec<Vec<TaskRunEntry>> = Vec::new();
 
@@ -996,7 +1005,6 @@ mod tests {
             "bead-1",
             "project-1",
             "run-3",
-            started_at,
         );
 
         assert!(matches.is_empty());

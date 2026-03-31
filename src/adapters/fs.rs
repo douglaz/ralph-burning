@@ -2699,6 +2699,26 @@ impl FsTaskRunLineageStore {
         Ok(changed)
     }
 
+    /// One-time upgrade repair: mark any running entries with `run_id: None`
+    /// as failed.  Prior code versions allowed starting beads without a run ID;
+    /// the current write paths require `run_id: &str` at the port boundary, so
+    /// these legacy entries can never be finalized normally.  Failing them on
+    /// first write access prevents them from blocking new starts or producing
+    /// confusing "ambiguous" errors.
+    fn fail_legacy_runless_entries(entries: &mut [TaskRunEntry], now: DateTime<Utc>) -> bool {
+        let mut changed = false;
+        for entry in entries.iter_mut() {
+            if entry.run_id.is_none() && !entry.outcome.is_terminal() {
+                entry.outcome = TaskRunOutcome::Failed;
+                entry.outcome_detail =
+                    Some("superseded: run_id is now required (upgrade repair)".to_owned());
+                entry.finished_at = Some(now);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     fn fail_superseded_running_attempt(
         entries: &mut [TaskRunEntry],
         prior_attempt: &TaskRunEntry,
@@ -2796,6 +2816,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, started_at);
+        if legacy_repaired {
+            Self::write_task_runs(&path, &entries)?;
+        }
         let canonical_task_runs = collapse_task_run_attempts(entries.clone());
         let running_attempts_for_bead =
             Self::running_task_runs_for_bead(&canonical_task_runs, bead_id);
@@ -2813,13 +2837,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             });
         }
 
-        let finalized_attempts = matching_finalized_task_runs(
-            &canonical_task_runs,
-            bead_id,
-            project_id,
-            run_id,
-            started_at,
-        );
+        let finalized_attempts =
+            matching_finalized_task_runs(&canonical_task_runs, bead_id, project_id, run_id);
         match finalized_attempts.as_slice() {
             [] => {}
             [entry] => {
@@ -2846,13 +2865,9 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             }
         }
 
-        if let Some(existing_entry) = find_matching_running_task_run(
-            &canonical_task_runs,
-            bead_id,
-            project_id,
-            run_id,
-            started_at,
-        ) {
+        if let Some(existing_entry) =
+            find_matching_running_task_run(&canonical_task_runs, bead_id, project_id, run_id)
+        {
             if let Some(existing_index) = entries.iter().position(|entry| {
                 !entry.outcome.is_terminal() && TaskRunEntry::same_attempt(entry, &existing_entry)
             }) {
@@ -2926,6 +2941,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, finished_at);
+        if legacy_repaired {
+            Self::write_task_runs(&path, &entries)?;
+        }
         if entries.is_empty() {
             return Err(AppError::CorruptRecord {
                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
@@ -3005,10 +3024,15 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             });
                         }
                         _ => {
+                            let open_run_ids: Vec<&str> = open_matches
+                                .iter()
+                                .map(|idx| entries[*idx].run_id.as_deref().unwrap_or("<none>"))
+                                .collect();
                             return Err(AppError::CorruptRecord {
                                 file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                                 details: format!(
-                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
+                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}; open runs: [{}]",
+                                    open_run_ids.join(", ")
                                 ),
                             });
                         }
