@@ -3031,12 +3031,20 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
-        // Record the current snapshot hash for provenance tracking, but do NOT
-        // auto-populate plan_hash from it.  The snapshot read here races with
-        // persist_plan() — the bead may have been dispatched under an older
-        // plan version, so only the caller-supplied plan_hash is trustworthy.
+        // Auto-populate plan_hash from the milestone snapshot when the caller
+        // omits it.  This is safe for new rows because the entry doesn't exist
+        // yet — the current snapshot is the best available truth.
+        //
+        // Known limitation: if persist_plan() is called between the moment the
+        // bead is dispatched and the moment record_task_run_start is called,
+        // the entry gets stamped with the *newer* snapshot hash even though the
+        // bead was dispatched under the older plan.  The long-term fix is for
+        // callers to always supply plan_hash explicitly when they know which
+        // plan version dispatched the bead.
         let current_snapshot_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-        let effective_plan_hash = plan_hash.map(str::to_owned);
+        let effective_plan_hash = plan_hash
+            .map(str::to_owned)
+            .or_else(|| current_snapshot_hash.clone());
 
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),

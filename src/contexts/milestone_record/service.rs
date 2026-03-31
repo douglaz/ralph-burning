@@ -4761,9 +4761,7 @@ mod tests {
         )?;
         let expected_plan_hash = snapshot.plan_hash.clone().expect("plan_hash must be set");
 
-        // Start bead WITHOUT plan_hash — plan_hash is NOT auto-populated on
-        // new rows (amendment 3), but snapshot_plan_hash_at_creation records
-        // provenance for later backfill.
+        // Start bead WITHOUT plan_hash — should auto-populate from snapshot
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -4781,8 +4779,8 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(
             runs[0].plan_hash.as_deref(),
-            None,
-            "plan_hash must NOT be auto-populated on new rows"
+            Some(expected_plan_hash.as_str()),
+            "plan_hash should be auto-populated from snapshot on start"
         );
         assert_eq!(
             runs[0].snapshot_plan_hash_at_creation.as_deref(),
@@ -4914,8 +4912,7 @@ mod tests {
         )?;
         let hash_v1 = snap_v1.plan_hash.clone().expect("plan_hash v1");
 
-        // Start bead with plan_hash=None — NOT auto-populated on new rows,
-        // but provenance is recorded for later backfill.
+        // Start bead with plan_hash=None — auto-populated to hash_v1 from snapshot
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -4931,13 +4928,8 @@ mod tests {
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
         assert_eq!(
             runs[0].plan_hash.as_deref(),
-            None,
-            "new row must not auto-populate plan_hash"
-        );
-        assert_eq!(
-            runs[0].snapshot_plan_hash_at_creation.as_deref(),
             Some(hash_v1.as_str()),
-            "provenance must be recorded"
+            "start should auto-populate plan_hash from snapshot"
         );
 
         record_bead_completion(
@@ -5103,7 +5095,7 @@ mod tests {
             now,
         )?;
 
-        // Start bead with plan_hash=None — not auto-populated on new rows.
+        // Start bead with plan_hash=None (auto-populated to hash_v1)
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -5118,11 +5110,10 @@ mod tests {
         )?;
 
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
-        assert_eq!(
-            runs[0].plan_hash.as_deref(),
-            None,
-            "new row must not auto-populate plan_hash"
-        );
+        let hash_v1 = runs[0]
+            .plan_hash
+            .clone()
+            .expect("plan_hash should be auto-populated");
 
         // Persist plan v2 — snapshot.plan_hash advances
         let mut bundle_v2 = sample_bundle("start-replay-evolve", "Plan v2");
@@ -5138,8 +5129,8 @@ mod tests {
         )?;
 
         // Replay the same start with plan_hash=None — must not conflict.
-        // The entry has provenance=Some(hash_v1) but snapshot is now hash_v2,
-        // so safe_plan_hash_backfill skips (mismatch) → plan_hash stays None.
+        // The lineage layer sees the row already has hash_v1 and skips
+        // auto-population, avoiding option_conflicts(hash_v1, hash_v2).
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -5157,8 +5148,8 @@ mod tests {
         assert_eq!(runs.len(), 1);
         assert_eq!(
             runs[0].plan_hash.as_deref(),
-            None,
-            "plan_hash must stay None — provenance mismatch prevents backfill"
+            Some(hash_v1.as_str()),
+            "row must retain original plan_hash from v1, not be overwritten by v2"
         );
         Ok(())
     }
@@ -5559,8 +5550,8 @@ mod tests {
             .clone()
             .expect("snapshot should have plan_hash");
 
-        // Start a bead: plan_hash is NOT auto-populated on new rows, but
-        // snapshot_plan_hash_at_creation records provenance for later backfill.
+        // Start a bead: plan_hash auto-populated from snapshot, and
+        // snapshot_plan_hash_at_creation records the same hash.
         record_bead_start(
             &snapshot_store,
             &journal_store,
@@ -5570,7 +5561,7 @@ mod tests {
             "bead-backfill",
             "project-1",
             Some("run-1"),
-            None, // plan_hash omitted — NOT auto-populated
+            None, // plan_hash omitted — auto-populated from snapshot
             now + chrono::Duration::seconds(1),
         )?;
         let runs = read_task_runs(&lineage_store, base, &record.id)?;
@@ -5580,8 +5571,8 @@ mod tests {
             .expect("entry must exist");
         assert_eq!(
             entry.plan_hash.as_deref(),
-            None,
-            "new entry must not auto-populate plan_hash"
+            Some(expected_hash.as_str()),
+            "new entry should auto-populate plan_hash from snapshot"
         );
         assert_eq!(
             entry.snapshot_plan_hash_at_creation.as_deref(),
