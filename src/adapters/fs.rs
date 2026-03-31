@@ -2831,17 +2831,18 @@ impl FsTaskRunLineageStore {
         matching_indices: &[usize],
         requested_run_id: Option<&str>,
         requested_started_at: Option<DateTime<Utc>>,
-    ) -> Option<usize> {
+    ) -> AppResult<Option<usize>> {
         // Enforce the contract in all build modes: when the caller supplies a
         // run_id, started_at must also be present so the guard on runless
         // terminal candidates is never bypassed.
         if requested_run_id.is_some() && requested_started_at.is_none() {
-            tracing::error!(
-                "unique_terminal_replay_match: contract violation — \
-                 requested_run_id is Some but requested_started_at is None; \
-                 this bypasses the started_at guard on runless terminal candidates"
-            );
-            return None;
+            return Err(AppError::CorruptRecord {
+                file: "unique_terminal_replay_match".to_string(),
+                details: "contract violation: requested_run_id is Some but \
+                          requested_started_at is None — this would bypass \
+                          the started_at guard on runless terminal candidates"
+                    .to_string(),
+            });
         }
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
@@ -2880,8 +2881,8 @@ impl FsTaskRunLineageStore {
             .collect();
 
         match terminal_matches.as_slice() {
-            [index] => Some(*index),
-            _ => None,
+            [index] => Ok(Some(*index)),
+            _ => Ok(None),
         }
     }
 }
@@ -3135,20 +3136,21 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 .copied()
                                 .filter(|index| entries[*index].started_at == started_at)
                                 .collect();
-                            if let Some(index) = Self::unique_terminal_replay_match(
+                            match Self::unique_terminal_replay_match(
                                 &entries,
                                 &attempt_indices,
                                 Some(run_id),
                                 Some(started_at),
-                            ) {
-                                index
-                            } else {
-                                return Err(AppError::CorruptRecord {
-                                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                    details: format!(
-                                        "no matching task run for bead={bead_id} project={project_id} run={run_id}"
-                                    ),
-                                });
+                            )? {
+                                Some(index) => index,
+                                None => {
+                                    return Err(AppError::CorruptRecord {
+                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                        details: format!(
+                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}"
+                                        ),
+                                    });
+                                }
                             }
                         }
                         [index]
@@ -3162,18 +3164,40 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             // wrong legacy attempt.
                             *index
                         }
-                        [index] if entries[*index].run_id.is_none() => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!(
-                                    "milestones/{}/task-runs.ndjson",
-                                    milestone_id
-                                ),
-                                details: format!(
-                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; \
-                                     open runless attempt started_at={} does not match requested started_at={started_at}",
-                                    entries[*index].started_at,
-                                ),
-                            });
+                        [open_index] if entries[*open_index].run_id.is_none() => {
+                            // Open runless row exists but started_at doesn't
+                            // match.  Fall through to the terminal replay
+                            // matcher — a completed row with the matching
+                            // started_at may exist (partial-write repair path
+                            // where the lineage row was written terminal but
+                            // the snapshot/journal update failed).
+                            let attempt_indices: Vec<usize> = matching_indices
+                                .iter()
+                                .copied()
+                                .filter(|index| entries[*index].started_at == started_at)
+                                .collect();
+                            match Self::unique_terminal_replay_match(
+                                &entries,
+                                &attempt_indices,
+                                Some(run_id),
+                                Some(started_at),
+                            )? {
+                                Some(index) => index,
+                                None => {
+                                    return Err(AppError::CorruptRecord {
+                                        file: format!(
+                                            "milestones/{}/task-runs.ndjson",
+                                            milestone_id
+                                        ),
+                                        details: format!(
+                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}; \
+                                             open runless attempt started_at={} does not match requested started_at={started_at} \
+                                             and no terminal row found for the requested started_at",
+                                            entries[*open_index].started_at,
+                                        ),
+                                    });
+                                }
+                            }
                         }
                         [index] => {
                             return Err(AppError::CorruptRecord {
@@ -3263,20 +3287,21 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     match terminal_matches.as_slice() {
                         [index] => *index,
                         _ => {
-                            if let Some(index) = Self::unique_terminal_replay_match(
+                            match Self::unique_terminal_replay_match(
                                 &entries,
                                 &matching_attempt_indices,
                                 None,
                                 None,
-                            ) {
-                                index
-                            } else {
-                                return Err(AppError::CorruptRecord {
-                                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                    details: format!(
-                                        "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
-                                    ),
-                                });
+                            )? {
+                                Some(index) => index,
+                                None => {
+                                    return Err(AppError::CorruptRecord {
+                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                        details: format!(
+                                            "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
+                                        ),
+                                    });
+                                }
                             }
                         }
                     }

@@ -5064,6 +5064,124 @@ mod tests {
         Ok(())
     }
 
+    /// Regression: when a newer retry has started (open runless row with
+    /// different started_at), replaying the completion of an older terminal
+    /// attempt must fall through to the terminal replay matcher instead of
+    /// erroring on the open row's started_at mismatch.
+    #[test]
+    fn terminal_replay_falls_through_past_mismatched_open_runless_row(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let t0 = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "fall-through".to_owned(),
+                name: "Fall Through".to_owned(),
+                description: "terminal replay past mismatched open row".to_owned(),
+            },
+            t0,
+        )?;
+
+        // Start attempt 1 without run_id at t0.
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            t0,
+        )?;
+
+        // Complete attempt 1 (becomes terminal).
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("first attempt done"),
+            t0,
+            t0 + chrono::Duration::seconds(1),
+        )?;
+
+        // Start attempt 2 (retry) without run_id at t0+10 — creates a new
+        // open runless row with a different started_at.
+        let t1 = t0 + chrono::Duration::seconds(10);
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            None,
+            None,
+            t1,
+        )?;
+
+        // Replay the completion of attempt 1 WITH a run_id.  The open runless
+        // row has started_at=t1 which doesn't match t0.  Previously this
+        // errored immediately; now it must fall through to the terminal replay
+        // matcher and find the completed row at t0.
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-late"),
+            None,
+            TaskRunOutcome::Succeeded,
+            Some("first attempt done"),
+            t0,
+            t0 + chrono::Duration::seconds(1),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        // Should have 2 rows: the completed attempt 1 (now with run_id
+        // backfilled) and the still-running attempt 2.
+        let attempt1 = runs
+            .iter()
+            .find(|e| e.started_at == t0)
+            .expect("attempt 1 must exist");
+        assert_eq!(attempt1.outcome, TaskRunOutcome::Succeeded);
+        assert_eq!(
+            attempt1.run_id.as_deref(),
+            Some("run-late"),
+            "run_id should be backfilled on terminal replay"
+        );
+
+        let attempt2 = runs
+            .iter()
+            .find(|e| e.started_at == t1)
+            .expect("attempt 2 must exist");
+        assert_eq!(attempt2.outcome, TaskRunOutcome::Running);
+        assert_eq!(attempt2.run_id, None);
+
+        Ok(())
+    }
+
     /// Amendment 3: Replay of start after plan evolution must not conflict.
     /// Since plan_hash is not auto-populated at start time, the row stays
     /// plan_hash=None — replay with None again is always safe (no conflict).
