@@ -1,0 +1,44 @@
+{
+  "rollback_id": "3163cd37-befe-4c3b-baa8-549b8e289020",
+  "created_at": "2026-03-31T03:56:12.917126451Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "5107a20c9823a14dd13cfb5f741e32dcca1d25d9",
+  "run_snapshot": {
+    "active_run": null,
+    "status": "completed",
+    "cycle_history": [],
+    "completion_rounds": 21,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [],
+      "processed_count": 47
+    },
+    "status_summary": "completed",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-31T03:15:27.498909126Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

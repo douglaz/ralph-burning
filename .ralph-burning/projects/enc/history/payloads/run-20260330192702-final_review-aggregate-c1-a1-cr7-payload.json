@@ -1,0 +1,67 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T22:11:59.684183477Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-7-6ba24ae1"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-7-6ba24ae1",
+        "normalized_body": "In `json_fill_none` (fs.rs:2284-2300), the `entry().or_insert(value)` merge silently prefers base over overlay for ALL fields, including any future optional fields that may need conflict detection. Currently, conflict checks for run_id, plan_hash, and outcome_detail are performed explicitly before calling `json_fill_none`, but if a future optional field with conflict semantics is added to StartJournalDetails or CompletionJournalDetails, the merge will silently keep the stale base value without flagging the conflict. Add a code comment at the `json_fill_none` call sites (fs.rs:2326 and fs.rs:2367) documenting the invariant: any new optional field with conflict semantics MUST have an explicit conflict check added to `merge()` above the `json_fill_none` call, otherwise conflicting values will be silently preserved from the existing record rather than flagged as an error.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-0cb31894",
+        "normalized_body": "`src/adapters/fs.rs:2957-2961` only auto-populates `plan_hash` when a brand-new start row is created; the completion path for an existing row still skips snapshot backfill entirely (`src/adapters/fs.rs:3231-3264`, and terminal replays use the same caller-only backfill helper at `src/adapters/fs.rs:2672-2692`). `record_bead_completion`/`update_task_run` also still forward `plan_hash` straight through from the caller (`src/contexts/milestone_record/service.rs:557-563`). The result is that any in-flight row that was created without `plan_hash` still finalizes with `plan_hash: None` even when the milestone snapshot already has the canonical hash. I reproduced this by pre-seeding a running `TaskRunEntry` with `plan_hash=None`, setting `snapshot.plan_hash=\"plan-v1\"`, and then calling `record_bead_completion(..., plan_hash=None)`: the stored row remained `None`. That still loses lineage for legacy/incomplete starts, so issue 3 is only partially fixed.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-7-6ba24ae1",
+        "normalized_body": "In `json_fill_none` (fs.rs:2284-2300), the `entry().or_insert(value)` merge silently prefers base over overlay for ALL fields, including any future optional fields that may need conflict detection. Currently, conflict checks for run_id, plan_hash, and outcome_detail are performed explicitly before calling `json_fill_none`, but if a future optional field with conflict semantics is added to StartJournalDetails or CompletionJournalDetails, the merge will silently keep the stale base value without flagging the conflict. Add a code comment at the `json_fill_none` call sites (fs.rs:2326 and fs.rs:2367) documenting the invariant: any new optional field with conflict semantics MUST have an explicit conflict check added to `merge()` above the `json_fill_none` call, otherwise conflicting values will be silently preserved from the existing record rather than flagged as an error.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 7,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-7-0cb31894"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 1 amendment(s); restart required.",
+    "total_proposed_amendments": 2,
+    "total_reviewers": 2,
+    "unique_amendment_count": 2
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

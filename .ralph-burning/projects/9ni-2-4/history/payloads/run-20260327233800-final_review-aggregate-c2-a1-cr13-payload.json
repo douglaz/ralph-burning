@@ -1,0 +1,102 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr13-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T21:01:23.085517357Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-13-36f0aa72",
+      "fr-13-a74a46a6"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-13-ca8af530",
+        "normalized_body": "In `find_collapse_group_index`, when `entry.run_id` is `Some(...)` but no named group matches, the function falls through to `unique_open_legacy_group_index`. This means a named terminal entry could collapse into an unnamed legacy open group if they share the same `bead_id`, `project_id`, and `started_at`. For example: a terminal entry with `run_id=\"run-1\"` and `started_at=T` would collapse with an open group containing `{run_id: None, started_at: T, outcome: Running}`. Consider adding a `entry.run_id.is_none()` guard before the `unique_open_legacy_group_index` fallback, or document this cross-naming collapse as intentional behavior. Without this guard, audit queries via `find_runs_for_bead` could merge conceptually distinct attempts into one collapsed entry when a named completion happens to share timestamps with a stale unnamed open entry.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-13-8f43b7ad",
+        "normalized_body": "In the `explicit_retry_after_legacy_open_appends_new_attempt` test (service.rs ~line 2957), after the named retry succeeds, the test asserts the stale legacy Running entry remains visible and the snapshot shows `completed_beads=1`. This is correct given the current `latest_task_runs_per_bead` recency logic. However, there is no test covering the inverse clock-skew scenario where a stale legacy entry has a *later* `started_at` than a subsequent named entry (e.g., due to clock adjustment). In that case `latest_task_runs_per_bead` would pick the legacy Running entry as most recent, causing the snapshot to show the bead as still active despite the named run having succeeded. Add a test that validates behavior or documents the assumption that `started_at` values are monotonically increasing within a milestone's lineage.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-13-36f0aa72",
+        "normalized_body": "Fix same-timestamp retry ordering in `latest_task_runs_per_bead`. In `src/contexts/milestone_record/model.rs:379-389`, `compare_task_run_recency` treats a terminal row as newer than a later retry whenever both attempts share the same `started_at`, because it compares `finished_at` before anything else. `reconcile_snapshot_from_lineage` in `src/contexts/milestone_record/service.rs:163-204` uses that result to derive `active_bead` and progress, so a retry that starts at the same timestamp as an earlier failed/skipped attempt can leave the milestone in `ready` with `in_progress_beads=0` even though a new run is active. This needs a deterministic tie-break that preserves the newest attempt when timestamps collide, plus a regression test covering same-timestamp retries affecting snapshot state.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-13-a74a46a6",
+        "normalized_body": "Add a recovery path for start retries when `run_id` is absent. `record_bead_start` writes lineage/snapshot before it appends the `BeadStarted` journal event (`src/contexts/milestone_record/service.rs:428-451`). If that final append fails, the retry logic only reuses the existing running row when a runless caller supplies the exact original `started_at` (`src/contexts/milestone_record/model.rs:435-442`); otherwise `record_task_run_start` falls through to the \"already active\" error (`src/adapters/fs.rs:2815-2858`). For legacy callers still passing `run_id=None`, a transient journal failure leaves the start operation unrecoverable by a normal retry. The start matching/backfill logic should be widened so runless callers can repair the partial write, and this needs a regression test.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-13-36f0aa72",
+        "normalized_body": "Fix same-timestamp retry ordering in `latest_task_runs_per_bead`. In `src/contexts/milestone_record/model.rs:379-389`, `compare_task_run_recency` treats a terminal row as newer than a later retry whenever both attempts share the same `started_at`, because it compares `finished_at` before anything else. `reconcile_snapshot_from_lineage` in `src/contexts/milestone_record/service.rs:163-204` uses that result to derive `active_bead` and progress, so a retry that starts at the same timestamp as an earlier failed/skipped attempt can leave the milestone in `ready` with `in_progress_beads=0` even though a new run is active. This needs a deterministic tie-break that preserves the newest attempt when timestamps collide, plus a regression test covering same-timestamp retries affecting snapshot state.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-13-a74a46a6",
+        "normalized_body": "Add a recovery path for start retries when `run_id` is absent. `record_bead_start` writes lineage/snapshot before it appends the `BeadStarted` journal event (`src/contexts/milestone_record/service.rs:428-451`). If that final append fails, the retry logic only reuses the existing running row when a runless caller supplies the exact original `started_at` (`src/contexts/milestone_record/model.rs:435-442`); otherwise `record_task_run_start` falls through to the \"already active\" error (`src/adapters/fs.rs:2815-2858`). For legacy callers still passing `run_id=None`, a transient journal failure leaves the start operation unrecoverable by a normal retry. The start matching/backfill logic should be widened so runless callers can repair the partial write, and this needs a regression test.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 13,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-13-ca8af530",
+      "fr-13-8f43b7ad"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 13
+}

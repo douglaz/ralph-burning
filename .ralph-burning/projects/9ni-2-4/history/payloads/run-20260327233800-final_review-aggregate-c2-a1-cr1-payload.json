@@ -1,0 +1,169 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr1-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T00:04:26.857046041Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-1-83cc18bd",
+      "fr-1-b88127a5",
+      "fr-1-931e3b47",
+      "fr-1-6940a2a3",
+      "fr-1-3c001aa9",
+      "fr-1-15b667eb"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-1-83cc18bd",
+        "normalized_body": "The service-level `update_task_run` function only rewrites the NDJSON lineage file but does NOT update the MilestoneSnapshot (progress counters: in_progress_beads, completed_beads, failed_beads; active_bead). By contrast, `record_bead_completion` correctly updates both. If a controller calls `update_task_run` to transition a Running entry to Succeeded/Failed, the snapshot's progress counters and active_bead will become permanently stale. `update_task_run` must also accept `snapshot_store` and `journal_store` parameters and apply the same snapshot mutations and journal event emission that `record_bead_completion` does.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-b88127a5",
+        "normalized_body": "In `record_bead_completion` (service.rs lines 372-376), any non-Succeeded outcome—including `TaskRunOutcome::Skipped`—emits a `MilestoneEventType::BeadFailed` journal event. Skipped should either emit a distinct event type or at minimum not be recorded as a failure. Currently the progress counter also doesn't increment for Skipped (it falls through the match arms), so the total bead accounting is also off when Skipped is used.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-931e3b47",
+        "normalized_body": "The relationship between `record_bead_completion` (append-based) and `update_task_run` (in-place-rewrite) is undefined and untested in combination. `record_bead_completion` appends a NEW completion entry alongside the existing Running entry, while `update_task_run` mutates the existing Running entry in place. If both are used for the same bead, the NDJSON file will have an inconsistent mix of append-style and update-style entries. The code should document which one the controller should use and when, and add a test covering what happens if both are called on the same run.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-6940a2a3",
+        "normalized_body": "In the FS adapter, `update_task_run` performs a non-atomic read-modify-write: it reads the entire NDJSON file, deserializes all entries, mutates one, and rewrites the whole file. Between the read and the write, a concurrent `append_task_run` call (e.g., from another process recording a different bead) could add lines that will be silently dropped by the rewrite. At minimum, add a comment documenting this limitation; ideally, use file locking (e.g., `flock`) around the read-modify-write cycle.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-3c001aa9",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:324-350` still records completion by appending a second `TaskRunEntry`, while the new `update_task_run` helper at `src/contexts/milestone_record/service.rs:419-437` only mutates `task-runs.ndjson` and does not update the snapshot or journal. That leaves no correct completion path: using `record_bead_completion` duplicates every attempt in lineage, but using `update_task_run` alone leaves `active_bead`, progress counters, and journal events stale. Please consolidate completion into one service flow that updates snapshot/journal and mutates the existing task-run row instead of appending another row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-15b667eb",
+        "normalized_body": "`src/adapters/fs.rs:2340-2350` updates the last row matching only `bead_id` + `project_id`, even though this change adds `run_id` to `TaskRunEntry` for per-run auditability. If one Ralph project produces multiple runs for the same bead, `update_task_run` can silently rewrite the wrong attempt. The lookup should use `run_id` when present, or reject ambiguous matches instead of mutating the last matching row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-1-83cc18bd",
+        "normalized_body": "The service-level `update_task_run` function only rewrites the NDJSON lineage file but does NOT update the MilestoneSnapshot (progress counters: in_progress_beads, completed_beads, failed_beads; active_bead). By contrast, `record_bead_completion` correctly updates both. If a controller calls `update_task_run` to transition a Running entry to Succeeded/Failed, the snapshot's progress counters and active_bead will become permanently stale. `update_task_run` must also accept `snapshot_store` and `journal_store` parameters and apply the same snapshot mutations and journal event emission that `record_bead_completion` does.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-b88127a5",
+        "normalized_body": "In `record_bead_completion` (service.rs lines 372-376), any non-Succeeded outcome—including `TaskRunOutcome::Skipped`—emits a `MilestoneEventType::BeadFailed` journal event. Skipped should either emit a distinct event type or at minimum not be recorded as a failure. Currently the progress counter also doesn't increment for Skipped (it falls through the match arms), so the total bead accounting is also off when Skipped is used.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-931e3b47",
+        "normalized_body": "The relationship between `record_bead_completion` (append-based) and `update_task_run` (in-place-rewrite) is undefined and untested in combination. `record_bead_completion` appends a NEW completion entry alongside the existing Running entry, while `update_task_run` mutates the existing Running entry in place. If both are used for the same bead, the NDJSON file will have an inconsistent mix of append-style and update-style entries. The code should document which one the controller should use and when, and add a test covering what happens if both are called on the same run.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-6940a2a3",
+        "normalized_body": "In the FS adapter, `update_task_run` performs a non-atomic read-modify-write: it reads the entire NDJSON file, deserializes all entries, mutates one, and rewrites the whole file. Between the read and the write, a concurrent `append_task_run` call (e.g., from another process recording a different bead) could add lines that will be silently dropped by the rewrite. At minimum, add a comment documenting this limitation; ideally, use file locking (e.g., `flock`) around the read-modify-write cycle.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-3c001aa9",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:324-350` still records completion by appending a second `TaskRunEntry`, while the new `update_task_run` helper at `src/contexts/milestone_record/service.rs:419-437` only mutates `task-runs.ndjson` and does not update the snapshot or journal. That leaves no correct completion path: using `record_bead_completion` duplicates every attempt in lineage, but using `update_task_run` alone leaves `active_bead`, progress counters, and journal events stale. Please consolidate completion into one service flow that updates snapshot/journal and mutates the existing task-run row instead of appending another row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-15b667eb",
+        "normalized_body": "`src/adapters/fs.rs:2340-2350` updates the last row matching only `bead_id` + `project_id`, even though this change adds `run_id` to `TaskRunEntry` for per-run auditability. If one Ralph project produces multiple runs for the same bead, `update_task_run` can silently rewrite the wrong attempt. The lookup should use `run_id` when present, or reject ambiguous matches instead of mutating the last matching row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 1,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 6 amendment(s); restart required.",
+    "total_proposed_amendments": 6,
+    "total_reviewers": 2,
+    "unique_amendment_count": 6
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

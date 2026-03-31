@@ -1,0 +1,103 @@
+{
+  "rollback_id": "cb8264d1-3bb7-4de0-8bd5-93dcb99075b4",
+  "created_at": "2026-03-30T05:30:15.205256431Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "1e7af56f9567ec5d005b0a6bf75aae66338e183f",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330040352",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 4
+      },
+      "started_at": "2026-03-30T04:03:52.770384844Z",
+      "prompt_hash_at_cycle_start": "3bfdc4d039c93b65",
+      "prompt_hash_at_stage_start": "3bfdc4d039c93b65",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 3
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 4,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-3-a95af876",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 3,
+          "body": "The inner timeout in `spawn_and_wait()` (`process_backend.rs:1018`) and the outer timeout in `service.rs:204` both use `request.timeout` for the same duration, but the outer timeout starts first (before `build_command` and process spawn overhead). This means the service-layer timeout always fires before or simultaneously with the adapter-layer timeout, making the `preserve_failed_artifacts` call on the Timeout error path in `invoke()` (process_backend.rs:1193-1196) unreachable in production. On timeout, Codex schema/message temp files are left in their temp location instead of being preserved to `runtime/failed`, losing diagnostic artifacts.\n\nFix: Either (a) add a small buffer to the service-level timeout (e.g., `request.timeout + Duration::from_secs(30)`) so the inner timeout fires first and handles cleanup, or (b) move artifact preservation into the `cancel()` method or a dedicated timeout cleanup hook called by the service after timeout detection.",
+          "created_at": "2026-03-30T05:30:15.088973184Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "24b4bd89be561b9bcc9c1e30fad56fa21a5706afca5d0db5b0c213ca050711b0"
+        },
+        {
+          "amendment_id": "fr-3-e384feeb",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 3,
+          "body": "The test `spawn_and_wait_timeout_returns_timeout_failure` (process_backend_test.rs:1990) verifies that a timeout returns `FailureClass::Timeout` but does not assert that failed artifacts are actually preserved to `runtime/failed`. Add assertions checking that the `.failed.raw` file (and for Codex backends, the `.schema.json` / `.last-message.json` files) exist in the project's `runtime/failed` directory after a timeout failure.",
+          "created_at": "2026-03-30T05:30:15.088976491Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "a6dd292089824a47955f37cecb23a8d10dc3ace3ea169029810a5b822b403ebf"
+        },
+        {
+          "amendment_id": "fr-3-1c23f8ce",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 3,
+          "body": "src/adapters/process_backend.rs:1018-1023 and src/adapters/process_backend.rs:391-405 / 1434-1437: the new timeout path does not actually kill timed-out children on non-Unix platforms. `spawn_background_reap()` always calls `send_sigkill()`, but `send_sigkill()` returns `Unsupported` under `#[cfg(not(unix))]` and that error is ignored. The spawned task then sits in `child.wait()` forever while still owning the `ManagedChild`, so `kill_on_drop(true)` never fires either. On Windows a backend timeout will therefore return `FailureClass::Timeout` while the `claude`/`codex` process keeps running in the background, which violates the new hard-timeout guarantee and can leak orphaned backend processes.",
+          "created_at": "2026-03-30T05:30:15.088980228Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "10addd1f8a292e9521f6ed4877cfe41e763983996f61f5614cefe5c5345e3022"
+        },
+        {
+          "amendment_id": "fr-3-ccb079f3",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 3,
+          "body": "src/adapters/process_backend.rs:698-709, src/adapters/process_backend.rs:966-975, src/adapters/process_backend.rs:1248-1288, and src/adapters/process_backend.rs:1423-1430: `BinaryNotFound` is now inferred from exit status 127, but actual missing executables are already detected earlier by `resolve_binary()` and by `command.spawn()` returning `ErrorKind::NotFound`. Once the backend process has started, an exit code of 127 is just application-defined output, not proof that the backend binary was missing. Mapping every 127 to non-retryable `BinaryNotFound` means a wrapper script or CLI that exits 127 for its own error path will now fail the run immediately instead of using the new retry budget.",
+          "created_at": "2026-03-30T05:30:15.088984606Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "4bb9568a4048cd9f2ad117de3f85834f15a3a77b325b0817eace1dc716eaa1e4"
+        }
+      ],
+      "processed_count": 10
+    },
+    "status_summary": "running: final review restart round 4 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T05:13:38.805355592Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

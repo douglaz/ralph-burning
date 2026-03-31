@@ -1,0 +1,90 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr18-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T02:11:52.306575096Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-18-fb16fc87",
+      "fr-18-df19f0ba"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-18-fb16fc87",
+        "normalized_body": "In `safe_plan_hash_backfill` (fs.rs ~line 3395), the call site in the `update_task_run` open-entry finalization path calls `safe_plan_hash_backfill` AFTER setting `entry.plan_hash` from the caller's explicit value (line 3389: `entry.plan_hash = Some(plan_hash.to_owned())`). This means `safe_plan_hash_backfill` will always short-circuit on `entry.plan_hash.is_some()` when the caller supplied a plan_hash. This is correct behavior. However, there is a subtle ordering issue: `safe_plan_hash_backfill` checks `entry.outcome.is_terminal()` to skip terminal entries, but it is called on line 3395 BEFORE `entry.outcome = outcome` is set on line 3396. Since this code path is inside the `else` branch (meaning the entry is NOT yet terminal — it's being transitioned TO terminal), the `is_terminal()` check will see the old Running outcome, which means the terminal guard in `safe_plan_hash_backfill` is vacuous here. The backfill still proceeds correctly because the entry is about to become terminal, and this is exactly when you'd want the last chance to backfill. Document this ordering dependency with a brief inline comment so future refactors don't reorder the calls and break the invariant.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-18-df19f0ba",
+        "normalized_body": "The `unique_terminal_replay_match` contract enforcement (fs.rs ~line 2839) uses `AppError::CorruptRecord` for what is actually an internal programming invariant violation (caller passed `(Some(run_id), None)` for started_at). `CorruptRecord` implies corrupt on-disk data. Consider using a distinct error variant or at minimum adjust the error message prefix to say 'internal contract violation' rather than naming the ndjson file, since the file is not corrupt — the caller violated the API contract. This matters for error triage: an operator seeing 'CorruptRecord' in logs may investigate the data file rather than the calling code.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-18-ffc497f2",
+        "normalized_body": "Issue 3 is still not implemented. In `src/adapters/fs.rs:3042-3060`, `record_task_run_start` intentionally leaves `TaskRunEntry.plan_hash` unset for new rows and only records `snapshot_plan_hash_at_creation`; in `src/adapters/fs.rs:2583-2621`, `safe_plan_hash_backfill` refuses to fill `plan_hash` when provenance is `None`, so legacy/open rows with `plan_hash: None` are never backfilled from the milestone snapshot. The new tests at `src/contexts/milestone_record/service.rs:4727-4816` and `src/contexts/milestone_record/service.rs:5392-5506` explicitly assert that non-backfilling behavior, so the suite now locks in semantics that contradict the task prompt’s required adapter-level snapshot backfill for both new rows and existing open rows.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-18-fb16fc87",
+        "normalized_body": "In `safe_plan_hash_backfill` (fs.rs ~line 3395), the call site in the `update_task_run` open-entry finalization path calls `safe_plan_hash_backfill` AFTER setting `entry.plan_hash` from the caller's explicit value (line 3389: `entry.plan_hash = Some(plan_hash.to_owned())`). This means `safe_plan_hash_backfill` will always short-circuit on `entry.plan_hash.is_some()` when the caller supplied a plan_hash. This is correct behavior. However, there is a subtle ordering issue: `safe_plan_hash_backfill` checks `entry.outcome.is_terminal()` to skip terminal entries, but it is called on line 3395 BEFORE `entry.outcome = outcome` is set on line 3396. Since this code path is inside the `else` branch (meaning the entry is NOT yet terminal — it's being transitioned TO terminal), the `is_terminal()` check will see the old Running outcome, which means the terminal guard in `safe_plan_hash_backfill` is vacuous here. The backfill still proceeds correctly because the entry is about to become terminal, and this is exactly when you'd want the last chance to backfill. Document this ordering dependency with a brief inline comment so future refactors don't reorder the calls and break the invariant.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-18-df19f0ba",
+        "normalized_body": "The `unique_terminal_replay_match` contract enforcement (fs.rs ~line 2839) uses `AppError::CorruptRecord` for what is actually an internal programming invariant violation (caller passed `(Some(run_id), None)` for started_at). `CorruptRecord` implies corrupt on-disk data. Consider using a distinct error variant or at minimum adjust the error message prefix to say 'internal contract violation' rather than naming the ndjson file, since the file is not corrupt — the caller violated the API contract. This matters for error triage: an operator seeing 'CorruptRecord' in logs may investigate the data file rather than the calling code.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 18,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-18-ffc497f2"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 18
+}

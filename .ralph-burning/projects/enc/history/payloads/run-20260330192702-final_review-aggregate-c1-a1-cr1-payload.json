@@ -1,0 +1,100 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr1-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T19:51:37.935335508Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-1-0b213bd9",
+      "fr-1-b656ac14",
+      "fr-1-929f7a9f"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-1-0b213bd9",
+        "normalized_body": "Auto-populated plan_hash from snapshot can cause false-positive rejection on terminal replay after plan evolution. Scenario: (1) bead completed with plan_hash=None, auto-populated to snapshot's hash_v1; (2) new plan persisted, snapshot.plan_hash becomes hash_v2; (3) terminal replay of same completion with plan_hash=None auto-populates to hash_v2; (4) `option_conflicts(Some(hash_v1), Some(hash_v2))` at fs.rs:3161 triggers an `incompatible_terminal_update` error, breaking idempotent replay. Pre-change, the replay would pass None through to the adapter where `option_conflicts(Some(x), None)` is always false. Fix: either skip auto-population in `update_task_run` when the entry is already terminal (requires a two-phase check or passing the original caller value alongside the effective value), or weaken the terminal replay conflict check to treat plan_hash mismatch as non-fatal when the stored entry already has a plan_hash (backfill-only semantics, matching run_id behavior).",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-b656ac14",
+        "normalized_body": "`src/adapters/fs.rs:2993-3023` still does not use `started_at` when it falls back from a supplied `run_id` to a single open runless row. As written, any named completion with the right bead/project will finalize that row even if the caller's `started_at` points at a different attempt. That violates the service contract in `src/contexts/milestone_record/service.rs:466-469` and can backfill the wrong legacy attempt. Require `entries[*index].started_at == started_at` before accepting the runless fallback, and add a regression test that a mismatched timestamp is rejected.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-929f7a9f",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:429-441` and `src/contexts/milestone_record/service.rs:564-576` now replace every omitted `plan_hash` with `snapshot.plan_hash` before the lineage layer matches an existing row. Because `persist_plan` can later advance `snapshot.plan_hash` (`src/contexts/milestone_record/service.rs:347-385`), an idempotent start/completion replay against a row that already carries the older plan hash will now trip the conflict checks in `src/adapters/fs.rs:2711-2725` or `src/adapters/fs.rs:3159-3201`. The fallback needs to happen only when the matched row lacks `plan_hash`, not blindly at the service boundary; please add replay coverage across a later plan update.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-1-0b213bd9",
+        "normalized_body": "Auto-populated plan_hash from snapshot can cause false-positive rejection on terminal replay after plan evolution. Scenario: (1) bead completed with plan_hash=None, auto-populated to snapshot's hash_v1; (2) new plan persisted, snapshot.plan_hash becomes hash_v2; (3) terminal replay of same completion with plan_hash=None auto-populates to hash_v2; (4) `option_conflicts(Some(hash_v1), Some(hash_v2))` at fs.rs:3161 triggers an `incompatible_terminal_update` error, breaking idempotent replay. Pre-change, the replay would pass None through to the adapter where `option_conflicts(Some(x), None)` is always false. Fix: either skip auto-population in `update_task_run` when the entry is already terminal (requires a two-phase check or passing the original caller value alongside the effective value), or weaken the terminal replay conflict check to treat plan_hash mismatch as non-fatal when the stored entry already has a plan_hash (backfill-only semantics, matching run_id behavior).",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-b656ac14",
+        "normalized_body": "`src/adapters/fs.rs:2993-3023` still does not use `started_at` when it falls back from a supplied `run_id` to a single open runless row. As written, any named completion with the right bead/project will finalize that row even if the caller's `started_at` points at a different attempt. That violates the service contract in `src/contexts/milestone_record/service.rs:466-469` and can backfill the wrong legacy attempt. Require `entries[*index].started_at == started_at` before accepting the runless fallback, and add a regression test that a mismatched timestamp is rejected.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-1-929f7a9f",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:429-441` and `src/contexts/milestone_record/service.rs:564-576` now replace every omitted `plan_hash` with `snapshot.plan_hash` before the lineage layer matches an existing row. Because `persist_plan` can later advance `snapshot.plan_hash` (`src/contexts/milestone_record/service.rs:347-385`), an idempotent start/completion replay against a row that already carries the older plan hash will now trip the conflict checks in `src/adapters/fs.rs:2711-2725` or `src/adapters/fs.rs:3159-3201`. The fallback needs to happen only when the matched row lacks `plan_hash`, not blindly at the service boundary; please add replay coverage across a later plan update.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 1,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 1
+}

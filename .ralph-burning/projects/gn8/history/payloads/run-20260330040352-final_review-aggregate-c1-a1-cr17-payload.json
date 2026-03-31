@@ -1,0 +1,136 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr17-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T17:02:43.454562746Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-17-fd63d152",
+      "fr-17-a210d3ba",
+      "fr-17-b2220aa1",
+      "fr-17-39fd79cd"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-17-fd63d152",
+        "normalized_body": "In `derive_resume_state` (engine.rs ~line 5843), the `CycleAdvanced` handler does not clear stale entries from `retryable_failed_attempts` for prior cycles. While functionally correct (the HashMap key includes cycle number, so old entries won't match new-cycle lookups), the entries accumulate across cycles and are never reclaimed. In runs with many remediation cycles, this is a bounded but unnecessary memory growth. Add `retryable_failed_attempts.retain(|&(_, c), _| c >= current_cycle);` after updating `current_cycle` in the CycleAdvanced handler, matching the pattern used by CompletionRoundAdvanced's `.clear()`.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-a210d3ba",
+        "normalized_body": "The `apply_jitter` function (retry_policy.rs:134-143) uses `SystemTime::now().subsec_nanos() % 1000` as a randomness source. On systems where the clock resolution is coarser than 1μs (e.g., some VMs or containers), multiple calls within the same millisecond will produce identical jitter values, defeating the thundering-herd mitigation the jitter is designed to provide. Consider using `thread_rng()` from the `rand` crate (already a transitive dependency) or at minimum `Instant::now()` which is monotonic, or mix in the attempt number to ensure distinct values across consecutive retries.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-3303d1eb",
+        "normalized_body": "The timeout test `clean_timeout_teardown_yields_timeout_without_warning` (tests/unit/process_backend_test.rs) uses `start_paused = true` with `current_thread` runtime but relies on a real OS process (`sleep 99999`) that blocks the child wait. Tokio's auto-advance only fires when all tasks are pending on timers, but `active_child.wait()` is an OS I/O operation that won't trigger auto-advance. If this test passes, it's because the process I/O futures (stdout/stderr EOF) complete and the remaining `wait()` is the only non-timer pending task — but this behavior is implementation-dependent and fragile across Tokio versions. Consider adding a brief comment explaining why `start_paused` works here, or use a real 2-second timeout without `start_paused` to avoid coupling to Tokio internals.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-b2220aa1",
+        "normalized_body": "Clear stale retry-attempt bookkeeping on terminal stage failures in src/contexts/workflow_composition/engine.rs:5825-5841 and src/contexts/workflow_composition/engine.rs:5897-5902. The new `retryable_failed_attempts` map records `will_retry=true` failures, but it is never cleared when the same stage later emits `will_retry=false` after exhausting retries or hitting a terminal failure. That makes `run resume` restart at the old retry count instead of attempt 1. Repro: `cargo run --quiet --features test-stub -- conformance run --filter SC-RESUME-005` now fails with `expected first resumed stage attempt=1, got 5` (see the scenario expectation in src/contexts/conformance_spec/scenarios.rs:4539-4642).",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-39fd79cd",
+        "normalized_body": "Do not treat the pre-backoff snapshot write as best-effort in src/contexts/workflow_composition/engine.rs:4622-4656. By that point the `stage_failed` event has already been durably appended at src/contexts/workflow_composition/engine.rs:4563-4600, so if `write_run_snapshot` fails and the process dies during the backoff sleep, the journal says the run failed/retrying while `run.json` stays in its old state. That reintroduces the exact 'non-resumable after crash during backoff' condition this snapshot is supposed to prevent.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [
+      "fr-17-3303d1eb"
+    ],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-17-fd63d152",
+        "normalized_body": "In `derive_resume_state` (engine.rs ~line 5843), the `CycleAdvanced` handler does not clear stale entries from `retryable_failed_attempts` for prior cycles. While functionally correct (the HashMap key includes cycle number, so old entries won't match new-cycle lookups), the entries accumulate across cycles and are never reclaimed. In runs with many remediation cycles, this is a bounded but unnecessary memory growth. Add `retryable_failed_attempts.retain(|&(_, c), _| c >= current_cycle);` after updating `current_cycle` in the CycleAdvanced handler, matching the pattern used by CompletionRoundAdvanced's `.clear()`.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-a210d3ba",
+        "normalized_body": "The `apply_jitter` function (retry_policy.rs:134-143) uses `SystemTime::now().subsec_nanos() % 1000` as a randomness source. On systems where the clock resolution is coarser than 1μs (e.g., some VMs or containers), multiple calls within the same millisecond will produce identical jitter values, defeating the thundering-herd mitigation the jitter is designed to provide. Consider using `thread_rng()` from the `rand` crate (already a transitive dependency) or at minimum `Instant::now()` which is monotonic, or mix in the attempt number to ensure distinct values across consecutive retries.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-b2220aa1",
+        "normalized_body": "Clear stale retry-attempt bookkeeping on terminal stage failures in src/contexts/workflow_composition/engine.rs:5825-5841 and src/contexts/workflow_composition/engine.rs:5897-5902. The new `retryable_failed_attempts` map records `will_retry=true` failures, but it is never cleared when the same stage later emits `will_retry=false` after exhausting retries or hitting a terminal failure. That makes `run resume` restart at the old retry count instead of attempt 1. Repro: `cargo run --quiet --features test-stub -- conformance run --filter SC-RESUME-005` now fails with `expected first resumed stage attempt=1, got 5` (see the scenario expectation in src/contexts/conformance_spec/scenarios.rs:4539-4642).",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-17-39fd79cd",
+        "normalized_body": "Do not treat the pre-backoff snapshot write as best-effort in src/contexts/workflow_composition/engine.rs:4622-4656. By that point the `stage_failed` event has already been durably appended at src/contexts/workflow_composition/engine.rs:4563-4600, so if `write_run_snapshot` fails and the process dies during the backoff sleep, the journal says the run failed/retrying while `run.json` stays in its old state. That reintroduces the exact 'non-resumable after crash during backoff' condition this snapshot is supposed to prevent.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 17,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 4 amendment(s); restart required.",
+    "total_proposed_amendments": 5,
+    "total_reviewers": 2,
+    "unique_amendment_count": 5
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 17
+}

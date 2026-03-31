@@ -1,0 +1,113 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr15-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T22:05:26.113777052Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-15-03ed3b3d",
+      "fr-15-ad53be55",
+      "fr-15-967d37de"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-15-03ed3b3d",
+        "normalized_body": "In `record_task_run_start` (fs.rs ~line 2770-2797), when `find_matching_running_task_run` returns None but there IS exactly one matching running entry (len==1, different started_at), a new running entry is appended without finalizing the old one. This creates two open runless entries for the same bead/project. Subsequently calling `update_task_run` with `run_id=None` will hit the `open_matches.len() > 1` branch and fail with 'ambiguous task run update'. The test `runless_retry_with_new_started_at_appends_new_attempt` validates the start behavior but does not test that the resulting state is completable. Either: (a) auto-fail the old running entry when creating a new attempt (set outcome=Failed, finished_at=started_at of new attempt), or (b) add started_at as a disambiguator to update_task_run, or (c) add a test proving that callers are expected to always supply run_id when multiple attempts exist and document this constraint.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-15-ad53be55",
+        "normalized_body": "`src/adapters/fs.rs:2103-2111` and `src/adapters/fs.rs:2254-2264` create `milestones/<id>/` just to take the per-milestone lock, before any existence check runs. Any typoed `update_status`/`persist_plan`/`record_bead_start`/`update_task_run` call will therefore leave behind an empty milestone directory plus `mutation.lock`; after that, `FsMilestoneStore::milestone_exists` (`src/adapters/fs.rs:2131-2142`) treats the ID as corrupt, so `create_milestone` can no longer create that milestone without manual cleanup.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-15-967d37de",
+        "normalized_body": "`read_task_runs_from_path` never verifies that each deserialized `TaskRunEntry.milestone_id` matches the milestone file being read (`src/adapters/fs.rs:2478-2500`). Downstream code then trusts those rows for both snapshot reconciliation (`src/contexts/milestone_record/service.rs:163-223`) and the new bead query (`src/adapters/fs.rs:3056-3073`), so a misfiled row inside `milestones/A/task-runs.ndjson` will change A's active bead/progress or appear in A's audit results instead of surfacing corruption.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-15-ed0d03f2",
+        "normalized_body": "The implementation still ships a large legacy-repair layer for runless rows and paired start/completion rows even though the task explicitly said no backward-compatibility, backfill-on-read, or repair paths were needed. The relevant logic is in `src/contexts/milestone_record/model.rs:300-553` and is exercised by write paths in `src/adapters/fs.rs:2568-3050`. Those paths silently merge, backfill, and delete task-run rows instead of failing fast, which weakens the audit trail for the new schema and makes controller/data bugs much harder to diagnose.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-15-03ed3b3d",
+        "normalized_body": "In `record_task_run_start` (fs.rs ~line 2770-2797), when `find_matching_running_task_run` returns None but there IS exactly one matching running entry (len==1, different started_at), a new running entry is appended without finalizing the old one. This creates two open runless entries for the same bead/project. Subsequently calling `update_task_run` with `run_id=None` will hit the `open_matches.len() > 1` branch and fail with 'ambiguous task run update'. The test `runless_retry_with_new_started_at_appends_new_attempt` validates the start behavior but does not test that the resulting state is completable. Either: (a) auto-fail the old running entry when creating a new attempt (set outcome=Failed, finished_at=started_at of new attempt), or (b) add started_at as a disambiguator to update_task_run, or (c) add a test proving that callers are expected to always supply run_id when multiple attempts exist and document this constraint.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-15-ad53be55",
+        "normalized_body": "`src/adapters/fs.rs:2103-2111` and `src/adapters/fs.rs:2254-2264` create `milestones/<id>/` just to take the per-milestone lock, before any existence check runs. Any typoed `update_status`/`persist_plan`/`record_bead_start`/`update_task_run` call will therefore leave behind an empty milestone directory plus `mutation.lock`; after that, `FsMilestoneStore::milestone_exists` (`src/adapters/fs.rs:2131-2142`) treats the ID as corrupt, so `create_milestone` can no longer create that milestone without manual cleanup.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-15-967d37de",
+        "normalized_body": "`read_task_runs_from_path` never verifies that each deserialized `TaskRunEntry.milestone_id` matches the milestone file being read (`src/adapters/fs.rs:2478-2500`). Downstream code then trusts those rows for both snapshot reconciliation (`src/contexts/milestone_record/service.rs:163-223`) and the new bead query (`src/adapters/fs.rs:3056-3073`), so a misfiled row inside `milestones/A/task-runs.ndjson` will change A's active bead/progress or appear in A's audit results instead of surfacing corruption.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 15,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-15-ed0d03f2"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 3 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 15
+}

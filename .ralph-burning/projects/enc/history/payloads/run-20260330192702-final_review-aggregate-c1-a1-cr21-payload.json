@@ -1,0 +1,192 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T03:56:12.875904497Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-21-e7e21072",
+      "fr-21-c3d756b1",
+      "fr-21-93ff22d8",
+      "fr-21-fa9403b6",
+      "fr-21-56323054",
+      "fr-21-97db243d",
+      "fr-21-fc1d9825"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-21-e7e21072",
+        "normalized_body": "`unique_terminal_replay_match`, `is_legacy_start_for`, and `is_superseded_legacy_start` in `src/adapters/fs.rs` (lines 2748-2773, 2606-2615, 2596-2604) are still present and actively used in the `update_task_run` code path (line 3001). The spec explicitly requires removing `unique_terminal_replay_match` and all `started_at`-based disambiguation. The `fail_legacy_runless_entries` migration function was added as a pragmatic alternative, but it does not eliminate these code paths — it only marks runless Running entries as Failed on first write. The `update_task_run` fallback at lines 2990-3015 still uses `started_at` filtering (line 2999) combined with `unique_terminal_replay_match` to resolve completion of legacy entries. Either remove these functions as specified, or formally document in the spec that the backward-compat collapse pipeline and terminal replay matching are intentionally retained (with rationale), rather than leaving an undocumented deviation.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-c3d756b1",
+        "normalized_body": "No tests exist for `fail_legacy_runless_entries` (fs.rs:2708-2719). This function modifies on-disk state (marks legacy running entries as failed and writes them out) and is called on every `record_task_run_start` and `update_task_run` invocation. The spec requires 'New tests cover each fix.' Add at least: (1) a test that writes legacy runless Running entries to ndjson, calls `record_task_run_start`, and verifies the legacy entries are failed with the correct outcome_detail; (2) a test that verifies already-terminal legacy entries are NOT modified; (3) a test that verifies the new run proceeds normally after legacy repair.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-93ff22d8",
+        "normalized_body": "`fail_legacy_runless_entries` uses the caller's timestamp (`started_at` from `record_task_run_start` at line 2819, `finished_at` from `update_task_run` at line 2944) as the `finished_at` for failed legacy entries. If the legacy entry's `started_at` is later than the caller's timestamp (e.g., clock skew, entries written out of order), the resulting `finished_at < started_at` on the failed entry creates an impossible timeline. Use `max(legacy_entry.started_at, now)` instead to guarantee chronological validity.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-fa9403b6",
+        "normalized_body": "In `record_task_run_start` (fs.rs:2819-2822) and `update_task_run` (fs.rs:2944-2947), if `fail_legacy_runless_entries` triggers, the entries are written to disk immediately. The function then continues and may write entries again at line 2924 or 3149. This double-write is unnecessary I/O and creates a brief window where the on-disk state has the legacy repairs but not the actual operation result. Track the `legacy_repaired` flag and fold it into the final `should_write` / write-path instead of writing immediately.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-56323054",
+        "normalized_body": "`TaskRunEntry::same_attempt` (model.rs:298-311) still falls back to `started_at` matching when either entry has `run_id: None` (lines 306-309). This is used by `fail_superseded_running_attempt`, `is_superseded_legacy_start`, `is_legacy_start_for`, and the collapse pipeline. While the write paths now require run_id, this fallback means two entries with different run_ids but the same started_at that both have one None run_id would be considered the 'same attempt'. After the `fail_legacy_runless_entries` migration marks all runless running entries as terminal, the only remaining callers operating on live (non-terminal) entries should always have run_id present. Document this invariant with a debug_assert or add a comment explaining when the fallback is still needed.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-97db243d",
+        "normalized_body": "src/adapters/fs.rs:2818-2822 and src/adapters/fs.rs:2943-2947 now rewrite legacy runless rows before the requested start/update has been validated. If later checks fail (for example the duplicate-finalized checks at src/adapters/fs.rs:2840-2865 or the missing/ambiguous update checks at src/adapters/fs.rs:2948-3038), the service layer exits before the snapshot/journal repair at src/contexts/milestone_record/service.rs:439-452 and src/contexts/milestone_record/service.rs:568-584. That leaves task-runs.ndjson mutated while status.json and journal.ndjson still describe the pre-repair state. The legacy repair needs to be delayed until the overall operation is going to succeed, or surfaced through the service so all three artifacts are reconciled together.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-fc1d9825",
+        "normalized_body": "Runless identity heuristics are still present in the read path. src/contexts/milestone_record/model.rs:497-581 explicitly keeps unique_open_legacy_group_index / legacy_group_accepts_completion, which still associates run_id=None rows to terminal rows by started_at. That collapsed view feeds snapshot reconciliation at src/contexts/milestone_record/service.rs:164-170 and bead audit queries at src/adapters/fs.rs:3161-3162, so run identity is still partly timestamp-based. A legacy/corrupt runless row that happens to share a timestamp with a different named run can still be folded into the wrong canonical attempt, and the accepted remove-runless-matching change is not actually complete.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-21-e7e21072",
+        "normalized_body": "`unique_terminal_replay_match`, `is_legacy_start_for`, and `is_superseded_legacy_start` in `src/adapters/fs.rs` (lines 2748-2773, 2606-2615, 2596-2604) are still present and actively used in the `update_task_run` code path (line 3001). The spec explicitly requires removing `unique_terminal_replay_match` and all `started_at`-based disambiguation. The `fail_legacy_runless_entries` migration function was added as a pragmatic alternative, but it does not eliminate these code paths — it only marks runless Running entries as Failed on first write. The `update_task_run` fallback at lines 2990-3015 still uses `started_at` filtering (line 2999) combined with `unique_terminal_replay_match` to resolve completion of legacy entries. Either remove these functions as specified, or formally document in the spec that the backward-compat collapse pipeline and terminal replay matching are intentionally retained (with rationale), rather than leaving an undocumented deviation.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-c3d756b1",
+        "normalized_body": "No tests exist for `fail_legacy_runless_entries` (fs.rs:2708-2719). This function modifies on-disk state (marks legacy running entries as failed and writes them out) and is called on every `record_task_run_start` and `update_task_run` invocation. The spec requires 'New tests cover each fix.' Add at least: (1) a test that writes legacy runless Running entries to ndjson, calls `record_task_run_start`, and verifies the legacy entries are failed with the correct outcome_detail; (2) a test that verifies already-terminal legacy entries are NOT modified; (3) a test that verifies the new run proceeds normally after legacy repair.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-93ff22d8",
+        "normalized_body": "`fail_legacy_runless_entries` uses the caller's timestamp (`started_at` from `record_task_run_start` at line 2819, `finished_at` from `update_task_run` at line 2944) as the `finished_at` for failed legacy entries. If the legacy entry's `started_at` is later than the caller's timestamp (e.g., clock skew, entries written out of order), the resulting `finished_at < started_at` on the failed entry creates an impossible timeline. Use `max(legacy_entry.started_at, now)` instead to guarantee chronological validity.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-fa9403b6",
+        "normalized_body": "In `record_task_run_start` (fs.rs:2819-2822) and `update_task_run` (fs.rs:2944-2947), if `fail_legacy_runless_entries` triggers, the entries are written to disk immediately. The function then continues and may write entries again at line 2924 or 3149. This double-write is unnecessary I/O and creates a brief window where the on-disk state has the legacy repairs but not the actual operation result. Track the `legacy_repaired` flag and fold it into the final `should_write` / write-path instead of writing immediately.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-56323054",
+        "normalized_body": "`TaskRunEntry::same_attempt` (model.rs:298-311) still falls back to `started_at` matching when either entry has `run_id: None` (lines 306-309). This is used by `fail_superseded_running_attempt`, `is_superseded_legacy_start`, `is_legacy_start_for`, and the collapse pipeline. While the write paths now require run_id, this fallback means two entries with different run_ids but the same started_at that both have one None run_id would be considered the 'same attempt'. After the `fail_legacy_runless_entries` migration marks all runless running entries as terminal, the only remaining callers operating on live (non-terminal) entries should always have run_id present. Document this invariant with a debug_assert or add a comment explaining when the fallback is still needed.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-97db243d",
+        "normalized_body": "src/adapters/fs.rs:2818-2822 and src/adapters/fs.rs:2943-2947 now rewrite legacy runless rows before the requested start/update has been validated. If later checks fail (for example the duplicate-finalized checks at src/adapters/fs.rs:2840-2865 or the missing/ambiguous update checks at src/adapters/fs.rs:2948-3038), the service layer exits before the snapshot/journal repair at src/contexts/milestone_record/service.rs:439-452 and src/contexts/milestone_record/service.rs:568-584. That leaves task-runs.ndjson mutated while status.json and journal.ndjson still describe the pre-repair state. The legacy repair needs to be delayed until the overall operation is going to succeed, or surfaced through the service so all three artifacts are reconciled together.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-21-fc1d9825",
+        "normalized_body": "Runless identity heuristics are still present in the read path. src/contexts/milestone_record/model.rs:497-581 explicitly keeps unique_open_legacy_group_index / legacy_group_accepts_completion, which still associates run_id=None rows to terminal rows by started_at. That collapsed view feeds snapshot reconciliation at src/contexts/milestone_record/service.rs:164-170 and bead audit queries at src/adapters/fs.rs:3161-3162, so run identity is still partly timestamp-based. A legacy/corrupt runless row that happens to share a timestamp with a different named run can still be folded into the wrong canonical attempt, and the accepted remove-runless-matching change is not actually complete.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 20,
+    "force_completed": true,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": false,
+    "summary": "Final-review restart cap reached (20/20); force-completing instead of restarting with 7 accepted amendment(s).",
+    "total_proposed_amendments": 7,
+    "total_reviewers": 2,
+    "unique_amendment_count": 7
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 21
+}

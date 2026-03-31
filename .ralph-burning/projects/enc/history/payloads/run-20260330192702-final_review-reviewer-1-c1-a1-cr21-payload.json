@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr21-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T03:49:46.055984133Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/fs.rs:2818-2822 and src/adapters/fs.rs:2943-2947 now rewrite legacy runless rows before the requested start/update has been validated. If later checks fail (for example the duplicate-finalized checks at src/adapters/fs.rs:2840-2865 or the missing/ambiguous update checks at src/adapters/fs.rs:2948-3038), the service layer exits before the snapshot/journal repair at src/contexts/milestone_record/service.rs:439-452 and src/contexts/milestone_record/service.rs:568-584. That leaves task-runs.ndjson mutated while status.json and journal.ndjson still describe the pre-repair state. The legacy repair needs to be delayed until the overall operation is going to succeed, or surfaced through the service so all three artifacts are reconciled together.",
+        "rationale": "Failed start/completion calls should not silently rewrite lineage into a state the snapshot and journal never record."
+      },
+      {
+        "body": "Runless identity heuristics are still present in the read path. src/contexts/milestone_record/model.rs:497-581 explicitly keeps unique_open_legacy_group_index / legacy_group_accepts_completion, which still associates run_id=None rows to terminal rows by started_at. That collapsed view feeds snapshot reconciliation at src/contexts/milestone_record/service.rs:164-170 and bead audit queries at src/adapters/fs.rs:3161-3162, so run identity is still partly timestamp-based. A legacy/corrupt runless row that happens to share a timestamp with a different named run can still be folded into the wrong canonical attempt, and the accepted remove-runless-matching change is not actually complete.",
+        "rationale": "The point of requiring run_id at bead start was to delete this started_at-based identity path entirely; keeping it on reads preserves the same ambiguity that caused the earlier churn."
+      }
+    ],
+    "summary": "Found 2 correctness issues: the new runless-entry repair can leave task-runs, snapshot, and journal out of sync on error, and the code still retains started_at-based runless matching in the read path."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 21
+}

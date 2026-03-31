@@ -1,0 +1,146 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T11:36:37.283007357Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-10-d56bff07",
+      "fr-10-91429d88",
+      "fr-10-447afeb1",
+      "fr-10-722690d1",
+      "fr-10-182ad707"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-10-d56bff07",
+        "normalized_body": "In engine.rs:4620, `backoff_for_attempt(cursor.attempt - 1)` causes the first retry (after the first failure, cursor.attempt=1) to get `backoff_for_attempt(0)` which returns `Duration::ZERO`. This means the first retry happens immediately with no delay, defeating the acceptance criterion that 'retry attempts have backoff delay between them.' The `-1` adjustment was introduced in round 10 (changed from `cursor.attempt`). Revert to `backoff_for_attempt(cursor.attempt)` so the first retry gets a 5s delay, or document the intentional zero-delay-first-retry design choice and update the acceptance criteria accordingly.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-91429d88",
+        "normalized_body": "The two OpenRouter API key tests (`invoke_openrouter_without_api_key_returns_terminal_failure` and `invoke_openrouter_with_blank_api_key_returns_terminal_failure` in tests/unit/process_backend_test.rs) use `unsafe { std::env::set_var() }` and `unsafe { std::env::remove_var() }` without synchronization against other tests that may read OPENROUTER_API_KEY. While each test uses `#[tokio::test(flavor = \"current_thread\")]`, cargo runs test functions in parallel across threads. The existing `_guard`/restore pattern is a best-effort approach but can race with other tests. Consider using a shared mutex (like the existing `lock_path_mutex()` pattern used for PATH tests) to serialize all tests that modify OPENROUTER_API_KEY.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-447afeb1",
+        "normalized_body": "`src/contexts/workflow_composition/engine.rs:4620` calls `retry_policy.backoff_for_attempt(cursor.attempt - 1)`, but `RetryPolicy::backoff_for_attempt()` is explicitly 1-indexed in `src/contexts/workflow_composition/retry_policy.rs:102-112`. On the first retry `cursor.attempt` is 1, so this computes attempt 0 and returns `Duration::ZERO`, making the first retry immediate and shifting every later delay down one step. That defeats the new backoff policy exactly where rate-limit recovery needs it most.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-722690d1",
+        "normalized_body": "The tmux timeout path can report success even when cleanup failed. In `src/adapters/tmux.rs:534-541` the timeout branch ignores the result of `self.cancel(&request.invocation_id).await`. But `cancel()` removes the session from tracking up front at `src/adapters/tmux.rs:621-623` and can still fail later during SIGTERM/SIGKILL/`kill-session` cleanup at `src/adapters/tmux.rs:626-675`. If any of those steps fail, the code still returns a timeout error and drops the only tracking handle, so the hung tmux session/backend can remain alive after the caller has been told it was cleaned up.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-182ad707",
+        "normalized_body": "The process-backed OpenRouter path still treats whitespace-only API keys as valid. `ProcessBackendAdapter::build_command()` only rejects `OPENROUTER_API_KEY` when `!k.is_empty()` fails at `src/adapters/process_backend.rs:802-805`, and `check_availability()` uses the same non-trimming check at `src/adapters/process_backend.rs:1203-1206`. A value like `' '` therefore bypasses the new terminal `BinaryNotFound` handling and gets retried later as a transport failure. This is user-visible on the default production path because `build_backend_adapter()` still defaults to the `process` adapter in `src/composition/agent_execution_builder.rs:53-74` and returns `ProcessBackendAdapter` for that selector at `src/composition/agent_execution_builder.rs:110-113`. The direct HTTP adapter already uses `trim().is_empty()` at `src/adapters/openrouter_backend.rs:68-76`, so the two OpenRouter paths now disagree.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-10-d56bff07",
+        "normalized_body": "In engine.rs:4620, `backoff_for_attempt(cursor.attempt - 1)` causes the first retry (after the first failure, cursor.attempt=1) to get `backoff_for_attempt(0)` which returns `Duration::ZERO`. This means the first retry happens immediately with no delay, defeating the acceptance criterion that 'retry attempts have backoff delay between them.' The `-1` adjustment was introduced in round 10 (changed from `cursor.attempt`). Revert to `backoff_for_attempt(cursor.attempt)` so the first retry gets a 5s delay, or document the intentional zero-delay-first-retry design choice and update the acceptance criteria accordingly.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-91429d88",
+        "normalized_body": "The two OpenRouter API key tests (`invoke_openrouter_without_api_key_returns_terminal_failure` and `invoke_openrouter_with_blank_api_key_returns_terminal_failure` in tests/unit/process_backend_test.rs) use `unsafe { std::env::set_var() }` and `unsafe { std::env::remove_var() }` without synchronization against other tests that may read OPENROUTER_API_KEY. While each test uses `#[tokio::test(flavor = \"current_thread\")]`, cargo runs test functions in parallel across threads. The existing `_guard`/restore pattern is a best-effort approach but can race with other tests. Consider using a shared mutex (like the existing `lock_path_mutex()` pattern used for PATH tests) to serialize all tests that modify OPENROUTER_API_KEY.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-447afeb1",
+        "normalized_body": "`src/contexts/workflow_composition/engine.rs:4620` calls `retry_policy.backoff_for_attempt(cursor.attempt - 1)`, but `RetryPolicy::backoff_for_attempt()` is explicitly 1-indexed in `src/contexts/workflow_composition/retry_policy.rs:102-112`. On the first retry `cursor.attempt` is 1, so this computes attempt 0 and returns `Duration::ZERO`, making the first retry immediate and shifting every later delay down one step. That defeats the new backoff policy exactly where rate-limit recovery needs it most.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-722690d1",
+        "normalized_body": "The tmux timeout path can report success even when cleanup failed. In `src/adapters/tmux.rs:534-541` the timeout branch ignores the result of `self.cancel(&request.invocation_id).await`. But `cancel()` removes the session from tracking up front at `src/adapters/tmux.rs:621-623` and can still fail later during SIGTERM/SIGKILL/`kill-session` cleanup at `src/adapters/tmux.rs:626-675`. If any of those steps fail, the code still returns a timeout error and drops the only tracking handle, so the hung tmux session/backend can remain alive after the caller has been told it was cleaned up.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-182ad707",
+        "normalized_body": "The process-backed OpenRouter path still treats whitespace-only API keys as valid. `ProcessBackendAdapter::build_command()` only rejects `OPENROUTER_API_KEY` when `!k.is_empty()` fails at `src/adapters/process_backend.rs:802-805`, and `check_availability()` uses the same non-trimming check at `src/adapters/process_backend.rs:1203-1206`. A value like `' '` therefore bypasses the new terminal `BinaryNotFound` handling and gets retried later as a transport failure. This is user-visible on the default production path because `build_backend_adapter()` still defaults to the `process` adapter in `src/composition/agent_execution_builder.rs:53-74` and returns `ProcessBackendAdapter` for that selector at `src/composition/agent_execution_builder.rs:110-113`. The direct HTTP adapter already uses `trim().is_empty()` at `src/adapters/openrouter_backend.rs:68-76`, so the two OpenRouter paths now disagree.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 10,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 5 amendment(s); restart required.",
+    "total_proposed_amendments": 5,
+    "total_reviewers": 2,
+    "unique_amendment_count": 5
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

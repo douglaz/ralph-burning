@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr15-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-31T01:02:47.257156525Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "In `unique_terminal_replay_match` (fs.rs ~line 2832), the contract violation when `requested_run_id.is_some() && requested_started_at.is_none()` is handled by logging a `tracing::warn` and returning `None`. The caller then maps `None` to a generic 'no matching task run' error, losing the diagnostic information about the contract violation. Issue 2 specifies 'Replace any debug_assert! guards on this with runtime checks that return errors in both debug and release builds.' The current approach technically prevents the wrong behavior but the error message seen by callers/operators is misleading — it says 'no matching task run' when the real problem is a violated invariant. Change the function signature to return `Result<Option<usize>, AppError>` so the contract violation can propagate as a distinct error, or at minimum change the tracing level from `warn` to `error` since this represents a programming bug in a caller, not a recoverable warning.",
+        "rationale": "The spec explicitly requires runtime checks that 'return errors,' not silent None returns with warnings. While the current code is safe (callers always pass valid combinations today), if a future caller violates the contract, the resulting error message will be a red herring pointing at data corruption rather than the actual programming bug. This matters for debuggability in production."
+      },
+      {
+        "body": "The `safe_plan_hash_backfill` function (fs.rs line 2608-2616) skips backfill when `snapshot_plan_hash_at_creation` is `None`, which means legacy open entries created before plan persistence was added will never get their `plan_hash` filled during completion, even though the current snapshot has the answer. The test `running_entry_created_before_plan_is_not_backfilled_on_revisit` explicitly asserts this behavior. However, Issue 3 acceptance criteria states 'Lineage entries auto-populate plan_hash from the milestone snapshot when callers omit it' — this is not true for existing legacy open entries with no provenance. Add a comment in the test and near the `safe_plan_hash_backfill` None branch explicitly documenting this as a deliberate deviation from the original issue spec, referencing the ambiguity rationale, so future reviewers don't re-open this as a regression.",
+        "rationale": "The current behavior is defensible (None provenance is ambiguous), but it's a conscious narrowing of Issue 3's scope. Without explicit documentation linking the decision back to the issue, a future developer reading Issue 3's acceptance criteria will see 'auto-populate plan_hash from the milestone snapshot when callers omit it' and file a bug against this code path. A comment costs nothing and prevents churn."
+      }
+    ],
+    "summary": "Reviewed the full diff (fs.rs + service.rs + model.rs) covering all three issues: (1) journal detail struct unification, (2) runless-to-named completion path, (3) plan_hash auto-population from snapshot. All 127 milestone_record tests pass. The one unrelated test failure (worktree_adapter checkpoint) is a pre-existing test isolation issue. Issue 1 (duplicate structs) is fully resolved — single definitions in model.rs, imported by fs.rs. Issue 2 (runless-to-named completion) is correctly implemented with started_at disambiguation, proper error paths, and no remaining debug_assert! calls. Issue 3 (plan_hash auto-population) works correctly for new rows and existing rows with provenance. Terminal replay correctly avoids auto-population. The service layer correctly passes plan_hash through unchanged, with auto-population happening at the adapter level. Two minor amendments proposed: (a) the contract violation in unique_terminal_replay_match uses warn+None instead of returning a typed error as the spec requires, and (b) the deliberate deviation from Issue 3 for legacy entries with no provenance should be explicitly documented."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 15
+}

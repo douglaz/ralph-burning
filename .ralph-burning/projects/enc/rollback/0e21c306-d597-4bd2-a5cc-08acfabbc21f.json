@@ -1,0 +1,92 @@
+{
+  "rollback_id": "0e21c306-d597-4bd2-a5cc-08acfabbc21f",
+  "created_at": "2026-03-31T00:04:02.420402542Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "0c00be489e5aa9782b7df04e8c57d2d24bc915a1",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 13
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "1651ad7ccfc4aa00",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 12
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 13,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-12-cda1336a",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 12,
+          "body": "In `safe_plan_hash_backfill` (fs.rs ~line 2636), the `Some(creation_hash)` branch does not check `entry.outcome.is_terminal()` before backfilling `plan_hash`. The `None` provenance branch at line 2653 correctly guards against terminal entries, but the `Some` branch is missing the same guard. Per Issue 3 spec: 'Terminal replay: Do NOT auto-populate plan_hash for terminal replays.' If a terminal entry has `snapshot_plan_hash_at_creation = Some(X)` and `plan_hash = None` (reachable through merge paths or preseeded data), and the snapshot hasn't evolved, the function will incorrectly set `plan_hash = Some(X)`. Fix: add `if entry.outcome.is_terminal() { return false; }` at the top of the `Some(creation_hash)` branch (or move the existing terminal guard before the match, so it applies to both branches). Add a regression test: preseed a terminal entry with `snapshot_plan_hash_at_creation = Some(hash)` and `plan_hash = None`, replay with `plan_hash = None`, assert `plan_hash` stays `None`.",
+          "created_at": "2026-03-31T00:04:02.336167167Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "61a2989da109995c727bef3f774c2d3590f0e3c009eb96b08199ec186ddb2182"
+        },
+        {
+          "amendment_id": "fr-12-589cc81f",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 12,
+          "body": "Forward-compatible journal repair is still not implemented. `StartJournalDetails` and `CompletionJournalDetails` remain `#[serde(deny_unknown_fields)]` in `src/contexts/milestone_record/model.rs:377` and `src/contexts/milestone_record/model.rs:412`, so an older binary cannot parse journal details written by a newer binary and `append_event_if_missing` falls through to appending a duplicate event instead of repairing the existing row. The merge path in `src/adapters/fs.rs:2338-2407` also still relies on the generic `json_fill_none(...)` helper, so any future field with conflict semantics can be silently mishandled unless every caller is manually updated. Amendment 1 required forward-compatible deserialization plus explicit field-by-field merge rules; that gap remains.",
+          "created_at": "2026-03-31T00:04:02.336171385Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "3f1421506791e5f1f329aff2caf7ce1add49edb295120128191bd7501f8f5037"
+        },
+        {
+          "amendment_id": "fr-12-cf3e1d18",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 12,
+          "body": "Terminal replays can still synthesize a `plan_hash` on already-finalized rows. `TaskRunEntry::merge_attempt_entries()` now copies `snapshot_plan_hash_at_creation` onto the merged row (`src/contexts/milestone_record/model.rs:328-330`), and `update_task_run()` still calls `safe_plan_hash_backfill()` inside the already-finalized replay branch (`src/adapters/fs.rs:3371-3379`). Because `safe_plan_hash_backfill()` fills any row whose `snapshot_plan_hash_at_creation` matches the current snapshot (`src/adapters/fs.rs:2636-2642`), replaying a terminal completion with `plan_hash=None` can mutate a historical terminal row from `None` to the snapshot hash. The accepted contract for Amendment 3 was the opposite: terminal replays must preserve the caller-supplied `None`, and only open-row repairs may auto-populate `plan_hash`.",
+          "created_at": "2026-03-31T00:04:02.336175302Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "48ba383b70fa2bb5d463070223686e63272288230b92d7ff9a9758bfc4047fb6"
+        }
+      ],
+      "processed_count": 22
+    },
+    "status_summary": "running: final review restart round 13 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T23:47:46.565357896Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

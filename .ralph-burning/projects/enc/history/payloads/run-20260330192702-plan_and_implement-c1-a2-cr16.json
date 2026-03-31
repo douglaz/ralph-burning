@@ -1,0 +1,91 @@
+{
+  "payload_id": "run-20260330192702-plan_and_implement-c1-a2-cr16",
+  "stage_id": "plan_and_implement",
+  "cycle": 1,
+  "attempt": 2,
+  "created_at": "2026-03-31T01:21:28.407653499Z",
+  "payload": {
+    "data": {
+      "change_summary": "Three amendments addressed: (1) Changed tracing::warn to tracing::error in unique_terminal_replay_match contract violation path (fs.rs:2839) so the invariant violation is logged at error level rather than being masked as a routine warning — callers still see 'no matching task run' but operators now see an error-level log identifying the contract violation. (2) Added deliberate-deviation documentation to safe_plan_hash_backfill None-provenance branch (fs.rs:2609-2621) and the running_entry_created_before_plan_is_not_backfilled_on_revisit test (service.rs:5274-5285), explicitly referencing Issue 3 acceptance criteria and explaining why None-provenance entries are intentionally not backfilled due to ambiguity between 'created before any plan' and 'legacy code version'. (3) Removed new-row auto-population of plan_hash from snapshot (fs.rs:3050) — effective_plan_hash now uses only plan_hash.map(str::to_owned), preventing the dispatch-v1/snapshot-v2 race from stamping entries with the wrong plan version. snapshot_plan_hash_at_creation still records the snapshot hash for provenance. Added dispatch_v1_snapshot_v2_race_does_not_conflict regression test. Updated 4 existing tests (plan_hash_auto_populated_from_snapshot, terminal_replay_after_plan_evolution_succeeds, start_replay_after_plan_evolution_does_not_conflict, safe_backfill_fills_plan_hash_when_snapshot_unchanged) to expect plan_hash=None after start without explicit plan_hash.",
+      "outstanding_risks": [
+        "Callers that previously relied on auto-population now get plan_hash=None on new entries unless they supply it explicitly. safe_plan_hash_backfill at completion time fills it when the snapshot hasn't evolved, but entries completed after plan evolution with no explicit plan_hash will remain plan_hash=None.",
+        "Pre-existing formatting drift in tests/unit/agent_execution_test.rs is unrelated to these changes."
+      ],
+      "steps": [
+        {
+          "description": "Amendment 1: Changed tracing::warn! to tracing::error! in unique_terminal_replay_match contract violation guard (fs.rs:2839) where requested_run_id is Some but requested_started_at is None, so the invariant violation is logged at error level in all build modes.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 2: Added deliberate-deviation-from-Issue-3 documentation comment to safe_plan_hash_backfill None-provenance branch (fs.rs:2609-2621), explaining the ambiguity rationale for skipping legacy entries — None could mean 'created before any plan' or 'legacy code version that didn't record provenance', so backfilling would risk silently relabeling.",
+          "order": 2,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 2: Added deliberate-deviation doc comment to running_entry_created_before_plan_is_not_backfilled_on_revisit test (service.rs:5274-5285), referencing Issue 3 criteria and the correctness-over-completeness decision so future reviewers don't re-open this as a regression.",
+          "order": 3,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Removed new-row auto-population — changed effective_plan_hash from plan_hash.map(str::to_owned).or_else(|| current_snapshot_hash.clone()) to plan_hash.map(str::to_owned) at fs.rs:3050. Updated comment block (fs.rs:3040-3048) to document the dispatch-v1/snapshot-v2 race rationale. Kept snapshot_plan_hash_at_creation recording for provenance.",
+          "order": 4,
+          "status": "completed"
+        },
+        {
+          "description": "Amendment 3: Added dispatch_v1_snapshot_v2_race_does_not_conflict regression test (service.rs:5174) — persists plan v1, advances snapshot to v2, starts bead without plan_hash (gets None), completes with explicit hash_v1, verifies no conflicting plan_hash error and entry carries v1 hash.",
+          "order": 5,
+          "status": "completed"
+        },
+        {
+          "description": "Updated plan_hash_auto_populated_from_snapshot test: post-start assertion changed from Some(expected_plan_hash) to None (no auto-population on new rows). Post-completion assertion expects safe_plan_hash_backfill to fill plan_hash since snapshot hasn't evolved.",
+          "order": 6,
+          "status": "completed"
+        },
+        {
+          "description": "Updated terminal_replay_after_plan_evolution_succeeds test: post-start assertion changed from Some(hash_v1) to None. Completion now supplies explicit plan_hash=hash_v1 instead of relying on auto-population. Terminal replay after v2 evolution retains v1.",
+          "order": 7,
+          "status": "completed"
+        },
+        {
+          "description": "Updated start_replay_after_plan_evolution_does_not_conflict test: removed hash_v1 extraction via .expect(), replaced with assert plan_hash=None after start and after replay. No conflict possible since both sides are None.",
+          "order": 8,
+          "status": "completed"
+        },
+        {
+          "description": "Updated safe_backfill_fills_plan_hash_when_snapshot_unchanged test: post-start assertion changed from Some(expected_hash) to None. Provenance assertion unchanged. Second phase (bead-provenance with explicit provenance) still verifies safe_plan_hash_backfill fills at completion.",
+          "order": 9,
+          "status": "completed"
+        },
+        {
+          "description": "Ran cargo test (359 passed, 0 failed — new dispatch_v1_snapshot_v2_race_does_not_conflict test included), cargo clippy -- -D warnings (clean), cargo fmt --check (clean). Full test suite: 683 unit passed, 0 failed.",
+          "order": 10,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "cargo test: 359 lib tests passed, 0 failed; 683 total unit tests passed, 0 failed, 0 ignored",
+        "cargo clippy -- -D warnings: no warnings or errors",
+        "cargo fmt --check: all files clean",
+        "fs.rs:2839 now reads tracing::error! instead of tracing::warn! for contract violation in unique_terminal_replay_match",
+        "fs.rs:2609-2621 None-provenance branch has explicit deliberate-deviation comment referencing Issue 3 acceptance criteria",
+        "service.rs:5274-5285 running_entry_created_before_plan_is_not_backfilled_on_revisit has deliberate-deviation doc comment explaining correctness-over-completeness rationale",
+        "fs.rs:3050 reads: let effective_plan_hash = plan_hash.map(str::to_owned) — no auto-population from snapshot",
+        "dispatch_v1_snapshot_v2_race_does_not_conflict: persists v1, advances to v2, starts without plan_hash (gets None), completes with explicit v1 — succeeds without conflict, entry carries hash_v1",
+        "plan_hash_auto_populated_from_snapshot: asserts None after start, Some(expected) after completion via safe_plan_hash_backfill when snapshot unchanged",
+        "terminal_replay_after_plan_evolution_succeeds: asserts None after start, supplies explicit hash_v1 at completion, replays terminal after v2 evolution — retains v1",
+        "start_replay_after_plan_evolution_does_not_conflict: asserts None after start, replays after v2 evolution — remains None, no conflict possible",
+        "safe_backfill_fills_plan_hash_when_snapshot_unchanged: asserts None after start, provenance recorded, safe_plan_hash_backfill fills at completion via Some-provenance branch",
+        "All prior round tests continue to pass: named_terminal_replay_succeeds_with_multiple_attempts, terminal_runless_replay_rejected_when_started_at_mismatches, runless_match_rejected_when_started_at_mismatches, terminal_replay_legacy_row_without_plan_hash_stays_unset, terminal_replay_with_provenance_does_not_synthesize_plan_hash, running_entry_created_before_plan_is_not_backfilled_on_revisit, safe_backfill_skips_when_snapshot_evolved, explicit_plan_hash_takes_precedence_over_snapshot, runless_start_completed_with_named_run_id, completion_with_conflicting_plan_hash_rejects_runless_match, start_journal_details_round_trips_with_model_render, completion_journal_details_round_trips_with_model_render, journal_merge_fills_all_optional_fields, merge_attempt_entries_fills_all_optional_fields"
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

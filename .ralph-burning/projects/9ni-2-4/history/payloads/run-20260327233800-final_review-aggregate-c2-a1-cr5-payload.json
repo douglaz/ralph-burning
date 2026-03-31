@@ -1,0 +1,102 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr5-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-28T01:55:45.384408647Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-5-15b1f41e",
+      "fr-5-ef6f1e4a"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-5-54b32534",
+        "normalized_body": "In `same_attempt` (model.rs:306-309), when exactly one side has a `run_id` and the other has `None`, the fallback compares `started_at`. If two distinct runs for the same bead/project happen to have identical `started_at` timestamps (e.g., sub-millisecond retry or clock coarseness), a start row with no run_id would incorrectly match both terminals. Consider adding a comment documenting this intentional trade-off for legacy compatibility, or tightening the fallback to also require that at least one side has `run_id == None` (which it already does via the wildcard arm, but the risk of false positives with identical timestamps is not documented).",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-5-3ee9bde4",
+        "normalized_body": "In `record_bead_start` (service.rs:388-390), `existing_task_runs` is cloned twice — once for `collapse_task_run_attempts` and once for `reconcile_snapshot_from_lineage`. Since `reconcile_snapshot_from_lineage` internally calls `collapse_task_run_attempts` again, the collapse logic runs twice on the same data. Consider passing the already-collapsed `canonical_task_runs` into reconcile (changing its signature to accept pre-collapsed entries) or restructuring to avoid the redundant work.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-5-15b1f41e",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:176-189` only converts an idle milestone back to `ready` when the old snapshot status was already `active`. `update_task_run()` relies on that helper after sealing the lineage row (`src/contexts/milestone_record/service.rs:601-610`), while `record_bead_start()` still appends the running lineage entry before writing `status.json` (`src/contexts/milestone_record/service.rs:458-480`). If the start path fails after the append but before the snapshot write, a later completion repair fixes the counters but leaves the milestone stuck in `planning` (or any other stale non-terminal status) even though a bead already ran and finished. Please make reconciliation derive the correct idle status from lineage for these partial-failure repairs, not only for the `active -> ready` case.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-5-ef6f1e4a",
+        "normalized_body": "`record_bead_start()` is still not concurrency-safe for the idempotent retry case. It decides whether a running entry already exists from an unlocked `read_task_runs()` snapshot (`src/contexts/milestone_record/service.rs:387-423`) and only later performs a blind append (`src/contexts/milestone_record/service.rs:458-470`, `src/adapters/fs.rs:2428-2437`). The `BeadStarted` journal dedupe is another unlocked read-then-append (`src/contexts/milestone_record/service.rs:482-488`). Two controllers retrying the same `(bead_id, project_id, run_id)` concurrently can both observe “no existing row”, both append a running entry, and both emit start events. `update_task_run()` can collapse duplicate lineage rows later, but the duplicate journal history is permanent and snapshot counts are wrong until completion. The compare-and-insert for start idempotence needs to happen under a single lock.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-5-15b1f41e",
+        "normalized_body": "`src/contexts/milestone_record/service.rs:176-189` only converts an idle milestone back to `ready` when the old snapshot status was already `active`. `update_task_run()` relies on that helper after sealing the lineage row (`src/contexts/milestone_record/service.rs:601-610`), while `record_bead_start()` still appends the running lineage entry before writing `status.json` (`src/contexts/milestone_record/service.rs:458-480`). If the start path fails after the append but before the snapshot write, a later completion repair fixes the counters but leaves the milestone stuck in `planning` (or any other stale non-terminal status) even though a bead already ran and finished. Please make reconciliation derive the correct idle status from lineage for these partial-failure repairs, not only for the `active -> ready` case.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-5-ef6f1e4a",
+        "normalized_body": "`record_bead_start()` is still not concurrency-safe for the idempotent retry case. It decides whether a running entry already exists from an unlocked `read_task_runs()` snapshot (`src/contexts/milestone_record/service.rs:387-423`) and only later performs a blind append (`src/contexts/milestone_record/service.rs:458-470`, `src/adapters/fs.rs:2428-2437`). The `BeadStarted` journal dedupe is another unlocked read-then-append (`src/contexts/milestone_record/service.rs:482-488`). Two controllers retrying the same `(bead_id, project_id, run_id)` concurrently can both observe “no existing row”, both append a running entry, and both emit start events. `update_task_run()` can collapse duplicate lineage rows later, but the duplicate journal history is permanent and snapshot counts are wrong until completion. The compare-and-insert for start idempotence needs to happen under a single lock.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 5,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-5-54b32534",
+      "fr-5-3ee9bde4"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 4,
+    "total_reviewers": 2,
+    "unique_amendment_count": 4
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 5
+}

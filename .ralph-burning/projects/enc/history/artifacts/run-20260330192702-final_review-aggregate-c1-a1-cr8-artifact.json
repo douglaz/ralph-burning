@@ -1,0 +1,13 @@
+{
+  "artifact_id": "run-20260330192702-final_review-aggregate-c1-a1-cr8-artifact",
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr8-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T22:25:45.257089244Z",
+  "content": "# Final Review Aggregate\n\n**Summary:** Final review accepted 2 amendment(s); restart required.\n**Restart Required:** true\n**Force Completed:** false\n**Total Reviewers:** 2\n**Unique Amendments:** 2\n**Final Review Restarts:** 8/20\n\n## Accepted\n\n- `fr-8-866eda73`\n- `fr-8-772de23c`\n\n## Rejected\n\nNone.\n\n## Disputed\n\nNone.\n\n## Final Accepted Amendments\n\n### `fr-8-866eda73`\n\nThe `json_fill_none` function (fs.rs:2284-2300) silently converts serialization/deserialization errors into `None`, which is indistinguishable from a structural merge rejection. In the `StartJournalDetails::merge` and `CompletionJournalDetails::merge` callers, this means a serde bug (e.g., a future field type that fails to round-trip through `serde_json::Value`) would appear as a rejected merge, causing duplicate journal events to be appended instead of being merged. Consider returning `Result<Option<T>, ...>` or at minimum adding a `tracing::warn` inside `json_fill_none` when `to_value` or `from_value` fails, so operators can distinguish serde failures from legitimate merge rejections.\n\n### `fr-8-772de23c`\n\n`#[serde(deny_unknown_fields)]` on `StartJournalDetails` and `CompletionJournalDetails` (model.rs:357, 383) prevents parsing journal entries that contain fields added by a newer code version. If the binary is rolled back after new-format entries are written, `parse()` returns `None`, journal merge is skipped, and duplicate events accumulate. This is data-safe but operationally surprising. Add a comment documenting this forward-compatibility tradeoff next to the `deny_unknown_fields` attribute, or switch to a lenient parse for existing journal entries (only use `deny_unknown_fields` in the round-trip test assertions where it actually catches drift).\n\n",
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 8
+}

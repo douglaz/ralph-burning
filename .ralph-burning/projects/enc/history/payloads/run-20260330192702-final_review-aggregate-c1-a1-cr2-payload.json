@@ -1,0 +1,77 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T20:14:41.236456727Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-2-e54db26f",
+      "fr-2-371a0969"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-2-e54db26f",
+        "normalized_body": "`plan_hash` backfill on existing open rows can stamp the wrong plan version after a later `persist_plan()`. In `src/adapters/fs.rs:2914-2919` and `src/adapters/fs.rs:3246-3249`, replaying a start/completion for an existing row with `entry.plan_hash == None` pulls the hash from the current snapshot. But `persist_plan()` can advance `snapshot.plan_hash` at any time (`src/contexts/milestone_record/service.rs:365-376`), so a legacy attempt that originally ran under plan v1 can be relabeled as v2 if the plan changed before the replay. The new tests only cover rows that already had the original hash stored. Add a regression test for a missing-hash legacy row across plan evolution, and avoid snapshot-based backfill unless the original plan version is known.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-371a0969",
+        "normalized_body": "The terminal-replay repair path still does not auto-populate `plan_hash` when the finalized row already exists without one. `update_task_run()` routes terminal replays through `backfill_terminal_entry()` (`src/adapters/fs.rs:3218-3224`), but `backfill_terminal_entry()` only copies a caller-supplied hash (`src/adapters/fs.rs:2670-2689`). If a legacy finalized row is replayed with `plan_hash=None`, the repair write can fill `run_id`, `outcome_detail`, and `finished_at` while leaving `plan_hash` unset, so amendment 3 is still incomplete for repair flows. Add a regression test with a preseeded terminal row whose `plan_hash` is missing and the caller omits it.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-2-e54db26f",
+        "normalized_body": "`plan_hash` backfill on existing open rows can stamp the wrong plan version after a later `persist_plan()`. In `src/adapters/fs.rs:2914-2919` and `src/adapters/fs.rs:3246-3249`, replaying a start/completion for an existing row with `entry.plan_hash == None` pulls the hash from the current snapshot. But `persist_plan()` can advance `snapshot.plan_hash` at any time (`src/contexts/milestone_record/service.rs:365-376`), so a legacy attempt that originally ran under plan v1 can be relabeled as v2 if the plan changed before the replay. The new tests only cover rows that already had the original hash stored. Add a regression test for a missing-hash legacy row across plan evolution, and avoid snapshot-based backfill unless the original plan version is known.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-2-371a0969",
+        "normalized_body": "The terminal-replay repair path still does not auto-populate `plan_hash` when the finalized row already exists without one. `update_task_run()` routes terminal replays through `backfill_terminal_entry()` (`src/adapters/fs.rs:3218-3224`), but `backfill_terminal_entry()` only copies a caller-supplied hash (`src/adapters/fs.rs:2670-2689`). If a legacy finalized row is replayed with `plan_hash=None`, the repair write can fill `run_id`, `outcome_detail`, and `finished_at` while leaving `plan_hash` unset, so amendment 3 is still incomplete for repair flows. Add a regression test with a preseeded terminal row whose `plan_hash` is missing and the caller omits it.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 2,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 2,
+    "total_reviewers": 2,
+    "unique_amendment_count": 2
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 2
+}

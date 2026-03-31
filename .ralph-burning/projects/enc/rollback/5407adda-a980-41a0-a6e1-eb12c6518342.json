@@ -1,0 +1,70 @@
+{
+  "rollback_id": "5407adda-a980-41a0-a6e1-eb12c6518342",
+  "created_at": "2026-03-30T21:23:57.025218185Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "aa05e425a8431c59869500c9ffbeaac88641c628",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 6
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "2a786de7c1b1a6f1",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 5
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 6,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-5-39bc594e",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 5,
+          "body": "src/adapters/fs.rs:2279-2339 still duplicates the journal detail schema instead of reusing the canonical payload types in src/contexts/milestone_record/model.rs:353-386, and the new regression tests at src/adapters/fs.rs:3768-3812 only round-trip one concrete payload. That does not guarantee drift detection: a future optional or conditionally serialized field can be added to the model payload without affecting these fixtures, so the duplicated fs structs still compile and the tests still pass. Amendment 1 asked for drift to fail at compile/test time; this guard is still example-based rather than structural.",
+          "created_at": "2026-03-30T21:23:56.977106812Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "4b1c20379cd644cf4c9913d546457a9d188f061be96dd7bed34b772d846baf66"
+        }
+      ],
+      "processed_count": 7
+    },
+    "status_summary": "running: final review restart round 6 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-30T21:04:59.038057475Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

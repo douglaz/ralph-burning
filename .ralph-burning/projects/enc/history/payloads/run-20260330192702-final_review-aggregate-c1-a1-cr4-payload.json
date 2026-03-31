@@ -1,0 +1,80 @@
+{
+  "payload_id": "run-20260330192702-final_review-aggregate-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T21:02:56.751586403Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-4-0dab1450"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-4-0dab1450",
+        "normalized_body": "snapshot_plan_hash() silently swallows I/O errors (corrupt snapshot JSON, permission failures) via .ok(), making them indistinguishable from 'no snapshot exists.' Consider logging a warning or tracing event when read_snapshot returns an Err that is not NotFound, so operators can detect a corrupted snapshot that is silently preventing plan_hash auto-population.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-e29e2ea2",
+        "normalized_body": "The deny_unknown_fields guard on StartJournalDetails and CompletionJournalDetails provides runtime detection (parse returns None, which causes journal repair to fall back to appending), but the stated acceptance criterion asks for 'compile-time or test failure.' The round-trip tests fulfill the 'test failure' criterion only if they are run — consider adding a doc-comment or CLAUDE.md note explaining that the deny_unknown_fields + round-trip test pair is the chosen enforcement mechanism, so future developers know this is an intentional two-layer guard rather than just a serde annotation.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-4-e57cd3d1",
+        "normalized_body": "`plan_hash` auto-population still does not repair the legacy rows that motivated Issue 3. New rows get the snapshot hash at `src/adapters/fs.rs:2945-2957`, but once a running/terminal row already exists with `plan_hash: null`, both the replay path in `src/adapters/fs.rs:2909-2923` and the finalize path in `src/adapters/fs.rs:3228-3250` explicitly skip snapshot-based backfill. That means a task-run row written by the old code without `plan_hash` will stay null forever even when the milestone snapshot already has the canonical plan hash, so lineage for pre-upgrade attempts is still incomplete. The new regressions at `src/contexts/milestone_record/service.rs:5122-5308` lock in that lossiness instead of fixing it.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [
+      "fr-4-e29e2ea2"
+    ],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-4-0dab1450",
+        "normalized_body": "snapshot_plan_hash() silently swallows I/O errors (corrupt snapshot JSON, permission failures) via .ok(), making them indistinguishable from 'no snapshot exists.' Consider logging a warning or tracing event when read_snapshot returns an Err that is not NotFound, so operators can detect a corrupted snapshot that is silently preventing plan_hash auto-population.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 4,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [
+      "fr-4-e57cd3d1"
+    ],
+    "restart_required": true,
+    "summary": "Final review accepted 1 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 4
+}

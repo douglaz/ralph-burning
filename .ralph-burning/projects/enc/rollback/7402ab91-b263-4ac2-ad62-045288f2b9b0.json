@@ -1,0 +1,103 @@
+{
+  "rollback_id": "7402ab91-b263-4ac2-ad62-045288f2b9b0",
+  "created_at": "2026-03-31T00:26:00.169506950Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "df70d24904cbcd25df60b94b169e05cb5663193e",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 14
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "1651ad7ccfc4aa00",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 13
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 14,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-13-d40509ba",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "In `unique_terminal_replay_match` (fs.rs ~line 2837), the `debug_assert!` was replaced with a silent `return None`. The issue spec requires 'runtime checks that return errors in both debug and release builds.' While callers do produce an error when `None` is returned, the specific contract violation reason (run_id supplied without started_at) is lost, making debugging harder. Add a `tracing::error!` or `tracing::warn!` log before returning `None` so the contract violation is diagnosable in production logs, or change the return type to `Result<Option<usize>>` and return an explicit error.",
+          "created_at": "2026-03-31T00:26:00.066786867Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "4bcb4c2935f20960c2e7102878e00c354b9dc6399e1d67fa096f88f9cfae97ea"
+        },
+        {
+          "amendment_id": "fr-13-ebee7dc9",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "`TaskRunEntry::merge_attempt_entries` (model.rs ~line 320) uses the same manual field-by-field pattern that was identified as drift-prone for journal details (issue 1), but has no compile-time or test-time guard against omitted fields. Add a round-trip coverage test analogous to `journal_merge_fills_all_optional_fields`: construct a primary with all optional fields None and a secondary with all fields populated, merge, serialize both the merged entry and the secondary, and assert the optional-field subset matches. This would catch a forgotten merge line when a new optional field is added to `TaskRunEntry`.",
+          "created_at": "2026-03-31T00:26:00.066791165Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "a3d79d2040eac57d1e24ff8b1b76e24ec7bdc6d71dcdab182e6f17933784f0a6"
+        },
+        {
+          "amendment_id": "fr-13-ad662561",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "src/adapters/fs.rs:3034-3055 still records the current snapshot hash on brand-new `TaskRunEntry` rows whenever the caller omits `plan_hash`. The comment at lines 3037-3042 already describes the bug: if `persist_plan` runs after dispatch but before `record_task_run_start`, the start row is stamped with the newer snapshot hash even though the bead was launched under the older plan. That leaves permanently incorrect lineage and journal data for the attempt, so the new-row auto-population path is not actually safe.",
+          "created_at": "2026-03-31T00:26:00.066794592Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "8ffa668cd64b4bd6bd3ba21c355ae1054ea56373c4993d333c8e9e4add90e3be"
+        },
+        {
+          "amendment_id": "fr-13-a84fe7e0",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 13,
+          "body": "src/contexts/milestone_record/model.rs:286-290 documents `snapshot_plan_hash_at_creation == None` as \"legacy entries that predate this field\", but src/adapters/fs.rs:2608-2615 treats `None` as proof that the row was created before any plan existed and immediately backfills the current snapshot hash. For real legacy data, those are not equivalent: an older open row created under plan V1 will also have `snapshot_plan_hash_at_creation=None`, so replaying or completing it after the snapshot advances to V2 will silently relabel the attempt with V2. The new provenance guard therefore does not protect existing lineages from plan-evolution corruption.",
+          "created_at": "2026-03-31T00:26:00.066798589Z",
+          "batch_sequence": 4,
+          "source": "workflow_stage",
+          "dedup_key": "01d971e164b160ebeb1c08e6b4e462d2e7f528698557c30b7b501b62b670cb64"
+        }
+      ],
+      "processed_count": 25
+    },
+    "status_summary": "running: final review restart round 14 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-31T00:11:55.331199278Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}

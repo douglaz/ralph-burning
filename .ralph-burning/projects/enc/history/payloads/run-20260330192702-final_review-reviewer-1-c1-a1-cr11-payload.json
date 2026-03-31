@@ -1,0 +1,31 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr11-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T23:32:39.458372265Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "src/adapters/fs.rs:3051-3063 still derives plan_hash from the current milestone snapshot at start time. If a bead is dispatched under plan v1 and persist_plan advances the snapshot to v2 before record_task_run_start runs, an omitted plan_hash is written as v2 even though the attempt actually belongs to v1. That corrupts lineage/journal history in the normal start path, so the dispatch-time plan hash/version has to be carried into record_bead_start instead of re-reading the mutable snapshot here.",
+        "rationale": "The code comment already notes this window; it is a real correctness gap, not just a missing optimization."
+      },
+      {
+        "body": "src/adapters/fs.rs:3002-3030 finds an existing running attempt via the collapsed canonical view, but then repairs only the first raw row satisfying same_attempt. In duplicate-row states, that first raw row can be the stale copy with plan_hash=None while another duplicate already has the populated plan_hash/snapshot_plan_hash_at_creation. Replaying record_bead_start with plan_hash omitted then returns and writes the stale row unchanged, so the lineage file and BeadStarted journal never get repaired even though the canonical attempt already had the missing metadata. Repair from the merged canonical entry, or pick the most complete duplicate, before deciding there is no change.",
+        "rationale": "Duplicate running rows are an explicitly supported repair case elsewhere in this module, so start-path replays need the same completeness-preserving behavior."
+      },
+      {
+        "body": "src/contexts/milestone_record/model.rs:320-337 does not merge snapshot_plan_hash_at_creation, even though duplicate cleanup in src/adapters/fs.rs:3308-3315 and canonical collapsing in src/contexts/milestone_record/model.rs:630-644 both depend on merge_attempt_entries. If the surviving primary row is the stale duplicate and the only provenance-bearing copy is in a duplicate being removed, the merge drops that provenance permanently. After that, safe_plan_hash_backfill (src/adapters/fs.rs:2628-2648) can never recover plan_hash for that attempt, so the new issue-3 repair silently stops working on duplicate/replay paths.",
+        "rationale": "This field was introduced specifically to make safe backfill possible; losing it during duplicate merges defeats that safety mechanism."
+      }
+    ],
+    "summary": "Reviewed the milestone lineage changes in src/adapters/fs.rs, src/contexts/milestone_record/model.rs, and src/contexts/milestone_record/service.rs, and ran the milestone_record service/model/fs test slices. I found three correctness issues: one plan-hash mislabeling window in the normal start path and two duplicate-repair gaps that can drop or ignore plan-hash provenance."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 11
+}

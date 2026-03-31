@@ -1,0 +1,43 @@
+{
+  "payload_id": "run-20260327233800-review-c2-a1-cr16",
+  "stage_id": "review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T22:17:54.267545488Z",
+  "payload": {
+    "data": {
+      "evidence": [
+        "All 102 milestone_record tests pass (0 failures, 0 ignored)",
+        "cargo clippy -- -D warnings passes cleanly (no warnings)",
+        "cargo fmt --all --check passes (no formatting issues)",
+        "Amendment fr-15-03ed3b3d FIXED: record_task_run_start in fs.rs (lines 2827-2837) now calls fail_superseded_running_attempt() to auto-finalize the old running entry when a new runless retry with different started_at is appended. The fail_superseded_running_attempt function (lines 2662-2683) sets outcome=Failed, outcome_detail='superseded by retry started at {rfc3339}', finished_at=new retry's started_at. update_task_run with run_id=None uses is_superseded_legacy_start to filter out auto-failed entries, so the new retry remains the sole open match and can be finalized without ambiguity.",
+        "Amendment fr-15-03ed3b3d regression test: runless_retry_with_new_started_at_auto_fails_prior_attempt_and_stays_completable (service.rs) verifies: first attempt is auto-failed with 'superseded by retry' detail, second attempt is Running, then record_bead_completion succeeds, final snapshot has status=Ready with completed_beads=1 and failed_beads=0.",
+        "Amendment fr-15-ad53be55 FIXED: Lock files now live under milestones/.locks/<id>/ via milestone_lock_root (fs.rs:2098-2103, constant MILESTONE_LOCKS_DIR='.locks' at line 2089), separate from milestone data under milestones/<id>/. AdvisoryFileLock::acquire creates only the .locks/<id>/ directory, never the milestone data directory. milestone_exists (lines 2139-2151) only examines the data directory, so lock creation for a nonexistent milestone cannot poison that ID.",
+        "Amendment fr-15-ad53be55 regression test: update_task_run_missing_milestone_does_not_block_future_create (service.rs:1868-1911) calls update_task_run against a nonexistent milestone (fails), then successfully creates that milestone, proving no stale directory is left behind.",
+        "Amendment fr-15-ad53be55 regression test: persist_plan_missing_milestone_does_not_block_future_create also verifies the same property for persist_plan.",
+        "Amendment fr-15-967d37de FIXED: read_task_runs_from_path (fs.rs:2486-2521) now validates each deserialized entry's milestone_id against the expected milestone_id from the file path. Mismatches return AppError::CorruptRecord with line number and both IDs in the error message. find_runs_for_bead calls read_task_runs which delegates to read_task_runs_from_path, so the validation covers all downstream paths.",
+        "Amendment fr-15-967d37de regression test: misfiled_task_run_rows_are_rejected_by_queries_and_reconciliation (service.rs:1329-1379) seeds a task-run row with milestone_id='other-milestone' into the correct milestone's task-runs.ndjson, then asserts find_runs_for_bead fails with 'does not match milestone path' error.",
+        "model.rs: TaskRunEntry has all required fields — milestone_id (String, required), bead_id, project_id, run_id, plan_hash, outcome, outcome_detail, started_at, finished_at — with serde(default, skip_serializing_if) only on legitimately optional fields (run_id, plan_hash, outcome_detail, finished_at)",
+        "service.rs: reconcile_snapshot_from_lineage (lines 163-226) rebuilds counters from latest_task_runs_per_bead, preserves Paused status, transitions Active→Ready when no active beads remain, validates terminal invariants",
+        "service.rs: All mutation paths (update_status, persist_plan, record_bead_start, update_task_run) run under with_milestone_write_lock for serialized access",
+        "All original acceptance criteria remain satisfied: milestone state answers 'what happened to bead X?', controller can update linkage after each run outcome, no backward-compatibility with old schemas is needed"
+      ],
+      "findings_or_gaps": [
+        "The outstanding risk — milestone mutations span separate lineage, snapshot, and journal files without a cross-file transaction — remains. All paths are serialized by the milestone mutation lock (per-milestone granularity) and replay-safe, making this an acceptable trade-off for file-based storage.",
+        "AppError::RunStartFailed is still used (service.rs ~line 555) for rejecting non-terminal outcomes in update_task_run, which is semantically a finalization rejection. A more specific error variant would be cleaner but this is cosmetic, not a correctness issue — carried forward from prior reviews.",
+        "The active_bead_ids() function in model.rs still contains its own internal latest_task_runs_per_bead() call while reconcile_snapshot_from_lineage computes latest runs separately. External callers of active_bead_ids would redundantly recompute, but this is minor and not a correctness concern.",
+        "Legacy runless attempts that persist after upgrades (run_id=None with no matching completion) remain visible in audit history as auto-failed entries with 'superseded by retry' detail, which is intentional and preserves the audit trail."
+      ],
+      "follow_up_or_amendments": [],
+      "outcome": "approved"
+    },
+    "family": "Validation"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

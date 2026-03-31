@@ -1,0 +1,27 @@
+{
+  "payload_id": "run-20260330040352-final_review-reviewer-1-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T06:18:36.954886722Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "`src/adapters/process_backend.rs:1294-1307` now routes every non-zero child exit through `classify_exit_failure()`, but `src/adapters/process_backend.rs:1442-1450` is still a stub that always returns `FailureClass::TransportFailure`. That means exit 127 is still treated as retryable and will burn the expanded 5-attempt budget, even though shell-based wrappers commonly use 127 for `command not found`. A broken `claude`/`codex` wrapper that cannot exec a helper binary will therefore keep retrying instead of failing fast as intended.",
+        "rationale": "This leaves the fatal-vs-transient exit classification change effectively unimplemented for one of the main fatal cases the task was supposed to cover."
+      },
+      {
+        "body": "`src/shared/error.rs:300-308` now maps every `AppError::BackendUnavailable` to `FailureClass::BinaryNotFound`, but `BackendUnavailable` is used for transient availability failures too. For example, `src/adapters/openrouter_backend.rs:176-204` returns `BackendUnavailable` for HTTP client construction failures, probe request errors, and any non-2xx `/models` response, and `src/adapters/openrouter_backend.rs:369-380` is called on every `AgentExecutionService::invoke()` via `src/contexts/agent_execution/service.rs:166-169`. With this blanket remap, a transient OpenRouter 429/5xx or network hiccup is now classified as terminal `binary_not_found`, so the workflow never uses the new retry budget. The new non-retryable class needs to be assigned only at actual missing-binary/misconfiguration call sites, not by reclassifying the entire `BackendUnavailable` variant.",
+        "rationale": "This is a real retry regression for non-process backends and preflight availability checks."
+      }
+    ],
+    "summary": "Reviewed the retry-hardening changes across the process backend, agent execution service, retry policy, and workflow engine. I found two correctness regressions: exit-status classification is still effectively unimplemented, and the new `BinaryNotFound` failure class is applied too broadly, which disables retries for transient availability failures."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 5
+}

@@ -1,0 +1,18 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T20:04:55.956660912Z",
+  "payload": {
+    "amendments": [],
+    "summary": "Reviewed all changes across src/adapters/fs.rs and src/contexts/milestone_record/service.rs. The implementation correctly addresses all three issues from the project prompt:\n\n**Issue 1 (Journal struct drift):** Round-trip tests render via model.rs, parse via fs.rs, check every field, and compare re-rendered output to the original. Because serde silently drops unknown fields during deserialization, any field added to the model payload but missing from the fs struct causes the `assert_eq!(parsed.render(), rendered)` comparison to fail. Additionally, any new parameter added to `render_start_journal_details` or `render_completion_journal_details` would break the test at compile time since the function signatures change. Both StartJournalDetails and CompletionJournalDetails pairs are currently in sync (3 and 6 fields respectively).\n\n**Issue 2 (Runless-to-named completion):** New match arm in `update_task_run` at line 3042-3051 accepts a runless entry when `started_at` matches, then backfills run_id at line 3226-3227. Plan_hash conflict detection at lines 3229-3241 still rejects incompatible plan_hash values. The started_at guard prevents backfilling the wrong legacy attempt. Error messages now include both timestamps for diagnosability. The single-element slice pattern `[index]` ensures ambiguous multiple-open-match cases still error out.\n\n**Issue 3 (plan_hash auto-population):** Three locations correctly auto-populate: (a) new entry creation in `record_task_run` (line 2948-2950), (b) existing entry backfill in `record_task_run` (line 2916-2921), (c) non-terminal completion in `update_task_run` (line 3246-3249). All use `snapshot_plan_hash` which reads `status.json` and extracts the plan_hash. Caller-supplied plan_hash always takes precedence via the `or_else`/conditional checks. The auto-populate is correctly guarded by `entry.plan_hash.is_none()` so already-populated rows (e.g., from an earlier snapshot version) are never overwritten by a newer snapshot's plan_hash.\n\n**Edge cases verified:** (1) Start replay after plan evolution: entry retains hash_v1 even after snapshot advances to v2, because `plan_hash.is_none()` is false. (2) Terminal replay after plan evolution: `option_conflicts(Some(hash_v1), None)` returns false, so replay is accepted and hash_v1 is preserved. (3) Conflicting plan_hash on runless match: properly rejected even though started_at matches. (4) run_id backfill on failed plan_hash conflict: not persisted to disk since error returns before `write_task_runs`.\n\n**Concurrency:** Advisory file lock on task-runs.ndjson protects against concurrent writes. The snapshot read inside the lock may observe a concurrently-updated plan_hash, but this is a benign race since plan_hash auto-population is best-effort enrichment.\n\nAll 683 tests pass. No bugs, safety issues, or correctness gaps found."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 2
+}

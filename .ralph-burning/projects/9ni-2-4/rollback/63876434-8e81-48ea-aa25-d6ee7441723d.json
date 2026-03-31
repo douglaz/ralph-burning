@@ -1,0 +1,99 @@
+{
+  "rollback_id": "63876434-8e81-48ea-aa25-d6ee7441723d",
+  "created_at": "2026-03-29T22:34:44.795594221Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "b013db1b5b4aed1dd73be39adfa2cc24627bc573",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 17
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "f47a86f5053bdcd9",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 16
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 17,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-16-381b2bc1",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 16,
+          "body": "MilestoneId::new() in model.rs should reject dot-prefixed names (e.g., `.locks`, `.hidden`) to prevent collision with the new MILESTONE_LOCKS_DIR (`.locks`) directory. Currently, creating a milestone with id `.locks` would place its data directory at `milestones/.locks/`, which is the same path used for lock files of all other milestones. Add a validation rule like `normalized.starts_with('.')` to the existing rejection checks in MilestoneId::new().",
+          "created_at": "2026-03-29T22:34:44.704942481Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "f746d2b4c063677fd2ccb157f478e72f47a9997942188d1efe57120c3652b7ae"
+        },
+        {
+          "amendment_id": "fr-16-20005d1b",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 16,
+          "body": "Tighten `FsTaskRunLineageStore::update_task_run` so a completion with `run_id` only finalizes an exact matching attempt. Today `src/adapters/fs.rs:2894-2928` falls back to the lone unfinished runless row when no exact `run_id` match exists, and `record_bead_completion` no longer supplies `started_at` to disambiguate (`src/contexts/milestone_record/service.rs:457-492`). That means a completion for a brand-new named retry can be written onto an older open attempt instead of failing fast, which corrupts the bead audit trail.",
+          "created_at": "2026-03-29T22:34:44.704946969Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "2e2cbd9322c955ef6b4d33fc68aed3309bf62d8f1b6ebac58684a5ee7b920b84"
+        },
+        {
+          "amendment_id": "fr-16-20943f79",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 16,
+          "body": "Handle stale legacy/open attempts when starting a new named retry. In `src/adapters/fs.rs:2827-2836`, superseding only happens when the new start is itself runless; if a new explicit `run_id` starts after an older runless row, the old row is left permanently `running`. `find_runs_for_bead` then returns contradictory history for the same bead (`src/adapters/fs.rs:3111-3127`), e.g. one attempt still `running` even after a later retry already `succeeded`. Either mark the older row as superseded at start time or reject the new start until the old row is resolved.",
+          "created_at": "2026-03-29T22:34:44.704950906Z",
+          "batch_sequence": 3,
+          "source": "workflow_stage",
+          "dedup_key": "f06083e766c421d468da6d2ffc5c012abc7138010305294914ef02bd7eb06268"
+        }
+      ],
+      "processed_count": 50
+    },
+    "status_summary": "running: final review restart round 17 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-29T22:18:12.877963671Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

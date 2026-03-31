@@ -1,0 +1,88 @@
+{
+  "rollback_id": "d6f714fe-3f1e-4f61-9568-f7d411988a4a",
+  "created_at": "2026-03-28T00:51:35.841792075Z",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "git_sha": "c83a698a22dc6e8f7c0a1368a1098e0a5b99d41b",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260327233800",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 2,
+        "attempt": 1,
+        "completion_round": 4
+      },
+      "started_at": "2026-03-27T23:38:00.762297766Z",
+      "prompt_hash_at_cycle_start": "d18496a4cb46a01b",
+      "prompt_hash_at_stage_start": "d18496a4cb46a01b",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 3
+    },
+    "status": "running",
+    "cycle_history": [
+      {
+        "cycle": 2,
+        "stage_id": "apply_fixes",
+        "started_at": "2026-03-27T23:45:41.158402089Z",
+        "completed_at": null
+      }
+    ],
+    "completion_rounds": 4,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-3-b8dbc656",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 3,
+          "body": "`src/contexts/milestone_record/service.rs:417-474` seals the lineage row before updating the snapshot or journal, but `src/adapters/fs.rs:2545-2556` rejects any later finalize on an already-terminal entry. If `write_snapshot` or `append_event` fails after the row update, retrying `record_bead_completion`/`update_task_run` can no longer repair the snapshot/journal drift, so a transient I/O failure leaves milestone state permanently inconsistent unless `task-runs.ndjson` is edited manually. Make completion idempotent for the same terminal payload, or defer sealing the lineage row until the rest of the milestone state is durable.",
+          "created_at": "2026-03-28T00:51:35.772866076Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "d8ba2643365a94f77f226d1fa60b7e3118b535b48c3f0067f30e19876712c8b3"
+        },
+        {
+          "amendment_id": "fr-3-9fecdf73",
+          "source_stage": "final_review",
+          "source_cycle": 2,
+          "source_completion_round": 3,
+          "body": "`src/contexts/milestone_record/service.rs:305-308` moves a started bead into `MilestoneStatus::Active`, but `src/contexts/milestone_record/service.rs:448-456` clears `active_bead` on completion without changing `status` or re-validating. `src/contexts/milestone_record/model.rs:172-176` explicitly defines `status == Active && active_bead == None` as inconsistent, so every normal completion now persists a snapshot that violates the model invariant. Completion needs to transition out of `Active` (or otherwise preserve the invariant) before writing the snapshot.",
+          "created_at": "2026-03-28T00:51:35.772869532Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "63854726f1bd9f93bca50a818293c5d2b3560b4118ff8c7cf4ce9140a9659437"
+        }
+      ],
+      "processed_count": 10
+    },
+    "status_summary": "running: final review restart round 4 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-28T00:40:08.011059626Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      },
+      "final_review_arbiter": {
+        "backend_family": "codex",
+        "model_id": "gpt-5.4"
+      }
+    }
+  }
+}

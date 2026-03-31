@@ -1,0 +1,23 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T22:09:37.786675571Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "`src/adapters/fs.rs:2957-2961` only auto-populates `plan_hash` when a brand-new start row is created; the completion path for an existing row still skips snapshot backfill entirely (`src/adapters/fs.rs:3231-3264`, and terminal replays use the same caller-only backfill helper at `src/adapters/fs.rs:2672-2692`). `record_bead_completion`/`update_task_run` also still forward `plan_hash` straight through from the caller (`src/contexts/milestone_record/service.rs:557-563`). The result is that any in-flight row that was created without `plan_hash` still finalizes with `plan_hash: None` even when the milestone snapshot already has the canonical hash. I reproduced this by pre-seeding a running `TaskRunEntry` with `plan_hash=None`, setting `snapshot.plan_hash=\"plan-v1\"`, and then calling `record_bead_completion(..., plan_hash=None)`: the stored row remained `None`. That still loses lineage for legacy/incomplete starts, so issue 3 is only partially fixed.",
+        "rationale": "The accepted fix was to auto-populate omitted `plan_hash` values from the milestone snapshot. Current code does that for new start rows, but not for completion-time writes, so previously-started attempts can still be permanently unlabeled."
+      }
+    ],
+    "summary": "Reviewed the milestone-lineage changes and ran targeted milestone-record tests around journal merging, runless-to-named completion, started_at guards, and plan-hash evolution; those passed. I found one remaining correctness gap: completion-time writes still do not backfill `plan_hash` from the milestone snapshot for pre-existing rows, so issue 3 is not fully closed."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 7
+}

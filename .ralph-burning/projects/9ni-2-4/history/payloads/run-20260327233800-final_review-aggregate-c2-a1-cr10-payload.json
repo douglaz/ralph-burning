@@ -1,0 +1,77 @@
+{
+  "payload_id": "run-20260327233800-final_review-aggregate-c2-a1-cr10-payload",
+  "stage_id": "final_review",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-29T19:28:54.161637532Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-10-a35fc4da",
+      "fr-10-9fd118d3"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-10-a35fc4da",
+        "normalized_body": "`src/contexts/milestone_record/model.rs:347-378` and `src/adapters/fs.rs:2280-2318` serialize completion details with a raw `\", \"`-delimited string, but the only protection against `project_id`/`run_id`/`plan_hash` containing that delimiter is `debug_assert!`. In release builds those checks disappear, and `ProjectId::new` / `RunId::new` still accept commas and spaces (`src/shared/domain.rs:804-838`). A legal id like `\"foo, bar\"` makes `CompletionJournalDetails::parse` fail, which means the repair path in `append_event_if_missing` (`src/adapters/fs.rs:2416-2493`) cannot merge or backfill replayed completion events. The result is duplicate completion journal rows instead of the intended idempotent repair whenever a replay adds missing `run_id`, `plan_hash`, or `outcome_detail`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-9fd118d3",
+        "normalized_body": "`FsTaskRunLineageStore::append_task_run` still writes whatever `TaskRunEntry` it is handed (`src/adapters/fs.rs:2682-2691`). Because `milestone_id` remains optional and `read_task_runs_from_path` only backfills it in memory after deserialization (`src/adapters/fs.rs:2525-2533`), any direct caller of the public append API can still create brand-new NDJSON rows with no explicit `milestone_id`. That violates the new self-contained-entry invariant introduced by this task and leaves on-disk lineage incomplete until some later rewrite happens to touch the row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-10-a35fc4da",
+        "normalized_body": "`src/contexts/milestone_record/model.rs:347-378` and `src/adapters/fs.rs:2280-2318` serialize completion details with a raw `\", \"`-delimited string, but the only protection against `project_id`/`run_id`/`plan_hash` containing that delimiter is `debug_assert!`. In release builds those checks disappear, and `ProjectId::new` / `RunId::new` still accept commas and spaces (`src/shared/domain.rs:804-838`). A legal id like `\"foo, bar\"` makes `CompletionJournalDetails::parse` fail, which means the repair path in `append_event_if_missing` (`src/adapters/fs.rs:2416-2493`) cannot merge or backfill replayed completion events. The result is duplicate completion journal rows instead of the intended idempotent repair whenever a replay adds missing `run_id`, `plan_hash`, or `outcome_detail`.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-10-9fd118d3",
+        "normalized_body": "`FsTaskRunLineageStore::append_task_run` still writes whatever `TaskRunEntry` it is handed (`src/adapters/fs.rs:2682-2691`). Because `milestone_id` remains optional and `read_task_runs_from_path` only backfills it in memory after deserialization (`src/adapters/fs.rs:2525-2533`), any direct caller of the public append API can still create brand-new NDJSON rows with no explicit `milestone_id`. That violates the new self-contained-entry invariant introduced by this task and leaves on-disk lineage incomplete until some later rewrite happens to touch the row.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 10,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 2,
+    "total_reviewers": 2,
+    "unique_amendment_count": 2
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 10
+}

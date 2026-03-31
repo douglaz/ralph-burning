@@ -1,0 +1,43 @@
+{
+  "payload_id": "run-20260327233800-apply_fixes-c2-a1-cr1",
+  "stage_id": "apply_fixes",
+  "cycle": 2,
+  "attempt": 1,
+  "created_at": "2026-03-27T23:50:19.837637870Z",
+  "payload": {
+    "data": {
+      "change_summary": "Added optional `milestone_id` support to milestone task-run lineage, populated it on bead start/completion writes, backfilled and preserved it during lineage reads and `update_task_run` rewrites, and extended milestone-record tests to cover serialization, backward compatibility, legacy reads, bead queries, and outcome updates.",
+      "outstanding_risks": [],
+      "steps": [
+        {
+          "description": "Added optional `milestone_id` to `TaskRunEntry` with serde defaults so lineage entries stay backward-compatible with existing NDJSON.",
+          "order": 0,
+          "status": "completed"
+        },
+        {
+          "description": "Updated milestone task-run write and filesystem lineage paths so new start/completion records persist `milestone_id` and legacy entries retain or gain it during reads and outcome rewrites.",
+          "order": 1,
+          "status": "completed"
+        },
+        {
+          "description": "Extended milestone lineage tests for milestone ID serialization, legacy backfill behavior, bead-run query visibility, and update flow preservation, then ran the requested validation commands.",
+          "order": 2,
+          "status": "completed"
+        }
+      ],
+      "validation_evidence": [
+        "`cargo fmt --all` completed successfully.",
+        "`cargo test --lib contexts::milestone_record` passed with 61 tests.",
+        "`cargo clippy -- -D warnings` completed successfully."
+      ]
+    },
+    "family": "Execution"
+  },
+  "record_kind": "stage_primary",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 1
+}

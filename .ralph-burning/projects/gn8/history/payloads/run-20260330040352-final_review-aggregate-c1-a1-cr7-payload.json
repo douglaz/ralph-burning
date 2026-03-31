@@ -1,0 +1,90 @@
+{
+  "payload_id": "run-20260330040352-final_review-aggregate-c1-a1-cr7-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T08:29:29.733209966Z",
+  "payload": {
+    "accepted_amendment_ids": [
+      "fr-7-144385ef",
+      "fr-7-9872eaf7"
+    ],
+    "amendments": [
+      {
+        "amendment_id": "fr-7-f5efd49b",
+        "normalized_body": "The `enforces_timeout()` trait method on `AgentExecutionPort` returns `true` for `OpenRouterBackendAdapter`, which uses `reqwest::Client::builder().timeout()`. However, reqwest's timeout applies to the entire request lifecycle (connection + transfer), not just a wall-clock invocation timeout. If the server accepts the connection and streams data very slowly (trickle attack), reqwest may not fire its timeout because bytes are still flowing. This means `enforces_timeout() -> true` adds a 30-second buffer to the service-level timeout under the assumption the adapter will fire first, but for slow-streaming responses the adapter may never fire and the service-level timeout fires 30 seconds late. Consider either (a) returning `false` for OpenRouter so the service timeout is the canonical enforcement, or (b) wrapping the OpenRouter invoke in an explicit `tokio::time::timeout` like the process backend does, so that `enforces_timeout() -> true` is actually guaranteed.",
+        "sources": [
+          {
+            "backend_family": "claude",
+            "model_id": "claude-opus-4-6",
+            "reviewer_id": "reviewer-1"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-144385ef",
+        "normalized_body": "src/adapters/tmux.rs:452-453 advertises `enforces_timeout() == true`, but `TmuxAdapter::invoke()` never applies `request.timeout`; it just waits in `wait_for_session_exit()` until the service cancels it (`src/adapters/tmux.rs:518-520`, `src/adapters/tmux.rs:342-379`). Because `AgentExecutionService` adds a 30-second buffer whenever that flag is true (`src/contexts/agent_execution/service.rs:204-223`), tmux runs now exceed the configured timeout by about 30 seconds before cancellation. This regresses the hard-timeout behavior for the `process`/`openrouter` selector in tmux mode (`src/composition/agent_execution_builder.rs:95-108`).",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-9872eaf7",
+        "normalized_body": "src/adapters/openrouter_backend.rs:64-74 still reports a missing `OPENROUTER_API_KEY` as `BackendUnavailable { failure_class: None }`. `AppError::failure_class()` maps that to `TransportFailure` (`src/shared/error.rs:309-313`), and `RetryPolicy` now retries transport failures 5 times (`src/contexts/workflow_composition/retry_policy.rs:45-57`). In non-tmux `openrouter` mode (`src/composition/agent_execution_builder.rs:114`), a missing API key will therefore still burn the full retry budget instead of failing immediately as a terminal prerequisite error.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "disputed_amendment_ids": [
+      "fr-7-f5efd49b"
+    ],
+    "final_accepted_amendments": [
+      {
+        "amendment_id": "fr-7-144385ef",
+        "normalized_body": "src/adapters/tmux.rs:452-453 advertises `enforces_timeout() == true`, but `TmuxAdapter::invoke()` never applies `request.timeout`; it just waits in `wait_for_session_exit()` until the service cancels it (`src/adapters/tmux.rs:518-520`, `src/adapters/tmux.rs:342-379`). Because `AgentExecutionService` adds a 30-second buffer whenever that flag is true (`src/contexts/agent_execution/service.rs:204-223`), tmux runs now exceed the configured timeout by about 30 seconds before cancellation. This regresses the hard-timeout behavior for the `process`/`openrouter` selector in tmux mode (`src/composition/agent_execution_builder.rs:95-108`).",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      },
+      {
+        "amendment_id": "fr-7-9872eaf7",
+        "normalized_body": "src/adapters/openrouter_backend.rs:64-74 still reports a missing `OPENROUTER_API_KEY` as `BackendUnavailable { failure_class: None }`. `AppError::failure_class()` maps that to `TransportFailure` (`src/shared/error.rs:309-313`), and `RetryPolicy` now retries transport failures 5 times (`src/contexts/workflow_composition/retry_policy.rs:45-57`). In non-tmux `openrouter` mode (`src/composition/agent_execution_builder.rs:114`), a missing API key will therefore still burn the full retry budget instead of failing immediately as a terminal prerequisite error.",
+        "sources": [
+          {
+            "backend_family": "codex",
+            "model_id": "gpt-5.4",
+            "reviewer_id": "reviewer-2"
+          }
+        ]
+      }
+    ],
+    "final_review_restart_count": 7,
+    "force_completed": false,
+    "max_restarts": 20,
+    "rejected_amendment_ids": [],
+    "restart_required": true,
+    "summary": "Final review accepted 2 amendment(s); restart required.",
+    "total_proposed_amendments": 3,
+    "total_reviewers": 2,
+    "unique_amendment_count": 3
+  },
+  "record_kind": "stage_aggregate",
+  "producer": {
+    "type": "system",
+    "component": "final_review_aggregator"
+  },
+  "completion_round": 7
+}

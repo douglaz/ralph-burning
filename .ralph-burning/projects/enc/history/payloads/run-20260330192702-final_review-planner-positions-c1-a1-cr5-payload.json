@@ -1,0 +1,29 @@
+{
+  "payload_id": "run-20260330192702-final_review-planner-positions-c1-a1-cr5-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T21:18:10.749766073Z",
+  "payload": {
+    "summary": "Both amendments identify real gaps in the current implementation. Amendment fr-5-f1c7b7b6 correctly identifies that legacy rows with plan_hash=None are never repaired, but the code comments reveal this is a deliberate design choice to avoid mislabeling — the concern is valid but the tradeoff is intentional and documented. Amendment fr-5-39bc594e correctly identifies that the round-trip tests are example-based rather than structural and would not catch drift from new optional fields.",
+    "votes": [
+      {
+        "amendment_id": "fr-5-f1c7b7b6",
+        "decision": "accept",
+        "rationale": "The amendment correctly identifies a gap: pre-existing TaskRunEntry rows with plan_hash=None are never backfilled from the snapshot, even during finalization. The code comments at lines 2927-2931 and 3257-3261 explain the rationale (avoiding mislabeling a v1 attempt as v2 when snapshot.plan_hash advances), but this logic conflates two distinct cases: (1) the snapshot hash has genuinely advanced past the attempt's plan version (mislabel risk — legitimate concern), and (2) the row was simply created before auto-population existed and the snapshot hash has NOT changed (repair opportunity — currently missed). A legacy row that started under the same plan version the snapshot still holds could safely be backfilled, but the current blanket prohibition prevents this. The result is that Issue 3 is only fixed going forward for new rows, not for repairing legacy data. This is a real defect in the repair path."
+      },
+      {
+        "amendment_id": "fr-5-39bc594e",
+        "decision": "accept",
+        "rationale": "The amendment correctly identifies that the drift-detection tests at lines 3768-3812 are example-based round-trips rather than structural guards. Both tests populate ALL fields with Some values and verify the round-trip succeeds, but they cannot detect a new optional field added to the model's render function (StartJournalDetailsPayload or CompletionJournalDetailsPayload) that is absent from the fs adapter's parsing struct. Because the fs structs use `deny_unknown_fields`, a NEW field in the model would cause the parse to fail at runtime — but the test wouldn't catch it at compile time or even at test time unless a test case happens to exercise that field. Worse, if the model adds a field with `skip_serializing_if = Option::is_none` and it defaults to None, the round-trip test passes perfectly because the field is never serialized. The amendment's ask — structural/compile-time drift detection rather than example-based — remains unaddressed. The duplicated schema in fs.rs is a real maintenance hazard."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 5
+}

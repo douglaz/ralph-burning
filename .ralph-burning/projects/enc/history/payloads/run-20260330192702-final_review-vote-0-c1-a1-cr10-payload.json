@@ -1,0 +1,39 @@
+{
+  "payload_id": "run-20260330192702-final_review-vote-0-c1-a1-cr10-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T22:57:52.033340184Z",
+  "payload": {
+    "summary": "All four amendments identify genuine issues in the task-run lineage tracking code. After examining the actual source: (1) the debug_assert gap is a real safety defect with a trivial fix; (2) the plan_hash race on new entries mirrors the documented concern for existing rows but is undocumented; (3) legacy plan_hash=None rows are permanently orphaned by design but the gap could be closed safely; (4) the uniqueness check is overly broad and blocks valid backfill in multi-attempt scenarios. I agree with the planner positions on all four.",
+    "votes": [
+      {
+        "amendment_id": "fr-10-681307ea",
+        "decision": "accept",
+        "rationale": "The debug_assert! at line 2824 enforces a critical invariant: (Some(run_id), None) must never reach the filter logic because it would bypass the started_at guard on runless terminal candidates. While the sole current callsite at lines 3093-3098 correctly passes (Some(run_id), Some(started_at)), the invariant vanishes entirely in release builds. A future caller or refactor could silently violate it, allowing backfill onto the wrong legacy row. The fix is trivial — an early-return `if` check returning None — and carries zero regression risk. This is a textbook case where debug_assert is insufficient for a safety-critical contract."
+      },
+      {
+        "amendment_id": "fr-10-fa9c76f6",
+        "decision": "accept",
+        "rationale": "The code has a detailed comment block (lines 2983-2987) explaining why snapshot-based plan_hash backfill is skipped for existing rows: persist_plan() can advance the snapshot hash after the attempt started. But at lines 3012-3016, new entries unconditionally call snapshot_plan_hash(), and the identical race applies — if persist_plan() runs between bead dispatch and record_task_run_start, the new entry gets stamped with the post-evolution hash. The amendment reasonably asks for either documenting this known limitation or having callers supply plan_hash explicitly. Either approach is low-risk and closes a consistency gap in the plan_hash provenance model."
+      },
+      {
+        "amendment_id": "fr-10-9757053d",
+        "decision": "accept",
+        "rationale": "Existing rows with plan_hash=None are permanently orphaned. Both record_task_run_start (lines 2983-2987) and update_task_run (lines 3315-3319) explicitly skip snapshot-based backfill for existing rows to avoid mislabeling after plan evolution. This is safe but overly conservative: when the plan hash has NOT evolved since the row was created, the snapshot hash is provably correct and could safely be applied. The amendment asks for a safe backfill path (e.g., backfill only when the snapshot hash matches the hash at the time the row was created) or persisting enough provenance to make that determination. Both options are reasonable engineering improvements that close a real gap in repair/replay paths without compromising the safety the current skip provides."
+      },
+      {
+        "amendment_id": "fr-10-a0a290d3",
+        "decision": "accept",
+        "rationale": "The uniqueness check at lines 2859-2862 requires that every other entry in matching_indices (all rows for same bead/project) is a legacy start pair for the candidate. This fails in multi-attempt scenarios: if bead X has attempt A (runless terminal) and attempt B (completed with run_id), attempt B is not a legacy start pair for attempt A, so the check rejects A even though started_at uniquely identifies it. This is a real correctness bug — valid backfill of runless terminal rows is blocked whenever the same bead has been attempted more than once. Pre-filtering matching_indices to exclude rows from unrelated attempts (e.g., by started_at or run_id) before the uniqueness check would fix this while preserving the safety guarantee against ambiguous matches."
+      }
+    ]
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 10
+}

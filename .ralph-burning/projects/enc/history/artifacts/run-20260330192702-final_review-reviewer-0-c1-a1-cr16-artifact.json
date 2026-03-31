@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr16-artifact",
+  "payload_id": "run-20260330192702-final_review-reviewer-0-c1-a1-cr16-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-31T01:25:21.065770142Z",
+  "content": "# Final Review Proposal\n**Producer:** agent:claude/claude-opus-4-6\n\n## Summary\n\nReviewed the diff (fs.rs: 43 lines changed, service.rs: 187 lines changed, 683 tests pass). The implementation addresses the three issues with a deliberate architectural deviation on Issue 3: plan_hash is NOT auto-populated from the snapshot at record_task_run_start time due to a dispatch-v1/snapshot-v2 race condition the team discovered during implementation. Instead, only snapshot_plan_hash_at_creation is recorded for provenance, and safe_plan_hash_backfill fills plan_hash at completion time only when provenance confirms no plan evolution. This is well-documented and regression-tested. Issue 1 (duplicate journal structs) is resolved — fs.rs imports the model structs directly with round-trip tests ensuring drift is caught. Issue 2 (runless-to-named completion) is correctly implemented with started_at disambiguation and runtime contract enforcement. The code is solid with one minor concern about error message clarity for a contract violation path.\n\n## Amendments\n\n1. In `unique_terminal_replay_match` (fs.rs:2838-2844), the contract violation guard logs `tracing::error!` and returns `None`, which causes the caller to return a generic `CorruptRecord` error (\"no matching task run\" or \"ambiguous task run update\"). Issue 2 requires \"runtime checks that return errors\" — the current path does return an error, but the error message seen by the caller describes data corruption rather than the actual programmer contract violation (run_id supplied without started_at). Consider returning an explicit `Err` from `unique_terminal_replay_match` (changing the return type to `AppResult<Option<usize>>`) so the contract violation surfaces as its own distinct error rather than being masked by a misleading CorruptRecord wrapper. This prevents future debugging confusion if the contract is ever violated.\n   Rationale: The current implementation technically returns an error at runtime, satisfying the letter of Issue 2's requirement to replace debug_assert! with runtime checks. However, the error message seen by callers is misleading — it reports data corruption when the actual problem is a programming contract violation. If this guard ever fires in production, the misleading error message would send operators down the wrong diagnostic path (investigating data corruption instead of a code bug). Making the contract violation a distinct error type costs very little and significantly improves debuggability.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "claude",
+    "model_id": "claude-opus-4-6"
+  },
+  "completion_round": 16
+}

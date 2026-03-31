@@ -1,0 +1,14 @@
+{
+  "artifact_id": "run-20260330192702-final_review-vote-1-c1-a1-cr2-artifact",
+  "payload_id": "run-20260330192702-final_review-vote-1-c1-a1-cr2-payload",
+  "stage_id": "final_review",
+  "created_at": "2026-03-30T20:14:41.217758226Z",
+  "content": "# Final Review Votes\n**Producer:** agent:codex/gpt-5.4\n\n## Summary\n\nBoth amendments identify real issues in the plan_hash repair logic. fr-2-e54db26f is a stronger correctness problem because it can silently misattribute a legacy attempt to a newer plan after persist_plan() advances the snapshot hash. fr-2-371a0969 is a real repair-path gap: compatible terminal replays can repair other fields while leaving plan_hash permanently missing. Any fix for the second issue should be careful not to reintroduce the first issue by blindly using the current snapshot hash when the original plan version is not knowable.\n\n## Votes\n\n- `fr-2-e54db26f`: Accept\n  The code in src/adapters/fs.rs backfills an existing running/open row's missing plan_hash from snapshot_plan_hash() when both the caller and the row lack one, while persist_plan() in src/contexts/milestone_record/service.rs advances snapshot.plan_hash and plan_version independently of that old attempt's lineage. That means a legacy row created under plan v1 can later be replayed after a plan update and be stamped with the current snapshot hash for v2, which is silent data corruption rather than a benign repair. The current tests only cover rows that already retained their original hash, so they do not catch this case. A regression test for a missing-hash legacy row across plan evolution is warranted, and snapshot-based backfill should not be used unless the original plan version can be determined safely.\n- `fr-2-371a0969`: Accept\n  In the terminal replay branch, update_task_run() delegates compatible finalized-row repairs to backfill_terminal_entry(), and that helper only copies a caller-supplied plan_hash. If the stored terminal row is legacy data with plan_hash missing and the replay also arrives with plan_hash=None, the repair can still fill run_id, outcome_detail, and finished_at while leaving plan_hash unset forever. That is a real gap in the repair logic and deserves regression coverage with a preseeded finalized row missing plan_hash. The implementation should recover the hash only from a provenance-safe source; it should not blindly stamp the current snapshot hash if the plan may have changed since the attempt originally ran.\n",
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 2
+}

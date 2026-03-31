@@ -1,0 +1,23 @@
+{
+  "payload_id": "run-20260330192702-final_review-reviewer-1-c1-a1-cr4-payload",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "attempt": 1,
+  "created_at": "2026-03-30T20:55:58.159657291Z",
+  "payload": {
+    "amendments": [
+      {
+        "body": "`plan_hash` auto-population still does not repair the legacy rows that motivated Issue 3. New rows get the snapshot hash at `src/adapters/fs.rs:2945-2957`, but once a running/terminal row already exists with `plan_hash: null`, both the replay path in `src/adapters/fs.rs:2909-2923` and the finalize path in `src/adapters/fs.rs:3228-3250` explicitly skip snapshot-based backfill. That means a task-run row written by the old code without `plan_hash` will stay null forever even when the milestone snapshot already has the canonical plan hash, so lineage for pre-upgrade attempts is still incomplete. The new regressions at `src/contexts/milestone_record/service.rs:5122-5308` lock in that lossiness instead of fixing it.",
+        "rationale": "This leaves exactly the historical task-run records called out in the prompt without recoverable plan lineage, so debugging/auditing still cannot tell which persisted plan executed those attempts after the upgrade."
+      }
+    ],
+    "summary": "Reviewed the milestone-lineage changes in `src/adapters/fs.rs` and `src/contexts/milestone_record/service.rs` and ran `cargo test milestone_record`. One correctness gap remains: existing task-run rows with missing `plan_hash` are still never repaired from the snapshot."
+  },
+  "record_kind": "stage_supporting",
+  "producer": {
+    "type": "agent",
+    "backend_family": "codex",
+    "model_id": "gpt-5.4"
+  },
+  "completion_round": 4
+}

@@ -1,0 +1,81 @@
+{
+  "rollback_id": "147ac08a-7fcf-4e3b-88fc-74951f816ca2",
+  "created_at": "2026-03-31T01:34:45.291511313Z",
+  "stage_id": "final_review",
+  "cycle": 1,
+  "git_sha": "96abc4f02ced2a9c5514fd31cd0f840e481922f9",
+  "run_snapshot": {
+    "active_run": {
+      "run_id": "run-20260330192702",
+      "stage_cursor": {
+        "stage": "plan_and_implement",
+        "cycle": 1,
+        "attempt": 1,
+        "completion_round": 17
+      },
+      "started_at": "2026-03-30T19:27:02.091110396Z",
+      "prompt_hash_at_cycle_start": "2a786de7c1b1a6f1",
+      "prompt_hash_at_stage_start": "1651ad7ccfc4aa00",
+      "qa_iterations_current_cycle": 0,
+      "review_iterations_current_cycle": 0,
+      "final_review_restart_count": 16
+    },
+    "status": "running",
+    "cycle_history": [],
+    "completion_rounds": 17,
+    "rollback_point_meta": {
+      "last_rollback_id": null,
+      "rollback_count": 0
+    },
+    "amendment_queue": {
+      "pending": [
+        {
+          "amendment_id": "fr-16-8d96fcd0",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 16,
+          "body": "In `unique_terminal_replay_match` (fs.rs:2838-2844), the contract violation guard logs `tracing::error!` and returns `None`, which causes the caller to return a generic `CorruptRecord` error (\"no matching task run\" or \"ambiguous task run update\"). Issue 2 requires \"runtime checks that return errors\" — the current path does return an error, but the error message seen by the caller describes data corruption rather than the actual programmer contract violation (run_id supplied without started_at). Consider returning an explicit `Err` from `unique_terminal_replay_match` (changing the return type to `AppResult<Option<usize>>`) so the contract violation surfaces as its own distinct error rather than being masked by a misleading CorruptRecord wrapper. This prevents future debugging confusion if the contract is ever violated.",
+          "created_at": "2026-03-31T01:34:45.226633509Z",
+          "batch_sequence": 1,
+          "source": "workflow_stage",
+          "dedup_key": "af1ad0b1122aa10d1f05f040bd9af9ad036585152bd797fb8b1abea44cb31fa0"
+        },
+        {
+          "amendment_id": "fr-16-ec78c103",
+          "source_stage": "final_review",
+          "source_cycle": 1,
+          "source_completion_round": 16,
+          "body": "In `src/adapters/fs.rs:3118-3176`, the `run_id` update path returns an error as soon as it sees a single open runless row whose `started_at` differs from the request. That means a replay of an older completed runless attempt is still rejected once a newer retry has started: the code never falls through to the terminal replay matcher at `src/adapters/fs.rs:3127-3152`, even if a completed row exists with the requested `started_at`. The accepted Issue 2 fix requires started-at-based disambiguation for terminal replays too; this branch still breaks the partial-write repair path described in `src/contexts/milestone_record/service.rs:527-530`.",
+          "created_at": "2026-03-31T01:34:45.226638569Z",
+          "batch_sequence": 2,
+          "source": "workflow_stage",
+          "dedup_key": "bc4ce2958453d1aeacf11269d4c5e31e1a82432e846215ca6ba632c10db65a5d"
+        }
+      ],
+      "processed_count": 33
+    },
+    "status_summary": "running: final review restart round 17 -> Plan and Implement",
+    "last_stage_resolution_snapshot": {
+      "stage_id": "final_review",
+      "resolved_at": "2026-03-31T01:21:28.504338420Z",
+      "final_review_reviewers": [
+        {
+          "backend_family": "claude",
+          "model_id": "claude-opus-4-6"
+        },
+        {
+          "backend_family": "codex",
+          "model_id": "gpt-5.4"
+        }
+      ],
+      "final_review_planner": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      },
+      "final_review_arbiter": {
+        "backend_family": "claude",
+        "model_id": "claude-opus-4-6"
+      }
+    }
+  }
+}
