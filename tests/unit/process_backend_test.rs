@@ -199,6 +199,55 @@ fi
     );
 }
 
+/// Write a fake codex script that writes last-message from a prepared file and
+/// emits the provided stdout verbatim. This lets tests verify that the adapter
+/// preserves usage-bearing NDJSON in the raw output artifact while still
+/// parsing the structured payload from `--output-last-message`.
+fn write_fake_codex_with_stdout(
+    bin_dir: &std::path::Path,
+    payload_file: &std::path::Path,
+    stdout_text: &str,
+) {
+    let payload_path = payload_file.to_string_lossy();
+    write_executable(
+        &bin_dir.join("codex"),
+        &format!(
+            r#"#!/bin/sh
+echo "$@" > "$PWD/codex-args.txt"
+cat > "$PWD/codex-stdin.txt"
+# Parse --output-last-message and --output-schema paths from args
+msg_path=""
+schema_path=""
+next_is_msg=0
+next_is_schema=0
+for arg in "$@"; do
+    if [ "$next_is_msg" = "1" ]; then
+        msg_path="$arg"
+        next_is_msg=0
+    fi
+    if [ "$next_is_schema" = "1" ]; then
+        schema_path="$arg"
+        next_is_schema=0
+    fi
+    if [ "$arg" = "--output-last-message" ]; then
+        next_is_msg=1
+    fi
+    if [ "$arg" = "--output-schema" ]; then
+        next_is_schema=1
+    fi
+done
+if [ -n "$msg_path" ]; then
+    cp "{payload_path}" "$msg_path"
+fi
+if [ -n "$schema_path" ] && [ -f "$schema_path" ]; then
+    cp "$schema_path" "$PWD/codex-schema-captured.json"
+fi
+printf '%s\n' '{stdout_text}'
+"#
+        ),
+    );
+}
+
 /// Write a fake codex script that exits successfully without producing
 /// --output-last-message so the adapter exercises file-read error handling.
 fn write_fake_codex_without_last_message(bin_dir: &std::path::Path) {
@@ -586,7 +635,11 @@ async fn codex_command_construction_and_temp_files() {
         serde_json::to_string(&planning_payload()).unwrap(),
     )
     .expect("write payload");
-    write_fake_codex(bin_dir.path(), &payload_file);
+    write_fake_codex_with_stdout(
+        bin_dir.path(),
+        &payload_file,
+        r#"{"type":"turn.completed","usage":{"input_tokens":1200,"output_tokens":350,"cached_input_tokens":800}}"#,
+    );
 
     let adapter = ProcessBackendAdapter::new();
     let envelope = adapter
@@ -605,16 +658,23 @@ async fn codex_command_construction_and_temp_files() {
     // Verify parsed payload
     assert_eq!(envelope.parsed_payload["problem_framing"], "test plan");
 
-    // Verify raw output is the last-message content
+    // Verify raw output preserves Codex stdout NDJSON, including usage.
     assert!(matches!(
         &envelope.raw_output_reference,
-        RawOutputReference::Inline(text) if text.contains("test plan")
+        RawOutputReference::Inline(text)
+            if text.contains("\"turn.completed\"")
+                && text.contains("\"cached_input_tokens\":800")
+                && !text.contains("problem_framing")
     ));
 
     // Verify metadata
     assert_eq!(envelope.metadata.invocation_id, request.invocation_id);
     assert!(envelope.metadata.session_id.is_none());
     assert!(!envelope.metadata.session_reused);
+    assert_eq!(envelope.metadata.token_counts.prompt_tokens, Some(1200));
+    assert_eq!(envelope.metadata.token_counts.completion_tokens, Some(350));
+    assert_eq!(envelope.metadata.token_counts.total_tokens, Some(1550));
+    assert_eq!(envelope.metadata.token_counts.cache_read_tokens, Some(800));
 
     let args_file = request.working_dir.join("codex-args.txt");
     let args = read_logged_args(&args_file);

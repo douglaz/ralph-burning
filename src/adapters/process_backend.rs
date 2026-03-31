@@ -254,6 +254,7 @@ impl PreparedCommand {
                 session_resuming,
             } => {
                 let session_resuming = *session_resuming;
+                let stdout_text = String::from_utf8_lossy(&output.stdout).to_string();
                 let last_message_text = match tokio::fs::read_to_string(message_path).await {
                     Ok(text) => text,
                     Err(error) => {
@@ -289,7 +290,7 @@ impl PreparedCommand {
                 let token_counts = extract_codex_usage_from_stdout(&output.stdout);
 
                 Ok(InvocationEnvelope {
-                    raw_output_reference: RawOutputReference::Inline(last_message_text),
+                    raw_output_reference: RawOutputReference::Inline(stdout_text),
                     parsed_payload,
                     metadata: InvocationMetadata {
                         invocation_id: request.invocation_id.clone(),
