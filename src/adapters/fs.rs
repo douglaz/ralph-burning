@@ -2276,60 +2276,6 @@ impl MilestoneSnapshotPort for FsMilestoneSnapshotStore {
 
 pub struct FsMilestoneJournalStore;
 
-/// JSON-level null-fill: for every field absent from `base` (skipped because
-/// the value is None and `skip_serializing_if` omits it), insert the value
-/// from `overlay`. This is structurally complete — no manual per-field
-/// enumeration — so future optional fields added to the struct are
-/// automatically included in journal-repair merges.
-///
-/// Logs a warning on serde failures (e.g., a field type that cannot round-trip
-/// through `serde_json::Value`) so operators can distinguish serialization bugs
-/// from legitimate merge rejections, which would otherwise both surface as a
-/// duplicate journal event.
-/// Merge two structs at the JSON level: for every key present in `overlay`
-/// but absent from `base`, insert the overlay's value into `base`.
-///
-/// # `skip_serializing_if` requirement
-///
-/// This function relies on `Option` fields being **omitted** (key absent)
-/// when their value is `None`.  All `Option` fields on structs passed to
-/// this function **must** be annotated with
-/// `#[serde(default, skip_serializing_if = "Option::is_none")]`.
-/// If a field serialises `None` as an explicit JSON `null` instead, the
-/// key will be present in the base map and the overlay's non-null value
-/// will **not** fill it.
-fn json_fill_none<T: serde::Serialize + serde::de::DeserializeOwned>(
-    base: &T,
-    overlay: &T,
-) -> Option<T> {
-    let mut base_map = match serde_json::to_value(base) {
-        Ok(serde_json::Value::Object(m)) => m,
-        Ok(_) => return None,
-        Err(err) => {
-            tracing::warn!(error = %err, "json_fill_none: failed to serialize base");
-            return None;
-        }
-    };
-    let overlay_map = match serde_json::to_value(overlay) {
-        Ok(serde_json::Value::Object(m)) => m,
-        Ok(_) => return None,
-        Err(err) => {
-            tracing::warn!(error = %err, "json_fill_none: failed to serialize overlay");
-            return None;
-        }
-    };
-    for (key, value) in overlay_map {
-        base_map.entry(key).or_insert(value);
-    }
-    match serde_json::from_value(serde_json::Value::Object(base_map)) {
-        Ok(merged) => Some(merged),
-        Err(err) => {
-            tracing::warn!(error = %err, "json_fill_none: failed to deserialize merged map");
-            None
-        }
-    }
-}
-
 impl StartJournalDetails {
     fn parse(details: &str) -> Option<Self> {
         serde_json::from_str(details).ok()
@@ -2349,19 +2295,18 @@ impl StartJournalDetails {
             return None;
         }
 
-        // Fill all absent optional fields from `requested` using JSON-level
-        // merge.  This is structurally complete: adding a new optional field
-        // to the shared struct automatically includes it in the merge without
-        // manual enumeration, so future fields cannot be silently dropped
-        // during journal repair.
-        //
-        // INVARIANT: `json_fill_none` keeps the base value when both sides
-        // are present.  Any new optional field where conflicting values
-        // should be rejected (like run_id and plan_hash above) MUST have
-        // an explicit `option_conflicts` check added before this call;
-        // otherwise conflicting values are silently preserved from the
-        // existing record.
-        json_fill_none(existing, requested)
+        // Explicit field-by-field merge: fill absent optional fields from
+        // `requested`.  Each optional field must be listed here — adding a
+        // new optional field to StartJournalDetails requires adding a merge
+        // line below.  The round-trip test catches any omission.
+        let mut merged = existing.clone();
+        if merged.run_id.is_none() {
+            merged.run_id = requested.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = requested.plan_hash.clone();
+        }
+        Some(merged)
     }
 
     fn render(&self) -> String {
@@ -2400,11 +2345,21 @@ impl CompletionJournalDetails {
             return None;
         }
 
-        // Fill all absent optional fields from `requested` — see the
-        // INVARIANT comment in StartJournalDetails::merge.  Any new
-        // optional field with conflict semantics MUST have an explicit
-        // `option_conflicts` check added above this call.
-        json_fill_none(existing, requested)
+        // Explicit field-by-field merge: fill absent optional fields from
+        // `requested`.  Each optional field must be listed here — adding a
+        // new optional field to CompletionJournalDetails requires adding a
+        // merge line below.  The round-trip test catches any omission.
+        let mut merged = existing.clone();
+        if merged.run_id.is_none() {
+            merged.run_id = requested.run_id.clone();
+        }
+        if merged.plan_hash.is_none() {
+            merged.plan_hash = requested.plan_hash.clone();
+        }
+        if merged.outcome_detail.is_none() {
+            merged.outcome_detail = requested.outcome_detail.clone();
+        }
+        Some(merged)
     }
 
     fn render(&self) -> String {
@@ -2633,6 +2588,11 @@ impl FsTaskRunLineageStore {
         if entry.plan_hash.is_some() {
             return false;
         }
+        // Terminal entries must never be auto-populated — only the caller's
+        // explicit value (passed through backfill_terminal_entry) is used.
+        if entry.outcome.is_terminal() {
+            return false;
+        }
         match &entry.snapshot_plan_hash_at_creation {
             Some(creation_hash) => {
                 // Normal provenance path: verify the plan hasn't evolved.
@@ -2647,12 +2607,8 @@ impl FsTaskRunLineageStore {
             }
             None => {
                 // No provenance: entry was created before any plan was
-                // persisted.  If the entry is still Running (not terminal),
-                // it is safe to adopt the current snapshot — no prior plan
-                // version existed to conflict with.
-                if entry.outcome.is_terminal() {
-                    return false;
-                }
+                // persisted.  It is safe to adopt the current snapshot —
+                // no prior plan version existed to conflict with.
                 let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
                 if let Some(hash) = current_hash {
                     entry.snapshot_plan_hash_at_creation = Some(hash.clone());
@@ -3375,8 +3331,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     outcome_detail.as_deref(),
                     finished_at,
                 );
-                // Safe plan_hash backfill for terminal replay as well.
-                should_write |= Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
+                // Do NOT call safe_plan_hash_backfill here — terminal
+                // replays must preserve the caller-supplied plan_hash
+                // (including None) and never auto-populate from the
+                // snapshot.
             } else {
                 if let Some(run_id) = run_id {
                     entry.run_id.get_or_insert_with(|| run_id.to_owned());
@@ -4009,45 +3967,6 @@ mod tests {
             merged.render(),
             requested_json,
             "merged completion details must match fully-populated requested"
-        );
-    }
-
-    #[test]
-    fn json_fill_none_fills_absent_option_from_overlay() {
-        // Directly verify that json_fill_none fills a None optional field
-        // (key absent due to skip_serializing_if) with the overlay's Some value.
-        let base = StartJournalDetails {
-            project_id: "proj-1".to_string(),
-            run_id: None,
-            plan_hash: None,
-        };
-        let overlay = StartJournalDetails {
-            project_id: "proj-1".to_string(),
-            run_id: Some("run-42".to_string()),
-            plan_hash: Some("hash-abc".to_string()),
-        };
-        let merged = json_fill_none(&base, &overlay).expect("json_fill_none must succeed");
-        assert_eq!(merged.run_id.as_deref(), Some("run-42"));
-        assert_eq!(merged.plan_hash.as_deref(), Some("hash-abc"));
-        assert_eq!(merged.project_id, "proj-1");
-
-        // Verify that existing base values are NOT overwritten by overlay.
-        let base_with_values = StartJournalDetails {
-            project_id: "proj-1".to_string(),
-            run_id: Some("run-original".to_string()),
-            plan_hash: Some("hash-original".to_string()),
-        };
-        let merged2 =
-            json_fill_none(&base_with_values, &overlay).expect("json_fill_none must succeed");
-        assert_eq!(
-            merged2.run_id.as_deref(),
-            Some("run-original"),
-            "base value must be preserved when both sides are present"
-        );
-        assert_eq!(
-            merged2.plan_hash.as_deref(),
-            Some("hash-original"),
-            "base value must be preserved when both sides are present"
         );
     }
 

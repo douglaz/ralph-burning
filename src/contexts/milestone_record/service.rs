@@ -5352,6 +5352,95 @@ mod tests {
         Ok(())
     }
 
+    /// Regression: a terminal entry with snapshot_plan_hash_at_creation set
+    /// but plan_hash=None must NOT have plan_hash synthesized from the
+    /// snapshot during terminal replay.  Only open-row repairs may
+    /// auto-populate plan_hash.
+    #[test]
+    fn terminal_replay_with_provenance_does_not_synthesize_plan_hash(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let plan_store = FsMilestonePlanStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "terminal-prov-nofill".to_owned(),
+                name: "Terminal Provenance No Fill".to_owned(),
+                description: "terminal with provenance must not synthesize plan_hash".to_owned(),
+            },
+            now,
+        )?;
+
+        // Persist a plan so the snapshot has a plan_hash.
+        persist_plan(
+            &snapshot_store,
+            &journal_store,
+            &plan_store,
+            base,
+            &record.id,
+            &sample_bundle("terminal-prov-nofill", "Plan v1"),
+            now + chrono::Duration::seconds(1),
+        )?;
+        let snapshot = snapshot_store.read_snapshot(base, &record.id)?;
+        let plan_hash = snapshot.plan_hash.expect("plan hash must exist");
+
+        // Preseed a terminal entry with snapshot_plan_hash_at_creation
+        // matching the current snapshot but plan_hash = None.  This can
+        // happen through merge paths or manual intervention.
+        let terminal_entry = TaskRunEntry {
+            milestone_id: record.id.to_string(),
+            bead_id: "bead-1".to_owned(),
+            project_id: "project-1".to_owned(),
+            run_id: Some("run-1".to_owned()),
+            plan_hash: None,
+            snapshot_plan_hash_at_creation: Some(plan_hash.clone()),
+            outcome: TaskRunOutcome::Succeeded,
+            outcome_detail: None,
+            started_at: now,
+            finished_at: Some(now + chrono::Duration::seconds(2)),
+        };
+        lineage_store.append_task_run(base, &record.id, &terminal_entry)?;
+
+        // Replay the terminal completion with plan_hash=None.
+        update_task_run(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            Some("run-1"),
+            None,
+            now,
+            TaskRunOutcome::Succeeded,
+            Some("repair detail".to_owned()),
+            now + chrono::Duration::seconds(2),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(
+            runs[0].plan_hash, None,
+            "terminal replay must NOT synthesize plan_hash even when provenance matches snapshot"
+        );
+        assert_eq!(
+            runs[0].outcome_detail.as_deref(),
+            Some("repair detail"),
+            "outcome_detail should still be backfilled"
+        );
+        Ok(())
+    }
+
     /// Regression: a terminal runless replay with the wrong started_at must be
     /// rejected, not backfilled onto the wrong legacy terminal row.
     #[test]
