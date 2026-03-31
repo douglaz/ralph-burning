@@ -2325,7 +2325,6 @@ impl CompletionJournalDetails {
 
     fn merge(existing: &Self, requested: &Self) -> Option<Self> {
         // Repair in place only when both journal rows refer to the same attempt.
-        // Named runs use run_id; runless retries are disambiguated by started_at.
         if existing.project_id != requested.project_id
             || existing.started_at != requested.started_at
             || existing.outcome != requested.outcome
@@ -2547,82 +2546,6 @@ impl FsTaskRunLineageStore {
             .join(format!("{MILESTONE_TASK_RUNS_FILE}.lock"))
     }
 
-    /// Read the snapshot's plan_hash for backfill-only auto-population.
-    /// Returns `None` if no snapshot exists or no plan has been persisted.
-    /// Logs a warning for unexpected errors (corrupt JSON, permission failures)
-    /// so operators can detect issues that silently prevent auto-population.
-    fn snapshot_plan_hash(base_dir: &Path, milestone_id: &MilestoneId) -> Option<String> {
-        match FsMilestoneSnapshotStore.read_snapshot(base_dir, milestone_id) {
-            Ok(snapshot) => snapshot.plan_hash,
-            Err(AppError::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(err) => {
-                tracing::warn!(
-                    milestone_id = %milestone_id,
-                    error = %err,
-                    "failed to read milestone snapshot for plan_hash auto-population; \
-                     treating as no snapshot"
-                );
-                None
-            }
-        }
-    }
-
-    /// Backfill `plan_hash` on an existing entry from the current milestone
-    /// snapshot, but only when it is provably safe — i.e., no plan evolution
-    /// has occurred since the entry was created.
-    ///
-    /// Safety rules:
-    /// - Entry must still have `plan_hash == None`.
-    /// - If the entry has `snapshot_plan_hash_at_creation` (new entries), the
-    ///   current snapshot must match it — otherwise the plan has evolved and
-    ///   backfill is unsafe.
-    /// - Legacy entries (where `snapshot_plan_hash_at_creation` is `None`)
-    ///   cannot be verified, so backfill is skipped.
-    ///
-    /// Returns `true` if the entry was modified.
-    fn safe_plan_hash_backfill(
-        entry: &mut TaskRunEntry,
-        base_dir: &Path,
-        milestone_id: &MilestoneId,
-    ) -> bool {
-        if entry.plan_hash.is_some() {
-            return false;
-        }
-        // Terminal entries must never be auto-populated — only the caller's
-        // explicit value (passed through backfill_terminal_entry) is used.
-        if entry.outcome.is_terminal() {
-            return false;
-        }
-        match &entry.snapshot_plan_hash_at_creation {
-            Some(creation_hash) => {
-                // Normal provenance path: verify the plan hasn't evolved.
-                let current_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-                if current_hash.as_deref() == Some(creation_hash.as_str()) {
-                    entry.plan_hash = Some(creation_hash.clone());
-                    true
-                } else {
-                    // Plan has evolved since entry creation → backfill unsafe.
-                    false
-                }
-            }
-            None => {
-                // **Deliberate deviation from Issue 3 acceptance criteria.**
-                //
-                // Issue 3 requires "auto-populate plan_hash from snapshot
-                // when the caller omits it."  We intentionally do NOT
-                // backfill here because `snapshot_plan_hash_at_creation`
-                // being `None` is ambiguous: it could mean (a) the entry
-                // was created before any plan existed, or (b) a legacy
-                // entry written by older code that didn't record the field.
-                // We cannot distinguish the two, so backfilling would risk
-                // silently relabeling a legacy entry with a newer plan
-                // version.  Preferring correctness over completeness, we
-                // skip rather than guess.
-                false
-            }
-        }
-    }
-
     fn read_task_runs_from_path(
         path: &Path,
         milestone_id: &MilestoneId,
@@ -2708,33 +2631,23 @@ impl FsTaskRunLineageStore {
     fn plan_hash_conflict_details(
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
+        run_id: &str,
         existing_plan_hash: &str,
         requested_plan_hash: &str,
     ) -> String {
-        let run_suffix = run_id
-            .map(|run_id| format!(" run={run_id}"))
-            .unwrap_or_default();
         format!(
-            "conflicting plan_hash for bead={bead_id} project={project_id}{run_suffix}: existing={existing_plan_hash} requested={requested_plan_hash}"
+            "conflicting plan_hash for bead={bead_id} project={project_id} run={run_id}: existing={existing_plan_hash} requested={requested_plan_hash}"
         )
     }
 
     fn backfill_terminal_entry(
         entry: &mut TaskRunEntry,
-        run_id: Option<&str>,
         plan_hash: Option<&str>,
         outcome_detail: Option<&str>,
         finished_at: DateTime<Utc>,
     ) -> bool {
         let mut changed = false;
 
-        if let Some(run_id) = run_id {
-            if entry.run_id.is_none() {
-                entry.run_id = Some(run_id.to_owned());
-                changed = true;
-            }
-        }
         if let Some(plan_hash) = plan_hash {
             if entry.plan_hash.is_none() {
                 entry.plan_hash = Some(plan_hash.to_owned());
@@ -2759,36 +2672,28 @@ impl FsTaskRunLineageStore {
         entry: &mut TaskRunEntry,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
-        plan_hash: Option<&str>,
+        run_id: &str,
+        plan_hash: &str,
     ) -> AppResult<bool> {
         let mut changed = false;
 
-        if let Some(run_id) = run_id {
-            if entry.run_id.is_none() {
-                entry.run_id = Some(run_id.to_owned());
+        match entry.plan_hash.as_deref() {
+            Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                return Err(AppError::RunStartFailed {
+                    reason: Self::plan_hash_conflict_details(
+                        bead_id,
+                        project_id,
+                        entry.run_id.as_deref().unwrap_or(run_id),
+                        existing_plan_hash,
+                        plan_hash,
+                    ),
+                });
+            }
+            None => {
+                entry.plan_hash = Some(plan_hash.to_owned());
                 changed = true;
             }
-        }
-        if let Some(plan_hash) = plan_hash {
-            match entry.plan_hash.as_deref() {
-                Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
-                    return Err(AppError::RunStartFailed {
-                        reason: Self::plan_hash_conflict_details(
-                            bead_id,
-                            project_id,
-                            entry.run_id.as_deref().or(run_id),
-                            existing_plan_hash,
-                            plan_hash,
-                        ),
-                    });
-                }
-                None => {
-                    entry.plan_hash = Some(plan_hash.to_owned());
-                    changed = true;
-                }
-                _ => {}
-            }
+            _ => {}
         }
 
         Ok(changed)
@@ -2818,72 +2723,22 @@ impl FsTaskRunLineageStore {
     }
 
     /// Find a unique terminal entry among `matching_indices` that can be
-    /// treated as a replay match.
-    ///
-    /// # Contract
-    ///
-    /// When `requested_run_id` is `Some`, `requested_started_at` **must**
-    /// also be `Some`.  The started_at guard prevents backfilling the wrong
-    /// legacy terminal row when multiple runless entries exist.  Passing
-    /// `(Some(run_id), None)` would bypass the guard entirely.
+    /// treated as a replay match.  Matches by exact `run_id` only — legacy
+    /// entries with `run_id: None` are never matched.
     fn unique_terminal_replay_match(
         entries: &[TaskRunEntry],
         matching_indices: &[usize],
-        requested_run_id: Option<&str>,
-        requested_started_at: Option<DateTime<Utc>>,
-        milestone_id: &MilestoneId,
-    ) -> AppResult<Option<usize>> {
-        // Enforce the contract in all build modes: when the caller supplies a
-        // run_id, started_at must also be present so the guard on runless
-        // terminal candidates is never bypassed.
-        if requested_run_id.is_some() && requested_started_at.is_none() {
-            // NOTE: This is an internal programming error (caller violated the
-            // API contract), NOT corrupt on-disk data.  We reuse CorruptRecord
-            // because adding a dedicated variant is not warranted for a path
-            // that should never be reached.  The "internal contract violation"
-            // prefix and the "caller:" file tag distinguish this from genuine
-            // data-corruption errors during operator triage.
-            return Err(AppError::CorruptRecord {
-                file: "caller:unique_terminal_replay_match".to_string(),
-                details: format!(
-                    "internal contract violation (milestone {}): \
-                     requested_run_id is Some but requested_started_at is None — \
-                     this would bypass the started_at guard on runless terminal \
-                     candidates. This indicates a bug in the calling code, not \
-                     corrupt data.",
-                    milestone_id,
-                ),
-            });
-        }
+        requested_run_id: &str,
+    ) -> Option<usize> {
         let terminal_matches: Vec<usize> = matching_indices
             .iter()
             .copied()
             .filter(|candidate_index| {
                 let candidate = &entries[*candidate_index];
-                if !candidate.outcome.is_terminal() {
-                    return false;
-                }
-                if let Some(run_id) = requested_run_id {
-                    if candidate
-                        .run_id
-                        .as_deref()
-                        .is_some_and(|candidate_run_id| candidate_run_id != run_id)
-                    {
-                        return false;
-                    }
-                    // When the caller supplies a run_id but the candidate is
-                    // runless, require started_at to match — same guard as the
-                    // open-match path — to avoid backfilling the wrong legacy
-                    // terminal attempt after plan evolution.
-                    if candidate.run_id.is_none() {
-                        if let Some(started_at) = requested_started_at {
-                            if candidate.started_at != started_at {
-                                return false;
-                            }
-                        }
-                    }
-                }
-
+                candidate.outcome.is_terminal()
+                    && candidate.run_id.as_deref() == Some(requested_run_id)
+            })
+            .filter(|candidate_index| {
                 matching_indices.iter().copied().all(|other_index| {
                     other_index == *candidate_index
                         || Self::is_legacy_start_for(entries, other_index, *candidate_index)
@@ -2892,8 +2747,8 @@ impl FsTaskRunLineageStore {
             .collect();
 
         match terminal_matches.as_slice() {
-            [index] => Ok(Some(*index)),
-            _ => Ok(None),
+            [index] => Some(*index),
+            _ => None,
         }
     }
 }
@@ -2934,8 +2789,8 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
-        plan_hash: Option<&str>,
+        run_id: &str,
+        plan_hash: &str,
         started_at: DateTime<Utc>,
     ) -> AppResult<TaskRunEntry> {
         let path = Self::task_runs_path(base_dir, milestone_id);
@@ -3017,14 +2872,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     run_id,
                     plan_hash,
                 )?;
-                // Safe plan_hash backfill for existing rows: only when the
-                // entry's plan_hash is still None AND we can verify no plan
-                // evolution has occurred since the entry was created.
-                changed |= Self::safe_plan_hash_backfill(
-                    &mut entries[existing_index],
-                    base_dir,
-                    milestone_id,
-                );
                 if changed {
                     Self::write_task_runs(&path, &entries)?;
                 }
@@ -3035,9 +2882,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
 
         if running_attempts_for_bead.len() > 1 {
-            let run_suffix = run_id
-                .map(|run_id| format!(" run '{run_id}'"))
-                .unwrap_or_default();
+            let run_suffix = format!(" run '{run_id}'");
             return Err(AppError::RunStartFailed {
                 reason: format!(
                     "cannot start bead '{bead_id}': ambiguous existing running attempts{run_suffix}"
@@ -3049,25 +2894,12 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
             Self::fail_superseded_running_attempt(&mut entries, prior_running_attempt, started_at);
         }
 
-        // Record the current snapshot hash for provenance tracking, but do
-        // NOT auto-populate plan_hash from it.  The dispatch-v1/snapshot-v2
-        // race makes auto-population unsafe: if persist_plan() advances the
-        // snapshot between bead dispatch and record_task_run_start, the entry
-        // would be stamped with the *newer* snapshot hash even though the bead
-        // was dispatched under the older plan.  This causes false "conflicting
-        // plan_hash" errors when the caller later supplies the correct (older)
-        // hash at completion time.  Callers that know which plan version
-        // dispatched the bead should supply plan_hash explicitly.
-        let current_snapshot_hash = Self::snapshot_plan_hash(base_dir, milestone_id);
-        let effective_plan_hash = plan_hash.map(str::to_owned);
-
         let entry = TaskRunEntry {
             milestone_id: milestone_id.to_string(),
             bead_id: bead_id.to_owned(),
             project_id: project_id.to_owned(),
-            run_id: run_id.map(str::to_owned),
-            plan_hash: effective_plan_hash,
-            snapshot_plan_hash_at_creation: current_snapshot_hash,
+            run_id: Some(run_id.to_owned()),
+            plan_hash: Some(plan_hash.to_owned()),
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -3084,7 +2916,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         milestone_id: &MilestoneId,
         bead_id: &str,
         project_id: &str,
-        run_id: Option<&str>,
+        run_id: &str,
         plan_hash: Option<&str>,
         started_at: DateTime<Utc>,
         outcome: TaskRunOutcome,
@@ -3118,7 +2950,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         }
 
         let mut duplicate_indices_to_remove = Vec::new();
-        let target_index = if let Some(run_id) = run_id {
+        let target_index = {
             let exact_matches: Vec<usize> = matching_indices
                 .iter()
                 .copied()
@@ -3150,63 +2982,14 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                             match Self::unique_terminal_replay_match(
                                 &entries,
                                 &attempt_indices,
-                                Some(run_id),
-                                Some(started_at),
-                                milestone_id,
-                            )? {
+                                run_id,
+                            ) {
                                 Some(index) => index,
                                 None => {
                                     return Err(AppError::CorruptRecord {
                                         file: format!("milestones/{}/task-runs.ndjson", milestone_id),
                                         details: format!(
                                             "no matching task run for bead={bead_id} project={project_id} run={run_id}"
-                                        ),
-                                    });
-                                }
-                            }
-                        }
-                        [index]
-                            if entries[*index].run_id.is_none()
-                                && entries[*index].started_at == started_at =>
-                        {
-                            // Accept runless match: backfill run_id (and plan_hash)
-                            // so a start recorded before the controller knew the
-                            // run ID can be finalized with the now-known identity.
-                            // Require started_at to match to avoid backfilling the
-                            // wrong legacy attempt.
-                            *index
-                        }
-                        [open_index] if entries[*open_index].run_id.is_none() => {
-                            // Open runless row exists but started_at doesn't
-                            // match.  Fall through to the terminal replay
-                            // matcher — a completed row with the matching
-                            // started_at may exist (partial-write repair path
-                            // where the lineage row was written terminal but
-                            // the snapshot/journal update failed).
-                            let attempt_indices: Vec<usize> = matching_indices
-                                .iter()
-                                .copied()
-                                .filter(|index| entries[*index].started_at == started_at)
-                                .collect();
-                            match Self::unique_terminal_replay_match(
-                                &entries,
-                                &attempt_indices,
-                                Some(run_id),
-                                Some(started_at),
-                                milestone_id,
-                            )? {
-                                Some(index) => index,
-                                None => {
-                                    return Err(AppError::CorruptRecord {
-                                        file: format!(
-                                            "milestones/{}/task-runs.ndjson",
-                                            milestone_id
-                                        ),
-                                        details: format!(
-                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}; \
-                                             open runless attempt started_at={} does not match requested started_at={started_at} \
-                                             and no terminal row found for the requested started_at",
-                                            entries[*open_index].started_at,
                                         ),
                                     });
                                 }
@@ -3264,71 +3047,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                     }
                 }
             }
-        } else {
-            let matching_attempt_indices: Vec<usize> = matching_indices
-                .iter()
-                .copied()
-                .filter(|index| entries[*index].started_at == started_at)
-                .collect();
-
-            if matching_attempt_indices.is_empty() {
-                return Err(AppError::CorruptRecord {
-                    file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                    details: format!(
-                        "no matching task run for bead={bead_id} project={project_id} started_at={started_at}"
-                    ),
-                });
-            }
-
-            let open_matches: Vec<usize> = matching_attempt_indices
-                .iter()
-                .copied()
-                .filter(|index| {
-                    !entries[*index].outcome.is_terminal()
-                        && !Self::is_superseded_legacy_start(&entries, *index)
-                })
-                .collect();
-
-            match open_matches.as_slice() {
-                [index] => *index,
-                [] => {
-                    let terminal_matches: Vec<usize> = matching_attempt_indices
-                        .iter()
-                        .copied()
-                        .filter(|index| entries[*index].outcome.is_terminal())
-                        .collect();
-                    match terminal_matches.as_slice() {
-                        [index] => *index,
-                        _ => {
-                            match Self::unique_terminal_replay_match(
-                                &entries,
-                                &matching_attempt_indices,
-                                None,
-                                None,
-                                milestone_id,
-                            )? {
-                                Some(index) => index,
-                                None => {
-                                    return Err(AppError::CorruptRecord {
-                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                        details: format!(
-                                            "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
-                                        ),
-                                    });
-                                }
-                            }
-                        }
-                    }
-                }
-                _ => {
-                    return Err(AppError::CorruptRecord {
-                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                        details: format!(
-                            "ambiguous task run update for bead={bead_id} project={project_id} started_at={started_at}; provide run_id to disambiguate"
-                        ),
-                    });
-                }
-            }
         };
 
         let mut should_write = !duplicate_indices_to_remove.is_empty();
@@ -3344,14 +3062,10 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let finalized_entry = {
             let entry = &mut entries[target_index];
             if entry.outcome.is_terminal() {
-                let run_suffix = entry
-                    .run_id
-                    .as_deref()
-                    .or(run_id)
-                    .map(|run_id| format!(" run={run_id}"))
-                    .unwrap_or_default();
+                let run_suffix = entry.run_id.as_deref().unwrap_or(run_id);
+                let run_suffix = format!(" run={run_suffix}");
                 let incompatible_terminal_update = entry.outcome != outcome
-                    || Self::option_conflicts(entry.run_id.as_deref(), run_id)
+                    || Self::option_conflicts(entry.run_id.as_deref(), Some(run_id))
                     || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
                     || Self::option_conflicts(
                         entry.outcome_detail.as_deref(),
@@ -3369,19 +3083,11 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
 
                 should_write |= Self::backfill_terminal_entry(
                     entry,
-                    run_id,
                     plan_hash,
                     outcome_detail.as_deref(),
                     finished_at,
                 );
-                // Do NOT call safe_plan_hash_backfill here — terminal
-                // replays must preserve the caller-supplied plan_hash
-                // (including None) and never auto-populate from the
-                // snapshot.
             } else {
-                if let Some(run_id) = run_id {
-                    entry.run_id.get_or_insert_with(|| run_id.to_owned());
-                }
                 if let Some(plan_hash) = plan_hash {
                     match entry.plan_hash.as_deref() {
                         Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
@@ -3390,7 +3096,7 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                                 details: Self::plan_hash_conflict_details(
                                     bead_id,
                                     project_id,
-                                    entry.run_id.as_deref().or(run_id),
+                                    entry.run_id.as_deref().unwrap_or(run_id),
                                     existing_plan_hash,
                                     plan_hash,
                                 ),
@@ -3400,19 +3106,6 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
                         _ => {}
                     }
                 }
-                // Safe plan_hash backfill: only when provenance confirms no
-                // plan evolution since the entry was created.
-                //
-                // ORDERING: this call MUST precede `entry.outcome = outcome`
-                // below.  safe_plan_hash_backfill's is_terminal() guard skips
-                // already-terminal entries; at this point the entry is still
-                // Running (about to transition), so the guard correctly
-                // allows one last backfill opportunity before finalization.
-                // Moving the outcome assignment above this line would cause
-                // the terminal guard to fire prematurely, permanently
-                // preventing provenance-based plan_hash backfill on
-                // finalization.
-                Self::safe_plan_hash_backfill(entry, base_dir, milestone_id);
                 entry.outcome = outcome;
                 entry.outcome_detail = outcome_detail;
                 entry.finished_at = Some(finished_at);

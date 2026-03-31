@@ -283,13 +283,6 @@ pub struct TaskRunEntry {
     /// Plan version/hash at time of execution.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_hash: Option<String>,
-    /// Snapshot of the milestone's plan_hash at the time this entry was
-    /// created.  Used to detect plan evolution: if the current snapshot
-    /// differs from this value, `plan_hash` must not be backfilled from the
-    /// snapshot because the plan has changed since the attempt started.
-    /// `None` for legacy entries that predate this field.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snapshot_plan_hash_at_creation: Option<String>,
     /// Outcome of the task run.
     pub outcome: TaskRunOutcome,
     /// Human-readable outcome summary.
@@ -324,10 +317,6 @@ impl TaskRunEntry {
         }
         if merged.plan_hash.is_none() {
             merged.plan_hash = secondary.plan_hash.clone();
-        }
-        if merged.snapshot_plan_hash_at_creation.is_none() {
-            merged.snapshot_plan_hash_at_creation =
-                secondary.snapshot_plan_hash_at_creation.clone();
         }
         if merged.outcome_detail.is_none() {
             merged.outcome_detail = secondary.outcome_detail.clone();
@@ -474,76 +463,36 @@ pub fn find_matching_running_task_run(
     entries: &[TaskRunEntry],
     bead_id: &str,
     project_id: &str,
-    run_id: Option<&str>,
-    started_at: DateTime<Utc>,
+    run_id: &str,
+    _started_at: DateTime<Utc>,
 ) -> Option<TaskRunEntry> {
-    let matching_running_entries: Vec<TaskRunEntry> = entries
+    entries
         .iter()
         .filter(|entry| {
             entry.bead_id == bead_id
                 && entry.project_id == project_id
                 && !entry.outcome.is_terminal()
         })
+        .find(|entry| entry.run_id.as_deref() == Some(run_id))
         .cloned()
-        .collect();
-
-    if let Some(run_id) = run_id {
-        matching_running_entries
-            .iter()
-            .find(|entry| entry.run_id.as_deref() == Some(run_id))
-            .cloned()
-            .or_else(|| match matching_running_entries.as_slice() {
-                [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
-                    Some(entry.clone())
-                }
-                _ => None,
-            })
-    } else {
-        match matching_running_entries.as_slice() {
-            [entry] if entry.run_id.is_none() && entry.started_at == started_at => {
-                Some(entry.clone())
-            }
-            _ => None,
-        }
-    }
 }
 
 pub fn matching_finalized_task_runs(
     entries: &[TaskRunEntry],
     bead_id: &str,
     project_id: &str,
-    run_id: Option<&str>,
-    started_at: DateTime<Utc>,
+    run_id: &str,
+    _started_at: DateTime<Utc>,
 ) -> Vec<TaskRunEntry> {
-    let matching_finalized_entries: Vec<TaskRunEntry> = entries
+    entries
         .iter()
         .filter(|entry| {
             entry.bead_id == bead_id
                 && entry.project_id == project_id
                 && entry.outcome.is_terminal()
         })
+        .filter(|entry| entry.run_id.as_deref() == Some(run_id))
         .cloned()
-        .collect();
-
-    if let Some(run_id) = run_id {
-        let exact_matches: Vec<TaskRunEntry> = matching_finalized_entries
-            .iter()
-            .filter(|entry| entry.run_id.as_deref() == Some(run_id))
-            .cloned()
-            .collect();
-        if !exact_matches.is_empty() {
-            return exact_matches;
-        }
-
-        return matching_finalized_entries
-            .into_iter()
-            .filter(|entry| entry.run_id.is_none() && entry.started_at == started_at)
-            .collect();
-    }
-
-    matching_finalized_entries
-        .into_iter()
-        .filter(|entry| entry.started_at == started_at)
         .collect()
 }
 
@@ -824,7 +773,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: Some("plan-a".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -836,7 +785,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("done".to_owned()),
                 started_at,
@@ -864,7 +813,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -876,7 +825,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: None,
                 started_at,
@@ -888,7 +837,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("replayed".to_owned()),
                 started_at,
@@ -912,7 +861,7 @@ mod tests {
             project_id: "project-1".to_owned(),
             run_id: Some("run-1".to_owned()),
             plan_hash: None,
-            snapshot_plan_hash_at_creation: None,
+
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at,
@@ -938,7 +887,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
@@ -950,7 +899,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v2".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("retry passed".to_owned()),
                 started_at: started_at + chrono::Duration::seconds(10),
@@ -962,7 +911,7 @@ mod tests {
                 project_id: "project-3".to_owned(),
                 run_id: Some("run-3".to_owned()),
                 plan_hash: Some("plan-v3".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at: started_at + chrono::Duration::seconds(30),
@@ -996,7 +945,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-1".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first attempt failed".to_owned()),
                 started_at,
@@ -1008,7 +957,7 @@ mod tests {
                 project_id: "project-2".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v2".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1028,197 +977,6 @@ mod tests {
     }
 
     #[test]
-    fn find_matching_running_task_run_backfills_named_replay_with_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: None,
-            snapshot_plan_hash_at_creation: None,
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        let matched = find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at,
-        )
-        .expect("matching started_at should let a replay backfill a runless row");
-        assert_eq!(matched.started_at, started_at);
-        assert_eq!(matched.run_id, None);
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_reuses_sole_runless_attempt_for_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: Some("plan-v1".to_owned()),
-            snapshot_plan_hash_at_creation: None,
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        let matched =
-            find_matching_running_task_run(&entries, "bead-1", "project-1", None, started_at)
-                .expect("matching started_at should reuse the same runless attempt");
-        assert_eq!(matched.started_at, started_at);
-        assert_eq!(matched.plan_hash.as_deref(), Some("plan-v1"));
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_treats_new_started_at_as_new_attempt(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![TaskRunEntry {
-            milestone_id: "ms-1".to_owned(),
-            bead_id: "bead-1".to_owned(),
-            project_id: "project-1".to_owned(),
-            run_id: None,
-            plan_hash: Some("plan-v1".to_owned()),
-            snapshot_plan_hash_at_creation: None,
-            outcome: TaskRunOutcome::Running,
-            outcome_detail: None,
-            started_at,
-            finished_at: None,
-        }];
-
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            None,
-            started_at + chrono::Duration::seconds(30),
-        )
-        .is_none());
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at + chrono::Duration::seconds(30),
-        )
-        .is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn find_matching_running_task_run_rejects_mixed_legacy_and_named_open_attempts(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let entries = vec![
-            TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at,
-                finished_at: None,
-            },
-            TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: Some("run-2".to_owned()),
-                plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
-                outcome: TaskRunOutcome::Running,
-                outcome_detail: None,
-                started_at: started_at + chrono::Duration::seconds(1),
-                finished_at: None,
-            },
-        ];
-
-        assert!(find_matching_running_task_run(
-            &entries,
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at + chrono::Duration::seconds(2),
-        )
-        .is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn matching_finalized_task_runs_rejects_runless_replay_with_matching_started_at(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let matches = matching_finalized_task_runs(
-            &[TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
-                outcome: TaskRunOutcome::Succeeded,
-                outcome_detail: Some("done".to_owned()),
-                started_at,
-                finished_at: Some(started_at + chrono::Duration::seconds(1)),
-            }],
-            "bead-1",
-            "project-1",
-            None,
-            started_at,
-        );
-
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].run_id, None);
-        assert_eq!(matches[0].outcome, TaskRunOutcome::Succeeded);
-        Ok(())
-    }
-
-    #[test]
-    fn matching_finalized_task_runs_falls_back_to_started_at_when_terminal_row_is_runless(
-    ) -> Result<(), Box<dyn std::error::Error>> {
-        let started_at = Utc::now();
-        let matches = matching_finalized_task_runs(
-            &[TaskRunEntry {
-                milestone_id: "ms-1".to_owned(),
-                bead_id: "bead-1".to_owned(),
-                project_id: "project-1".to_owned(),
-                run_id: None,
-                plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
-                outcome: TaskRunOutcome::Succeeded,
-                outcome_detail: Some("done".to_owned()),
-                started_at,
-                finished_at: Some(started_at + chrono::Duration::seconds(1)),
-            }],
-            "bead-1",
-            "project-1",
-            Some("run-3"),
-            started_at,
-        );
-
-        assert_eq!(matches.len(), 1);
-        assert_eq!(matches[0].run_id, None);
-        assert_eq!(matches[0].started_at, started_at);
-        Ok(())
-    }
-
-    #[test]
     fn matching_finalized_task_runs_ignores_different_named_run_at_same_started_at(
     ) -> Result<(), Box<dyn std::error::Error>> {
         let started_at = Utc::now();
@@ -1229,7 +987,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: Some("run-2".to_owned()),
                 plan_hash: Some("plan-v1".to_owned()),
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Succeeded,
                 outcome_detail: Some("done".to_owned()),
                 started_at,
@@ -1237,7 +995,7 @@ mod tests {
             }],
             "bead-1",
             "project-1",
-            Some("run-3"),
+            "run-3",
             started_at,
         );
 
@@ -1256,7 +1014,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1268,7 +1026,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("first retry".to_owned()),
                 started_at,
@@ -1280,7 +1038,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Running,
                 outcome_detail: None,
                 started_at,
@@ -1292,7 +1050,7 @@ mod tests {
                 project_id: "project-1".to_owned(),
                 run_id: None,
                 plan_hash: None,
-                snapshot_plan_hash_at_creation: None,
+
                 outcome: TaskRunOutcome::Failed,
                 outcome_detail: Some("second retry".to_owned()),
                 started_at,
@@ -1366,7 +1124,7 @@ mod tests {
             project_id: "proj".into(),
             run_id: None,
             plan_hash: None,
-            snapshot_plan_hash_at_creation: None,
+
             outcome: TaskRunOutcome::Running,
             outcome_detail: None,
             started_at: t1,
@@ -1380,7 +1138,6 @@ mod tests {
             project_id: "proj".into(),
             run_id: Some("run-1".into()),
             plan_hash: Some("hash-abc".into()),
-            snapshot_plan_hash_at_creation: Some("snap-abc".into()),
             outcome: TaskRunOutcome::Running,
             outcome_detail: Some("detail".into()),
             started_at: t2,
@@ -1392,10 +1149,6 @@ mod tests {
         // Every optional field should be filled from secondary.
         assert_eq!(merged.run_id.as_deref(), Some("run-1"));
         assert_eq!(merged.plan_hash.as_deref(), Some("hash-abc"));
-        assert_eq!(
-            merged.snapshot_plan_hash_at_creation.as_deref(),
-            Some("snap-abc")
-        );
         assert_eq!(merged.outcome_detail.as_deref(), Some("detail"));
         // started_at takes the minimum.
         assert_eq!(merged.started_at, t1);
@@ -1409,7 +1162,6 @@ mod tests {
             project_id: "proj".into(),
             run_id: Some("original-run".into()),
             plan_hash: Some("original-hash".into()),
-            snapshot_plan_hash_at_creation: Some("original-snap".into()),
             outcome: TaskRunOutcome::Running,
             outcome_detail: Some("original-detail".into()),
             started_at: t1,
@@ -1419,10 +1171,6 @@ mod tests {
         let merged2 = TaskRunEntry::merge_attempt_entries(&primary_full, &secondary);
         assert_eq!(merged2.run_id.as_deref(), Some("original-run"));
         assert_eq!(merged2.plan_hash.as_deref(), Some("original-hash"));
-        assert_eq!(
-            merged2.snapshot_plan_hash_at_creation.as_deref(),
-            Some("original-snap")
-        );
         assert_eq!(merged2.outcome_detail.as_deref(), Some("original-detail"));
         assert_eq!(merged2.started_at, t1);
         assert_eq!(merged2.finished_at, Some(t1));
