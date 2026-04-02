@@ -2324,7 +2324,6 @@ impl CompletionJournalDetails {
     }
 
     fn merge(existing: &Self, requested: &Self) -> Option<Self> {
-        // Repair in place only when both journal rows refer to the same attempt.
         if existing.project_id != requested.project_id
             || existing.started_at != requested.started_at
             || existing.outcome != requested.outcome
@@ -2344,10 +2343,6 @@ impl CompletionJournalDetails {
             return None;
         }
 
-        // Explicit field-by-field merge: fill absent optional fields from
-        // `requested`.  Each optional field must be listed here — adding a
-        // new optional field to CompletionJournalDetails requires adding a
-        // merge line below.  The round-trip test catches any omission.
         let mut merged = existing.clone();
         if merged.run_id.is_none() {
             merged.run_id = requested.run_id.clone();
@@ -2427,28 +2422,89 @@ impl FsMilestoneJournalStore {
         )
     }
 
+    fn matches_event(existing: &MilestoneJournalEvent, requested: &MilestoneJournalEvent) -> bool {
+        existing.timestamp == requested.timestamp
+            && existing.event_type == requested.event_type
+            && existing.bead_id == requested.bead_id
+            && existing.details == requested.details
+    }
+
     fn repairable_completion_event(
         existing: &MilestoneJournalEvent,
         requested: &MilestoneJournalEvent,
     ) -> Option<MilestoneJournalEvent> {
         if !Self::is_completion_event(existing)
             || !Self::is_completion_event(requested)
-            || existing.timestamp != requested.timestamp
-            || existing.event_type != requested.event_type
             || existing.bead_id != requested.bead_id
         {
             return None;
         }
 
-        let existing_details_raw = existing.details.as_deref()?;
+        let existing_details = CompletionJournalDetails::parse(existing.details.as_deref()?)?;
         let requested_details = CompletionJournalDetails::parse(requested.details.as_deref()?)?;
+        if existing_details.project_id != requested_details.project_id
+            || existing_details.started_at != requested_details.started_at
+            || FsTaskRunLineageStore::option_conflicts(
+                existing_details.run_id.as_deref(),
+                requested_details.run_id.as_deref(),
+            )
+            || FsTaskRunLineageStore::option_conflicts(
+                existing_details.plan_hash.as_deref(),
+                requested_details.plan_hash.as_deref(),
+            )
+        {
+            return None;
+        }
 
-        let existing_details = CompletionJournalDetails::parse(existing_details_raw)?;
         let merged_details =
             CompletionJournalDetails::merge(&existing_details, &requested_details)?;
-
         let mut repaired = existing.clone();
         repaired.details = Some(merged_details.render());
+        Some(repaired)
+    }
+
+    fn explicitly_repaired_completion_event(
+        existing: &MilestoneJournalEvent,
+        requested: &MilestoneJournalEvent,
+    ) -> Option<MilestoneJournalEvent> {
+        if !Self::is_completion_event(existing)
+            || !Self::is_completion_event(requested)
+            || existing.bead_id != requested.bead_id
+        {
+            return None;
+        }
+
+        let existing_details = CompletionJournalDetails::parse(existing.details.as_deref()?)?;
+        let requested_details = CompletionJournalDetails::parse(requested.details.as_deref()?)?;
+        if existing_details.project_id != requested_details.project_id
+            || existing_details.started_at != requested_details.started_at
+            || FsTaskRunLineageStore::option_conflicts(
+                existing_details.run_id.as_deref(),
+                requested_details.run_id.as_deref(),
+            )
+            || FsTaskRunLineageStore::option_conflicts(
+                existing_details.plan_hash.as_deref(),
+                requested_details.plan_hash.as_deref(),
+            )
+        {
+            return None;
+        }
+
+        let mut repaired_details = requested_details.clone();
+        if repaired_details.run_id.is_none() {
+            repaired_details.run_id = existing_details.run_id.clone();
+        }
+        if repaired_details.plan_hash.is_none() {
+            repaired_details.plan_hash = existing_details.plan_hash.clone();
+        }
+        if repaired_details.outcome == existing_details.outcome
+            && repaired_details.outcome_detail.is_none()
+        {
+            repaired_details.outcome_detail = existing_details.outcome_detail.clone();
+        }
+
+        let mut repaired = requested.clone();
+        repaired.details = Some(repaired_details.render());
         Some(repaired)
     }
 
@@ -2526,6 +2582,46 @@ impl MilestoneJournalPort for FsMilestoneJournalStore {
             journal[existing_index] = repaired_event;
             Self::write_journal(&path, &journal)?;
             return Ok(true);
+        }
+
+        let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
+        FileSystem::append_line(&path, &line)?;
+        Ok(true)
+    }
+
+    fn repair_completion_event(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        event: &MilestoneJournalEvent,
+    ) -> AppResult<bool> {
+        let path = Self::journal_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::journal_lock_path(base_dir, milestone_id))?;
+        let mut journal = Self::read_journal_from_path(&path, milestone_id)?;
+        let exact_match_index = journal
+            .iter()
+            .position(|existing| Self::matches_event(existing, event));
+
+        if let Some((existing_index, repaired_event)) =
+            journal.iter().enumerate().find_map(|(index, existing)| {
+                if Self::matches_event(existing, event) {
+                    return None;
+                }
+                Self::explicitly_repaired_completion_event(existing, event)
+                    .map(|repaired| (index, repaired))
+            })
+        {
+            if exact_match_index.is_some() {
+                journal.remove(existing_index);
+            } else {
+                journal[existing_index] = repaired_event;
+            }
+            Self::write_journal(&path, &journal)?;
+            return Ok(true);
+        }
+
+        if exact_match_index.is_some() {
+            return Ok(false);
         }
 
         let line = event.to_ndjson_line().map_err(AppError::SerdeJson)?;
@@ -2645,6 +2741,7 @@ impl FsTaskRunLineageStore {
         plan_hash: Option<&str>,
         outcome_detail: Option<&str>,
         finished_at: DateTime<Utc>,
+        overwrite_finished_at: bool,
     ) -> bool {
         let mut changed = false;
 
@@ -2660,12 +2757,77 @@ impl FsTaskRunLineageStore {
                 changed = true;
             }
         }
-        if entry.finished_at.is_none() {
+        if overwrite_finished_at {
+            if entry.finished_at != Some(finished_at) {
+                entry.finished_at = Some(finished_at);
+                changed = true;
+            }
+        } else if entry.finished_at.is_none() {
             entry.finished_at = Some(finished_at);
             changed = true;
         }
 
         changed
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn replace_terminal_entry(
+        entry: &mut TaskRunEntry,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+    ) -> AppResult<bool> {
+        if entry.started_at != started_at {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!(
+                    "task run for bead={bead_id} project={project_id} run={run_id} has mismatched started_at: existing={} requested={}",
+                    entry.started_at.to_rfc3339(),
+                    started_at.to_rfc3339()
+                ),
+            });
+        }
+
+        if let Some(plan_hash) = plan_hash {
+            match entry.plan_hash.as_deref() {
+                Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                    return Err(AppError::CorruptRecord {
+                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                        details: Self::plan_hash_conflict_details(
+                            bead_id,
+                            project_id,
+                            entry.run_id.as_deref().unwrap_or(run_id),
+                            existing_plan_hash,
+                            plan_hash,
+                        ),
+                    });
+                }
+                None => entry.plan_hash = Some(plan_hash.to_owned()),
+                _ => {}
+            }
+        }
+
+        let mut changed = false;
+        if entry.outcome != outcome {
+            entry.outcome = outcome;
+            changed = true;
+        }
+        if entry.outcome_detail != outcome_detail {
+            entry.outcome_detail = outcome_detail;
+            changed = true;
+        }
+        if entry.finished_at != Some(finished_at) {
+            entry.finished_at = Some(finished_at);
+            changed = true;
+        }
+
+        Ok(changed)
     }
 
     fn backfill_running_entry(
@@ -2697,6 +2859,53 @@ impl FsTaskRunLineageStore {
         }
 
         Ok(changed)
+    }
+
+    fn reopen_failed_exact_attempt(
+        entries: &mut Vec<TaskRunEntry>,
+        canonical_entry: &TaskRunEntry,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: &str,
+    ) -> AppResult<Option<TaskRunEntry>> {
+        if canonical_entry.outcome != TaskRunOutcome::Failed {
+            return Ok(None);
+        }
+
+        let exact_match_indices: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (entry.bead_id == bead_id
+                    && entry.project_id == project_id
+                    && entry.run_id.as_deref() == Some(run_id))
+                .then_some(index)
+            })
+            .collect();
+        if exact_match_indices.is_empty() {
+            return Ok(None);
+        }
+
+        let target_index = exact_match_indices[0];
+        let mut reopened_entry = canonical_entry.clone();
+        reopened_entry.outcome = TaskRunOutcome::Running;
+        reopened_entry.outcome_detail = None;
+        reopened_entry.finished_at = None;
+        Self::backfill_running_entry(&mut reopened_entry, bead_id, project_id, run_id, plan_hash)?;
+        entries[target_index] = reopened_entry.clone();
+
+        if exact_match_indices.len() > 1 {
+            let filtered_entries: Vec<TaskRunEntry> = entries
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !exact_match_indices[1..].contains(index))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            *entries = filtered_entries;
+        }
+
+        Ok(Some(reopened_entry))
     }
 
     /// One-time upgrade repair: mark any running entries with `run_id: None`
@@ -2771,6 +2980,268 @@ impl FsTaskRunLineageStore {
             _ => None,
         }
     }
+
+    fn finalized_task_run_already_exists_error(
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        outcome: TaskRunOutcome,
+    ) -> AppError {
+        AppError::CorruptRecord {
+            file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+            details: format!(
+                "task run for bead={bead_id} project={project_id} run={run_id} is already finalized with outcome={outcome}",
+            ),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn finalize_task_run_internal(
+        path: &Path,
+        milestone_id: &MilestoneId,
+        entries: &mut Vec<TaskRunEntry>,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+        allow_terminal_repair: bool,
+    ) -> AppResult<TaskRunEntry> {
+        let legacy_repaired = Self::fail_legacy_runless_entries(entries, finished_at);
+        if legacy_repaired {
+            Self::write_task_runs(path, entries)?;
+        }
+        if entries.is_empty() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!(
+                    "no task runs file found when updating bead={bead_id} project={project_id}"
+                ),
+            });
+        }
+
+        let matching_indices: Vec<usize> = entries
+            .iter()
+            .enumerate()
+            .filter_map(|(index, entry)| {
+                (entry.bead_id == bead_id && entry.project_id == project_id).then_some(index)
+            })
+            .collect();
+        if matching_indices.is_empty() {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                details: format!("no matching task run for bead={bead_id} project={project_id}"),
+            });
+        }
+
+        let mut duplicate_indices_to_remove = Vec::new();
+        let target_index = {
+            let exact_matches: Vec<usize> = matching_indices
+                .iter()
+                .copied()
+                .filter(|index| entries[*index].run_id.as_deref() == Some(run_id))
+                .collect();
+            match exact_matches.as_slice() {
+                [index] => *index,
+                [] => {
+                    let open_matches: Vec<usize> = matching_indices
+                        .iter()
+                        .copied()
+                        .filter(|index| {
+                            !entries[*index].outcome.is_terminal()
+                                && !Self::is_superseded_legacy_start(entries, *index)
+                        })
+                        .collect();
+                    match open_matches.as_slice() {
+                        [] => {
+                            let attempt_indices: Vec<usize> = matching_indices
+                                .iter()
+                                .copied()
+                                .filter(|index| entries[*index].started_at == started_at)
+                                .collect();
+                            match Self::unique_terminal_replay_match(
+                                entries,
+                                &attempt_indices,
+                                run_id,
+                            ) {
+                                Some(index) => index,
+                                None => {
+                                    return Err(AppError::CorruptRecord {
+                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                        details: format!(
+                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}"
+                                        ),
+                                    });
+                                }
+                            }
+                        }
+                        [index] => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only run={} is still open",
+                                    entries[*index].run_id.as_deref().unwrap_or("<missing>")
+                                ),
+                            });
+                        }
+                        _ => {
+                            let open_run_ids: Vec<&str> = open_matches
+                                .iter()
+                                .map(|idx| entries[*idx].run_id.as_deref().unwrap_or("<none>"))
+                                .collect();
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}; open runs: [{}]",
+                                    open_run_ids.join(", ")
+                                ),
+                            });
+                        }
+                    }
+                }
+                _ => {
+                    let terminal_exact_matches: Vec<usize> = exact_matches
+                        .iter()
+                        .copied()
+                        .filter(|index| entries[*index].outcome.is_terminal())
+                        .collect();
+                    match terminal_exact_matches.as_slice() {
+                        [index] => {
+                            duplicate_indices_to_remove.extend(
+                                exact_matches
+                                    .iter()
+                                    .copied()
+                                    .filter(|other_index| other_index != index),
+                            );
+                            *index
+                        }
+                        [] => {
+                            let index = exact_matches[0];
+                            duplicate_indices_to_remove
+                                .extend(exact_matches.iter().copied().skip(1));
+                            index
+                        }
+                        _ => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: format!(
+                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
+                                ),
+                            });
+                        }
+                    }
+                }
+            }
+        };
+
+        let mut should_write = !duplicate_indices_to_remove.is_empty();
+        if !duplicate_indices_to_remove.is_empty() {
+            let mut merged_target = entries[target_index].clone();
+            for duplicate_index in duplicate_indices_to_remove.iter().copied() {
+                merged_target =
+                    TaskRunEntry::merge_attempt_entries(&merged_target, &entries[duplicate_index]);
+            }
+            entries[target_index] = merged_target;
+        }
+
+        let finalized_entry = {
+            let entry = &mut entries[target_index];
+            if entry.outcome.is_terminal() {
+                let incompatible_terminal_update =
+                    Self::option_conflicts(entry.run_id.as_deref(), Some(run_id))
+                        || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
+                        || entry.started_at != started_at;
+                if incompatible_terminal_update {
+                    let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
+                    return Err(Self::finalized_task_run_already_exists_error(
+                        milestone_id,
+                        bead_id,
+                        project_id,
+                        existing_run_id,
+                        entry.outcome,
+                    ));
+                }
+
+                let can_backfill_without_repair = entry.outcome == outcome
+                    && (outcome_detail.is_none()
+                        || entry.outcome_detail.is_none()
+                        || entry.outcome_detail == outcome_detail);
+
+                if can_backfill_without_repair {
+                    should_write |= Self::backfill_terminal_entry(
+                        entry,
+                        plan_hash,
+                        outcome_detail.as_deref(),
+                        finished_at,
+                        allow_terminal_repair,
+                    );
+                } else if allow_terminal_repair {
+                    should_write |= Self::replace_terminal_entry(
+                        entry,
+                        milestone_id,
+                        bead_id,
+                        project_id,
+                        run_id,
+                        plan_hash,
+                        started_at,
+                        outcome,
+                        outcome_detail,
+                        finished_at,
+                    )?;
+                } else {
+                    let existing_run_id = entry.run_id.as_deref().unwrap_or(run_id);
+                    return Err(Self::finalized_task_run_already_exists_error(
+                        milestone_id,
+                        bead_id,
+                        project_id,
+                        existing_run_id,
+                        entry.outcome,
+                    ));
+                }
+            } else {
+                if let Some(plan_hash) = plan_hash {
+                    match entry.plan_hash.as_deref() {
+                        Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
+                            return Err(AppError::CorruptRecord {
+                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
+                                details: Self::plan_hash_conflict_details(
+                                    bead_id,
+                                    project_id,
+                                    entry.run_id.as_deref().unwrap_or(run_id),
+                                    existing_plan_hash,
+                                    plan_hash,
+                                ),
+                            });
+                        }
+                        None => entry.plan_hash = Some(plan_hash.to_owned()),
+                        _ => {}
+                    }
+                }
+                entry.outcome = outcome;
+                entry.outcome_detail = outcome_detail;
+                entry.finished_at = Some(finished_at);
+                should_write = true;
+            }
+
+            entry.clone()
+        };
+
+        if should_write {
+            let filtered_entries: Vec<TaskRunEntry> = entries
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| !duplicate_indices_to_remove.contains(index))
+                .map(|(_, entry)| entry.clone())
+                .collect();
+            Self::write_task_runs(path, &filtered_entries)?;
+        }
+
+        Ok(finalized_entry)
+    }
 }
 
 impl TaskRunLineagePort for FsTaskRunLineageStore {
@@ -2842,6 +3313,17 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         match finalized_attempts.as_slice() {
             [] => {}
             [entry] => {
+                if let Some(reopened_entry) = Self::reopen_failed_exact_attempt(
+                    &mut entries,
+                    entry,
+                    bead_id,
+                    project_id,
+                    run_id,
+                    plan_hash,
+                )? {
+                    Self::write_task_runs(&path, &entries)?;
+                    return Ok(reopened_entry);
+                }
                 let finalized_attempt = entry
                     .run_id
                     .as_deref()
@@ -2941,215 +3423,52 @@ impl TaskRunLineagePort for FsTaskRunLineageStore {
         let path = Self::task_runs_path(base_dir, milestone_id);
         let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
         let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
-        let legacy_repaired = Self::fail_legacy_runless_entries(&mut entries, finished_at);
-        if legacy_repaired {
-            Self::write_task_runs(&path, &entries)?;
-        }
-        if entries.is_empty() {
-            return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                details: format!(
-                    "no task runs file found when updating bead={bead_id} project={project_id}"
-                ),
-            });
-        }
+        Self::finalize_task_run_internal(
+            &path,
+            milestone_id,
+            &mut entries,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            outcome,
+            outcome_detail,
+            finished_at,
+            false,
+        )
+    }
 
-        let matching_indices: Vec<usize> = entries
-            .iter()
-            .enumerate()
-            .filter_map(|(index, entry)| {
-                (entry.bead_id == bead_id && entry.project_id == project_id).then_some(index)
-            })
-            .collect();
-        if matching_indices.is_empty() {
-            return Err(AppError::CorruptRecord {
-                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                details: format!("no matching task run for bead={bead_id} project={project_id}"),
-            });
-        }
-
-        let mut duplicate_indices_to_remove = Vec::new();
-        let target_index = {
-            let exact_matches: Vec<usize> = matching_indices
-                .iter()
-                .copied()
-                .filter(|index| entries[*index].run_id.as_deref() == Some(run_id))
-                .collect();
-            match exact_matches.as_slice() {
-                [index] => *index,
-                [] => {
-                    let open_matches: Vec<usize> = matching_indices
-                        .iter()
-                        .copied()
-                        .filter(|index| {
-                            !entries[*index].outcome.is_terminal()
-                                && !Self::is_superseded_legacy_start(&entries, *index)
-                        })
-                        .collect();
-                    match open_matches.as_slice() {
-                        [] => {
-                            // Pre-filter to rows matching started_at so that
-                            // unrelated completed attempts for the same
-                            // bead/project are excluded from the uniqueness
-                            // check (they would otherwise cause
-                            // is_legacy_start_for to reject valid candidates).
-                            let attempt_indices: Vec<usize> = matching_indices
-                                .iter()
-                                .copied()
-                                .filter(|index| entries[*index].started_at == started_at)
-                                .collect();
-                            match Self::unique_terminal_replay_match(
-                                &entries,
-                                &attempt_indices,
-                                run_id,
-                            ) {
-                                Some(index) => index,
-                                None => {
-                                    return Err(AppError::CorruptRecord {
-                                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                        details: format!(
-                                            "no matching task run for bead={bead_id} project={project_id} run={run_id}"
-                                        ),
-                                    });
-                                }
-                            }
-                        }
-                        [index] => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "no matching task run for bead={bead_id} project={project_id} run={run_id}; only run={} is still open",
-                                    entries[*index].run_id.as_deref().unwrap_or("<missing>")
-                                ),
-                            });
-                        }
-                        _ => {
-                            let open_run_ids: Vec<&str> = open_matches
-                                .iter()
-                                .map(|idx| entries[*idx].run_id.as_deref().unwrap_or("<none>"))
-                                .collect();
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}; open runs: [{}]",
-                                    open_run_ids.join(", ")
-                                ),
-                            });
-                        }
-                    }
-                }
-                _ => {
-                    let terminal_exact_matches: Vec<usize> = exact_matches
-                        .iter()
-                        .copied()
-                        .filter(|index| entries[*index].outcome.is_terminal())
-                        .collect();
-                    match terminal_exact_matches.as_slice() {
-                        [index] => {
-                            duplicate_indices_to_remove.extend(
-                                exact_matches
-                                    .iter()
-                                    .copied()
-                                    .filter(|other_index| other_index != index),
-                            );
-                            *index
-                        }
-                        [] => {
-                            let index = exact_matches[0];
-                            duplicate_indices_to_remove
-                                .extend(exact_matches.iter().copied().skip(1));
-                            index
-                        }
-                        _ => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: format!(
-                                    "ambiguous task run update for bead={bead_id} project={project_id} run={run_id}"
-                                ),
-                            });
-                        }
-                    }
-                }
-            }
-        };
-
-        let mut should_write = !duplicate_indices_to_remove.is_empty();
-        if !duplicate_indices_to_remove.is_empty() {
-            let mut merged_target = entries[target_index].clone();
-            for duplicate_index in duplicate_indices_to_remove.iter().copied() {
-                merged_target =
-                    TaskRunEntry::merge_attempt_entries(&merged_target, &entries[duplicate_index]);
-            }
-            entries[target_index] = merged_target;
-        }
-
-        let finalized_entry = {
-            let entry = &mut entries[target_index];
-            if entry.outcome.is_terminal() {
-                let run_suffix = entry.run_id.as_deref().unwrap_or(run_id);
-                let run_suffix = format!(" run={run_suffix}");
-                let incompatible_terminal_update = entry.outcome != outcome
-                    || Self::option_conflicts(entry.run_id.as_deref(), Some(run_id))
-                    || Self::option_conflicts(entry.plan_hash.as_deref(), plan_hash)
-                    || Self::option_conflicts(
-                        entry.outcome_detail.as_deref(),
-                        outcome_detail.as_deref(),
-                    );
-                if incompatible_terminal_update {
-                    return Err(AppError::CorruptRecord {
-                        file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                        details: format!(
-                            "task run for bead={bead_id} project={project_id}{run_suffix} is already finalized with outcome={}",
-                            entry.outcome,
-                        ),
-                    });
-                }
-
-                should_write |= Self::backfill_terminal_entry(
-                    entry,
-                    plan_hash,
-                    outcome_detail.as_deref(),
-                    finished_at,
-                );
-            } else {
-                if let Some(plan_hash) = plan_hash {
-                    match entry.plan_hash.as_deref() {
-                        Some(existing_plan_hash) if existing_plan_hash != plan_hash => {
-                            return Err(AppError::CorruptRecord {
-                                file: format!("milestones/{}/task-runs.ndjson", milestone_id),
-                                details: Self::plan_hash_conflict_details(
-                                    bead_id,
-                                    project_id,
-                                    entry.run_id.as_deref().unwrap_or(run_id),
-                                    existing_plan_hash,
-                                    plan_hash,
-                                ),
-                            });
-                        }
-                        None => entry.plan_hash = Some(plan_hash.to_owned()),
-                        _ => {}
-                    }
-                }
-                entry.outcome = outcome;
-                entry.outcome_detail = outcome_detail;
-                entry.finished_at = Some(finished_at);
-                should_write = true;
-            }
-
-            entry.clone()
-        };
-
-        if should_write {
-            let filtered_entries: Vec<TaskRunEntry> = entries
-                .iter()
-                .enumerate()
-                .filter(|(index, _)| !duplicate_indices_to_remove.contains(index))
-                .map(|(_, entry)| entry.clone())
-                .collect();
-            Self::write_task_runs(&path, &filtered_entries)?;
-        }
-
-        Ok(finalized_entry)
+    fn repair_task_run_terminal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+    ) -> AppResult<TaskRunEntry> {
+        let path = Self::task_runs_path(base_dir, milestone_id);
+        let _lock = AdvisoryFileLock::acquire(&Self::task_runs_lock_path(base_dir, milestone_id))?;
+        let mut entries = Self::read_task_runs_from_path(&path, milestone_id)?;
+        Self::finalize_task_run_internal(
+            &path,
+            milestone_id,
+            &mut entries,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            outcome,
+            outcome_detail,
+            finished_at,
+            true,
+        )
     }
 
     fn find_runs_for_bead(
@@ -3738,6 +4057,67 @@ mod tests {
             requested_json,
             "merged completion details must match fully-populated requested"
         );
+    }
+
+    #[test]
+    fn repair_completion_event_removes_stale_row_even_when_exact_event_exists() {
+        use crate::contexts::milestone_record::model::{
+            render_completion_journal_details, MilestoneEventType, MilestoneId,
+            MilestoneJournalEvent,
+        };
+        use chrono::{TimeZone, Utc};
+
+        let store = FsMilestoneJournalStore;
+        let temp = tempdir().expect("tempdir");
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let milestone_root = FileSystem::milestone_root(temp.path(), &milestone_id);
+        std::fs::create_dir_all(&milestone_root).expect("create milestone root");
+
+        let started_at = Utc.with_ymd_and_hms(2026, 4, 1, 10, 11, 0).unwrap();
+        let stale_timestamp = Utc.with_ymd_and_hms(2026, 4, 1, 10, 12, 0).unwrap();
+        let repaired_timestamp = Utc.with_ymd_and_hms(2026, 4, 1, 10, 15, 0).unwrap();
+        let stale_event =
+            MilestoneJournalEvent::new(MilestoneEventType::BeadFailed, stale_timestamp)
+                .with_bead("ms-alpha.bead-2")
+                .with_details(render_completion_journal_details(
+                    "proj-1",
+                    Some("run-1"),
+                    Some("plan-1"),
+                    started_at,
+                    "failed",
+                    Some("stale failure"),
+                ));
+        let exact_event =
+            MilestoneJournalEvent::new(MilestoneEventType::BeadCompleted, repaired_timestamp)
+                .with_bead("ms-alpha.bead-2")
+                .with_details(render_completion_journal_details(
+                    "proj-1",
+                    Some("run-1"),
+                    Some("plan-1"),
+                    started_at,
+                    "succeeded",
+                    None,
+                ));
+        let journal_path = FsMilestoneJournalStore::journal_path(temp.path(), &milestone_id);
+        FsMilestoneJournalStore::write_journal(
+            &journal_path,
+            &[stale_event.clone(), exact_event.clone()],
+        )
+        .expect("write journal");
+
+        let changed = store
+            .repair_completion_event(temp.path(), &milestone_id, &exact_event)
+            .expect("repair completion event");
+        assert!(changed, "stale conflicting row should be removed");
+
+        let repaired =
+            FsMilestoneJournalStore::read_journal_from_path(&journal_path, &milestone_id)
+                .expect("read repaired journal");
+        assert_eq!(repaired.len(), 1);
+        assert_eq!(repaired[0].timestamp, exact_event.timestamp);
+        assert_eq!(repaired[0].event_type, exact_event.event_type);
+        assert_eq!(repaired[0].bead_id, exact_event.bead_id);
+        assert_eq!(repaired[0].details, exact_event.details);
     }
 
     #[test]

@@ -377,6 +377,7 @@ fn run_query_views_round_trip_through_json() {
             status: RunStatus::Paused,
             cycle_history: Vec::new(),
             completion_rounds: 0,
+            max_completion_rounds: Some(0),
             rollback_point_meta: RollbackPointMeta::default(),
             amendment_queue: AmendmentQueueState {
                 pending: vec![],

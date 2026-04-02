@@ -5,6 +5,9 @@ use chrono::{DateTime, Utc};
 use crate::adapters::fs::FileSystem;
 use crate::contexts::requirements_drafting::service::SeedHandoff;
 use crate::contexts::workflow_composition;
+use crate::contexts::workspace_governance::config::{
+    EffectiveConfig, DEFAULT_MAX_COMPLETION_ROUNDS,
+};
 use crate::shared::domain::{FlowPreset, ProjectId, StageCursor, StageId};
 use crate::shared::error::{AppError, AppResult};
 
@@ -236,6 +239,35 @@ pub struct CreateProjectInput {
     pub task_source: Option<TaskSource>,
 }
 
+/// Bead-backed execution context used to bootstrap a project from milestone state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BeadProjectContext {
+    pub milestone_id: String,
+    pub milestone_name: String,
+    pub milestone_description: String,
+    pub milestone_summary: Option<String>,
+    pub milestone_goals: Vec<String>,
+    pub milestone_constraints: Vec<String>,
+    pub agents_guidance: Option<String>,
+    pub bead_id: String,
+    pub bead_title: String,
+    pub bead_description: Option<String>,
+    pub bead_acceptance_criteria: Vec<String>,
+    pub bead_dependencies: Vec<String>,
+    pub parent_epic_id: Option<String>,
+    pub flow: FlowPreset,
+    pub plan_hash: Option<String>,
+    pub plan_version: Option<u32>,
+}
+
+/// Input for creating a project directly from milestone + bead context.
+pub struct CreateProjectFromBeadContextInput {
+    pub project_id: Option<ProjectId>,
+    pub prompt_override: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub context: BeadProjectContext,
+}
+
 /// Create a new project with all canonical files.
 pub fn create_project(
     store: &dyn ProjectStorePort,
@@ -321,6 +353,196 @@ pub fn create_project_from_seed(
     )
 }
 
+pub fn create_project_from_bead_context(
+    store: &dyn ProjectStorePort,
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    input: CreateProjectFromBeadContextInput,
+) -> AppResult<ProjectRecord> {
+    let CreateProjectFromBeadContextInput {
+        project_id,
+        prompt_override,
+        created_at,
+        context,
+    } = input;
+
+    let project_id = project_id.unwrap_or(default_project_id_for_bead(
+        &context.milestone_id,
+        &context.bead_id,
+    )?);
+    let prompt_contents = match prompt_override {
+        Some(prompt) => prompt,
+        None => render_bead_task_prompt(&context),
+    };
+    let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
+
+    let mut initial_details = serde_json::Map::from_iter([
+        (
+            "project_id".to_owned(),
+            serde_json::Value::String(project_id.to_string()),
+        ),
+        (
+            "flow".to_owned(),
+            serde_json::Value::String(context.flow.as_str().to_owned()),
+        ),
+        (
+            "source".to_owned(),
+            serde_json::Value::String("milestone_bead".to_owned()),
+        ),
+        (
+            "milestone_id".to_owned(),
+            serde_json::Value::String(context.milestone_id.clone()),
+        ),
+        (
+            "bead_id".to_owned(),
+            serde_json::Value::String(context.bead_id.clone()),
+        ),
+        (
+            "bead_title".to_owned(),
+            serde_json::Value::String(context.bead_title.clone()),
+        ),
+    ]);
+    if let Some(parent_epic_id) = &context.parent_epic_id {
+        initial_details.insert(
+            "parent_epic_id".to_owned(),
+            serde_json::Value::String(parent_epic_id.clone()),
+        );
+    }
+    if let Some(plan_hash) = &context.plan_hash {
+        initial_details.insert(
+            "plan_hash".to_owned(),
+            serde_json::Value::String(plan_hash.clone()),
+        );
+    }
+    if let Some(plan_version) = context.plan_version {
+        initial_details.insert(
+            "plan_version".to_owned(),
+            serde_json::Value::Number(plan_version.into()),
+        );
+    }
+
+    let project_name = format!("{}: {}", context.milestone_name, context.bead_title);
+    let task_source = Some(TaskSource {
+        milestone_id: context.milestone_id,
+        bead_id: context.bead_id,
+        parent_epic_id: context.parent_epic_id,
+        origin: super::model::TaskOrigin::Milestone,
+        plan_hash: context.plan_hash,
+        plan_version: context.plan_version,
+    });
+
+    let input = CreateProjectInput {
+        id: project_id,
+        name: project_name,
+        flow: context.flow,
+        prompt_path: "prompt.md".to_owned(),
+        prompt_contents,
+        prompt_hash,
+        created_at,
+        task_source,
+    };
+
+    create_project_with_initial_details(
+        store,
+        journal_store,
+        base_dir,
+        input,
+        serde_json::Value::Object(initial_details),
+    )
+}
+
+pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
+    fn bullet_lines(items: &[String]) -> String {
+        items
+            .iter()
+            .map(|item| format!("- {item}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    let mut sections = vec![
+        format!(
+            "# Ralph Task Prompt\n\nThis project executes bead `{}` for milestone `{}`.",
+            context.bead_id, context.milestone_id
+        ),
+        format!(
+            "## Milestone\n\n- ID: `{}`\n- Name: {}\n\n{}",
+            context.milestone_id, context.milestone_name, context.milestone_description
+        ),
+    ];
+
+    if let Some(summary) = &context.milestone_summary {
+        sections.push(format!("## Milestone Summary\n\n{summary}"));
+    }
+    if !context.milestone_goals.is_empty() {
+        sections.push(format!(
+            "## Milestone Goals\n\n{}",
+            bullet_lines(&context.milestone_goals)
+        ));
+    }
+    if !context.milestone_constraints.is_empty() {
+        sections.push(format!(
+            "## Constraints\n\n{}",
+            bullet_lines(&context.milestone_constraints)
+        ));
+    }
+
+    let mut bead_header = format!(
+        "## Active Bead\n\n- ID: `{}`\n- Title: {}",
+        context.bead_id, context.bead_title
+    );
+    if let Some(parent_epic_id) = &context.parent_epic_id {
+        bead_header.push_str(&format!("\n- Parent epic: `{parent_epic_id}`"));
+    }
+    if let Some(plan_version) = context.plan_version {
+        bead_header.push_str(&format!("\n- Plan version: {plan_version}"));
+    }
+    sections.push(bead_header);
+
+    if let Some(description) = &context.bead_description {
+        sections.push(format!("## Scope\n\n{description}"));
+    }
+    if !context.bead_dependencies.is_empty() {
+        sections.push(format!(
+            "## Dependencies\n\n{}",
+            bullet_lines(&context.bead_dependencies)
+        ));
+    }
+    if !context.bead_acceptance_criteria.is_empty() {
+        sections.push(format!(
+            "## Acceptance Criteria\n\n{}",
+            bullet_lines(&context.bead_acceptance_criteria)
+        ));
+    }
+    if let Some(guidance) = &context.agents_guidance {
+        sections.push(format!("## AGENTS Guidance\n\n{guidance}"));
+    }
+
+    sections.join("\n\n")
+}
+
+fn default_project_id_for_bead(milestone_id: &str, bead_id: &str) -> AppResult<ProjectId> {
+    let bead_segment = bead_id
+        .strip_prefix(milestone_id)
+        .and_then(|suffix| suffix.strip_prefix('.'))
+        .unwrap_or(bead_id);
+    ProjectId::new(format!(
+        "task-{}-{}",
+        sanitize_project_id_component(milestone_id),
+        sanitize_project_id_component(bead_segment)
+    ))
+}
+
+fn sanitize_project_id_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '-' | '_' | '.' => ch,
+            _ => '-',
+        })
+        .collect()
+}
+
 fn create_project_with_initial_details(
     store: &dyn ProjectStorePort,
     journal_store: &dyn JournalStorePort,
@@ -346,7 +568,10 @@ fn create_project_with_initial_details(
         task_source: input.task_source,
     };
 
-    let run_snapshot = RunSnapshot::initial();
+    let max_completion_rounds = EffectiveConfig::load(base_dir)
+        .map(|cfg| cfg.run_policy().max_completion_rounds)
+        .unwrap_or(DEFAULT_MAX_COMPLETION_ROUNDS);
+    let run_snapshot = RunSnapshot::initial(max_completion_rounds);
     let sessions = SessionStore::empty();
 
     // Create the initial journal event
@@ -1625,7 +1850,6 @@ pub fn reopen_completed_project_with_snapshot(
     snapshot.active_run = None;
     snapshot.status = RunStatus::Paused;
     snapshot.status_summary = "paused: amendments staged".to_owned();
-
     run_write_port.write_run_snapshot(base_dir, project_id, snapshot)?;
     Ok(())
 }

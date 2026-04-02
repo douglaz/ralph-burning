@@ -380,7 +380,7 @@ impl FromStr for BackendPolicyRole {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct BackendSelection {
     pub family: BackendFamily,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -439,28 +439,40 @@ impl fmt::Display for BackendSelection {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PanelBackendSpec {
-    Required(BackendFamily),
-    Optional(BackendFamily),
+    Required(BackendSelection),
+    Optional(BackendSelection),
 }
 
 impl PanelBackendSpec {
     pub fn required(backend: BackendFamily) -> Self {
-        Self::Required(backend)
+        Self::required_selection(BackendSelection::new(backend, None))
+    }
+
+    pub fn required_selection(selection: BackendSelection) -> Self {
+        Self::Required(selection)
     }
 
     pub fn optional(backend: BackendFamily) -> Self {
-        Self::Optional(backend)
+        Self::optional_selection(BackendSelection::new(backend, None))
     }
 
-    pub fn backend(self) -> BackendFamily {
+    pub fn optional_selection(selection: BackendSelection) -> Self {
+        Self::Optional(selection)
+    }
+
+    pub fn selection(&self) -> &BackendSelection {
         match self {
-            Self::Required(backend) | Self::Optional(backend) => backend,
+            Self::Required(selection) | Self::Optional(selection) => selection,
         }
     }
 
-    pub fn is_optional(self) -> bool {
+    pub fn backend(&self) -> BackendFamily {
+        self.selection().family
+    }
+
+    pub fn is_optional(&self) -> bool {
         matches!(self, Self::Optional(_))
     }
 }
@@ -468,8 +480,8 @@ impl PanelBackendSpec {
 impl fmt::Display for PanelBackendSpec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Required(backend) => write!(f, "{}", backend.as_str()),
-            Self::Optional(backend) => write!(f, "?{}", backend.as_str()),
+            Self::Required(selection) => write!(f, "{selection}"),
+            Self::Optional(selection) => write!(f, "?{selection}"),
         }
     }
 }
@@ -488,9 +500,13 @@ impl FromStr for PanelBackendSpec {
         }
 
         if let Some(optional) = normalized.strip_prefix('?') {
-            Ok(Self::Optional(optional.parse::<BackendFamily>()?))
+            Ok(Self::optional_selection(
+                BackendSelection::from_backend_name(optional)?,
+            ))
         } else {
-            Ok(Self::Required(normalized.parse::<BackendFamily>()?))
+            Ok(Self::required_selection(
+                BackendSelection::from_backend_name(normalized)?,
+            ))
         }
     }
 }
@@ -1200,6 +1216,8 @@ pub struct FinalReviewSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backends: Option<Vec<PanelBackendSpec>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub planner_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arbiter_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_reviewers: Option<usize>,
@@ -1215,6 +1233,7 @@ impl FinalReviewSettings {
     pub fn is_empty(&self) -> bool {
         self.enabled.is_none()
             && self.backends.is_none()
+            && self.planner_backend.is_none()
             && self.arbiter_backend.is_none()
             && self.min_reviewers.is_none()
             && self.consensus_threshold.is_none()
@@ -1531,6 +1550,8 @@ pub struct EffectiveBackendPolicy {
     pub default_model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub planner_backend: Option<BackendSelection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub final_review_planner_backend: Option<BackendSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub implementer_backend: Option<BackendSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

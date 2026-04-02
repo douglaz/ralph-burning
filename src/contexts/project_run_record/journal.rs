@@ -1,3 +1,4 @@
+use crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource;
 use crate::shared::error::{AppError, AppResult};
 
 use super::model::{JournalEvent, JournalEventType};
@@ -98,6 +99,7 @@ pub fn run_started_event(
     timestamp: DateTime<Utc>,
     run_id: &RunId,
     first_stage: StageId,
+    max_completion_rounds: u32,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -106,6 +108,7 @@ pub fn run_started_event(
         details: serde_json::json!({
             "run_id": run_id.as_str(),
             "first_stage": first_stage.as_str(),
+            "max_completion_rounds": max_completion_rounds,
         }),
     }
 }
@@ -118,6 +121,7 @@ pub fn run_resumed_event(
     resume_stage: StageId,
     cycle: u32,
     completion_round: u32,
+    max_completion_rounds: u32,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -128,6 +132,7 @@ pub fn run_resumed_event(
             "resume_stage": resume_stage.as_str(),
             "cycle": cycle,
             "completion_round": completion_round,
+            "max_completion_rounds": max_completion_rounds,
         }),
     }
 }
@@ -240,6 +245,7 @@ pub fn run_completed_event(
     timestamp: DateTime<Utc>,
     run_id: &RunId,
     completion_rounds: u32,
+    max_completion_rounds: u32,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -248,6 +254,7 @@ pub fn run_completed_event(
         details: serde_json::json!({
             "run_id": run_id.as_str(),
             "completion_rounds": completion_rounds,
+            "max_completion_rounds": max_completion_rounds,
         }),
     }
 }
@@ -262,6 +269,7 @@ pub fn completion_round_advanced_event(
     from_round: u32,
     to_round: u32,
     amendment_count: u32,
+    max_completion_rounds: u32,
 ) -> JournalEvent {
     JournalEvent {
         sequence,
@@ -273,6 +281,7 @@ pub fn completion_round_advanced_event(
             "from_round": from_round,
             "to_round": to_round,
             "amendment_count": amendment_count,
+            "max_completion_rounds": max_completion_rounds,
         }),
     }
 }
@@ -288,19 +297,26 @@ pub fn amendment_queued_event(
     body: &str,
     source: &str,
     dedup_key: &str,
+    reviewer_sources: Option<&[FinalReviewAmendmentSource]>,
 ) -> JournalEvent {
+    let mut details = serde_json::json!({
+        "run_id": run_id.as_str(),
+        "amendment_id": amendment_id,
+        "source_stage": source_stage.as_str(),
+        "body": body,
+        "source": source,
+        "dedup_key": dedup_key,
+    });
+    if let Some(reviewer_sources) = reviewer_sources {
+        details["reviewer_sources"] = serde_json::to_value(reviewer_sources)
+            .unwrap_or_else(|_| serde_json::Value::Array(Vec::new()));
+    }
+
     JournalEvent {
         sequence,
         timestamp,
         event_type: JournalEventType::AmendmentQueued,
-        details: serde_json::json!({
-            "run_id": run_id.as_str(),
-            "amendment_id": amendment_id,
-            "source_stage": source_stage.as_str(),
-            "body": body,
-            "source": source,
-            "dedup_key": dedup_key,
-        }),
+        details,
     }
 }
 
@@ -324,6 +340,86 @@ pub fn amendment_queued_manual_event(
             "source_stage": source_stage,
             "dedup_key": dedup_key,
             "body": body,
+        }),
+    }
+}
+
+/// Build a `reviewer_started` journal event for final-review panel members.
+#[allow(clippy::too_many_arguments)]
+pub fn reviewer_started_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    completion_round: u32,
+    panel: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    backend_family: &str,
+    model_id: &str,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ReviewerStarted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "completion_round": completion_round,
+            "panel": panel,
+            "phase": phase,
+            "reviewer_id": reviewer_id,
+            "role": role,
+            "backend_family": backend_family,
+            "model_id": model_id,
+        }),
+    }
+}
+
+/// Build a `reviewer_completed` journal event for final-review panel members.
+#[allow(clippy::too_many_arguments)]
+pub fn reviewer_completed_event(
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    run_id: &RunId,
+    stage_id: StageId,
+    cycle: u32,
+    attempt: u32,
+    completion_round: u32,
+    panel: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    backend_family: &str,
+    model_id: &str,
+    duration_ms: u64,
+    outcome: &str,
+    amendment_count: usize,
+) -> JournalEvent {
+    JournalEvent {
+        sequence,
+        timestamp,
+        event_type: JournalEventType::ReviewerCompleted,
+        details: serde_json::json!({
+            "run_id": run_id.as_str(),
+            "stage_id": stage_id.as_str(),
+            "cycle": cycle,
+            "attempt": attempt,
+            "completion_round": completion_round,
+            "panel": panel,
+            "phase": phase,
+            "reviewer_id": reviewer_id,
+            "role": role,
+            "backend_family": backend_family,
+            "model_id": model_id,
+            "duration_ms": duration_ms,
+            "outcome": outcome,
+            "amendment_count": amendment_count,
         }),
     }
 }
@@ -416,6 +512,7 @@ pub fn durable_warning_event(
 }
 
 /// Build a `run_failed` journal event.
+#[allow(clippy::too_many_arguments)]
 pub fn run_failed_event(
     sequence: u64,
     timestamp: DateTime<Utc>,
@@ -423,16 +520,27 @@ pub fn run_failed_event(
     stage_id: StageId,
     failure_class: &str,
     message: &str,
+    completion_rounds: u32,
+    max_completion_rounds: u32,
+    completion_rounds_display: Option<&str>,
 ) -> JournalEvent {
+    let mut details = serde_json::json!({
+        "run_id": run_id.as_str(),
+        "stage_id": stage_id.as_str(),
+        "failure_class": failure_class,
+        "message": message,
+        "completion_rounds": completion_rounds,
+        "max_completion_rounds": max_completion_rounds,
+    });
+
+    if let Some(display) = completion_rounds_display {
+        details["completion_rounds_display"] = serde_json::json!(display);
+    }
+
     JournalEvent {
         sequence,
         timestamp,
         event_type: JournalEventType::RunFailed,
-        details: serde_json::json!({
-            "run_id": run_id.as_str(),
-            "stage_id": stage_id.as_str(),
-            "failure_class": failure_class,
-            "message": message,
-        }),
+        details,
     }
 }

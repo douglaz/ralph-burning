@@ -1152,23 +1152,44 @@ impl ProcessBackendAdapter {
         }
     }
 
+    fn codex_model_and_reasoning_effort(model_id: &str) -> (&str, Option<&str>) {
+        for effort in ["xhigh", "high", "medium", "low"] {
+            let suffix = format!("-{effort}");
+            if let Some(base_model) = model_id.strip_suffix(&suffix) {
+                if !base_model.is_empty() {
+                    return (base_model, Some(effort));
+                }
+            }
+        }
+
+        (model_id, None)
+    }
+
     fn codex_new_session_args(
         model_id: &str,
         schema_path: &Path,
         message_path: &Path,
     ) -> Vec<String> {
-        vec![
+        let (base_model_id, reasoning_effort) = Self::codex_model_and_reasoning_effort(model_id);
+        let mut args = vec![
             "exec".to_owned(),
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
-            model_id.to_owned(),
+            base_model_id.to_owned(),
+        ];
+        if let Some(reasoning_effort) = reasoning_effort {
+            args.push("-c".to_owned());
+            args.push(format!("model_reasoning_effort=\"{reasoning_effort}\""));
+        }
+        args.extend([
             "--output-schema".to_owned(),
             schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             "-".to_owned(),
-        ]
+        ]);
+        args
     }
 
     fn codex_resume_args(
@@ -1177,20 +1198,28 @@ impl ProcessBackendAdapter {
         message_path: &Path,
         session_id: &str,
     ) -> Vec<String> {
-        vec![
+        let (base_model_id, reasoning_effort) = Self::codex_model_and_reasoning_effort(model_id);
+        let mut args = vec![
             "exec".to_owned(),
             "resume".to_owned(),
             "--dangerously-bypass-approvals-and-sandbox".to_owned(),
             "--skip-git-repo-check".to_owned(),
             "--model".to_owned(),
-            model_id.to_owned(),
+            base_model_id.to_owned(),
+        ];
+        if let Some(reasoning_effort) = reasoning_effort {
+            args.push("-c".to_owned());
+            args.push(format!("model_reasoning_effort=\"{reasoning_effort}\""));
+        }
+        args.extend([
             "--output-schema".to_owned(),
             schema_path.to_string_lossy().into_owned(),
             "--output-last-message".to_owned(),
             message_path.to_string_lossy().into_owned(),
             session_id.to_owned(),
             "-".to_owned(),
-        ]
+        ]);
+        args
     }
 }
 

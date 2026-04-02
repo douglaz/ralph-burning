@@ -249,8 +249,16 @@ pub fn require_agent_record_producer<'a>(
         RecordProducer::Agent {
             backend_family,
             model_id,
-            ..
-        } => Ok((backend_family.as_str(), model_id.as_str())),
+            adapter_reported_backend_family,
+            adapter_reported_model_id,
+        } => Ok((
+            adapter_reported_backend_family
+                .as_deref()
+                .unwrap_or(backend_family.as_str()),
+            adapter_reported_model_id
+                .as_deref()
+                .unwrap_or(model_id.as_str()),
+        )),
         _ => Err(AppError::InvocationFailed {
             backend: backend.to_owned(),
             contract_id: contract_id.to_owned(),
@@ -343,6 +351,27 @@ mod tests {
             )
             .expect("agent producer"),
             ("claude", "claude-opus-4-6")
+        );
+    }
+
+    #[test]
+    fn require_agent_record_producer_prefers_adapter_reported_values() {
+        let producer = RecordProducer::Agent {
+            backend_family: "claude".to_owned(),
+            model_id: "claude-opus-4-6".to_owned(),
+            adapter_reported_backend_family: Some("openrouter".to_owned()),
+            adapter_reported_model_id: Some("openai/gpt-4.1".to_owned()),
+        };
+
+        assert_eq!(
+            require_agent_record_producer(
+                &producer,
+                "claude",
+                "final_review:reviewer",
+                "final-review reviewer invocations must produce agent metadata",
+            )
+            .expect("agent producer"),
+            ("openrouter", "openai/gpt-4.1")
         );
     }
 

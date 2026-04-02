@@ -2,6 +2,7 @@ use chrono::{TimeZone, Utc};
 
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{JournalEvent, JournalEventType};
+use ralph_burning::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource;
 use ralph_burning::shared::domain::{FailureClass, RunId, StageId};
 use ralph_burning::shared::error::AppError;
 
@@ -212,13 +213,15 @@ fn stage_failed_event_builder_serializes_failure_metadata() {
 #[test]
 fn run_resumed_event_builder_serializes_resume_cursor() {
     let run_id = RunId::new("run-1").expect("run id");
-    let event = journal::run_resumed_event(3, test_timestamp(), &run_id, StageId::Planning, 2, 4);
+    let event =
+        journal::run_resumed_event(3, test_timestamp(), &run_id, StageId::Planning, 2, 4, 20);
 
     assert_eq!(event.event_type, JournalEventType::RunResumed);
     assert_eq!(event.details["run_id"], "run-1");
     assert_eq!(event.details["resume_stage"], "planning");
     assert_eq!(event.details["cycle"], 2);
     assert_eq!(event.details["completion_round"], 4);
+    assert_eq!(event.details["max_completion_rounds"], 20);
 }
 
 #[test]
@@ -232,6 +235,7 @@ fn completion_round_advanced_event_builder_serializes_round_metadata() {
         1,
         2,
         3,
+        20,
     );
 
     assert_eq!(event.event_type, JournalEventType::CompletionRoundAdvanced);
@@ -241,6 +245,28 @@ fn completion_round_advanced_event_builder_serializes_round_metadata() {
     assert_eq!(event.details["from_round"], 1);
     assert_eq!(event.details["to_round"], 2);
     assert_eq!(event.details["amendment_count"], 3);
+    assert_eq!(event.details["max_completion_rounds"], 20);
+}
+
+#[test]
+fn run_failed_event_builder_serializes_round_ratio_for_force_completion() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::run_failed_event(
+        4,
+        test_timestamp(),
+        &run_id,
+        StageId::CompletionPanel,
+        "stage_commit_failed",
+        "max completion rounds exceeded: 3/2",
+        3,
+        2,
+        Some("3/2"),
+    );
+
+    assert_eq!(event.event_type, JournalEventType::RunFailed);
+    assert_eq!(event.details["completion_rounds"], 3);
+    assert_eq!(event.details["max_completion_rounds"], 2);
+    assert_eq!(event.details["completion_rounds_display"], "3/2");
 }
 
 #[test]
@@ -255,6 +281,11 @@ fn amendment_queued_event_builder_serializes_amendment_metadata() {
         "fix the widget alignment",
         "workflow_stage",
         "test-dedup-key",
+        Some(&[FinalReviewAmendmentSource {
+            reviewer_id: "reviewer-1".to_owned(),
+            backend_family: "claude".to_owned(),
+            model_id: "claude-opus".to_owned(),
+        }]),
     );
 
     assert_eq!(event.event_type, JournalEventType::AmendmentQueued);
@@ -263,4 +294,40 @@ fn amendment_queued_event_builder_serializes_amendment_metadata() {
     assert_eq!(event.details["amendment_id"], "amend-001");
     assert_eq!(event.details["source_stage"], "acceptance_qa");
     assert_eq!(event.details["body"], "fix the widget alignment");
+    assert_eq!(
+        event.details["reviewer_sources"][0]["reviewer_id"],
+        "reviewer-1"
+    );
+}
+
+#[test]
+fn reviewer_completed_event_builder_serializes_timing_metadata() {
+    let run_id = RunId::new("run-1").expect("run id");
+    let event = journal::reviewer_completed_event(
+        6,
+        test_timestamp(),
+        &run_id,
+        StageId::FinalReview,
+        1,
+        2,
+        3,
+        "final_review",
+        "proposal",
+        "reviewer-2",
+        "reviewer",
+        "codex",
+        "gpt-5.4",
+        37,
+        "proposed_amendments",
+        2,
+    );
+
+    assert_eq!(event.event_type, JournalEventType::ReviewerCompleted);
+    assert_eq!(event.details["stage_id"], "final_review");
+    assert_eq!(event.details["phase"], "proposal");
+    assert_eq!(event.details["reviewer_id"], "reviewer-2");
+    assert_eq!(event.details["backend_family"], "codex");
+    assert_eq!(event.details["duration_ms"], 37);
+    assert_eq!(event.details["outcome"], "proposed_amendments");
+    assert_eq!(event.details["amendment_count"], 2);
 }

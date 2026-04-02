@@ -51,7 +51,7 @@ fn setup_workspace(base_dir: &std::path::Path) {
 fn create_project_on_disk(base_dir: &std::path::Path, id: &str) {
     let store = FsProjectStore;
     let record = make_project_record(id);
-    let snapshot = RunSnapshot::initial();
+    let snapshot = RunSnapshot::initial(20);
     let sessions = SessionStore::empty();
     let event = JournalEvent {
         sequence: 1,
@@ -405,6 +405,42 @@ fn run_snapshot_store_round_trip() {
 }
 
 #[test]
+fn run_snapshot_store_preserves_missing_legacy_max_completion_rounds() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let run_json_path = tmp.path().join(".ralph-burning/projects/alpha/run.json");
+    let legacy_snapshot = serde_json::json!({
+        "active_run": null,
+        "status": "not_started",
+        "cycle_history": [],
+        "completion_rounds": 0,
+        "rollback_point_meta": {"last_rollback_id": null, "rollback_count": 0},
+        "amendment_queue": {"pending": [], "processed_count": 0},
+        "status_summary": "not started"
+    });
+    fs::write(
+        &run_json_path,
+        serde_json::to_string_pretty(&legacy_snapshot).unwrap(),
+    )
+    .unwrap();
+
+    let store = FsRunSnapshotStore;
+    let pid = ProjectId::new("alpha").unwrap();
+    let snapshot = store.read_run_snapshot(tmp.path(), &pid).unwrap();
+
+    assert_eq!(snapshot.max_completion_rounds, None);
+
+    let persisted = fs::read_to_string(&run_json_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+    assert!(
+        parsed.get("max_completion_rounds").is_none(),
+        "read-only snapshot loads must not rewrite legacy run.json"
+    );
+}
+
+#[test]
 fn run_snapshot_store_missing_file_returns_corrupt() {
     let tmp = tempdir().unwrap();
     setup_workspace(tmp.path());
@@ -481,7 +517,7 @@ fn rollback_point_store_round_trip_write_list_and_read_by_stage() {
         stage_id: StageId::Planning,
         cycle: 1,
         git_sha: Some("abc123".to_owned()),
-        run_snapshot: RunSnapshot::initial(),
+        run_snapshot: RunSnapshot::initial(20),
     };
     let review_point = RollbackPoint {
         rollback_id: "rb-review".to_owned(),
@@ -489,7 +525,7 @@ fn rollback_point_store_round_trip_write_list_and_read_by_stage() {
         stage_id: StageId::Review,
         cycle: 1,
         git_sha: None,
-        run_snapshot: RunSnapshot::initial(),
+        run_snapshot: RunSnapshot::initial(20),
     };
 
     store
@@ -512,6 +548,60 @@ fn rollback_point_store_round_trip_write_list_and_read_by_stage() {
         .expect("review point exists");
     assert_eq!(by_stage.rollback_id, "rb-review");
     assert_eq!(by_stage.stage_id, StageId::Review);
+}
+
+#[test]
+fn rollback_point_store_preserves_missing_legacy_max_completion_rounds() {
+    let tmp = tempdir().unwrap();
+    setup_workspace(tmp.path());
+    create_project_on_disk(tmp.path(), "alpha");
+
+    let rollback_path = tmp
+        .path()
+        .join(".ralph-burning/projects/alpha/rollback/rb-planning.json");
+    let legacy_point = serde_json::json!({
+        "rollback_id": "rb-planning",
+        "created_at": "2026-03-11T19:00:00Z",
+        "stage_id": "planning",
+        "cycle": 1,
+        "git_sha": "abc123",
+        "run_snapshot": {
+            "active_run": null,
+            "status": "paused",
+            "cycle_history": [],
+            "completion_rounds": 1,
+            "rollback_point_meta": {"last_rollback_id": null, "rollback_count": 0},
+            "amendment_queue": {"pending": [], "processed_count": 0},
+            "status_summary": "paused"
+        }
+    });
+    fs::write(
+        &rollback_path,
+        serde_json::to_string_pretty(&legacy_point).unwrap(),
+    )
+    .unwrap();
+
+    let store = FsRollbackPointStore;
+    let pid = ProjectId::new("alpha").unwrap();
+
+    let listed = store.list_rollback_points(tmp.path(), &pid).unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].run_snapshot.max_completion_rounds, None);
+
+    let by_stage = store
+        .read_rollback_point_by_stage(tmp.path(), &pid, StageId::Planning)
+        .unwrap()
+        .expect("planning point exists");
+    assert_eq!(by_stage.run_snapshot.max_completion_rounds, None);
+
+    let persisted = fs::read_to_string(&rollback_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&persisted).unwrap();
+    assert!(
+        parsed["run_snapshot"]
+            .get("max_completion_rounds")
+            .is_none(),
+        "read-only rollback loads must preserve legacy artifact contents"
+    );
 }
 
 // ── FsArtifactStore ──
@@ -1012,7 +1102,7 @@ fn project_create_copies_prompt_and_records_canonical_reference() {
 
     let store = FsProjectStore;
     let record = make_project_record("alpha");
-    let snapshot = RunSnapshot::initial();
+    let snapshot = RunSnapshot::initial(20);
     let sessions = SessionStore::empty();
     let event = JournalEvent {
         sequence: 1,

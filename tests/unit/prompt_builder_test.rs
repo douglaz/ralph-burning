@@ -109,7 +109,7 @@ fn build_stage_prompt_includes_project_prompt_role_prior_outputs_remediation_ame
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::PromptReview),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::PromptReview, 20),
         journal::stage_completed_event(
             3,
             Utc::now(),
@@ -234,7 +234,7 @@ fn build_stage_prompt_omits_prior_outputs_section_when_current_cycle_has_no_comp
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
         journal::stage_completed_event(
             3,
             Utc::now(),
@@ -299,7 +299,7 @@ fn build_stage_prompt_excludes_rolled_back_prior_outputs() {
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::PromptReview),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::PromptReview, 20),
         journal::stage_completed_event(
             3,
             Utc::now(),
@@ -423,7 +423,7 @@ fn build_stage_prompt_omits_remediation_and_amendments_section_when_inputs_are_e
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
         journal::stage_completed_event(
             3,
             Utc::now(),
@@ -489,7 +489,7 @@ fn build_stage_prompt_returns_diagnostic_error_when_journal_references_missing_p
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
         journal::stage_completed_event(
             3,
             Utc::now(),
@@ -552,7 +552,7 @@ fn build_stage_prompt_with_workspace_template_override() {
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
     ];
     write_prompt_fixture(
         base_dir,
@@ -608,7 +608,7 @@ fn build_stage_prompt_fails_on_malformed_workspace_override() {
 
     let events = vec![
         project_created_event(&project_id),
-        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
     ];
     write_prompt_fixture(
         base_dir,

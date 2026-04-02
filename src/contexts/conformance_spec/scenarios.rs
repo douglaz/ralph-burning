@@ -12965,7 +12965,7 @@ fn register_workflow_slice5(m: &mut HashMap<String, ScenarioExecutor>) {
                 .write_amendment(ws.path(), &pid, &amendment)
                 .map_err(|e| format!("write amendment: {e}"))?;
 
-            let mut snapshot = crate::contexts::project_run_record::model::RunSnapshot::initial();
+            let mut snapshot = crate::contexts::project_run_record::model::RunSnapshot::initial(20);
             snapshot.completion_rounds = 1;
             snapshot.amendment_queue.pending.push(amendment);
 

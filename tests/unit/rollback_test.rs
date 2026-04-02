@@ -42,6 +42,7 @@ fn running_snapshot(stage: StageId) -> RunSnapshot {
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: format!("running: {}", stage.display_name()),
@@ -56,6 +57,7 @@ fn paused_snapshot(summary: &str) -> RunSnapshot {
         status: RunStatus::Paused,
         cycle_history: Vec::new(),
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: summary.to_owned(),
@@ -313,6 +315,7 @@ fn perform_rollback_restores_snapshot_and_updates_meta() {
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 2,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta {
             last_rollback_id: Some("previous".to_owned()),
             rollback_count: 2,
@@ -386,6 +389,65 @@ fn perform_rollback_restores_snapshot_and_updates_meta() {
 }
 
 #[test]
+fn perform_rollback_preserves_unknown_legacy_max_completion_rounds() {
+    let current_snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: None,
+        status: RunStatus::Failed,
+        cycle_history: Vec::new(),
+        completion_rounds: 2,
+        max_completion_rounds: Some(7),
+        rollback_point_meta: RollbackPointMeta::default(),
+        amendment_queue: AmendmentQueueState::default(),
+        status_summary: "failed at review".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    let mut point_snapshot = running_snapshot(StageId::Implementation);
+    point_snapshot.max_completion_rounds = None;
+    let rollback_point = rollback_point("rb-planning", StageId::Planning, point_snapshot);
+    let run_store = FakeRunSnapshotStore {
+        snapshot: current_snapshot,
+    };
+    let write_store = TrackingRunSnapshotWriteStore::default();
+    let journal_store = FakeJournalStore {
+        events: vec![
+            JournalEvent {
+                sequence: 1,
+                timestamp: test_timestamp(),
+                event_type: JournalEventType::ProjectCreated,
+                details: serde_json::json!({}),
+            },
+            rollback_created_event(2, "rb-planning", StageId::Planning),
+        ],
+        appended: RefCell::new(Vec::new()),
+        fail_with: None,
+    };
+
+    perform_rollback(
+        &run_store,
+        &write_store,
+        &journal_store,
+        &FakeRollbackStore {
+            points: vec![rollback_point],
+        },
+        None,
+        Path::new("/tmp"),
+        &project_id(),
+        FlowPreset::Standard,
+        StageId::Planning,
+        false,
+    )
+    .expect("soft rollback succeeds");
+
+    let writes = write_store.writes.borrow();
+    assert_eq!(writes.len(), 1);
+    assert_eq!(
+        writes[0].max_completion_rounds, None,
+        "rollback should preserve unknown historical max_completion_rounds"
+    );
+}
+
+#[test]
 fn hard_rollback_failure_preserves_logical_rollback_state() {
     let run_store = FakeRunSnapshotStore {
         snapshot: paused_snapshot("paused before hard rollback"),
@@ -448,6 +510,7 @@ fn perform_rollback_restores_previous_snapshot_when_journal_append_fails() {
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 2,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta {
             last_rollback_id: Some("previous".to_owned()),
             rollback_count: 2,

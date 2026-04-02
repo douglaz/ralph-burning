@@ -16,7 +16,7 @@ fn test_timestamp() -> chrono::DateTime<Utc> {
 
 #[test]
 fn status_view_not_started_when_no_active_run() {
-    let snapshot = RunSnapshot::initial();
+    let snapshot = RunSnapshot::initial(20);
     let view = queries::build_status_view("alpha", &snapshot);
 
     assert_eq!(view.project_id, "alpha");
@@ -34,6 +34,7 @@ fn status_view_reports_completed_terminal_state_without_active_run() {
         status: RunStatus::Completed,
         cycle_history: Vec::new(),
         completion_rounds: 3,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "completed after 3 rounds".to_owned(),
@@ -54,6 +55,7 @@ fn status_view_reports_failed_terminal_state_without_active_run() {
         status: RunStatus::Failed,
         cycle_history: Vec::new(),
         completion_rounds: 0,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "failed at implementation".to_owned(),
@@ -83,6 +85,7 @@ fn status_view_reports_running_with_cursor() {
         status: RunStatus::Running,
         cycle_history: Vec::new(),
         completion_rounds: 0,
+        max_completion_rounds: Some(0),
         rollback_point_meta: RollbackPointMeta::default(),
         amendment_queue: AmendmentQueueState::default(),
         status_summary: "running at planning".to_owned(),
@@ -424,7 +427,7 @@ fn validate_history_consistency_fails_with_orphaned_payload() {
 
 #[test]
 fn run_snapshot_initial_includes_all_canonical_fields() {
-    let snapshot = RunSnapshot::initial();
+    let snapshot = RunSnapshot::initial(20);
     let json = serde_json::to_string_pretty(&snapshot).expect("serialize");
 
     // Verify all canonical fields are present in the serialized form
@@ -432,6 +435,7 @@ fn run_snapshot_initial_includes_all_canonical_fields() {
     assert!(json.contains("\"status\""));
     assert!(json.contains("\"cycle_history\""));
     assert!(json.contains("\"completion_rounds\""));
+    assert!(json.contains("\"max_completion_rounds\""));
     assert!(json.contains("\"rollback_point_meta\""));
     assert!(json.contains("\"amendment_queue\""));
     assert!(json.contains("\"status_summary\""));
@@ -439,7 +443,7 @@ fn run_snapshot_initial_includes_all_canonical_fields() {
 
 #[test]
 fn run_snapshot_round_trips_through_json() {
-    let snapshot = RunSnapshot::initial();
+    let snapshot = RunSnapshot::initial(20);
     let json = serde_json::to_string(&snapshot).expect("serialize");
     let parsed: RunSnapshot = serde_json::from_str(&json).expect("deserialize");
     assert_eq!(snapshot, parsed);

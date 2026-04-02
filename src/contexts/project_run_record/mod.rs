@@ -14,7 +14,8 @@ pub use service::{
 
 // Re-export service use cases
 pub use service::{
-    create_project, delete_project, get_rollback_point_for_stage, list_projects,
-    list_rollback_points, perform_rollback, run_history, run_status, run_tail, show_project,
+    create_project, create_project_from_bead_context, delete_project, get_rollback_point_for_stage,
+    list_projects, list_rollback_points, perform_rollback, render_bead_task_prompt, run_history,
+    run_status, run_tail, show_project, BeadProjectContext, CreateProjectFromBeadContextInput,
     CreateProjectInput,
 };
