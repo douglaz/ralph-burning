@@ -7,7 +7,10 @@ use chrono::{DateTime, Utc};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::adapters::fs::{FileSystem, FsArtifactStore, FsProjectStore, FsRollbackPointStore};
+use crate::adapters::fs::{
+    FileSystem, FsArtifactStore, FsMilestoneJournalStore, FsMilestoneSnapshotStore, FsProjectStore,
+    FsRollbackPointStore, FsTaskRunLineageStore,
+};
 use crate::adapters::worktree::WorktreeAdapter;
 use crate::contexts::agent_execution::model::{
     CancellationToken, InvocationContract, InvocationPayload, InvocationRequest,
@@ -21,11 +24,13 @@ use crate::contexts::agent_execution::service::{
 };
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
+use crate::contexts::milestone_record::model::MilestoneId;
+use crate::contexts::milestone_record::service as milestone_service;
 use crate::contexts::project_run_record::journal;
 use crate::contexts::project_run_record::model::{
     ActiveRun, ArtifactRecord, CycleHistoryEntry, JournalEvent, JournalEventType, LogLevel,
-    PayloadRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint, RunSnapshot, RunStatus,
-    RuntimeLogEntry, StageResolutionSnapshot,
+    PayloadRecord, ProjectRecord, QueuedAmendment, ResolvedTargetRecord, RollbackPoint,
+    RunSnapshot, RunStatus, RuntimeLogEntry, StageResolutionSnapshot,
 };
 use crate::contexts::project_run_record::queries;
 use crate::contexts::project_run_record::service::{
@@ -501,6 +506,86 @@ fn generate_run_id() -> AppResult<RunId> {
     RunId::new(format!("run-{}", now.format("%Y%m%d%H%M%S")))
 }
 
+fn sync_milestone_bead_start(
+    project_record: &ProjectRecord,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    run_id: &RunId,
+    started_at: DateTime<Utc>,
+) -> AppResult<()> {
+    let Some(task_source) = project_record.task_source.as_ref() else {
+        return Ok(());
+    };
+
+    let milestone_id = MilestoneId::new(&task_source.milestone_id)?;
+    let plan_hash = milestone_lineage_plan_hash(
+        project_record,
+        base_dir,
+        project_id,
+        &milestone_id,
+        &task_source.bead_id,
+        run_id.as_str(),
+    )?;
+    milestone_service::record_bead_start(
+        &FsMilestoneSnapshotStore,
+        &FsMilestoneJournalStore,
+        &FsTaskRunLineageStore,
+        base_dir,
+        &milestone_id,
+        &task_source.bead_id,
+        project_id.as_str(),
+        run_id.as_str(),
+        &plan_hash,
+        started_at,
+    )
+}
+
+pub(crate) fn milestone_lineage_plan_hash(
+    project_record: &ProjectRecord,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    run_id: &str,
+) -> AppResult<String> {
+    let task_source = project_record.task_source.as_ref();
+
+    if let Some(plan_hash) = task_source.and_then(|source| source.plan_hash.clone()) {
+        return Ok(plan_hash);
+    }
+
+    if let Some(plan_hash) = milestone_service::find_runs_for_bead(
+        &FsTaskRunLineageStore,
+        base_dir,
+        milestone_id,
+        bead_id,
+    )?
+    .into_iter()
+    .find(|entry| {
+        entry.project_id == project_id.as_str() && entry.run_id.as_deref() == Some(run_id)
+    })
+    .and_then(|entry| entry.plan_hash)
+    {
+        return Ok(plan_hash);
+    }
+
+    if let Some(plan_version) = task_source.and_then(|source| source.plan_version) {
+        return Ok(format!("plan-version:{plan_version}"));
+    }
+
+    if task_source.is_some() {
+        return Ok(format!("bead:{}:{}", milestone_id.as_str(), bead_id));
+    }
+
+    let snapshot =
+        milestone_service::load_snapshot(&FsMilestoneSnapshotStore, base_dir, milestone_id)?;
+    if let Some(plan_hash) = snapshot.plan_hash {
+        return Ok(plan_hash);
+    }
+
+    Ok(format!("bead:{}:{}", milestone_id.as_str(), bead_id))
+}
+
 fn history_record_base_id(
     run_id: &RunId,
     stage_id: StageId,
@@ -875,6 +960,10 @@ where
     let mut seq = journal::last_sequence(&events);
     let first_stage = stage_plan[0].stage_id;
     let initial_cursor = StageCursor::initial(first_stage);
+    let effective_max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok())
+        .unwrap_or(effective_config.run_policy().max_completion_rounds);
     let mut current_snapshot = RunSnapshot {
         active_run: Some(build_active_run(
             &run_id,
@@ -891,6 +980,7 @@ where
         status: RunStatus::Running,
         cycle_history: snapshot.cycle_history.clone(),
         completion_rounds: 1,
+        max_completion_rounds: Some(effective_max_rounds),
         rollback_point_meta: snapshot.rollback_point_meta.clone(),
         amendment_queue: snapshot.amendment_queue.clone(),
         status_summary: format!("running: {}", first_stage.display_name()),
@@ -899,7 +989,8 @@ where
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &current_snapshot)?;
 
     seq += 1;
-    let run_started = journal::run_started_event(seq, now, &run_id, first_stage);
+    let run_started =
+        journal::run_started_event(seq, now, &run_id, first_stage, effective_max_rounds);
     let run_started_line = journal::serialize_event(&run_started)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &run_started_line) {
         seq -= 1;
@@ -919,6 +1010,37 @@ where
         )
         .await;
     }
+
+    if let Err(error) =
+        sync_milestone_bead_start(&project_record, base_dir, project_id, &run_id, now)
+    {
+        return fail_run(
+            &AppError::RunStartFailed {
+                reason: format!("failed to sync milestone bead start: {error}"),
+            },
+            first_stage,
+            &run_id,
+            &mut seq,
+            &mut current_snapshot,
+            journal_store,
+            run_snapshot_write,
+            base_dir,
+            project_id,
+            ExecutionOrigin::Start,
+        )
+        .await;
+    }
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!("run started: max_completion_rounds={effective_max_rounds}"),
+        },
+    );
 
     execute_run_internal(
         agent_service,
@@ -1476,6 +1598,12 @@ where
         .completion_rounds
         .max(resume_state.cursor.completion_round);
     snapshot.status_summary = format!("running: {}", resume_state.cursor.stage.display_name());
+    snapshot.max_completion_rounds = Some(
+        std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(effective_config.run_policy().max_completion_rounds),
+    );
     run_snapshot_write.write_run_snapshot(base_dir, project_id, &snapshot)?;
 
     seq += 1;
@@ -1486,6 +1614,7 @@ where
         resume_state.cursor.stage,
         resume_state.cursor.cycle,
         resume_state.cursor.completion_round,
+        snapshot.max_completion_rounds.unwrap_or(0),
     );
     let run_resumed_line = journal::serialize_event(&run_resumed)?;
     if let Err(error) = journal_store.append_event(base_dir, project_id, &run_resumed_line) {
@@ -1506,6 +1635,44 @@ where
         )
         .await;
     }
+
+    if let Err(error) = sync_milestone_bead_start(
+        &project_record,
+        base_dir,
+        project_id,
+        &resume_state.run_id,
+        resume_state.started_at,
+    ) {
+        return fail_run(
+            &AppError::ResumeFailed {
+                reason: format!("failed to sync milestone bead start: {error}"),
+            },
+            resume_state.cursor.stage,
+            &resume_state.run_id,
+            &mut seq,
+            &mut snapshot,
+            journal_store,
+            run_snapshot_write,
+            base_dir,
+            project_id,
+            ExecutionOrigin::Resume,
+        )
+        .await;
+    }
+
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "engine".to_owned(),
+            message: format!(
+                "run resumed: max_completion_rounds={}",
+                snapshot.max_completion_rounds.unwrap_or(0)
+            ),
+        },
+    );
 
     execute_run_internal(
         agent_service,
@@ -2061,11 +2228,28 @@ where
                         .ok()
                         .and_then(|v| v.parse::<u32>().ok())
                         .unwrap_or(effective_config.run_policy().max_completion_rounds);
+                    snapshot.max_completion_rounds = Some(max_rounds);
                     if next_cursor.completion_round > max_rounds {
+                        let _ = log_write.append_runtime_log(
+                            base_dir,
+                            project_id,
+                            &RuntimeLogEntry {
+                                timestamp: Utc::now(),
+                                level: LogLevel::Error,
+                                source: "engine".to_owned(),
+                                message: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
+                            },
+                        );
                         return fail_run_result(
                             &AppError::StageCommitFailed {
                                 stage_id,
-                                details: format!("max completion rounds ({}) exceeded", max_rounds),
+                                details: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
                             },
                             stage_id,
                             run_id,
@@ -2190,6 +2374,7 @@ where
                         from_round,
                         to_round,
                         0, // no amendments from completion panel
+                        snapshot.max_completion_rounds.unwrap_or(0),
                     );
                     let round_event_line = journal::serialize_event(&round_event)?;
                     if let Err(error) =
@@ -2230,8 +2415,10 @@ where
                             level: LogLevel::Info,
                             source: "engine".to_owned(),
                             message: format!(
-                                "completion round advanced: {} -> {}",
-                                from_round, to_round
+                                "completion round advanced: {} -> {} (max={})",
+                                from_round,
+                                to_round,
+                                snapshot.max_completion_rounds.unwrap_or(0)
                             ),
                         },
                     );
@@ -2471,11 +2658,28 @@ where
                         .ok()
                         .and_then(|value| value.parse::<u32>().ok())
                         .unwrap_or(effective_config.run_policy().max_completion_rounds);
+                    snapshot.max_completion_rounds = Some(max_rounds);
                     if next_cursor.completion_round > max_rounds {
+                        let _ = log_write.append_runtime_log(
+                            base_dir,
+                            project_id,
+                            &RuntimeLogEntry {
+                                timestamp: Utc::now(),
+                                level: LogLevel::Error,
+                                source: "engine".to_owned(),
+                                message: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
+                            },
+                        );
                         return fail_run_result(
                             &AppError::StageCommitFailed {
                                 stage_id,
-                                details: format!("max completion rounds ({}) exceeded", max_rounds),
+                                details: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
                             },
                             stage_id,
                             run_id,
@@ -2519,9 +2723,11 @@ where
 
                     let mut written_ids: Vec<String> = Vec::new();
                     for amendment in &commit_data.accepted_amendments {
-                        if let Err(error) =
-                            amendment_queue_port.write_amendment(base_dir, project_id, amendment)
-                        {
+                        if let Err(error) = amendment_queue_port.write_amendment(
+                            base_dir,
+                            project_id,
+                            &amendment.queued,
+                        ) {
                             for written_id in &written_ids {
                                 let _ = amendment_queue_port
                                     .remove_amendment(base_dir, project_id, written_id);
@@ -2536,7 +2742,7 @@ where
                                 &AppError::AmendmentQueueError {
                                     details: format!(
                                         "failed to persist final-review amendment '{}': {}",
-                                        amendment.amendment_id, error
+                                        amendment.queued.amendment_id, error
                                     ),
                                 },
                                 stage_id,
@@ -2551,7 +2757,7 @@ where
                             )
                             .await;
                         }
-                        written_ids.push(amendment.amendment_id.clone());
+                        written_ids.push(amendment.queued.amendment_id.clone());
                     }
 
                     let mut last_journaled_amendment_index = None;
@@ -2561,11 +2767,12 @@ where
                             *seq,
                             Utc::now(),
                             run_id,
-                            &amendment.amendment_id,
-                            amendment.source_stage,
-                            &amendment.body,
-                            amendment.source.as_str(),
-                            &amendment.dedup_key,
+                            &amendment.queued.amendment_id,
+                            amendment.queued.source_stage,
+                            &amendment.queued.body,
+                            amendment.queued.source.as_str(),
+                            &amendment.queued.dedup_key,
+                            Some(&amendment.reviewer_sources),
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -2580,11 +2787,14 @@ where
                                         .remove_amendment(
                                             base_dir,
                                             project_id,
-                                            &pending.amendment_id,
+                                            &pending.queued.amendment_id,
                                         )
                                         .err()
                                         .map(|cleanup_error| {
-                                            format!("{}: {}", pending.amendment_id, cleanup_error)
+                                            format!(
+                                                "{}: {}",
+                                                pending.queued.amendment_id, cleanup_error
+                                            )
                                         })
                                 })
                                 .collect();
@@ -2593,13 +2803,15 @@ where
                                 snapshot.amendment_queue.pending.extend(
                                     commit_data.accepted_amendments[..=last_index]
                                         .iter()
-                                        .cloned(),
+                                        .map(|amendment| amendment.queued.clone()),
                                 );
                             } else {
-                                snapshot
-                                    .amendment_queue
-                                    .pending
-                                    .extend(commit_data.accepted_amendments.iter().cloned());
+                                snapshot.amendment_queue.pending.extend(
+                                    commit_data
+                                        .accepted_amendments
+                                        .iter()
+                                        .map(|amendment| amendment.queued.clone()),
+                                );
                             }
                             let details = if cleanup_errors.is_empty() {
                                 format!(
@@ -2634,10 +2846,12 @@ where
                         .active_run
                         .as_ref()
                         .and_then(|active_run| active_run.stage_resolution_snapshot.clone());
-                    snapshot
-                        .amendment_queue
-                        .pending
-                        .extend(commit_data.accepted_amendments.iter().cloned());
+                    snapshot.amendment_queue.pending.extend(
+                        commit_data
+                            .accepted_amendments
+                            .iter()
+                            .map(|amendment| amendment.queued.clone()),
+                    );
                     snapshot.completion_rounds =
                         snapshot.completion_rounds.max(next_cursor.completion_round);
                     snapshot.status = RunStatus::Running;
@@ -2689,6 +2903,7 @@ where
                         from_round,
                         to_round,
                         snapshot.amendment_queue.pending.len() as u32,
+                        snapshot.max_completion_rounds.unwrap_or(0),
                     );
                     let round_event_line = journal::serialize_event(&round_event)?;
                     if let Err(error) =
@@ -2715,6 +2930,22 @@ where
                         )
                         .await;
                     }
+
+                    let _ = log_write.append_runtime_log(
+                        base_dir,
+                        project_id,
+                        &RuntimeLogEntry {
+                            timestamp: Utc::now(),
+                            level: LogLevel::Info,
+                            source: "engine".to_owned(),
+                            message: format!(
+                                "completion round advanced: {} -> {} (max={})",
+                                from_round,
+                                to_round,
+                                snapshot.max_completion_rounds.unwrap_or(0)
+                            ),
+                        },
+                    );
 
                     if let Err(error) = persist_rollback_point(
                         rollback_store,
@@ -3646,6 +3877,48 @@ where
                     let next_cursor = cursor.advance_completion_round(semantics.planning_stage)?;
                     let from_round = cursor.completion_round;
                     let to_round = next_cursor.completion_round;
+
+                    // Safety limit: prevent infinite completion round loops.
+                    let max_rounds = std::env::var("RALPH_BURNING_TEST_MAX_COMPLETION_ROUNDS")
+                        .ok()
+                        .and_then(|v| v.parse::<u32>().ok())
+                        .unwrap_or(effective_config.run_policy().max_completion_rounds);
+                    snapshot.max_completion_rounds = Some(max_rounds);
+                    if next_cursor.completion_round > max_rounds {
+                        let _ = log_write.append_runtime_log(
+                            base_dir,
+                            project_id,
+                            &RuntimeLogEntry {
+                                timestamp: Utc::now(),
+                                level: LogLevel::Error,
+                                source: "engine".to_owned(),
+                                message: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
+                            },
+                        );
+                        return fail_run_result(
+                            &AppError::StageCommitFailed {
+                                stage_id,
+                                details: format!(
+                                    "max completion rounds exceeded: {}/{}",
+                                    next_cursor.completion_round, max_rounds
+                                ),
+                            },
+                            stage_id,
+                            run_id,
+                            seq,
+                            snapshot,
+                            journal_store,
+                            run_snapshot_write,
+                            base_dir,
+                            project_id,
+                            origin,
+                        )
+                        .await;
+                    }
+
                     let follow_ups = validation_follow_ups(&bundle.payload);
                     let amendments = build_queued_amendments(
                         follow_ups,
@@ -3704,6 +3977,7 @@ where
                             &amendment.body,
                             amendment.source.as_str(),
                             &amendment.dedup_key,
+                            None,
                         );
                         let event_line = journal::serialize_event(&amendment_event)?;
                         if let Err(error) =
@@ -3798,6 +4072,7 @@ where
                         from_round,
                         to_round,
                         amendment_count,
+                        snapshot.max_completion_rounds.unwrap_or(0),
                     );
                     let round_event_line = journal::serialize_event(&round_event)?;
                     if let Err(error) =
@@ -3824,6 +4099,22 @@ where
                         )
                         .await;
                     }
+
+                    let _ = log_write.append_runtime_log(
+                        base_dir,
+                        project_id,
+                        &RuntimeLogEntry {
+                            timestamp: Utc::now(),
+                            level: LogLevel::Info,
+                            source: "engine".to_owned(),
+                            message: format!(
+                                "completion round advanced: {} -> {} (max={})",
+                                from_round,
+                                to_round,
+                                snapshot.max_completion_rounds.unwrap_or(0)
+                            ),
+                        },
+                    );
 
                     // Advance completion round and restart from the flow's planning stage.
                     let planning_index = stage_index_for(stage_plan, semantics.planning_stage)?;
@@ -5071,8 +5362,13 @@ fn complete_run(
     run_snapshot_write.write_run_snapshot(base_dir, project_id, snapshot)?;
 
     *seq += 1;
-    let run_completed =
-        journal::run_completed_event(*seq, Utc::now(), run_id, snapshot.completion_rounds);
+    let run_completed = journal::run_completed_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        snapshot.completion_rounds,
+        snapshot.max_completion_rounds.unwrap_or(0),
+    );
     let run_completed_line = journal::serialize_event(&run_completed)?;
     journal_store.append_event(base_dir, project_id, &run_completed_line)?;
     Ok(())
@@ -5113,6 +5409,19 @@ async fn fail_run(
 ) -> AppResult<()> {
     let failure_class = failure_label(err);
     let message = err.to_string();
+    let completion_rounds_progress = match err {
+        AppError::StageCommitFailed { details, .. } => max_completion_rounds_progress(details),
+        _ => None,
+    };
+    let completion_rounds = snapshot.completion_rounds;
+    let max_completion_rounds = completion_rounds_progress
+        .as_ref()
+        .map(|&(_, max_rounds)| max_rounds)
+        .or(snapshot.max_completion_rounds)
+        .unwrap_or(0);
+    let completion_rounds_display = completion_rounds_progress
+        .as_ref()
+        .map(|&(current_round, max_rounds)| format!("{current_round}/{max_rounds}"));
 
     // Preserve the stage resolution snapshot for resume drift detection.
     // Only overwrite if the active run carries an explicit snapshot;
@@ -5144,8 +5453,17 @@ async fn fail_run(
     }
 
     *seq += 1;
-    let run_failed =
-        journal::run_failed_event(*seq, Utc::now(), run_id, stage_id, &failure_class, &message);
+    let run_failed = journal::run_failed_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        stage_id,
+        &failure_class,
+        &message,
+        completion_rounds,
+        max_completion_rounds,
+        completion_rounds_display.as_deref(),
+    );
     if let Ok(run_failed_line) = journal::serialize_event(&run_failed) {
         let _ = journal_store.append_event(base_dir, project_id, &run_failed_line);
     }
@@ -5228,6 +5546,18 @@ fn failure_label(error: &AppError) -> String {
         AppError::ResumeFailed { .. } => "resume_failed".to_owned(),
         _ => "unknown".to_owned(),
     }
+}
+
+fn max_completion_rounds_progress(details: &str) -> Option<(u32, u32)> {
+    const PREFIX: &str = "max completion rounds exceeded: ";
+    let remainder = details.strip_prefix(PREFIX)?;
+    let mut parts = remainder.split('/');
+    let current_round = parts.next()?.parse::<u32>().ok()?;
+    let max_rounds = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() {
+        return None;
+    }
+    Some((current_round, max_rounds))
 }
 
 fn prompt_review_requires_pause(payload: &StagePayload) -> bool {
@@ -6032,7 +6362,14 @@ struct FinalReviewCommitData {
     payload_id: String,
     artifact_id: String,
     completion_round: u32,
-    accepted_amendments: Vec<QueuedAmendment>,
+    accepted_amendments: Vec<FinalReviewQueuedAmendment>,
+}
+
+#[derive(Clone)]
+struct FinalReviewQueuedAmendment {
+    queued: QueuedAmendment,
+    reviewer_sources:
+        Vec<crate::contexts::workflow_composition::panel_contracts::FinalReviewAmendmentSource>,
 }
 
 enum FinalReviewPanelOutcome {
@@ -6679,11 +7016,13 @@ where
         agent_service,
         artifact_write,
         log_write,
+        journal_store,
         base_dir,
         project_root,
         backend_working_dir,
         project_id,
         run_id,
+        seq,
         cursor,
         &panel,
         min_reviewers,
@@ -6726,16 +7065,19 @@ where
         .map(|(index, amendment)| {
             let source = crate::contexts::project_run_record::model::AmendmentSource::WorkflowStage;
             let dedup_key = QueuedAmendment::compute_dedup_key(&source, &amendment.normalized_body);
-            QueuedAmendment {
-                amendment_id: amendment.amendment_id.clone(),
-                source_stage: stage_id,
-                source_cycle: cursor.cycle,
-                source_completion_round: cursor.completion_round,
-                body: amendment.normalized_body.clone(),
-                created_at: Utc::now(),
-                batch_sequence: (index + 1) as u32,
-                source,
-                dedup_key,
+            FinalReviewQueuedAmendment {
+                queued: QueuedAmendment {
+                    amendment_id: amendment.amendment_id.clone(),
+                    source_stage: stage_id,
+                    source_cycle: cursor.cycle,
+                    source_completion_round: cursor.completion_round,
+                    body: amendment.normalized_body.clone(),
+                    created_at: Utc::now(),
+                    batch_sequence: (index + 1) as u32,
+                    source,
+                    dedup_key,
+                },
+                reviewer_sources: amendment.sources.clone(),
             }
         })
         .collect::<Vec<_>>();
@@ -7184,13 +7526,28 @@ mod tests {
     use serde_json::Value;
     use tempfile::tempdir;
 
+    use crate::adapters::fs::{
+        FsMilestoneJournalStore, FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore,
+    };
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
+    use crate::contexts::milestone_record::bundle::{
+        AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
+    use crate::contexts::milestone_record::service::{
+        create_milestone, persist_plan, CreateMilestoneInput,
+    };
+    use crate::contexts::project_run_record::model::{
+        ProjectRecord, ProjectStatusSummary, TaskOrigin, TaskSource,
+    };
     use crate::contexts::workspace_governance::{initialize_workspace, EffectiveConfig};
-    use crate::shared::domain::{BackendFamily, ResolvedBackendTarget, StageId};
+    use crate::shared::domain::{
+        BackendFamily, FlowPreset, ProjectId, ResolvedBackendTarget, StageId,
+    };
     use crate::shared::error::AppError;
 
     use super::{
-        build_final_review_snapshot, drift_still_satisfies_requirements, resolution_has_drifted,
+        build_final_review_snapshot, drift_still_satisfies_requirements,
+        milestone_lineage_plan_hash, resolution_has_drifted,
     };
 
     fn final_review_reviewers() -> Vec<ResolvedPanelMember> {
@@ -7212,6 +7569,42 @@ mod tests {
         let temp_dir = tempdir().expect("create temp dir");
         initialize_workspace(temp_dir.path(), Utc::now()).expect("initialize workspace");
         EffectiveConfig::load(temp_dir.path()).expect("load effective config")
+    }
+
+    fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {
+        MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: milestone_id.to_owned(),
+                name: "Alpha Milestone".to_owned(),
+            },
+            executive_summary: "Ship bead-backed task creation.".to_owned(),
+            goals: vec!["Create the bead-backed task path.".to_owned()],
+            non_goals: vec![],
+            constraints: vec!["Keep the run substrate compatible.".to_owned()],
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Task creation works".to_owned(),
+                covered_by: vec!["bead-2".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Creation".to_owned(),
+                description: Some("Project bootstrap flow.".to_owned()),
+                beads: vec![BeadProposal {
+                    bead_id: Some(format!("{milestone_id}.bead-2")),
+                    title: "Bootstrap bead-backed task creation".to_owned(),
+                    description: Some("Create a project from milestone context.".to_owned()),
+                    bead_type: Some("feature".to_owned()),
+                    priority: Some(1),
+                    labels: vec!["creation".to_owned()],
+                    depends_on: vec![],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: Some(FlowPreset::Standard),
+                }],
+            }],
+            default_flow: FlowPreset::Standard,
+            agents_guidance: Some("Keep it deterministic.".to_owned()),
+        }
     }
 
     #[test]
@@ -7290,6 +7683,67 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn milestone_lineage_plan_hash_does_not_reattach_unconfirmed_beads_to_snapshot_plan() {
+        let temp_dir = tempdir().expect("create temp dir");
+        let base_dir = temp_dir.path();
+        let now = Utc::now();
+        initialize_workspace(base_dir, now).expect("initialize workspace");
+
+        let milestone = create_milestone(
+            &FsMilestoneStore,
+            base_dir,
+            CreateMilestoneInput {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+                description: "Test milestone".to_owned(),
+            },
+            now,
+        )
+        .expect("create milestone");
+        persist_plan(
+            &FsMilestoneSnapshotStore,
+            &FsMilestoneJournalStore,
+            &FsMilestonePlanStore,
+            base_dir,
+            &milestone.id,
+            &sample_milestone_bundle("ms-alpha"),
+            now,
+        )
+        .expect("persist plan");
+
+        let project_id = ProjectId::new("bead-run").expect("project id");
+        let project_record = ProjectRecord {
+            id: project_id.clone(),
+            name: "Alpha: Bead".to_owned(),
+            flow: FlowPreset::Standard,
+            prompt_reference: "prompt.md".to_owned(),
+            prompt_hash: "prompt-hash".to_owned(),
+            created_at: now,
+            status_summary: ProjectStatusSummary::Created,
+            task_source: Some(TaskSource {
+                milestone_id: milestone.id.to_string(),
+                bead_id: "ms-alpha.bead-2".to_owned(),
+                parent_epic_id: None,
+                origin: TaskOrigin::Milestone,
+                plan_hash: None,
+                plan_version: None,
+            }),
+        };
+
+        let plan_hash = milestone_lineage_plan_hash(
+            &project_record,
+            base_dir,
+            &project_id,
+            &milestone.id,
+            "ms-alpha.bead-2",
+            "run-1",
+        )
+        .expect("derive plan hash");
+
+        assert_eq!(plan_hash, "bead:ms-alpha:ms-alpha.bead-2");
+    }
+
     // ── derive_resume_state unit tests ─────────────────────────────────
 
     mod resume_state_tests {
@@ -7327,7 +7781,7 @@ mod tests {
             let semantics = flow_semantics(FlowPreset::Standard);
 
             let events: Vec<JournalEvent> = vec![
-                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning, 20),
                 journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
                 journal::stage_completed_event(
                     3,
@@ -7375,7 +7829,7 @@ mod tests {
                 ),
             ];
 
-            let snapshot = RunSnapshot::initial();
+            let snapshot = RunSnapshot::initial(20);
             let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
@@ -7393,7 +7847,7 @@ mod tests {
             let semantics = flow_semantics(FlowPreset::Standard);
 
             let events: Vec<JournalEvent> = vec![
-                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning, 20),
                 journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
                 journal::stage_completed_event(
                     3,
@@ -7407,7 +7861,7 @@ mod tests {
                 ),
             ];
 
-            let snapshot = RunSnapshot::initial();
+            let snapshot = RunSnapshot::initial(20);
             let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
@@ -7426,7 +7880,7 @@ mod tests {
             let semantics = flow_semantics(FlowPreset::Standard);
 
             let events: Vec<JournalEvent> = vec![
-                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning, 20),
                 journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
                 journal::stage_completed_event(
                     3,
@@ -7498,7 +7952,7 @@ mod tests {
                 ),
             ];
 
-            let snapshot = RunSnapshot::initial();
+            let snapshot = RunSnapshot::initial(20);
             let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Implementation);
@@ -7516,7 +7970,7 @@ mod tests {
             let semantics = flow_semantics(FlowPreset::Standard);
 
             let events: Vec<JournalEvent> = vec![
-                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning),
+                journal::run_started_event(1, Utc::now(), &run_id, StageId::Planning, 20),
                 // Round 1: planning fails at attempt 3 with will_retry
                 journal::stage_entered_event(2, Utc::now(), &run_id, StageId::Planning, 1, 1),
                 journal::stage_failed_event(
@@ -7573,10 +8027,11 @@ mod tests {
                     1,
                     2,
                     0,
+                    20,
                 ),
             ];
 
-            let snapshot = RunSnapshot::initial();
+            let snapshot = RunSnapshot::initial(20);
             let resume = derive_resume_state(&events, &snapshot, &stage_plan, semantics).unwrap();
 
             assert_eq!(resume.cursor.stage, StageId::Planning);

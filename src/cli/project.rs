@@ -3,19 +3,30 @@ use std::sync::Arc;
 
 use chrono::Utc;
 use clap::{ArgGroup, Args, Subcommand};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 
+use crate::adapters::br_models::{BeadDetail, BeadStatus, DependencyKind};
+use crate::adapters::br_process::{BrAdapter, BrCommand, BrError};
 use crate::adapters::fs::{
     FileSystem, FsActiveProjectStore, FsAmendmentQueueStore, FsDaemonStore, FsJournalStore,
-    FsPayloadArtifactWriteStore, FsProjectStore, FsRequirementsStore, FsRunSnapshotStore,
-    FsRunSnapshotWriteStore, FsRuntimeLogWriteStore,
+    FsMilestonePlanStore, FsMilestoneSnapshotStore, FsMilestoneStore, FsPayloadArtifactWriteStore,
+    FsProjectStore, FsRequirementsStore, FsRunSnapshotStore, FsRunSnapshotWriteStore,
+    FsRuntimeLogWriteStore,
 };
 use crate::composition::agent_execution_builder;
 use crate::contexts::automation_runtime::cli_writer_lease::{
     CliWriterLeaseGuard, CLI_LEASE_HEARTBEAT_CADENCE_SECONDS, CLI_LEASE_TTL_SECONDS,
 };
+use crate::contexts::milestone_record::bundle::MilestoneBundle;
+use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
+use crate::contexts::milestone_record::service::{
+    MilestonePlanPort, MilestoneSnapshotPort, MilestoneStorePort,
+};
 use crate::contexts::project_run_record::model::{ProjectDetail, ProjectStatusSummary, RunStatus};
 use crate::contexts::project_run_record::service::{
-    self, CreateProjectInput, ProjectStorePort, RunSnapshotPort,
+    self, BeadProjectContext, CreateProjectFromBeadContextInput, CreateProjectInput,
+    ProjectStorePort, RunSnapshotPort,
 };
 use crate::contexts::requirements_drafting::model::{
     ProjectSeedPayload, RequirementsStatus, SUPPORTED_SEED_VERSIONS,
@@ -38,6 +49,7 @@ pub struct ProjectCommand {
 #[derive(Debug, Subcommand)]
 pub enum ProjectSubcommand {
     Create(ProjectCreateArgs),
+    CreateFromBead(CreateFromBeadArgs),
     Bootstrap(BootstrapArgs),
     Select { id: String },
     List,
@@ -92,6 +104,20 @@ pub struct ProjectCreateArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct CreateFromBeadArgs {
+    #[arg(long = "milestone-id")]
+    pub milestone_id: String,
+    #[arg(long = "bead-id")]
+    pub bead_id: String,
+    #[arg(long = "project-id")]
+    pub project_id: Option<String>,
+    #[arg(long = "prompt-file")]
+    pub prompt_file: Option<PathBuf>,
+    #[arg(long)]
+    pub flow: Option<String>,
+}
+
+#[derive(Debug, Args)]
 #[command(group(
     ArgGroup::new("bootstrap_input")
         .required(true)
@@ -129,6 +155,7 @@ pub async fn handle(command: ProjectCommand) -> AppResult<()> {
                 handle_create(args).await
             }
         }
+        ProjectSubcommand::CreateFromBead(args) => handle_create_from_bead(args).await,
         ProjectSubcommand::Bootstrap(args) => handle_bootstrap(args).await,
         ProjectSubcommand::List => handle_list().await,
         ProjectSubcommand::Show { id } => handle_show(id).await,
@@ -213,6 +240,92 @@ async fn handle_create_from_requirements(run_id: String) -> AppResult<()> {
         Utc::now(),
     )
     .map_err(|error| map_requirements_project_error(error, &run_id))?;
+
+    set_active_project_after_create(&current_dir, &record.id)?;
+    let detail = load_project_detail(&current_dir, &record.id)?;
+    print_project_detail(&detail);
+    Ok(())
+}
+
+async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
+    let current_dir = std::env::current_dir()?;
+
+    let config = workspace_governance::load_workspace_config(&current_dir)?;
+    workspace_governance::ensure_supported_workspace_version(&config)?;
+
+    let milestone_store = FsMilestoneStore;
+    let plan_store = FsMilestonePlanStore;
+    let snapshot_store = FsMilestoneSnapshotStore;
+    let milestone_id = MilestoneId::new(args.milestone_id)?;
+    ensure_milestone_exists(&milestone_store, &current_dir, &milestone_id)?;
+    let milestone = milestone_store.read_milestone_record(&current_dir, &milestone_id)?;
+    let milestone_snapshot = snapshot_store.read_snapshot(&current_dir, &milestone_id)?;
+    let milestone_bundle = load_milestone_bundle(&plan_store, &current_dir, &milestone_id)?;
+    let bead = load_bead_detail(&current_dir, &args.bead_id).await?;
+    let flow_override = parse_flow_override(args.flow.as_deref())?;
+    ensure_bead_belongs_to_milestone(&milestone_id, &bead)?;
+    ensure_bead_creation_targets_are_actionable(&milestone_id, milestone_snapshot.status, &bead)?;
+    let bead_plan = resolve_bead_plan(&milestone_bundle.bundle, &milestone_id, &bead)?;
+    let confirmed_plan_version = if bead_plan.membership_confirmed {
+        validate_milestone_plan_snapshot(
+            &milestone_id,
+            milestone_snapshot.plan_hash.as_deref(),
+            milestone_snapshot.plan_version,
+            &milestone_bundle.plan_hash,
+        )?
+    } else {
+        None
+    };
+    let prompt_override = load_optional_prompt_override(&current_dir, args.prompt_file.as_deref())?;
+    let flow = flow_override
+        .or(bead_plan.flow_override)
+        .unwrap_or(milestone_bundle.bundle.default_flow);
+    let plan_hash = bead_plan
+        .membership_confirmed
+        .then(|| milestone_bundle.plan_hash.clone());
+    let plan_version = bead_plan
+        .membership_confirmed
+        .then_some(confirmed_plan_version)
+        .flatten();
+
+    let context = BeadProjectContext {
+        milestone_id: milestone.id.to_string(),
+        milestone_name: milestone.name.clone(),
+        milestone_description: milestone.description.clone(),
+        milestone_summary: Some(milestone_bundle.bundle.executive_summary.clone()),
+        milestone_goals: milestone_bundle.bundle.goals.clone(),
+        milestone_constraints: milestone_bundle.bundle.constraints.clone(),
+        agents_guidance: milestone_bundle.bundle.agents_guidance.clone(),
+        bead_id: bead.id.clone(),
+        bead_title: bead.title.clone(),
+        bead_description: bead.description.clone(),
+        bead_acceptance_criteria: bead.acceptance_criteria.clone(),
+        bead_dependencies: bead
+            .dependencies
+            .iter()
+            .filter(|dependency| dependency.kind == DependencyKind::Blocks)
+            .map(format_dependency_reference)
+            .collect(),
+        parent_epic_id: infer_parent_epic_id(&bead),
+        flow,
+        plan_hash,
+        plan_version,
+    };
+
+    let project_id = args.project_id.map(ProjectId::new).transpose()?;
+    let store = FsProjectStore;
+    let journal_store = FsJournalStore;
+    let record = service::create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &current_dir,
+        CreateProjectFromBeadContextInput {
+            project_id,
+            prompt_override,
+            created_at: Utc::now(),
+            context,
+        },
+    )?;
 
     set_active_project_after_create(&current_dir, &record.id)?;
     let detail = load_project_detail(&current_dir, &record.id)?;
@@ -384,6 +497,309 @@ fn print_project_detail(detail: &ProjectDetail) {
     println!("Run status: {}", detail.run_snapshot.status_summary);
     println!("Journal events: {}", detail.journal_event_count);
     println!("Rollback points: {}", detail.rollback_count);
+}
+
+fn ensure_milestone_exists(
+    store: &dyn MilestoneStorePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<()> {
+    if store.milestone_exists(base_dir, milestone_id)? {
+        return Ok(());
+    }
+
+    Err(AppError::Io(std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("milestone '{}' not found", milestone_id),
+    )))
+}
+
+#[derive(Debug)]
+struct LoadedMilestoneBundle {
+    bundle: MilestoneBundle,
+    plan_hash: String,
+}
+
+fn load_milestone_bundle(
+    store: &dyn MilestonePlanPort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+) -> AppResult<LoadedMilestoneBundle> {
+    let raw = store.read_plan_json(base_dir, milestone_id)?;
+    let bundle: MilestoneBundle =
+        serde_json::from_str(&raw).map_err(|error| AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: error.to_string(),
+        })?;
+
+    if bundle.identity.id != milestone_id.as_str() {
+        return Err(AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: format!(
+                "bundle identity '{}' does not match milestone '{}'",
+                bundle.identity.id, milestone_id
+            ),
+        });
+    }
+
+    let mut hasher = Sha256::new();
+    hasher.update(raw.as_bytes());
+
+    Ok(LoadedMilestoneBundle {
+        bundle,
+        plan_hash: format!("{:x}", hasher.finalize()),
+    })
+}
+
+fn validate_milestone_plan_snapshot(
+    milestone_id: &MilestoneId,
+    snapshot_plan_hash: Option<&str>,
+    snapshot_plan_version: u32,
+    bundle_plan_hash: &str,
+) -> AppResult<Option<u32>> {
+    let status_file = format!("milestones/{}/status.json", milestone_id);
+    match snapshot_plan_hash {
+        Some(snapshot_plan_hash) => {
+            if snapshot_plan_version == 0 {
+                return Err(AppError::CorruptRecord {
+                    file: status_file,
+                    details: "status snapshot has plan_hash but plan_version is 0".to_owned(),
+                });
+            }
+            if snapshot_plan_hash != bundle_plan_hash {
+                return Err(AppError::CorruptRecord {
+                    file: status_file,
+                    details: format!(
+                        "plan metadata is stale: status.json hash '{}' does not match plan.json hash '{}'",
+                        snapshot_plan_hash, bundle_plan_hash
+                    ),
+                });
+            }
+        }
+        None if snapshot_plan_version > 0 => {
+            return Err(AppError::CorruptRecord {
+                file: status_file,
+                details: "status snapshot is missing plan_hash for the current plan.json"
+                    .to_owned(),
+            });
+        }
+        None => return Ok(None),
+    }
+
+    Ok((snapshot_plan_version > 0).then_some(snapshot_plan_version))
+}
+
+fn ensure_bead_creation_targets_are_actionable(
+    milestone_id: &MilestoneId,
+    milestone_status: MilestoneStatus,
+    bead: &BeadDetail,
+) -> AppResult<()> {
+    if milestone_status.is_terminal() {
+        return Err(AppError::InvalidConfigValue {
+            key: "milestone_status".to_owned(),
+            value: milestone_status.to_string(),
+            reason: format!(
+                "cannot create project from bead '{}': milestone '{}' is already {}",
+                bead.id, milestone_id, milestone_status
+            ),
+        });
+    }
+
+    match bead.status {
+        BeadStatus::Open | BeadStatus::InProgress => Ok(()),
+        BeadStatus::Closed | BeadStatus::Deferred => Err(AppError::InvalidConfigValue {
+            key: "bead_status".to_owned(),
+            value: bead.status.to_string(),
+            reason: format!(
+                "cannot create project from bead '{}': bead is already {}",
+                bead.id, bead.status
+            ),
+        }),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum BrShowResponse {
+    Single(BeadDetail),
+    Many(Vec<BeadDetail>),
+}
+
+async fn load_bead_detail(base_dir: &Path, bead_id: &str) -> AppResult<BeadDetail> {
+    let response: BrShowResponse = BrAdapter::new()
+        .with_working_dir(base_dir.to_path_buf())
+        .exec_json(&BrCommand::show(bead_id))
+        .await
+        .map_err(|error| match error {
+            BrError::BrExitError { stderr, .. } => AppError::Io(std::io::Error::other(format!(
+                "failed to load bead '{bead_id}': {stderr}"
+            ))),
+            other => AppError::Io(std::io::Error::other(format!(
+                "failed to load bead '{bead_id}': {other}"
+            ))),
+        })?;
+
+    match response {
+        BrShowResponse::Single(bead) => {
+            if bead.id != bead_id {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to load bead '{bead_id}': br show returned bead '{}'",
+                    bead.id
+                ))));
+            }
+            Ok(bead)
+        }
+        BrShowResponse::Many(beads) => {
+            let mut matches = beads.into_iter().filter(|bead| bead.id == bead_id);
+            let bead = matches.next().ok_or_else(|| {
+                AppError::Io(std::io::Error::other(format!(
+                    "failed to load bead '{bead_id}': br show returned no matching bead"
+                )))
+            })?;
+            if matches.next().is_some() {
+                return Err(AppError::Io(std::io::Error::other(format!(
+                    "failed to load bead '{bead_id}': br show returned multiple matching beads"
+                ))));
+            }
+            Ok(bead)
+        }
+    }
+}
+
+fn load_optional_prompt_override(
+    base_dir: &Path,
+    path: Option<&Path>,
+) -> AppResult<Option<String>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base_dir.join(path)
+    };
+    let prompt = std::fs::read_to_string(&resolved).map_err(|error| AppError::InvalidPrompt {
+        path: resolved.display().to_string(),
+        reason: error.to_string(),
+    })?;
+    if prompt.trim().is_empty() {
+        return Err(AppError::InvalidPrompt {
+            path: resolved.display().to_string(),
+            reason: "prompt file is empty".to_owned(),
+        });
+    }
+    Ok(Some(prompt))
+}
+
+fn infer_parent_epic_id(bead: &BeadDetail) -> Option<String> {
+    bead.dependencies
+        .iter()
+        .find(|dependency| dependency.kind == DependencyKind::ParentChild)
+        .map(|dependency| dependency.id.clone())
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ResolvedBeadPlan {
+    flow_override: Option<FlowPreset>,
+    membership_confirmed: bool,
+}
+
+fn ensure_bead_belongs_to_milestone(
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+) -> AppResult<()> {
+    let expected_prefix = format!("{}.", milestone_id.as_str());
+    if bead.id.starts_with(&expected_prefix) {
+        return Ok(());
+    }
+
+    Err(AppError::InvalidConfigValue {
+        key: "bead_id".to_owned(),
+        value: bead.id.clone(),
+        reason: format!(
+            "expected bead id to belong to milestone '{}' (prefix '{}')",
+            milestone_id, expected_prefix
+        ),
+    })
+}
+
+fn resolve_bead_plan(
+    bundle: &MilestoneBundle,
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+) -> AppResult<ResolvedBeadPlan> {
+    ensure_bead_belongs_to_milestone(milestone_id, bead)?;
+
+    let matching_by_id = bundle
+        .all_beads()
+        .into_iter()
+        .filter(|proposal| proposal_matches_bead_id(proposal, milestone_id, bead))
+        .collect::<Vec<_>>();
+
+    match matching_by_id.as_slice() {
+        [proposal] => {
+            return Ok(ResolvedBeadPlan {
+                flow_override: proposal.flow_override,
+                membership_confirmed: true,
+            });
+        }
+        [] => {}
+        _ => {
+            return Err(AppError::CorruptRecord {
+                file: format!("milestones/{}/plan.json", milestone_id),
+                details: format!(
+                    "multiple bead proposals resolve to bead '{}'; cannot resolve bead metadata",
+                    bead.id
+                ),
+            });
+        }
+    }
+
+    let matching_beads = bundle
+        .all_beads()
+        .into_iter()
+        .filter(|proposal| proposal.bead_id.is_none() && proposal.title == bead.title)
+        .collect::<Vec<_>>();
+
+    match matching_beads.as_slice() {
+        [proposal] => Ok(ResolvedBeadPlan {
+            flow_override: proposal.flow_override,
+            membership_confirmed: true,
+        }),
+        [] => Ok(ResolvedBeadPlan {
+            flow_override: None,
+            membership_confirmed: false,
+        }),
+        _ => Err(AppError::CorruptRecord {
+            file: format!("milestones/{}/plan.json", milestone_id),
+            details: format!(
+                "multiple bead proposals named '{}' match bead '{}'; cannot resolve bead metadata",
+                bead.title, bead.id
+            ),
+        }),
+    }
+}
+
+fn proposal_matches_bead_id(
+    proposal: &crate::contexts::milestone_record::bundle::BeadProposal,
+    milestone_id: &MilestoneId,
+    bead: &BeadDetail,
+) -> bool {
+    let Some(candidate) = proposal.bead_id.as_deref() else {
+        return false;
+    };
+    let expected_suffix = bead
+        .id
+        .strip_prefix(&format!("{}.", milestone_id.as_str()))
+        .unwrap_or(bead.id.as_str());
+    candidate == bead.id || candidate == expected_suffix
+}
+
+fn format_dependency_reference(dependency: &crate::adapters::br_models::DependencyRef) -> String {
+    match dependency.title.as_deref() {
+        Some(title) if !title.trim().is_empty() => format!("{} ({title})", dependency.id),
+        _ => dependency.id.clone(),
+    }
 }
 
 fn parse_flow_override(raw: Option<&str>) -> AppResult<Option<FlowPreset>> {
@@ -925,5 +1341,224 @@ fn truncate_utf8(s: &str, max_chars: usize) -> String {
     } else {
         let truncated: String = s.chars().take(max_chars.saturating_sub(3)).collect();
         format!("{truncated}...")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ensure_bead_belongs_to_milestone, ensure_bead_creation_targets_are_actionable,
+        infer_parent_epic_id, resolve_bead_plan, validate_milestone_plan_snapshot,
+    };
+    use crate::adapters::br_models::{
+        BeadDetail, BeadPriority, BeadStatus, BeadType, DependencyKind, DependencyRef,
+    };
+    use crate::contexts::milestone_record::bundle::{
+        AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+    };
+    use crate::contexts::milestone_record::model::{MilestoneId, MilestoneStatus};
+    use crate::shared::domain::FlowPreset;
+    use crate::shared::error::AppError;
+
+    fn sample_bundle() -> MilestoneBundle {
+        MilestoneBundle {
+            schema_version: 1,
+            identity: MilestoneIdentity {
+                id: "ms-alpha".to_owned(),
+                name: "Alpha".to_owned(),
+            },
+            executive_summary: "Summary".to_owned(),
+            goals: vec!["Goal".to_owned()],
+            non_goals: Vec::new(),
+            constraints: Vec::new(),
+            acceptance_map: vec![AcceptanceCriterion {
+                id: "AC-1".to_owned(),
+                description: "Criterion".to_owned(),
+                covered_by: vec!["bead-2".to_owned()],
+            }],
+            workstreams: vec![Workstream {
+                name: "Creation".to_owned(),
+                description: None,
+                beads: vec![BeadProposal {
+                    bead_id: None,
+                    title: "Bootstrap bead-backed task creation".to_owned(),
+                    description: None,
+                    bead_type: Some("feature".to_owned()),
+                    priority: Some(1),
+                    labels: Vec::new(),
+                    depends_on: vec!["bead-1".to_owned()],
+                    acceptance_criteria: vec!["AC-1".to_owned()],
+                    flow_override: Some(FlowPreset::DocsChange),
+                }],
+            }],
+            default_flow: FlowPreset::QuickDev,
+            agents_guidance: None,
+        }
+    }
+
+    fn sample_bead() -> BeadDetail {
+        BeadDetail {
+            id: "ms-alpha.bead-2".to_owned(),
+            title: "Bootstrap bead-backed task creation".to_owned(),
+            status: BeadStatus::Open,
+            priority: BeadPriority::new(1),
+            bead_type: BeadType::Feature,
+            labels: Vec::new(),
+            description: None,
+            acceptance_criteria: vec!["Ship it".to_owned()],
+            dependencies: vec![DependencyRef {
+                id: "ms-alpha.epic-1".to_owned(),
+                kind: DependencyKind::ParentChild,
+                title: Some("Parent".to_owned()),
+            }],
+            dependents: Vec::new(),
+            owner: None,
+            created_at: None,
+            updated_at: None,
+        }
+    }
+
+    #[test]
+    fn infer_parent_epic_id_ignores_child_edges_from_dependents() {
+        let mut bead = sample_bead();
+        bead.dependencies.clear();
+        bead.dependents.push(DependencyRef {
+            id: "ms-alpha.bead-3".to_owned(),
+            kind: DependencyKind::ParentChild,
+            title: Some("Child bead".to_owned()),
+        });
+
+        assert_eq!(infer_parent_epic_id(&bead), None);
+    }
+
+    #[test]
+    fn resolve_bead_plan_returns_per_bead_flow_override() {
+        let bundle = sample_bundle();
+        let bead = sample_bead();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, Some(FlowPreset::DocsChange));
+        assert!(resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
+        let mut bundle = sample_bundle();
+        bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
+        let bead = sample_bead();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, None);
+        assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_falls_back_when_live_title_drifted() {
+        let bundle = sample_bundle();
+        let mut bead = sample_bead();
+        bead.title = "Renamed live bead".to_owned();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let resolved = resolve_bead_plan(&bundle, &milestone_id, &bead).expect("resolve bead");
+
+        assert_eq!(resolved.flow_override, None);
+        assert!(!resolved.membership_confirmed);
+    }
+
+    #[test]
+    fn resolve_bead_plan_rejects_cross_milestone_bead_ids() {
+        let bundle = sample_bundle();
+        let mut bead = sample_bead();
+        bead.id = "other-ms.bead-2".to_owned();
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let error = resolve_bead_plan(&bundle, &milestone_id, &bead)
+            .expect_err("cross-milestone bead should fail");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+    }
+
+    #[test]
+    fn ensure_bead_belongs_to_milestone_accepts_matching_prefix() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        ensure_bead_belongs_to_milestone(&milestone_id, &sample_bead())
+            .expect("matching bead should pass");
+    }
+
+    #[test]
+    fn validate_milestone_plan_snapshot_rejects_stale_hash() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let error =
+            validate_milestone_plan_snapshot(&milestone_id, Some("status-hash"), 2, "plan-hash")
+                .expect_err("stale status hash should fail");
+
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(error.to_string().contains("plan metadata is stale"));
+    }
+
+    #[test]
+    fn validate_milestone_plan_snapshot_allows_legacy_missing_metadata() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let version = validate_milestone_plan_snapshot(&milestone_id, None, 0, "plan-hash")
+            .expect("legacy metadata should be accepted");
+
+        assert_eq!(version, None);
+    }
+
+    #[test]
+    fn validate_milestone_plan_snapshot_rejects_hash_without_version() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+
+        let error =
+            validate_milestone_plan_snapshot(&milestone_id, Some("plan-hash"), 0, "plan-hash")
+                .expect_err("hash without version should fail");
+
+        assert!(matches!(error, AppError::CorruptRecord { .. }));
+        assert!(error.to_string().contains("plan_version is 0"));
+    }
+
+    #[test]
+    fn ensure_bead_creation_targets_are_actionable_rejects_terminal_milestone() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        let bead = sample_bead();
+
+        let error = ensure_bead_creation_targets_are_actionable(
+            &milestone_id,
+            MilestoneStatus::Completed,
+            &bead,
+        )
+        .expect_err("completed milestone should be rejected");
+
+        assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+        assert!(error
+            .to_string()
+            .contains("milestone 'ms-alpha' is already completed"));
+    }
+
+    #[test]
+    fn ensure_bead_creation_targets_are_actionable_rejects_non_actionable_bead_statuses() {
+        let milestone_id = MilestoneId::new("ms-alpha").expect("milestone id");
+        for status in [BeadStatus::Closed, BeadStatus::Deferred] {
+            let mut bead = sample_bead();
+            bead.status = status.clone();
+
+            let error = ensure_bead_creation_targets_are_actionable(
+                &milestone_id,
+                MilestoneStatus::Ready,
+                &bead,
+            )
+            .expect_err("non-actionable bead status should be rejected");
+
+            assert!(matches!(error, AppError::InvalidConfigValue { .. }));
+            assert!(error
+                .to_string()
+                .contains(&format!("bead is already {status}")));
+        }
     }
 }

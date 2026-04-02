@@ -1,4 +1,5 @@
 use std::fs;
+use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::process::{Command, Stdio};
 
@@ -8,7 +9,12 @@ use nix::unistd::Pid;
 use ralph_burning::contexts::automation_runtime::model::{
     CliWriterLease, DaemonTask, DispatchMode, LeaseRecord, RoutingSource, TaskStatus, WorktreeLease,
 };
+use ralph_burning::contexts::milestone_record::bundle::{
+    render_plan_json, AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity,
+    Workstream,
+};
 use ralph_burning::shared::domain::FlowPreset;
+use sha2::{Digest, Sha256};
 use tempfile::tempdir;
 
 fn binary() -> &'static str {
@@ -315,6 +321,108 @@ fn write_editor_script(
     permissions.set_mode(0o755);
     fs::set_permissions(&script_path, permissions).expect("set script permissions");
     script_path
+}
+
+fn prepend_path(dir: &std::path::Path) -> std::ffi::OsString {
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    let mut parts = vec![dir.as_os_str().to_owned()];
+    if !existing.is_empty() {
+        parts.extend(std::env::split_paths(&existing).map(|path| path.into_os_string()));
+    }
+    std::env::join_paths(parts).expect("join PATH entries")
+}
+
+fn write_milestone_fixture(base_dir: &std::path::Path, milestone_id: &str) {
+    let milestone_root = base_dir
+        .join(".ralph-burning/milestones")
+        .join(milestone_id);
+    fs::create_dir_all(&milestone_root).expect("create milestone root");
+    fs::write(
+        milestone_root.join("milestone.toml"),
+        format!(
+            r#"schema_version = 1
+id = "{milestone_id}"
+name = "Alpha Milestone"
+description = "Deliver the alpha milestone."
+created_at = "2026-04-01T10:00:00Z"
+"#
+        ),
+    )
+    .expect("write milestone record");
+    let bundle = MilestoneBundle {
+        schema_version: 1,
+        identity: MilestoneIdentity {
+            id: milestone_id.to_owned(),
+            name: "Alpha Milestone".to_owned(),
+        },
+        executive_summary: "Ship bead-backed task creation.".to_owned(),
+        goals: vec![
+            "Create a task directly from milestone state".to_owned(),
+            "Keep run start compatible".to_owned(),
+        ],
+        non_goals: vec![],
+        constraints: vec!["Reuse the current project substrate".to_owned()],
+        acceptance_map: vec![AcceptanceCriterion {
+            id: "AC-1".to_owned(),
+            description: "Bead-backed task creation works".to_owned(),
+            covered_by: vec!["bead-2".to_owned()],
+        }],
+        workstreams: vec![Workstream {
+            name: "Task Substrate".to_owned(),
+            description: Some("Wire milestone beads into Ralph projects.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: None,
+                title: "Bootstrap bead-backed task creation".to_owned(),
+                description: Some(
+                    "Create a Ralph project directly from milestone + bead context.".to_owned(),
+                ),
+                bead_type: Some("feature".to_owned()),
+                priority: Some(1),
+                labels: vec!["creation".to_owned()],
+                depends_on: vec!["bead-1".to_owned()],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: Some(FlowPreset::DocsChange),
+            }],
+        }],
+        default_flow: FlowPreset::QuickDev,
+        agents_guidance: Some("Keep changes inspectable and deterministic.".to_owned()),
+    };
+    let plan_json = render_plan_json(&bundle).expect("render plan json");
+    let mut hasher = Sha256::new();
+    hasher.update(plan_json.as_bytes());
+    let plan_hash = format!("{:x}", hasher.finalize());
+    fs::write(
+        milestone_root.join("status.json"),
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("write milestone status");
+    fs::write(milestone_root.join("plan.json"), plan_json).expect("write plan json");
+}
+
+fn milestone_plan_hash(base_dir: &std::path::Path, milestone_id: &str) -> String {
+    let plan_path = base_dir
+        .join(".ralph-burning/milestones")
+        .join(milestone_id)
+        .join("plan.json");
+    let plan_json = fs::read_to_string(plan_path).expect("read plan json");
+    let mut hasher = Sha256::new();
+    hasher.update(plan_json.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 #[cfg(feature = "test-stub")]
@@ -1593,6 +1701,918 @@ fn project_create_records_canonical_prompt_reference_not_source_path() {
 }
 
 #[test]
+fn project_create_from_bead_bootstraps_project_from_milestone_context() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "labels": ["creation", "prompt"],
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [
+      {
+        "id": "ms-alpha.epic-1",
+        "dependency_type": "parent_child",
+        "title": "Task Substrate"
+      },
+      {
+        "id": "ms-alpha.bead-1",
+        "dependency_type": "blocks",
+        "title": "Define task-source metadata"
+      }
+    ],
+    "dependents": [
+      {
+        "id": "ms-alpha.bead-3",
+        "dependency_type": "parent_child",
+        "title": "Child bead"
+      }
+    ]
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/task-ms-alpha-bead-2");
+    assert!(project_root.join("project.toml").is_file());
+    let project_toml = fs::read_to_string(project_root.join("project.toml")).expect("read project");
+    assert!(project_toml.contains("flow = \"docs_change\""));
+    assert!(project_toml.contains("milestone_id = \"ms-alpha\""));
+    assert!(project_toml.contains("bead_id = \"ms-alpha.bead-2\""));
+    assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(project_toml.contains("plan_version = 2"));
+    assert!(project_toml.contains("parent_epic_id = \"ms-alpha.epic-1\""));
+
+    let prompt = fs::read_to_string(project_root.join("prompt.md")).expect("read prompt");
+    assert!(prompt.contains("Ship bead-backed task creation."));
+    assert!(prompt.contains("## Active Bead"));
+    assert!(prompt.contains("Keep changes inspectable and deterministic."));
+    assert!(prompt.contains("## Dependencies\n\n- ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
+    assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
+
+    let active = fs::read_to_string(temp_dir.path().join(".ralph-burning/active-project"))
+        .expect("read active project");
+    assert_eq!(active.trim(), "task-ms-alpha-bead-2");
+}
+
+#[test]
+fn project_create_from_bead_rejects_stale_milestone_plan_metadata() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let stale_status = fs::read_to_string(&status_path)
+        .expect("read status")
+        .replace("\"plan_hash\": \"", "\"plan_hash\": \"stale-");
+    fs::write(&status_path, stale_status).expect("write stale status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("plan metadata is stale"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/task-ms-alpha-bead-2")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_accepts_legacy_milestone_status_without_plan_metadata() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    fs::write(
+        &status_path,
+        r#"{
+  "status": "ready",
+  "plan_version": 0,
+  "progress": {
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  },
+  "updated_at": "2026-04-01T10:05:00Z"
+}"#,
+    )
+    .expect("write legacy status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "legacy-status-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/legacy-status-project/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains(&format!("plan_hash = \"{plan_hash}\"")));
+    assert!(!project_toml.contains("plan_version = "));
+}
+
+#[test]
+fn project_create_from_bead_rejects_status_hash_without_plan_version() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    fs::write(
+        &status_path,
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{plan_hash}",
+  "plan_version": 0,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("write corrupt status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "corrupt-status-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("plan_hash but plan_version is 0"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/corrupt-status-project")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_rejects_completed_milestone() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let completed_status = fs::read_to_string(&status_path)
+        .expect("read status")
+        .replace("\"status\": \"ready\"", "\"status\": \"completed\"");
+    fs::write(&status_path, completed_status).expect("write completed status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "completed-milestone-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("milestone 'ms-alpha' is already completed"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/completed-milestone-project")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_rejects_closed_bead() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "closed",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "closed-bead-project",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("bead is already closed"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/closed-bead-project")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_allows_unconfirmed_fallback_when_status_metadata_is_stale() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let stale_status = fs::read_to_string(&status_path)
+        .expect("read status")
+        .replace("\"plan_hash\": \"", "\"plan_hash\": \"stale-");
+    fs::write(&status_path, stale_status).expect("write stale status");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation (renamed live bead)",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "stale-status-unconfirmed-fallback",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/stale-status-unconfirmed-fallback/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(!project_toml.contains("plan_version = "));
+    assert!(!project_toml.contains("plan_hash = "));
+}
+
+#[test]
+fn project_create_from_bead_rejects_plan_json_hash_drift_from_unknown_fields() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/plan.json");
+    let mut plan_value: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&plan_path).expect("read plan"))
+            .expect("parse plan");
+    plan_value
+        .as_object_mut()
+        .expect("plan root object")
+        .insert("ignored_extra".to_owned(), serde_json::json!(true));
+    fs::write(
+        &plan_path,
+        serde_json::to_string_pretty(&plan_value).expect("serialize modified plan"),
+    )
+    .expect("write modified plan");
+
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("plan metadata is stale"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/task-ms-alpha-bead-2")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_rejects_beads_outside_selected_milestone() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "other-ms.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "other-ms.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "acceptance_criteria": "Controller can create the project without manual setup",
+    "dependencies": [],
+    "dependents": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "other-ms.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("expected bead id to belong to milestone 'ms-alpha'"));
+    assert!(!temp_dir
+        .path()
+        .join(".ralph-burning/projects/task-other-ms-bead-2")
+        .exists());
+}
+
+#[test]
+fn project_create_from_bead_rejects_single_show_response_for_wrong_bead() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+{
+  "id": "ms-alpha.bead-200",
+  "title": "Wrong bead",
+  "status": "open",
+  "priority": "P1",
+  "issue_type": "feature",
+  "acceptance_criteria": "wrong"
+}
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(!output.status.success(), "command unexpectedly succeeded");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(stderr.contains("br show returned bead 'ms-alpha.bead-200'"));
+}
+
+#[test]
+fn project_create_from_bead_allows_explicit_flow_when_plan_title_drifted() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation (renamed live bead)",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--flow",
+            "standard",
+            "--project-id",
+            "renamed-live-bead",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/renamed-live-bead/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"standard\""));
+    assert!(!project_toml.contains("plan_version = "));
+    assert!(!project_toml.contains("plan_hash = "));
+}
+
+#[test]
+fn project_create_from_bead_falls_back_to_milestone_default_flow_when_title_drifted() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation (renamed live bead)",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "renamed-live-bead-default-flow",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/renamed-live-bead-default-flow/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(!project_toml.contains("plan_version = "));
+    assert!(!project_toml.contains("plan_hash = "));
+}
+
+#[test]
+fn project_create_from_bead_does_not_confirm_title_fallback_against_mismatched_explicit_bead_id() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let milestone_plan = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/plan.json");
+    let mut bundle: MilestoneBundle =
+        serde_json::from_str(&fs::read_to_string(&milestone_plan).expect("read plan"))
+            .expect("parse plan");
+    bundle.workstreams[0].beads[0].bead_id = Some("ms-alpha.bead-200".to_owned());
+    fs::write(
+        &milestone_plan,
+        serde_json::to_string_pretty(&bundle).expect("serialize plan"),
+    )
+    .expect("write plan");
+    let status_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/status.json");
+    let updated_plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    fs::write(
+        &status_path,
+        format!(
+            r#"{{
+  "status": "ready",
+  "plan_hash": "{updated_plan_hash}",
+  "plan_version": 2,
+  "progress": {{
+    "total_beads": 2,
+    "completed_beads": 0,
+    "in_progress_beads": 0,
+    "failed_beads": 0,
+    "skipped_beads": 0,
+    "blocked_beads": 0
+  }},
+  "updated_at": "2026-04-01T10:05:00Z"
+}}"#
+        ),
+    )
+    .expect("write status");
+
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let output = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "mismatched-explicit-bead-id",
+        ])
+        .env("PATH", path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project create-from-bead");
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let project_toml = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/projects/mismatched-explicit-bead-id/project.toml"),
+    )
+    .expect("read project.toml");
+    assert!(project_toml.contains("flow = \"quick_dev\""));
+    assert!(!project_toml.contains("plan_version = "));
+    assert!(!project_toml.contains("plan_hash = "));
+}
+
+#[test]
 fn project_create_fails_on_duplicate_id() {
     let temp_dir = initialize_workspace_fixture();
     let prompt = write_prompt_fixture(temp_dir.path());
@@ -2389,6 +3409,47 @@ fn run_status_shows_not_started_for_new_project() {
     assert!(stdout.contains("Status: not started"));
 }
 
+#[test]
+fn run_status_does_not_rewrite_legacy_run_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    Command::new(binary())
+        .args(["project", "select", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    let run_json_path = temp_dir
+        .path()
+        .join(".ralph-burning/projects/alpha/run.json");
+    let legacy_snapshot = serde_json::json!({
+        "active_run": null,
+        "status": "not_started",
+        "cycle_history": [],
+        "completion_rounds": 0,
+        "rollback_point_meta": {"last_rollback_id": null, "rollback_count": 0},
+        "amendment_queue": {"pending": [], "processed_count": 0},
+        "status_summary": "not started"
+    });
+    fs::write(
+        &run_json_path,
+        serde_json::to_string_pretty(&legacy_snapshot).expect("serialize legacy snapshot"),
+    )
+    .expect("write legacy run.json");
+    let before = fs::read_to_string(&run_json_path).expect("read legacy run.json");
+
+    let output = Command::new(binary())
+        .args(["run", "status"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run status");
+
+    assert!(output.status.success());
+    let after = fs::read_to_string(&run_json_path).expect("read post-status run.json");
+    assert_eq!(after, before, "run status must not mutate legacy run.json");
+}
+
 // ── Run History ──
 
 #[test]
@@ -2697,6 +3758,64 @@ fn run_tail_with_logs_includes_runtime_logs_section() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("Durable History"));
     assert!(stdout.contains("Runtime Logs"));
+}
+
+#[test]
+fn run_tail_with_logs_renders_final_review_member_timing_summary() {
+    let temp_dir = initialize_workspace_fixture();
+    let prompt = write_prompt_fixture(temp_dir.path());
+
+    Command::new(binary())
+        .args([
+            "project",
+            "create",
+            "--id",
+            "tail-reviewers",
+            "--name",
+            "Tail Reviewers",
+            "--prompt",
+            prompt.to_str().unwrap(),
+            "--flow",
+            "standard",
+        ])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create project");
+
+    Command::new(binary())
+        .args(["project", "select", "tail-reviewers"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("select project");
+
+    let journal_path = project_root(temp_dir.path(), "tail-reviewers").join("journal.ndjson");
+    let reviewer_events = [
+        r#"{"sequence":2,"timestamp":"2026-04-02T10:00:00Z","event_type":"reviewer_started","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.4"}}"#,
+        r#"{"sequence":3,"timestamp":"2026-04-02T10:00:05Z","event_type":"reviewer_completed","details":{"run_id":"run-1","stage_id":"final_review","cycle":1,"attempt":1,"completion_round":1,"panel":"final_review","phase":"proposal","reviewer_id":"reviewer-2","role":"reviewer","backend_family":"codex","model_id":"gpt-5.4","duration_ms":37,"outcome":"proposed_amendments","amendment_count":2}}"#,
+    ]
+    .join("\n")
+        + "\n";
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&journal_path)
+        .expect("open journal")
+        .write_all(reviewer_events.as_bytes())
+        .expect("append reviewer events");
+
+    let output = Command::new(binary())
+        .args(["run", "tail", "--logs"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run tail --logs");
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("final_review reviewer reviewer-2 proposal [codex / gpt-5.4]"));
+    assert!(
+        stdout.contains(
+            "final_review reviewer reviewer-2 proposal completed in 37ms outcome=proposed_amendments amendments=2"
+        )
+    );
 }
 
 #[test]
@@ -4057,6 +5176,44 @@ fn empty_journal_fails_fast_on_project_show() {
 }
 
 #[test]
+fn project_show_does_not_rewrite_legacy_run_snapshot() {
+    let temp_dir = initialize_workspace_fixture();
+    create_project_fixture(temp_dir.path(), "alpha");
+
+    let run_json_path = temp_dir
+        .path()
+        .join(".ralph-burning/projects/alpha/run.json");
+    let legacy_snapshot = serde_json::json!({
+        "active_run": null,
+        "status": "not_started",
+        "cycle_history": [],
+        "completion_rounds": 0,
+        "rollback_point_meta": {"last_rollback_id": null, "rollback_count": 0},
+        "amendment_queue": {"pending": [], "processed_count": 0},
+        "status_summary": "not started"
+    });
+    fs::write(
+        &run_json_path,
+        serde_json::to_string_pretty(&legacy_snapshot).expect("serialize legacy snapshot"),
+    )
+    .expect("write legacy run.json");
+    let before = fs::read_to_string(&run_json_path).expect("read legacy run.json");
+
+    let output = Command::new(binary())
+        .args(["project", "show", "alpha"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run project show");
+
+    assert!(output.status.success());
+    let after = fs::read_to_string(&run_json_path).expect("read post-show run.json");
+    assert_eq!(
+        after, before,
+        "project show must not mutate legacy run.json"
+    );
+}
+
+#[test]
 fn empty_journal_fails_fast_on_run_history() {
     let temp_dir = initialize_workspace_fixture();
     create_project_fixture(temp_dir.path(), "alpha");
@@ -4398,6 +5555,714 @@ fn run_start_persists_journal_events() {
         journal.contains("\"run_completed\""),
         "journal should contain run_completed"
     );
+}
+
+#[cfg(feature = "test-stub")]
+#[test]
+fn run_start_syncs_milestone_lineage_for_bead_backed_projects() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--flow",
+            "standard",
+            "--project-id",
+            "bead-run",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let start = Command::new(binary())
+        .args(["run", "start"])
+        .env("PATH", path)
+        .env("RALPH_BURNING_BACKEND", "stub")
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run start");
+    assert!(
+        start.status.success(),
+        "run start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let task_runs = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson"),
+    )
+    .expect("read milestone task-runs");
+    assert!(task_runs.contains("\"bead_id\":\"ms-alpha.bead-2\""));
+    assert!(task_runs.contains("\"project_id\":\"bead-run\""));
+    assert!(task_runs.contains(&format!("\"plan_hash\":\"{plan_hash}\"")));
+    assert!(task_runs.contains("\"outcome\":\"succeeded\""));
+
+    let milestone_journal = fs::read_to_string(
+        temp_dir
+            .path()
+            .join(".ralph-burning/milestones/ms-alpha/journal.ndjson"),
+    )
+    .expect("read milestone journal");
+    assert!(milestone_journal.contains("\"bead_started\""));
+    assert!(milestone_journal.contains("\"bead_completed\""));
+}
+
+#[test]
+fn run_sync_milestone_repairs_completed_bead_backed_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-repair",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-repair");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-repair","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401101100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-repair","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write stale task-runs");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read repaired task-runs");
+    assert!(repaired_task_runs.contains("\"outcome\":\"succeeded\""));
+    assert!(repaired_task_runs.contains("\"finished_at\":\"2026-04-01T10:15:00Z\""));
+}
+
+#[test]
+fn run_sync_milestone_repairs_stale_terminal_outcome_with_original_timestamp() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-terminal-repair",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-terminal-repair");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-terminal-repair","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:12:00Z","event_type":"run_failed","details":{{"run_id":"run-20260401101100","stage_id":"review","failure_class":"stage_failure","message":"stale failure","completion_rounds":0,"max_completion_rounds":20}}}}
+{{"sequence":4,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401101100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-terminal-repair","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"failed","outcome_detail":"stale failure","started_at":"2026-04-01T10:11:00Z","finished_at":"2026-04-01T10:12:00Z"}}"#
+        ),
+    )
+    .expect("write stale task-runs");
+
+    let milestone_journal_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/journal.ndjson");
+    fs::write(
+        &milestone_journal_path,
+        format!(
+            r#"{{"timestamp":"2026-04-01T10:11:00Z","event_type":"bead_started","bead_id":"ms-alpha.bead-2","details":"{{\"project_id\":\"bead-sync-terminal-repair\",\"run_id\":\"run-20260401101100\",\"plan_hash\":\"{plan_hash}\"}}"}}
+{{"timestamp":"2026-04-01T10:12:00Z","event_type":"bead_failed","bead_id":"ms-alpha.bead-2","details":"{{\"project_id\":\"bead-sync-terminal-repair\",\"run_id\":\"run-20260401101100\",\"plan_hash\":\"{plan_hash}\",\"started_at\":\"2026-04-01T10:11:00Z\",\"outcome\":\"failed\",\"outcome_detail\":\"stale failure\"}}"}}"#
+        ),
+    )
+    .expect("write stale milestone journal");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read repaired task-runs");
+    assert!(repaired_task_runs.contains("\"outcome\":\"succeeded\""));
+    assert!(!repaired_task_runs.contains("\"outcome_detail\":\"stale failure\""));
+    assert!(repaired_task_runs.contains("\"finished_at\":\"2026-04-01T10:15:00Z\""));
+
+    let repaired_milestone_journal =
+        fs::read_to_string(&milestone_journal_path).expect("read repaired milestone journal");
+    assert!(!repaired_milestone_journal.contains("\"event_type\":\"bead_failed\""));
+    assert!(repaired_milestone_journal.contains("\"event_type\":\"bead_completed\""));
+    assert!(repaired_milestone_journal.contains("\"timestamp\":\"2026-04-01T10:15:00Z\""));
+}
+
+#[test]
+fn run_sync_milestone_reconstructs_missing_lineage_for_terminal_project() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-reconstruct",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-reconstruct");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-reconstruct","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:15:00Z","event_type":"run_completed","details":{{"run_id":"run-20260401101100","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    if task_runs_path.exists() {
+        fs::remove_file(&task_runs_path).expect("remove task-runs");
+    }
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        sync.status.success(),
+        "sync failed: {}",
+        String::from_utf8_lossy(&sync.stderr)
+    );
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read repaired task-runs");
+    assert!(repaired_task_runs.contains("\"project_id\":\"bead-sync-reconstruct\""));
+    assert!(repaired_task_runs.contains("\"run_id\":\"run-20260401101100\""));
+    assert!(repaired_task_runs.contains(&format!("\"plan_hash\":\"{plan_hash}\"")));
+    assert!(repaired_task_runs.contains("\"outcome\":\"succeeded\""));
+    assert!(repaired_task_runs.contains("\"finished_at\""));
+}
+
+#[test]
+fn run_sync_milestone_errors_when_missing_lineage_is_ambiguous() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-ambiguous",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-ambiguous");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed after ambiguous lineage drift"}"#,
+    )
+    .expect("write failed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-ambiguous","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:20:00Z","event_type":"run_started","details":{{"run_id":"run-20260401102000","first_stage":"planning","max_completion_rounds":20}}}}
+{{"sequence":3,"timestamp":"2026-04-01T10:25:00Z","event_type":"run_failed","details":{{"run_id":"run-20260401102000","stage_id":"planning","failure_class":"stage_failure","message":"failed after ambiguous lineage drift","completion_rounds":0,"max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            concat!(
+                "{{\"milestone_id\":\"ms-alpha\",\"bead_id\":\"ms-alpha.bead-2\",",
+                "\"project_id\":\"older-project-a\",\"run_id\":\"run-older-a\",\"plan_hash\":\"{0}\",",
+                "\"outcome\":\"running\",\"started_at\":\"2026-04-01T09:40:00Z\"}}\n",
+                "{{\"milestone_id\":\"ms-alpha\",\"bead_id\":\"ms-alpha.bead-2\",",
+                "\"project_id\":\"older-project-b\",\"run_id\":\"run-older-b\",\"plan_hash\":\"{0}\",",
+                "\"outcome\":\"running\",\"started_at\":\"2026-04-01T09:50:00Z\"}}"
+            ),
+            plan_hash
+        ),
+    )
+    .expect("write ambiguous task-runs");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        !sync.status.success(),
+        "sync should surface ambiguous lineage failure"
+    );
+    let stderr = String::from_utf8_lossy(&sync.stderr);
+    assert!(stderr.contains("multiple active lineage rows exist"));
+    assert!(stderr.contains("manual cleanup required"));
+
+    let repaired_task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(repaired_task_runs.contains("\"run_id\":\"run-older-a\""));
+    assert!(repaired_task_runs.contains("\"run_id\":\"run-older-b\""));
+    assert!(!repaired_task_runs.contains("\"run_id\":\"run-20260401102000\""));
+}
+
+#[test]
+fn run_sync_milestone_fails_when_completed_project_lacks_run_completed_event() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-missing-run-completed",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-missing-run-completed");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"completed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"completed"}"#,
+    )
+    .expect("write completed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-missing-run-completed","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-missing-run-completed","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write running task-runs");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        !sync.status.success(),
+        "sync should fail without run_completed"
+    );
+    let stderr = String::from_utf8_lossy(&sync.stderr);
+    assert!(stderr.contains("missing durable run_completed event"));
+
+    let task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(task_runs.contains("\"outcome\":\"running\""));
+    assert!(!task_runs.contains("\"finished_at\""));
+}
+
+#[test]
+fn run_sync_milestone_fails_when_failed_project_lacks_run_failed_event() {
+    let temp_dir = initialize_workspace_fixture();
+    write_milestone_fixture(temp_dir.path(), "ms-alpha");
+    let plan_hash = milestone_plan_hash(temp_dir.path(), "ms-alpha");
+    let fake_br = write_editor_script(
+        temp_dir.path(),
+        "br",
+        r#"#!/bin/sh
+if [ "$1" = "show" ] && [ "$2" = "ms-alpha.bead-2" ] && [ "$3" = "--json" ]; then
+cat <<'EOF'
+[
+  {
+    "id": "ms-alpha.bead-2",
+    "title": "Bootstrap bead-backed task creation",
+    "status": "open",
+    "priority": "P1",
+    "issue_type": "feature",
+    "description": "Create a Ralph project directly from milestone and bead context.",
+    "acceptance_criteria": "- Controller can create the project without manual setup\n- Created task is durable and inspectable",
+    "dependencies": []
+  }
+]
+EOF
+exit 0
+fi
+echo "unexpected br args: $@" >&2
+exit 1
+"#,
+    );
+    let path = prepend_path(fake_br.parent().expect("fake br parent"));
+
+    let create = Command::new(binary())
+        .args([
+            "project",
+            "create-from-bead",
+            "--milestone-id",
+            "ms-alpha",
+            "--bead-id",
+            "ms-alpha.bead-2",
+            "--project-id",
+            "bead-sync-missing-run-failed",
+        ])
+        .env("PATH", &path)
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("create bead-backed project");
+    assert!(
+        create.status.success(),
+        "create failed: {}",
+        String::from_utf8_lossy(&create.stderr)
+    );
+
+    let project_root = temp_dir
+        .path()
+        .join(".ralph-burning/projects/bead-sync-missing-run-failed");
+    fs::write(
+        project_root.join("run.json"),
+        r#"{"active_run":null,"interrupted_run":null,"status":"failed","cycle_history":[],"completion_rounds":0,"rollback_point_meta":{"last_rollback_id":null,"rollback_count":0},"amendment_queue":{"pending":[],"processed_count":0},"status_summary":"failed without durable run_failed event"}"#,
+    )
+    .expect("write failed run.json");
+    fs::write(
+        project_root.join("journal.ndjson"),
+        format!(
+            r#"{{"sequence":1,"timestamp":"2026-04-01T10:10:00Z","event_type":"project_created","details":{{"project_id":"bead-sync-missing-run-failed","flow":"docs_change","source":"milestone_bead","milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","plan_hash":"{plan_hash}","plan_version":2}}}}
+{{"sequence":2,"timestamp":"2026-04-01T10:11:00Z","event_type":"run_started","details":{{"run_id":"run-20260401101100","first_stage":"planning","max_completion_rounds":20}}}}"#
+        ),
+    )
+    .expect("write journal");
+
+    let task_runs_path = temp_dir
+        .path()
+        .join(".ralph-burning/milestones/ms-alpha/task-runs.ndjson");
+    fs::write(
+        &task_runs_path,
+        format!(
+            r#"{{"milestone_id":"ms-alpha","bead_id":"ms-alpha.bead-2","project_id":"bead-sync-missing-run-failed","run_id":"run-20260401101100","plan_hash":"{plan_hash}","outcome":"running","started_at":"2026-04-01T10:11:00Z"}}"#
+        ),
+    )
+    .expect("write running task-runs");
+
+    let sync = Command::new(binary())
+        .args(["run", "sync-milestone"])
+        .current_dir(temp_dir.path())
+        .output()
+        .expect("run sync-milestone");
+    assert!(
+        !sync.status.success(),
+        "sync should fail without run_failed"
+    );
+    let stderr = String::from_utf8_lossy(&sync.stderr);
+    assert!(stderr.contains("missing durable run_failed event"));
+
+    let task_runs = fs::read_to_string(&task_runs_path).expect("read task-runs");
+    assert!(task_runs.contains("\"outcome\":\"running\""));
+    assert!(!task_runs.contains("\"finished_at\""));
 }
 
 #[cfg(feature = "test-stub")]

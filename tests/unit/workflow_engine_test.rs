@@ -18,9 +18,15 @@ use ralph_burning::contexts::agent_execution::model::{
 };
 use ralph_burning::contexts::agent_execution::service::AgentExecutionPort;
 use ralph_burning::contexts::agent_execution::service::AgentExecutionService;
+use ralph_burning::contexts::milestone_record::bundle::{
+    AcceptanceCriterion, BeadProposal, MilestoneBundle, MilestoneIdentity, Workstream,
+};
+use ralph_burning::contexts::milestone_record::service::{
+    create_milestone, persist_plan, read_task_runs, CreateMilestoneInput,
+};
 use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
-    JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry,
+    JournalEvent, JournalEventType, RunSnapshot, RunStatus, RuntimeLogEntry, TaskOrigin, TaskSource,
 };
 use ralph_burning::contexts::project_run_record::service::{
     self, CreateProjectInput, JournalStorePort, ProjectStorePort, RunSnapshotPort,
@@ -72,6 +78,72 @@ fn create_project_with_flow(base_dir: &Path, project_id: &str, flow: FlowPreset)
 
 fn create_standard_project(base_dir: &Path, project_id: &str) -> ProjectId {
     create_project_with_flow(base_dir, project_id, FlowPreset::Standard)
+}
+
+fn create_milestone_task_project(
+    base_dir: &Path,
+    project_id: &str,
+    task_source: TaskSource,
+) -> ProjectId {
+    let pid = ProjectId::new(project_id).unwrap();
+    let store = FsProjectStore;
+    let journal_store = FsJournalStore;
+    let prompt_contents = "# Test prompt";
+    service::create_project(
+        &store,
+        &journal_store,
+        base_dir,
+        CreateProjectInput {
+            id: pid.clone(),
+            name: format!("Test {}", project_id),
+            flow: FlowPreset::Standard,
+            prompt_path: "prompt.md".to_owned(),
+            prompt_contents: prompt_contents.to_owned(),
+            prompt_hash: ralph_burning::adapters::fs::FileSystem::prompt_hash(prompt_contents),
+            created_at: Utc::now(),
+            task_source: Some(task_source),
+        },
+    )
+    .unwrap();
+
+    workspace_governance::set_active_project(base_dir, &pid).unwrap();
+    pid
+}
+
+fn sample_milestone_bundle(milestone_id: &str) -> MilestoneBundle {
+    MilestoneBundle {
+        schema_version: 1,
+        identity: MilestoneIdentity {
+            id: milestone_id.to_owned(),
+            name: "Alpha Milestone".to_owned(),
+        },
+        executive_summary: "Ship bead-backed task creation.".to_owned(),
+        goals: vec!["Create the bead-backed task path.".to_owned()],
+        non_goals: vec![],
+        constraints: vec!["Keep the run substrate compatible.".to_owned()],
+        acceptance_map: vec![AcceptanceCriterion {
+            id: "AC-1".to_owned(),
+            description: "Task creation works".to_owned(),
+            covered_by: vec!["bead-2".to_owned()],
+        }],
+        workstreams: vec![Workstream {
+            name: "Creation".to_owned(),
+            description: Some("Project bootstrap flow.".to_owned()),
+            beads: vec![BeadProposal {
+                bead_id: Some(format!("{milestone_id}.bead-2")),
+                title: "Bootstrap bead-backed task creation".to_owned(),
+                description: Some("Create a project from milestone context.".to_owned()),
+                bead_type: Some("feature".to_owned()),
+                priority: Some(1),
+                labels: vec!["creation".to_owned()],
+                depends_on: vec![],
+                acceptance_criteria: vec!["AC-1".to_owned()],
+                flow_override: Some(FlowPreset::Standard),
+            }],
+        }],
+        default_flow: FlowPreset::Standard,
+        agents_guidance: Some("Keep it deterministic.".to_owned()),
+    }
 }
 
 fn build_agent_service(
@@ -1560,6 +1632,7 @@ async fn run_start_rejects_already_running() {
         status: RunStatus::Running,
         cycle_history: vec![],
         completion_rounds: 0,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "running".to_owned(),
@@ -1605,6 +1678,7 @@ async fn run_start_rejects_completed_project() {
         status: RunStatus::Completed,
         cycle_history: vec![],
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "completed".to_owned(),
@@ -2064,6 +2138,220 @@ async fn run_started_journal_failure_persists_failed_state() {
     let payloads_dir = base_dir.join(".ralph-burning/projects/run-started-fail/history/payloads");
     let payload_count = fs::read_dir(&payloads_dir).unwrap().count();
     assert_eq!(payload_count, 0, "no payloads should exist");
+}
+
+#[tokio::test]
+async fn bead_backed_run_started_failure_does_not_open_milestone_lineage() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+    let now = Utc::now();
+
+    setup_workspace(base_dir);
+    let milestone = create_milestone(
+        &ralph_burning::adapters::fs::FsMilestoneStore,
+        base_dir,
+        CreateMilestoneInput {
+            id: "ms-alpha".to_owned(),
+            name: "Alpha".to_owned(),
+            description: "Test milestone".to_owned(),
+        },
+        now,
+    )
+    .unwrap();
+    persist_plan(
+        &ralph_burning::adapters::fs::FsMilestoneSnapshotStore,
+        &ralph_burning::adapters::fs::FsMilestoneJournalStore,
+        &ralph_burning::adapters::fs::FsMilestonePlanStore,
+        base_dir,
+        &milestone.id,
+        &sample_milestone_bundle("ms-alpha"),
+        now,
+    )
+    .unwrap();
+
+    let pid = create_milestone_task_project(
+        base_dir,
+        "bead-run-started-fail",
+        TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-alpha.bead-2".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        },
+    );
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let failing_journal = FailingJournalStore::new(1);
+
+    let result = engine::execute_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "run should fail on run_started journal failure"
+    );
+
+    let task_runs = read_task_runs(
+        &ralph_burning::adapters::fs::FsTaskRunLineageStore,
+        base_dir,
+        &milestone.id,
+    )
+    .unwrap();
+    assert!(
+        task_runs.is_empty(),
+        "milestone lineage must remain untouched when run_started is not durable"
+    );
+}
+
+#[tokio::test]
+async fn bead_backed_run_resumed_failure_does_not_open_milestone_lineage() {
+    let tmp = tempdir().unwrap();
+    let base_dir = tmp.path();
+    let now = Utc::now();
+
+    setup_workspace(base_dir);
+    let milestone = create_milestone(
+        &ralph_burning::adapters::fs::FsMilestoneStore,
+        base_dir,
+        CreateMilestoneInput {
+            id: "ms-alpha".to_owned(),
+            name: "Alpha".to_owned(),
+            description: "Test milestone".to_owned(),
+        },
+        now,
+    )
+    .unwrap();
+
+    let pid = create_milestone_task_project(
+        base_dir,
+        "bead-run-resumed-fail",
+        TaskSource {
+            milestone_id: milestone.id.to_string(),
+            bead_id: "ms-alpha.bead-2".to_owned(),
+            parent_epic_id: None,
+            origin: TaskOrigin::Milestone,
+            plan_hash: Some("plan-v1".to_owned()),
+            plan_version: Some(1),
+        },
+    );
+
+    let run_id = RunId::new("run-resume-failure").unwrap();
+    let snapshot = RunSnapshot {
+        active_run: None,
+        interrupted_run: Some(
+            ralph_burning::contexts::project_run_record::model::ActiveRun {
+                run_id: run_id.as_str().to_owned(),
+                stage_cursor: ralph_burning::shared::domain::StageCursor::new(
+                    StageId::Implementation,
+                    1,
+                    1,
+                    1,
+                )
+                .unwrap(),
+                started_at: now,
+                prompt_hash_at_cycle_start: FsProjectStore
+                    .read_project_record(base_dir, &pid)
+                    .unwrap()
+                    .prompt_hash,
+                prompt_hash_at_stage_start: FsProjectStore
+                    .read_project_record(base_dir, &pid)
+                    .unwrap()
+                    .prompt_hash,
+                qa_iterations_current_cycle: 0,
+                review_iterations_current_cycle: 0,
+                final_review_restart_count: 0,
+                stage_resolution_snapshot: None,
+            },
+        ),
+        status: RunStatus::Failed,
+        cycle_history: vec![],
+        completion_rounds: 1,
+        max_completion_rounds: Some(20),
+        rollback_point_meta: Default::default(),
+        amendment_queue: Default::default(),
+        status_summary: "failed at implementation".to_owned(),
+        last_stage_resolution_snapshot: None,
+    };
+    FsRunSnapshotWriteStore
+        .write_run_snapshot(base_dir, &pid, &snapshot)
+        .unwrap();
+
+    for event in [
+        journal::run_started_event(2, now, &run_id, StageId::PromptReview, 20),
+        journal::stage_completed_event(
+            3,
+            now,
+            &run_id,
+            StageId::PromptReview,
+            1,
+            1,
+            "prompt-review-payload",
+            "prompt-review-artifact",
+        ),
+        journal::stage_completed_event(
+            4,
+            now,
+            &run_id,
+            StageId::Planning,
+            1,
+            1,
+            "planning-payload",
+            "planning-artifact",
+        ),
+    ] {
+        FsJournalStore
+            .append_event(base_dir, &pid, &journal::serialize_event(&event).unwrap())
+            .unwrap();
+    }
+
+    let agent_service = build_agent_service();
+    let config = EffectiveConfig::load(base_dir).unwrap();
+    let failing_journal = FailingJournalStore::new(1);
+
+    let result = engine::resume_standard_run(
+        &agent_service,
+        &FsRunSnapshotStore,
+        &FsRunSnapshotWriteStore,
+        &failing_journal,
+        &FsArtifactStore,
+        &FsPayloadArtifactWriteStore,
+        &FsRuntimeLogWriteStore,
+        &FsAmendmentQueueStore,
+        base_dir,
+        &pid,
+        &config,
+    )
+    .await;
+
+    assert!(
+        result.is_err(),
+        "resume should fail when run_resumed is not durable"
+    );
+
+    let task_runs = read_task_runs(
+        &ralph_burning::adapters::fs::FsTaskRunLineageStore,
+        base_dir,
+        &milestone.id,
+    )
+    .unwrap();
+    assert!(
+        task_runs.is_empty(),
+        "milestone lineage must remain untouched when run_resumed is not durable"
+    );
 }
 
 /// Journal append failure after payload/artifact write must roll back the
@@ -3245,6 +3533,7 @@ async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record
         status: RunStatus::Failed,
         cycle_history: vec![],
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "failed at implementation".to_owned(),
@@ -3254,7 +3543,7 @@ async fn resume_uses_interrupted_cycle_prompt_baseline_instead_of_project_record
         .write_run_snapshot(base_dir, &pid, &snapshot)
         .unwrap();
 
-    let run_started = journal::run_started_event(2, started_at, &run_id, StageId::PromptReview);
+    let run_started = journal::run_started_event(2, started_at, &run_id, StageId::PromptReview, 20);
     FsJournalStore
         .append_event(
             base_dir,
@@ -3393,6 +3682,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
         status: RunStatus::Failed,
         cycle_history: vec![],
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "failed at implementation".to_owned(),
@@ -3403,7 +3693,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_for_later_resumes(
         .unwrap();
 
     for event in [
-        journal::run_started_event(2, started_at, &run_id, StageId::PromptReview),
+        journal::run_started_event(2, started_at, &run_id, StageId::PromptReview, 20),
         journal::stage_completed_event(
             3,
             started_at,
@@ -3606,6 +3896,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_r
         status: RunStatus::Failed,
         cycle_history: vec![],
         completion_rounds: 1,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "failed at implementation".to_owned(),
@@ -3616,7 +3907,7 @@ async fn continue_resume_keeps_original_cycle_prompt_baseline_after_completion_r
         .unwrap();
 
     for event in [
-        journal::run_started_event(2, started_at, &run_id, StageId::PromptReview),
+        journal::run_started_event(2, started_at, &run_id, StageId::PromptReview, 20),
         journal::stage_completed_event(
             3,
             started_at,
@@ -4134,6 +4425,7 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
         status: RunStatus::Failed,
         cycle_history: vec![],
         completion_rounds: u32::MAX,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "failed".to_owned(),
@@ -4152,7 +4444,7 @@ async fn resume_late_stage_conditionally_approved_reports_completion_round_overf
     ];
     let mut sequence = 2;
     let run_started =
-        journal::run_started_event(sequence, started_at, &run_id, StageId::PromptReview);
+        journal::run_started_event(sequence, started_at, &run_id, StageId::PromptReview, 20);
     let run_started_line = journal::serialize_event(&run_started).unwrap();
     FsJournalStore
         .append_event(base_dir, &pid, &run_started_line)
@@ -4293,6 +4585,18 @@ async fn late_stage_rejected_causes_terminal_failure() {
         .read_run_snapshot(base_dir, &pid)
         .unwrap();
     assert_eq!(snapshot.status, RunStatus::Failed);
+    assert_eq!(
+        snapshot.completion_rounds, 2,
+        "terminal failure should not advance the canonical completion round"
+    );
+    assert_eq!(
+        snapshot
+            .interrupted_run
+            .as_ref()
+            .map(|run| run.stage_cursor.completion_round),
+        Some(2),
+        "interrupted cursor should remain aligned with the canonical completion round"
+    );
 
     // Panel model produces completion_round_advanced events before max rounds failure.
     let events = FsJournalStore.read_journal(base_dir, &pid).unwrap();
@@ -4304,6 +4608,12 @@ async fn late_stage_rejected_causes_terminal_failure() {
         !round_events.is_empty(),
         "completion_round_advanced events should exist before max rounds failure"
     );
+    let run_failed = events
+        .iter()
+        .find(|e| e.event_type == JournalEventType::RunFailed)
+        .expect("run_failed event");
+    assert_eq!(run_failed.details["completion_rounds"], 2);
+    assert_eq!(run_failed.details["completion_rounds_display"], "3/2");
 }
 
 #[tokio::test]
@@ -4654,6 +4964,27 @@ async fn final_review_conditionally_approved_triggers_completion_round_advanceme
         "should have amendment_queued events"
     );
     assert_eq!(amendment_events[0].details["body"], "tighten final wording");
+    assert_eq!(
+        amendment_events[0].details["reviewer_sources"][0]["reviewer_id"],
+        "reviewer-1"
+    );
+    assert_eq!(
+        amendment_events[0].details["reviewer_sources"][0]["backend_family"],
+        "claude"
+    );
+
+    let reviewer_completed_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == JournalEventType::ReviewerCompleted)
+        .collect();
+    assert!(
+        reviewer_completed_events.iter().any(|event| {
+            event.details["reviewer_id"] == "reviewer-1"
+                && event.details["phase"] == "proposal"
+                && event.details["duration_ms"].as_u64().is_some()
+        }),
+        "final_review should journal per-reviewer completion timing"
+    );
 
     // Completion round advanced with source_stage = final_review.
     let round_events: Vec<_> = events
@@ -5743,6 +6074,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
             },
         ],
         completion_rounds: 2,
+        max_completion_rounds: Some(0),
         rollback_point_meta: Default::default(),
         amendment_queue: Default::default(),
         status_summary: "failed at planning".to_owned(),
@@ -5752,7 +6084,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
         .write_run_snapshot(base_dir, &pid, &snapshot)
         .unwrap();
 
-    let run_started = journal::run_started_event(2, started_at, &run_id, StageId::PromptReview);
+    let run_started = journal::run_started_event(2, started_at, &run_id, StageId::PromptReview, 20);
     FsJournalStore
         .append_event(
             base_dir,
@@ -5880,6 +6212,7 @@ async fn resume_uses_current_cycle_review_counter_instead_of_prior_cycles() {
         1,
         2,
         1,
+        20,
     );
     FsJournalStore
         .append_event(

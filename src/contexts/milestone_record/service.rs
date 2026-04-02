@@ -77,6 +77,18 @@ pub trait MilestoneJournalPort {
         milestone_id: &MilestoneId,
         event: &MilestoneJournalEvent,
     ) -> AppResult<bool>;
+    /// Explicitly repair a completion event for an already-known attempt.
+    /// Unlike `append_event_if_missing`, this path may replace a stale
+    /// completion row when a narrower repair flow has already established that
+    /// the exact bead/project/run attempt should be corrected.
+    fn repair_completion_event(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        event: &MilestoneJournalEvent,
+    ) -> AppResult<bool> {
+        self.append_event_if_missing(base_dir, milestone_id, event)
+    }
 }
 
 /// Port for reading and writing task-run lineage.
@@ -121,6 +133,37 @@ pub trait TaskRunLineagePort {
         outcome_detail: Option<String>,
         finished_at: DateTime<Utc>,
     ) -> AppResult<TaskRunEntry>;
+    /// Explicitly repair the terminal state of an exact historical attempt.
+    /// This is narrower than `update_task_run`: callers must already know they
+    /// are correcting the same bead/project/run attempt instead of replaying a
+    /// generic terminal completion.
+    #[allow(clippy::too_many_arguments)]
+    fn repair_task_run_terminal(
+        &self,
+        base_dir: &Path,
+        milestone_id: &MilestoneId,
+        bead_id: &str,
+        project_id: &str,
+        run_id: &str,
+        plan_hash: Option<&str>,
+        started_at: DateTime<Utc>,
+        outcome: TaskRunOutcome,
+        outcome_detail: Option<String>,
+        finished_at: DateTime<Utc>,
+    ) -> AppResult<TaskRunEntry> {
+        self.update_task_run(
+            base_dir,
+            milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            outcome,
+            outcome_detail,
+            finished_at,
+        )
+    }
     /// Find all task run entries for a specific bead, in chronological order.
     fn find_runs_for_bead(
         &self,
@@ -587,6 +630,73 @@ pub fn update_task_run(
     })
 }
 
+/// Explicitly repair an already-terminal task run for an exact attempt.
+///
+/// This narrow path is reserved for milestone reconciliation when the project
+/// journal proves the canonical terminal outcome and earlier sync logic wrote a
+/// stale terminal row. Generic duplicate finalization continues to be rejected
+/// by [`update_task_run`].
+#[allow(clippy::too_many_arguments)]
+pub fn repair_task_run(
+    snapshot_store: &impl MilestoneSnapshotPort,
+    journal_store: &impl MilestoneJournalPort,
+    lineage_store: &impl TaskRunLineagePort,
+    base_dir: &Path,
+    milestone_id: &MilestoneId,
+    bead_id: &str,
+    project_id: &str,
+    run_id: &str,
+    plan_hash: Option<&str>,
+    started_at: DateTime<Utc>,
+    outcome: TaskRunOutcome,
+    outcome_detail: Option<String>,
+    finished_at: DateTime<Utc>,
+) -> AppResult<()> {
+    snapshot_store.with_milestone_write_lock(base_dir, milestone_id, move || {
+        if !outcome.is_terminal() {
+            return Err(AppError::RunStartFailed {
+                reason: format!(
+                    "cannot repair bead '{bead_id}' with non-terminal outcome '{outcome}'"
+                ),
+            });
+        }
+
+        let mut snapshot = snapshot_store.read_snapshot(base_dir, milestone_id)?;
+        let repaired_run = lineage_store.repair_task_run_terminal(
+            base_dir,
+            milestone_id,
+            bead_id,
+            project_id,
+            run_id,
+            plan_hash,
+            started_at,
+            outcome,
+            outcome_detail,
+            finished_at,
+        )?;
+
+        reconcile_snapshot_from_lineage(
+            &mut snapshot,
+            milestone_id,
+            lineage_store.read_task_runs(base_dir, milestone_id)?,
+        )?;
+        let event_timestamp = repaired_run.finished_at.unwrap_or(finished_at);
+        snapshot.updated_at = snapshot.updated_at.max(finished_at).max(event_timestamp);
+        validate_snapshot(&snapshot, milestone_id)?;
+        snapshot_store.write_snapshot(base_dir, milestone_id, &snapshot)?;
+
+        let event = MilestoneJournalEvent::new(
+            event_type_for_outcome(repaired_run.outcome),
+            event_timestamp,
+        )
+        .with_bead(&repaired_run.bead_id)
+        .with_details(repaired_run.completion_journal_details());
+        let _ = journal_store.repair_completion_event(base_dir, milestone_id, &event)?;
+
+        Ok(())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -840,6 +950,7 @@ mod tests {
                 name: "Core".to_owned(),
                 description: None,
                 beads: vec![BeadProposal {
+                    bead_id: None,
                     title: "Implement feature".to_owned(),
                     description: None,
                     bead_type: Some("task".to_owned()),
@@ -2854,6 +2965,84 @@ mod tests {
             .filter(|event| event.event_type == MilestoneEventType::BeadStarted)
             .collect();
         assert_eq!(start_events.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn start_retry_reopens_failed_attempt_for_same_run_id() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let tmp = tempfile::tempdir()?;
+        let base = tmp.path();
+        setup_workspace(base);
+        let store = FsMilestoneStore;
+        let snapshot_store = FsMilestoneSnapshotStore;
+        let journal_store = FsMilestoneJournalStore;
+        let lineage_store = FsTaskRunLineageStore;
+        let now = Utc::now();
+
+        let record = create_milestone(
+            &store,
+            base,
+            CreateMilestoneInput {
+                id: "start-reopen-failed-run".to_owned(),
+                name: "Start Reopen Failed Run".to_owned(),
+                description: "reopen a failed attempt when the same run resumes".to_owned(),
+            },
+            now,
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now,
+        )?;
+        record_bead_completion(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            Some("plan-v1"),
+            TaskRunOutcome::Failed,
+            Some("interrupted before resume"),
+            now,
+            now + chrono::Duration::seconds(5),
+        )?;
+
+        record_bead_start(
+            &snapshot_store,
+            &journal_store,
+            &lineage_store,
+            base,
+            &record.id,
+            "bead-1",
+            "project-1",
+            "run-1",
+            "plan-v1",
+            now + chrono::Duration::seconds(10),
+        )?;
+
+        let runs = read_task_runs(&lineage_store, base, &record.id)?;
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].run_id.as_deref(), Some("run-1"));
+        assert_eq!(runs[0].outcome, TaskRunOutcome::Running);
+        assert_eq!(runs[0].plan_hash.as_deref(), Some("plan-v1"));
+        assert!(runs[0].finished_at.is_none());
+        assert!(runs[0].outcome_detail.is_none());
+
+        let snapshot = load_snapshot(&snapshot_store, base, &record.id)?;
+        assert_eq!(snapshot.status, MilestoneStatus::Active);
+        assert_eq!(snapshot.active_bead.as_deref(), Some("bead-1"));
         Ok(())
     }
 

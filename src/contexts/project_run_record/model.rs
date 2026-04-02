@@ -32,6 +32,9 @@ pub struct TaskSource {
     /// How this task was created.
     #[serde(default)]
     pub origin: TaskOrigin,
+    /// Stable milestone plan hash captured when the task was created.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plan_hash: Option<String>,
     /// Plan version at the time this task was created.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub plan_version: Option<u32>,
@@ -86,6 +89,13 @@ pub struct RunSnapshot {
     pub status: RunStatus,
     pub cycle_history: Vec<CycleHistoryEntry>,
     pub completion_rounds: u32,
+    /// The configured maximum completion rounds for this run.
+    /// Stored so operators can see the limit alongside the current count.
+    /// `None` indicates a legacy snapshot written before this field existed,
+    /// and must be preserved during read-only inspection so historical
+    /// artifacts do not silently inherit present-day config.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_completion_rounds: Option<u32>,
     pub rollback_point_meta: RollbackPointMeta,
     pub amendment_queue: AmendmentQueueState,
     pub status_summary: String,
@@ -95,13 +105,14 @@ pub struct RunSnapshot {
 }
 
 impl RunSnapshot {
-    pub fn initial() -> Self {
+    pub fn initial(max_completion_rounds: u32) -> Self {
         Self {
             active_run: None,
             interrupted_run: None,
             status: RunStatus::NotStarted,
             cycle_history: Vec::new(),
             completion_rounds: 0,
+            max_completion_rounds: Some(max_completion_rounds),
             rollback_point_meta: RollbackPointMeta::default(),
             amendment_queue: AmendmentQueueState::default(),
             status_summary: "not started".to_owned(),
@@ -351,6 +362,8 @@ pub enum JournalEventType {
     RunFailed,
     RollbackCreated,
     RollbackPerformed,
+    ReviewerStarted,
+    ReviewerCompleted,
     AmendmentQueued,
     DurableWarning,
 }

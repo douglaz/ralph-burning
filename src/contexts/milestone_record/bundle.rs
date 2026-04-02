@@ -179,6 +179,9 @@ pub struct Workstream {
 /// A proposed bead for execution, with dependency hints.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 pub struct BeadProposal {
+    /// Optional stable bead ID or suffix (for example `bead-2`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bead_id: Option<String>,
     /// Proposed bead title (used as br title).
     pub title: String,
     /// Detailed description of what the bead should accomplish.
@@ -351,6 +354,7 @@ mod tests {
                 description: Some("Implement the core feature set.".to_owned()),
                 beads: vec![
                     BeadProposal {
+                        bead_id: None,
                         title: "Implement data model".to_owned(),
                         description: Some("Define schema and types".to_owned()),
                         bead_type: Some("task".to_owned()),
@@ -361,6 +365,7 @@ mod tests {
                         flow_override: None,
                     },
                     BeadProposal {
+                        bead_id: None,
                         title: "Build API endpoints".to_owned(),
                         description: Some("REST API for feature A".to_owned()),
                         bead_type: Some("feature".to_owned()),
@@ -371,6 +376,7 @@ mod tests {
                         flow_override: None,
                     },
                     BeadProposal {
+                        bead_id: None,
                         title: "Write integration tests".to_owned(),
                         description: None,
                         bead_type: Some("task".to_owned()),

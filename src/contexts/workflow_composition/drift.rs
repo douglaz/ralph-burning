@@ -387,7 +387,7 @@ mod tests {
         .expect("write changed prompt");
 
         let mut seq = 1;
-        let mut snapshot = RunSnapshot::initial();
+        let mut snapshot = RunSnapshot::initial(20);
         let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
         let result = evaluate_prompt_change_on_resume(
             &FsArtifactStore,
@@ -435,7 +435,7 @@ mod tests {
             .expect("write supporting record");
 
         let mut seq = 1;
-        let mut snapshot = RunSnapshot::initial();
+        let mut snapshot = RunSnapshot::initial(20);
         let cursor = StageCursor::new(StageId::Review, 1, 1, 1).expect("cursor");
         let result = evaluate_prompt_change_on_resume(
             &FsArtifactStore,
@@ -504,7 +504,7 @@ mod tests {
         }
 
         let mut seq = 1;
-        let mut snapshot = RunSnapshot::initial();
+        let mut snapshot = RunSnapshot::initial(20);
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
         let result = evaluate_prompt_change_on_resume(
             &FsArtifactStore,
@@ -589,7 +589,7 @@ mod tests {
         }
 
         let mut seq = 1;
-        let mut snapshot = RunSnapshot::initial();
+        let mut snapshot = RunSnapshot::initial(20);
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 2).expect("cursor");
         let result = evaluate_prompt_change_on_resume(
             &FsArtifactStore,

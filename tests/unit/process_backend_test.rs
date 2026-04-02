@@ -684,6 +684,59 @@ async fn codex_new_session_returns_session_id() {
     assert!(!envelope.metadata.session_reused);
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn codex_new_session_suffix_model_adds_reasoning_effort_override() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Codex);
+    request.resolved_target =
+        ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.3-codex-spark-xhigh");
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&planning_payload()).unwrap(),
+    )
+    .expect("write payload");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let schema_path = request.project_root.join(format!(
+        "runtime/temp/{}.schema.json",
+        request.invocation_id
+    ));
+    let message_path = request.project_root.join(format!(
+        "runtime/temp/{}.last-message.json",
+        request.invocation_id
+    ));
+
+    let args_file = request.working_dir.join("codex-args.txt");
+    let args = read_logged_args(&args_file);
+    assert_eq!(
+        args,
+        vec![
+            "exec".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            "gpt-5.3-codex-spark".to_owned(),
+            "-c".to_owned(),
+            "model_reasoning_effort=\"xhigh\"".to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            "-".to_owned(),
+        ]
+    );
+}
+
 // ── Codex resume ────────────────────────────────────────────────────────────
 
 #[tokio::test(flavor = "current_thread")]
@@ -758,6 +811,71 @@ async fn codex_resume_command_construction() {
     assert!(
         !message_path.exists(),
         "resume flow should not leave a last-message temp file behind"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn codex_resume_suffix_model_adds_reasoning_effort_override() {
+    let bin_dir = tempdir().expect("create bin dir");
+    let _env_lock = lock_path_mutex();
+    let _path_guard = PathGuard::prepend(bin_dir.path());
+
+    let (_dir, mut request) = request_fixture(BackendFamily::Codex);
+    request.resolved_target = ResolvedBackendTarget::new(BackendFamily::Codex, "gpt-5.4-xhigh");
+    request.session_policy = SessionPolicy::ReuseIfAllowed;
+    request.prior_session = Some(SessionMetadata {
+        role: BackendRole::Implementer,
+        backend_family: BackendFamily::Codex,
+        model_id: "gpt-5.4-xhigh".to_owned(),
+        session_id: "codex-ses-456".to_owned(),
+        created_at: Utc::now(),
+        last_used_at: Utc::now(),
+        invocation_count: 1,
+    });
+
+    let payload_file = request.working_dir.join("codex-payload.json");
+    fs::write(
+        &payload_file,
+        serde_json::to_string(&planning_payload()).unwrap(),
+    )
+    .expect("write payload");
+    write_fake_codex(bin_dir.path(), &payload_file);
+
+    let adapter = ProcessBackendAdapter::new();
+    adapter
+        .invoke(request.clone())
+        .await
+        .expect("invoke should succeed");
+
+    let schema_path = request.project_root.join(format!(
+        "runtime/temp/{}.schema.json",
+        request.invocation_id
+    ));
+    let message_path = request.project_root.join(format!(
+        "runtime/temp/{}.last-message.json",
+        request.invocation_id
+    ));
+
+    let args_file = request.working_dir.join("codex-args.txt");
+    let args = read_logged_args(&args_file);
+    assert_eq!(
+        args,
+        vec![
+            "exec".to_owned(),
+            "resume".to_owned(),
+            "--dangerously-bypass-approvals-and-sandbox".to_owned(),
+            "--skip-git-repo-check".to_owned(),
+            "--model".to_owned(),
+            "gpt-5.4".to_owned(),
+            "-c".to_owned(),
+            "model_reasoning_effort=\"xhigh\"".to_owned(),
+            "--output-schema".to_owned(),
+            schema_path.to_string_lossy().into_owned(),
+            "--output-last-message".to_owned(),
+            message_path.to_string_lossy().into_owned(),
+            "codex-ses-456".to_owned(),
+            "-".to_owned(),
+        ]
     );
 }
 

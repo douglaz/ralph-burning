@@ -14,7 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde_json::{json, Value};
@@ -27,8 +27,13 @@ use crate::contexts::agent_execution::policy::FinalReviewPanelResolution;
 use crate::contexts::agent_execution::service::AgentExecutionPort;
 use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
-use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
-use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
+use crate::contexts::project_run_record::journal;
+use crate::contexts::project_run_record::model::{
+    ArtifactRecord, LogLevel, PayloadRecord, RuntimeLogEntry,
+};
+use crate::contexts::project_run_record::service::{
+    JournalStorePort, PayloadArtifactWritePort, RuntimeLogWritePort,
+};
 use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewAggregatePayload, FinalReviewAmendmentSource, FinalReviewArbiterPayload,
     FinalReviewCanonicalAmendment, FinalReviewProposalPayload, FinalReviewVoteDecision,
@@ -58,9 +63,16 @@ pub enum FinalReviewConsensusStatus {
 pub struct FinalReviewResult {
     pub aggregate_payload: Value,
     pub aggregate_artifact: String,
-    pub final_accepted_amendments: Vec<CanonicalAmendment>,
+    pub final_accepted_amendments: Vec<FinalReviewAcceptedAmendment>,
     pub restart_required: bool,
     pub force_completed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FinalReviewAcceptedAmendment {
+    pub amendment_id: String,
+    pub normalized_body: String,
+    pub sources: Vec<FinalReviewAmendmentSource>,
 }
 
 struct ReviewerProposalRecord {
@@ -75,6 +87,21 @@ struct ReviewerProposalRecord {
 
 fn final_review_reviewer_id(member_index: usize) -> String {
     format!("reviewer-{}", member_index + 1)
+}
+
+fn panel_member_identity_from_producer(
+    producer: &RecordProducer,
+    target: &ResolvedBackendTarget,
+    contract_id: &str,
+    details: &str,
+) -> AppResult<(String, String)> {
+    let (backend_family, model_id) = super::require_agent_record_producer(
+        producer,
+        target.backend.family.as_str(),
+        contract_id,
+        details,
+    )?;
+    Ok((backend_family.to_owned(), model_id.to_owned()))
 }
 
 pub fn normalize_amendment_body(body: &str) -> String {
@@ -169,12 +196,14 @@ fn merge_final_review_amendments(
 pub async fn execute_final_review_panel<A, R, S>(
     agent_service: &AgentExecutionService<A, R, S>,
     artifact_write: &dyn PayloadArtifactWritePort,
-    _log_write: &dyn RuntimeLogWritePort,
+    log_write: &dyn RuntimeLogWritePort,
+    journal_store: &dyn JournalStorePort,
     base_dir: &Path,
     project_root: &Path,
     backend_working_dir: &Path,
     project_id: &ProjectId,
     run_id: &RunId,
+    seq: &mut u64,
     cursor: &StageCursor,
     panel: &FinalReviewPanelResolution,
     min_reviewers: usize,
@@ -204,6 +233,33 @@ where
     let mut reviewer_records = Vec::new();
     for (idx, member) in panel.reviewers.iter().enumerate() {
         let reviewer_id = final_review_reviewer_id(idx);
+        let reviewer_prompt = build_reviewer_prompt(&project_prompt, base_dir, Some(project_id))?;
+        append_panel_member_started_event(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "proposal",
+            &reviewer_id,
+            "reviewer",
+            &member.target,
+        )?;
+        append_panel_member_runtime_log(
+            log_write,
+            base_dir,
+            project_id,
+            "started",
+            "proposal",
+            &reviewer_id,
+            "reviewer",
+            &member.target,
+            None,
+            None,
+            None,
+        );
+        let started_at = Instant::now();
         let reviewer_payload = invoke_final_review_member(
             agent_service,
             project_root,
@@ -215,7 +271,7 @@ where
             BackendRole::Reviewer,
             &reviewer_id,
             "reviewer",
-            build_reviewer_prompt(&project_prompt, base_dir, Some(project_id))?,
+            reviewer_prompt,
             Value::Null,
             reviewer_timeout_for_backend(member.target.backend.family),
             cancellation_token.clone(),
@@ -225,6 +281,34 @@ where
         let (reviewer_payload, producer) = match reviewer_payload {
             Ok(payload) => payload,
             Err(error) if !member.required => {
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    started_at.elapsed(),
+                    "failed_optional",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_optional"),
+                    Some(0),
+                );
                 if reviewer_records.len() + panel.reviewers.len().saturating_sub(idx + 1)
                     < min_reviewers
                 {
@@ -232,26 +316,117 @@ where
                 }
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    started_at.elapsed(),
+                    "failed",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &member.target,
+                    Some(started_at.elapsed()),
+                    Some("failed"),
+                    Some(0),
+                );
+                return Err(error);
+            }
         };
+        let (backend_family, model_id) = panel_member_identity_from_producer(
+            &producer,
+            &member.target,
+            "final_review:reviewer",
+            "final-review reviewer invocations must produce agent metadata",
+        )?;
 
         let proposal: FinalReviewProposalPayload = serde_json::from_value(reviewer_payload.clone())
-            .map_err(|e| AppError::InvocationFailed {
-                backend: member.target.backend.family.to_string(),
-                contract_id: "final_review:reviewer".to_owned(),
-                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                details: format!("final-review proposal schema validation failed: {e}"),
+            .map_err(|e| {
+                let duration = started_at.elapsed();
+                let _ = append_panel_member_completed_event_with_identity(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    duration,
+                    "failed_schema_validation",
+                    0,
+                );
+                append_panel_member_runtime_log_with_identity(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "proposal",
+                    &reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    Some(duration),
+                    Some("failed_schema_validation"),
+                    Some(0),
+                );
+                AppError::InvocationFailed {
+                    backend: member.target.backend.family.to_string(),
+                    contract_id: "final_review:reviewer".to_owned(),
+                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                    details: format!("final-review proposal schema validation failed: {e}"),
+                }
             })?;
 
-        let (backend_family, model_id) = {
-            let (backend_family, model_id) = super::require_agent_record_producer(
-                &producer,
-                member.target.backend.family.as_str(),
-                "final_review:reviewer",
-                "final-review reviewer invocations must produce agent metadata",
-            )?;
-            (backend_family.to_owned(), model_id.to_owned())
-        };
+        let duration = started_at.elapsed();
+        append_panel_member_completed_event_with_identity(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "proposal",
+            &reviewer_id,
+            "reviewer",
+            &backend_family,
+            &model_id,
+            duration,
+            "proposed_amendments",
+            proposal.amendments.len(),
+        )?;
+        append_panel_member_runtime_log_with_identity(
+            log_write,
+            base_dir,
+            project_id,
+            "completed",
+            "proposal",
+            &reviewer_id,
+            "reviewer",
+            &backend_family,
+            &model_id,
+            Some(duration),
+            Some("proposed_amendments"),
+            Some(proposal.amendments.len()),
+        );
         let artifact = renderers::render_final_review_proposal(&proposal, &producer.to_string());
         persist_supporting_record(
             artifact_write,
@@ -317,7 +492,40 @@ where
         });
     }
 
-    let (planner_vote_payload, planner_producer) = invoke_final_review_member(
+    let planner_prompt = build_voter_prompt(
+        "Planner Positions",
+        &amendments,
+        None,
+        base_dir,
+        Some(project_id),
+    )?;
+    append_panel_member_started_event(
+        journal_store,
+        base_dir,
+        project_id,
+        seq,
+        run_id,
+        cursor,
+        "vote",
+        "planner",
+        "planner",
+        &panel.planner,
+    )?;
+    append_panel_member_runtime_log(
+        log_write,
+        base_dir,
+        project_id,
+        "started",
+        "vote",
+        "planner",
+        "planner",
+        &panel.planner,
+        None,
+        None,
+        None,
+    );
+    let planner_started_at = Instant::now();
+    let planner_vote_payload = invoke_final_review_member(
         agent_service,
         project_root,
         backend_working_dir,
@@ -328,13 +536,7 @@ where
         BackendRole::Planner,
         "planner",
         "voter",
-        build_voter_prompt(
-            "Planner Positions",
-            &amendments,
-            None,
-            base_dir,
-            Some(project_id),
-        )?,
+        planner_prompt,
         json!({
             "amendments": amendments
                 .iter()
@@ -349,9 +551,80 @@ where
         planner_timeout,
         cancellation_token.clone(),
     )
-    .await?;
+    .await;
+    let (planner_vote_payload, planner_producer) = match planner_vote_payload {
+        Ok(payload) => payload,
+        Err(error) => {
+            append_panel_member_completed_event(
+                journal_store,
+                base_dir,
+                project_id,
+                seq,
+                run_id,
+                cursor,
+                "vote",
+                "planner",
+                "planner",
+                &panel.planner,
+                planner_started_at.elapsed(),
+                "failed",
+                0,
+            )?;
+            append_panel_member_runtime_log(
+                log_write,
+                base_dir,
+                project_id,
+                "completed",
+                "vote",
+                "planner",
+                "planner",
+                &panel.planner,
+                Some(planner_started_at.elapsed()),
+                Some("failed"),
+                Some(0),
+            );
+            return Err(error);
+        }
+    };
+    let (planner_backend_family, planner_model_id) = panel_member_identity_from_producer(
+        &planner_producer,
+        &panel.planner,
+        "final_review:voter",
+        "final-review planner invocations must produce agent metadata",
+    )?;
     let planner_votes: FinalReviewVotePayload =
         serde_json::from_value(planner_vote_payload.clone()).map_err(|e| {
+            let duration = planner_started_at.elapsed();
+            let _ = append_panel_member_completed_event_with_identity(
+                journal_store,
+                base_dir,
+                project_id,
+                seq,
+                run_id,
+                cursor,
+                "vote",
+                "planner",
+                "planner",
+                &planner_backend_family,
+                &planner_model_id,
+                duration,
+                "failed_schema_validation",
+                0,
+            );
+            append_panel_member_runtime_log_with_identity(
+                log_write,
+                base_dir,
+                project_id,
+                "completed",
+                "vote",
+                "planner",
+                "planner",
+                &planner_backend_family,
+                &planner_model_id,
+                Some(duration),
+                Some("failed_schema_validation"),
+                Some(0),
+            );
             AppError::InvocationFailed {
                 backend: panel.planner.backend.family.to_string(),
                 contract_id: "final_review:voter".to_owned(),
@@ -359,7 +632,71 @@ where
                 details: format!("planner positions schema validation failed: {e}"),
             }
         })?;
-    validate_vote_payload(&planner_votes, &amendments, &panel.planner)?;
+    validate_vote_payload(&planner_votes, &amendments, &panel.planner).map_err(|error| {
+        let duration = planner_started_at.elapsed();
+        let _ = append_panel_member_completed_event_with_identity(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "vote",
+            "planner",
+            "planner",
+            &planner_backend_family,
+            &planner_model_id,
+            duration,
+            "failed_domain_validation",
+            0,
+        );
+        append_panel_member_runtime_log_with_identity(
+            log_write,
+            base_dir,
+            project_id,
+            "completed",
+            "vote",
+            "planner",
+            "planner",
+            &planner_backend_family,
+            &planner_model_id,
+            Some(duration),
+            Some("failed_domain_validation"),
+            Some(0),
+        );
+        error
+    })?;
+    let planner_duration = planner_started_at.elapsed();
+    append_panel_member_completed_event_with_identity(
+        journal_store,
+        base_dir,
+        project_id,
+        seq,
+        run_id,
+        cursor,
+        "vote",
+        "planner",
+        "planner",
+        &planner_backend_family,
+        &planner_model_id,
+        planner_duration,
+        "planner_positions_recorded",
+        planner_votes.votes.len(),
+    )?;
+    append_panel_member_runtime_log_with_identity(
+        log_write,
+        base_dir,
+        project_id,
+        "completed",
+        "vote",
+        "planner",
+        "planner",
+        &planner_backend_family,
+        &planner_model_id,
+        Some(planner_duration),
+        Some("planner_positions_recorded"),
+        Some(planner_votes.votes.len()),
+    );
     let planner_artifact = renderers::render_final_review_vote(
         "Final Review Planner Positions",
         &planner_votes,
@@ -387,6 +724,39 @@ where
 
     let mut reviewer_votes = Vec::new();
     for (idx, reviewer) in reviewer_records.iter().enumerate() {
+        let vote_prompt = build_voter_prompt(
+            "Final Review Votes",
+            &amendments,
+            Some(&planner_votes),
+            base_dir,
+            Some(project_id),
+        )?;
+        append_panel_member_started_event(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "vote",
+            &reviewer.reviewer_id,
+            "reviewer",
+            &reviewer.target,
+        )?;
+        append_panel_member_runtime_log(
+            log_write,
+            base_dir,
+            project_id,
+            "started",
+            "vote",
+            &reviewer.reviewer_id,
+            "reviewer",
+            &reviewer.target,
+            None,
+            None,
+            None,
+        );
+        let started_at = Instant::now();
         let vote_payload = invoke_final_review_member(
             agent_service,
             project_root,
@@ -398,13 +768,7 @@ where
             BackendRole::Reviewer,
             &reviewer.reviewer_id,
             "voter",
-            build_voter_prompt(
-                "Final Review Votes",
-                &amendments,
-                Some(&planner_votes),
-                base_dir,
-                Some(project_id),
-            )?,
+            vote_prompt,
             json!({
                 "amendments": amendments
                     .iter()
@@ -427,6 +791,34 @@ where
         let (vote_payload, producer) = match vote_payload {
             Ok(payload) => payload,
             Err(error) if !reviewer.required => {
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    started_at.elapsed(),
+                    "failed_optional",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    Some(started_at.elapsed()),
+                    Some("failed_optional"),
+                    Some(0),
+                );
                 if reviewer_votes.len() + reviewer_records.len().saturating_sub(idx + 1)
                     < min_reviewers
                 {
@@ -434,11 +826,78 @@ where
                 }
                 continue;
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    started_at.elapsed(),
+                    "failed",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &reviewer.target,
+                    Some(started_at.elapsed()),
+                    Some("failed"),
+                    Some(0),
+                );
+                return Err(error);
+            }
         };
+        let (backend_family, model_id) = panel_member_identity_from_producer(
+            &producer,
+            &reviewer.target,
+            "final_review:voter",
+            "final-review reviewer vote invocations must produce agent metadata",
+        )?;
 
         let votes: FinalReviewVotePayload =
             serde_json::from_value(vote_payload.clone()).map_err(|e| {
+                let duration = started_at.elapsed();
+                let _ = append_panel_member_completed_event_with_identity(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    duration,
+                    "failed_schema_validation",
+                    0,
+                );
+                append_panel_member_runtime_log_with_identity(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "vote",
+                    &reviewer.reviewer_id,
+                    "reviewer",
+                    &backend_family,
+                    &model_id,
+                    Some(duration),
+                    Some("failed_schema_validation"),
+                    Some(0),
+                );
                 AppError::InvocationFailed {
                     backend: reviewer.target.backend.family.to_string(),
                     contract_id: "final_review:voter".to_owned(),
@@ -446,7 +905,71 @@ where
                     details: format!("final-review vote schema validation failed: {e}"),
                 }
             })?;
-        validate_vote_payload(&votes, &amendments, &reviewer.target)?;
+        validate_vote_payload(&votes, &amendments, &reviewer.target).map_err(|error| {
+            let duration = started_at.elapsed();
+            let _ = append_panel_member_completed_event_with_identity(
+                journal_store,
+                base_dir,
+                project_id,
+                seq,
+                run_id,
+                cursor,
+                "vote",
+                &reviewer.reviewer_id,
+                "reviewer",
+                &backend_family,
+                &model_id,
+                duration,
+                "failed_domain_validation",
+                0,
+            );
+            append_panel_member_runtime_log_with_identity(
+                log_write,
+                base_dir,
+                project_id,
+                "completed",
+                "vote",
+                &reviewer.reviewer_id,
+                "reviewer",
+                &backend_family,
+                &model_id,
+                Some(duration),
+                Some("failed_domain_validation"),
+                Some(0),
+            );
+            error
+        })?;
+        let duration = started_at.elapsed();
+        append_panel_member_completed_event_with_identity(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "vote",
+            &reviewer.reviewer_id,
+            "reviewer",
+            &backend_family,
+            &model_id,
+            duration,
+            "reviewer_votes_recorded",
+            votes.votes.len(),
+        )?;
+        append_panel_member_runtime_log_with_identity(
+            log_write,
+            base_dir,
+            project_id,
+            "completed",
+            "vote",
+            &reviewer.reviewer_id,
+            "reviewer",
+            &backend_family,
+            &model_id,
+            Some(duration),
+            Some("reviewer_votes_recorded"),
+            Some(votes.votes.len()),
+        );
 
         let artifact = renderers::render_final_review_vote(
             "Final Review Votes",
@@ -514,7 +1037,40 @@ where
             .map(|amendment| (amendment.amendment_id.clone(), amendment))
             .collect();
 
-        let (arbiter_payload, producer) = invoke_final_review_member(
+        let arbiter_prompt = build_arbiter_prompt(
+            &disputed_set,
+            &planner_votes,
+            &reviewer_votes,
+            base_dir,
+            Some(project_id),
+        )?;
+        append_panel_member_started_event(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "arbitrate",
+            "arbiter",
+            "arbiter",
+            &panel.arbiter,
+        )?;
+        append_panel_member_runtime_log(
+            log_write,
+            base_dir,
+            project_id,
+            "started",
+            "arbitrate",
+            "arbiter",
+            "arbiter",
+            &panel.arbiter,
+            None,
+            None,
+            None,
+        );
+        let arbiter_started_at = Instant::now();
+        let arbiter_payload = invoke_final_review_member(
             agent_service,
             project_root,
             backend_working_dir,
@@ -525,13 +1081,7 @@ where
             BackendRole::Reviewer,
             "arbiter",
             "arbiter",
-            build_arbiter_prompt(
-                &disputed_set,
-                &planner_votes,
-                &reviewer_votes,
-                base_dir,
-                Some(project_id),
-            )?,
+            arbiter_prompt,
             json!({
                 "disputed_amendments": disputed_set
                     .values()
@@ -546,16 +1096,153 @@ where
             arbiter_timeout,
             cancellation_token,
         )
-        .await?;
+        .await;
+        let (arbiter_payload, producer) = match arbiter_payload {
+            Ok(payload) => payload,
+            Err(error) => {
+                append_panel_member_completed_event(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "arbitrate",
+                    "arbiter",
+                    "arbiter",
+                    &panel.arbiter,
+                    arbiter_started_at.elapsed(),
+                    "failed",
+                    0,
+                )?;
+                append_panel_member_runtime_log(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "arbitrate",
+                    "arbiter",
+                    "arbiter",
+                    &panel.arbiter,
+                    Some(arbiter_started_at.elapsed()),
+                    Some("failed"),
+                    Some(0),
+                );
+                return Err(error);
+            }
+        };
+        let (arbiter_backend_family, arbiter_model_id) = panel_member_identity_from_producer(
+            &producer,
+            &panel.arbiter,
+            "final_review:arbiter",
+            "final-review arbiter invocations must produce agent metadata",
+        )?;
 
         let arbiter: FinalReviewArbiterPayload = serde_json::from_value(arbiter_payload.clone())
-            .map_err(|e| AppError::InvocationFailed {
-                backend: panel.arbiter.backend.family.to_string(),
-                contract_id: "final_review:arbiter".to_owned(),
-                failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
-                details: format!("final-review arbiter schema validation failed: {e}"),
+            .map_err(|e| {
+                let duration = arbiter_started_at.elapsed();
+                let _ = append_panel_member_completed_event_with_identity(
+                    journal_store,
+                    base_dir,
+                    project_id,
+                    seq,
+                    run_id,
+                    cursor,
+                    "arbitrate",
+                    "arbiter",
+                    "arbiter",
+                    &arbiter_backend_family,
+                    &arbiter_model_id,
+                    duration,
+                    "failed_schema_validation",
+                    0,
+                );
+                append_panel_member_runtime_log_with_identity(
+                    log_write,
+                    base_dir,
+                    project_id,
+                    "completed",
+                    "arbitrate",
+                    "arbiter",
+                    "arbiter",
+                    &arbiter_backend_family,
+                    &arbiter_model_id,
+                    Some(duration),
+                    Some("failed_schema_validation"),
+                    Some(0),
+                );
+                AppError::InvocationFailed {
+                    backend: panel.arbiter.backend.family.to_string(),
+                    contract_id: "final_review:arbiter".to_owned(),
+                    failure_class: crate::shared::domain::FailureClass::SchemaValidationFailure,
+                    details: format!("final-review arbiter schema validation failed: {e}"),
+                }
             })?;
-        validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter)?;
+        validate_arbiter_payload(&arbiter, &disputed_ids, &panel.arbiter).map_err(|error| {
+            let duration = arbiter_started_at.elapsed();
+            let _ = append_panel_member_completed_event_with_identity(
+                journal_store,
+                base_dir,
+                project_id,
+                seq,
+                run_id,
+                cursor,
+                "arbitrate",
+                "arbiter",
+                "arbiter",
+                &arbiter_backend_family,
+                &arbiter_model_id,
+                duration,
+                "failed_domain_validation",
+                0,
+            );
+            append_panel_member_runtime_log_with_identity(
+                log_write,
+                base_dir,
+                project_id,
+                "completed",
+                "arbitrate",
+                "arbiter",
+                "arbiter",
+                &arbiter_backend_family,
+                &arbiter_model_id,
+                Some(duration),
+                Some("failed_domain_validation"),
+                Some(0),
+            );
+            error
+        })?;
+        let arbiter_duration = arbiter_started_at.elapsed();
+        append_panel_member_completed_event_with_identity(
+            journal_store,
+            base_dir,
+            project_id,
+            seq,
+            run_id,
+            cursor,
+            "arbitrate",
+            "arbiter",
+            "arbiter",
+            &arbiter_backend_family,
+            &arbiter_model_id,
+            arbiter_duration,
+            "arbiter_rulings_recorded",
+            arbiter.rulings.len(),
+        )?;
+        append_panel_member_runtime_log_with_identity(
+            log_write,
+            base_dir,
+            project_id,
+            "completed",
+            "arbitrate",
+            "arbiter",
+            "arbiter",
+            &arbiter_backend_family,
+            &arbiter_model_id,
+            Some(arbiter_duration),
+            Some("arbiter_rulings_recorded"),
+            Some(arbiter.rulings.len()),
+        );
         let artifact = renderers::render_final_review_arbiter(&arbiter, &producer.to_string());
         persist_supporting_record(
             artifact_write,
@@ -618,7 +1305,14 @@ where
         return Ok(FinalReviewResult {
             aggregate_payload,
             aggregate_artifact,
-            final_accepted_amendments,
+            final_accepted_amendments: final_accepted_amendments
+                .into_iter()
+                .map(|amendment| FinalReviewAcceptedAmendment {
+                    amendment_id: amendment.amendment_id,
+                    normalized_body: amendment.normalized_body,
+                    sources: amendment.sources,
+                })
+                .collect(),
             restart_required: false,
             force_completed: true,
         });
@@ -662,10 +1356,214 @@ where
     Ok(FinalReviewResult {
         aggregate_payload,
         aggregate_artifact,
-        final_accepted_amendments,
+        final_accepted_amendments: final_accepted_amendments
+            .into_iter()
+            .map(|amendment| FinalReviewAcceptedAmendment {
+                amendment_id: amendment.amendment_id,
+                normalized_body: amendment.normalized_body,
+                sources: amendment.sources,
+            })
+            .collect(),
         restart_required: !aggregate.final_accepted_amendments.is_empty(),
         force_completed: false,
     })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_started_event(
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    seq: &mut u64,
+    run_id: &RunId,
+    cursor: &StageCursor,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    target: &ResolvedBackendTarget,
+) -> AppResult<()> {
+    *seq += 1;
+    let event = journal::reviewer_started_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        StageId::FinalReview,
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round,
+        "final_review",
+        phase,
+        reviewer_id,
+        role,
+        target.backend.family.as_str(),
+        target.model.model_id.as_str(),
+    );
+    let line = journal::serialize_event(&event)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id: StageId::FinalReview,
+            details: format!(
+                "failed to persist reviewer_started for final_review {role} {reviewer_id}: {error}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_completed_event(
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    seq: &mut u64,
+    run_id: &RunId,
+    cursor: &StageCursor,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    target: &ResolvedBackendTarget,
+    duration: Duration,
+    outcome: &str,
+    amendment_count: usize,
+) -> AppResult<()> {
+    append_panel_member_completed_event_with_identity(
+        journal_store,
+        base_dir,
+        project_id,
+        seq,
+        run_id,
+        cursor,
+        phase,
+        reviewer_id,
+        role,
+        target.backend.family.as_str(),
+        target.model.model_id.as_str(),
+        duration,
+        outcome,
+        amendment_count,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_completed_event_with_identity(
+    journal_store: &dyn JournalStorePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    seq: &mut u64,
+    run_id: &RunId,
+    cursor: &StageCursor,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    backend_family: &str,
+    model_id: &str,
+    duration: Duration,
+    outcome: &str,
+    amendment_count: usize,
+) -> AppResult<()> {
+    *seq += 1;
+    let event = journal::reviewer_completed_event(
+        *seq,
+        Utc::now(),
+        run_id,
+        StageId::FinalReview,
+        cursor.cycle,
+        cursor.attempt,
+        cursor.completion_round,
+        "final_review",
+        phase,
+        reviewer_id,
+        role,
+        backend_family,
+        model_id,
+        duration.as_millis().min(u128::from(u64::MAX)) as u64,
+        outcome,
+        amendment_count,
+    );
+    let line = journal::serialize_event(&event)?;
+    if let Err(error) = journal_store.append_event(base_dir, project_id, &line) {
+        *seq -= 1;
+        return Err(AppError::StageCommitFailed {
+            stage_id: StageId::FinalReview,
+            details: format!(
+                "failed to persist reviewer_completed for final_review {role} {reviewer_id}: {error}"
+            ),
+        });
+    }
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_runtime_log(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    state: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    target: &ResolvedBackendTarget,
+    duration: Option<Duration>,
+    outcome: Option<&str>,
+    amendment_count: Option<usize>,
+) {
+    append_panel_member_runtime_log_with_identity(
+        log_write,
+        base_dir,
+        project_id,
+        state,
+        phase,
+        reviewer_id,
+        role,
+        target.backend.family.as_str(),
+        target.model.model_id.as_str(),
+        duration,
+        outcome,
+        amendment_count,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn append_panel_member_runtime_log_with_identity(
+    log_write: &dyn RuntimeLogWritePort,
+    base_dir: &Path,
+    project_id: &ProjectId,
+    state: &str,
+    phase: &str,
+    reviewer_id: &str,
+    role: &str,
+    backend_family: &str,
+    model_id: &str,
+    duration: Option<Duration>,
+    outcome: Option<&str>,
+    amendment_count: Option<usize>,
+) {
+    let mut message = format!(
+        "final_review {state}: role={role} phase={phase} reviewer_id={reviewer_id} backend={backend_family} model={model_id}",
+    );
+    if let Some(duration) = duration {
+        message.push_str(&format!(
+            " duration_ms={}",
+            duration.as_millis().min(u128::from(u64::MAX)) as u64
+        ));
+    }
+    if let Some(outcome) = outcome {
+        message.push_str(&format!(" outcome={outcome}"));
+    }
+    if let Some(amendment_count) = amendment_count {
+        message.push_str(&format!(" amendment_count={amendment_count}"));
+    }
+    let _ = log_write.append_runtime_log(
+        base_dir,
+        project_id,
+        &RuntimeLogEntry {
+            timestamp: Utc::now(),
+            level: LogLevel::Info,
+            source: "final_review".to_owned(),
+            message,
+        },
+    );
 }
 
 fn canonical_to_payload(amendment: &CanonicalAmendment) -> FinalReviewCanonicalAmendment {
@@ -952,7 +1850,7 @@ fn persist_supporting_record(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
@@ -961,7 +1859,7 @@ mod tests {
 
     use crate::adapters::fs::{
         FileSystem, FsArtifactStore, FsJournalStore, FsPayloadArtifactWriteStore, FsProjectStore,
-        FsRawOutputStore, FsSessionStore,
+        FsRawOutputStore, FsRuntimeLogStore, FsRuntimeLogWriteStore, FsSessionStore,
     };
     use crate::contexts::agent_execution::model::{
         InvocationEnvelope, InvocationMetadata, RawOutputReference, TokenCounts,
@@ -969,11 +1867,13 @@ mod tests {
     use crate::contexts::agent_execution::policy::ResolvedPanelMember;
     use crate::contexts::agent_execution::service::AgentExecutionPort;
     use crate::contexts::agent_execution::AgentExecutionService;
+    use crate::contexts::project_run_record::model::JournalEventType;
     use crate::contexts::project_run_record::service::{
-        self, ArtifactStorePort, CreateProjectInput,
+        self, ArtifactStorePort, CreateProjectInput, PayloadArtifactWritePort, RuntimeLogStorePort,
     };
     use crate::contexts::workspace_governance;
     use crate::shared::domain::{BackendFamily, FlowPreset};
+    use crate::shared::error::AppError;
 
     use super::*;
     use crate::contexts::workflow_composition::panel_contracts::FinalReviewProposal;
@@ -983,6 +1883,15 @@ mod tests {
         requests: Arc<Mutex<Vec<(String, String)>>>,
         proposal_failures: Arc<HashSet<String>>,
         vote_failures: Arc<HashSet<String>>,
+        actual_targets: Arc<HashMap<String, ResolvedBackendTarget>>,
+        deferred_template_override: Arc<Mutex<Option<DeferredTemplateOverride>>>,
+    }
+
+    #[derive(Clone)]
+    struct DeferredTemplateOverride {
+        invocation_id_fragment: String,
+        template_id: String,
+        content: String,
     }
 
     impl RecordingFinalReviewAdapter {
@@ -991,6 +1900,8 @@ mod tests {
                 requests: Arc::default(),
                 proposal_failures: Arc::new(HashSet::from([member_key.to_owned()])),
                 vote_failures: Arc::default(),
+                actual_targets: Arc::default(),
+                deferred_template_override: Arc::default(),
             }
         }
 
@@ -999,6 +1910,39 @@ mod tests {
                 requests: Arc::default(),
                 proposal_failures: Arc::default(),
                 vote_failures: Arc::new(HashSet::from([member_key.to_owned()])),
+                actual_targets: Arc::default(),
+                deferred_template_override: Arc::default(),
+            }
+        }
+
+        fn with_actual_target(member_key: &str, backend: BackendFamily, model_id: &str) -> Self {
+            Self {
+                requests: Arc::default(),
+                proposal_failures: Arc::default(),
+                vote_failures: Arc::default(),
+                actual_targets: Arc::new(HashMap::from([(
+                    member_key.to_owned(),
+                    ResolvedBackendTarget::new(backend, model_id),
+                )])),
+                deferred_template_override: Arc::default(),
+            }
+        }
+
+        fn with_template_override_after_invocation(
+            invocation_id_fragment: &str,
+            template_id: &str,
+            content: &str,
+        ) -> Self {
+            Self {
+                requests: Arc::default(),
+                proposal_failures: Arc::default(),
+                vote_failures: Arc::default(),
+                actual_targets: Arc::default(),
+                deferred_template_override: Arc::new(Mutex::new(Some(DeferredTemplateOverride {
+                    invocation_id_fragment: invocation_id_fragment.to_owned(),
+                    template_id: template_id.to_owned(),
+                    content: content.to_owned(),
+                }))),
             }
         }
 
@@ -1070,6 +2014,36 @@ mod tests {
             }
 
             let amendment_id = canonical_amendment_id(1, "tighten wording");
+            let actual_target = self.actual_targets.iter().find_map(|(member_key, target)| {
+                request
+                    .invocation_id
+                    .contains(member_key)
+                    .then(|| target.clone())
+            });
+            let backend_used = actual_target
+                .as_ref()
+                .map(|target| target.backend.clone())
+                .unwrap_or_else(|| request.resolved_target.backend.clone());
+            let model_used = actual_target
+                .as_ref()
+                .map(|target| target.model.clone())
+                .unwrap_or_else(|| request.resolved_target.model.clone());
+            let deferred_template_override = {
+                let mut guard = self
+                    .deferred_template_override
+                    .lock()
+                    .expect("recording adapter lock poisoned");
+                match guard.as_ref() {
+                    Some(override_spec)
+                        if request
+                            .invocation_id
+                            .contains(&override_spec.invocation_id_fragment) =>
+                    {
+                        guard.take()
+                    }
+                    _ => None,
+                }
+            };
             let payload = match contract_label.as_str() {
                 "final_review:reviewer" => json!({
                     "summary": "proposal",
@@ -1097,6 +2071,14 @@ mod tests {
                 other => panic!("unexpected contract label: {other}"),
             };
 
+            if let Some(override_spec) = deferred_template_override {
+                write_project_template_override(
+                    &request.project_root,
+                    &override_spec.template_id,
+                    &override_spec.content,
+                )?;
+            }
+
             Ok(InvocationEnvelope {
                 raw_output_reference: RawOutputReference::Inline("{}".to_owned()),
                 parsed_payload: payload,
@@ -1104,8 +2086,8 @@ mod tests {
                     invocation_id: request.invocation_id,
                     duration: Duration::from_millis(1),
                     token_counts: TokenCounts::default(),
-                    backend_used: request.resolved_target.backend.clone(),
-                    model_used: request.resolved_target.model.clone(),
+                    backend_used,
+                    model_used,
                     adapter_reported_backend: None,
                     adapter_reported_model: None,
                     attempt_number: request.attempt_number,
@@ -1150,6 +2132,24 @@ mod tests {
             .join(project_id.as_str())
     }
 
+    fn write_workspace_template_override(base_dir: &Path, template_id: &str, content: &str) {
+        let template_dir = base_dir.join(".ralph-burning").join("templates");
+        std::fs::create_dir_all(&template_dir).expect("workspace template dir");
+        std::fs::write(template_dir.join(format!("{template_id}.md")), content)
+            .expect("workspace template override");
+    }
+
+    fn write_project_template_override(
+        project_root: &Path,
+        template_id: &str,
+        content: &str,
+    ) -> AppResult<()> {
+        let template_dir = project_root.join("templates");
+        std::fs::create_dir_all(&template_dir)?;
+        std::fs::write(template_dir.join(format!("{template_id}.md")), content)?;
+        Ok(())
+    }
+
     fn proposal_record(reviewer_id: &str, body: &str) -> ReviewerProposalRecord {
         ReviewerProposalRecord {
             member_index: reviewer_id
@@ -1172,6 +2172,32 @@ mod tests {
                     rationale: None,
                 }],
             },
+        }
+    }
+
+    struct AlwaysFailPayloadArtifactWriteStore;
+
+    impl PayloadArtifactWritePort for AlwaysFailPayloadArtifactWriteStore {
+        fn write_payload_artifact_pair(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _payload: &PayloadRecord,
+            _artifact: &ArtifactRecord,
+        ) -> AppResult<()> {
+            Err(AppError::Io(std::io::Error::other(
+                "simulated payload/artifact write failure",
+            )))
+        }
+
+        fn remove_payload_artifact_pair(
+            &self,
+            _base_dir: &Path,
+            _project_id: &ProjectId,
+            _payload_id: &str,
+            _artifact_id: &str,
+        ) -> AppResult<()> {
+            Ok(())
         }
     }
 
@@ -1281,6 +2307,323 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn final_review_reviewer_prompt_failure_does_not_emit_started_telemetry() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-reviewer-prompt-failure");
+        write_workspace_template_override(base_dir, "final_review_reviewer", "broken reviewer");
+        let adapter = RecordingFinalReviewAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-reviewer-prompt-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("reviewer prompt failure should abort final review");
+
+        assert!(
+            matches!(error, AppError::MalformedTemplate { .. }),
+            "expected malformed template error, got: {error:?}"
+        );
+        assert!(adapter
+            .invocation_ids_for("final_review:reviewer")
+            .is_empty());
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                JournalEventType::ReviewerStarted | JournalEventType::ReviewerCompleted
+            )
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().all(|entry| {
+            !entry.message.contains("final_review started:")
+                && !entry.message.contains("final_review completed:")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_planner_prompt_failure_does_not_emit_vote_started_telemetry() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-planner-prompt-failure");
+        write_workspace_template_override(base_dir, "final_review_voter", "broken voter");
+        let adapter = RecordingFinalReviewAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-planner-prompt-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("planner prompt failure should abort final review");
+
+        assert!(
+            matches!(error, AppError::MalformedTemplate { .. }),
+            "expected malformed template error, got: {error:?}"
+        );
+        assert_eq!(adapter.invocation_ids_for("final_review:reviewer").len(), 1);
+        assert!(adapter.invocation_ids_for("final_review:voter").is_empty());
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                JournalEventType::ReviewerStarted | JournalEventType::ReviewerCompleted
+            ) && event.details["phase"] == "vote"
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().all(|entry| {
+            !(entry.message.contains("phase=vote") && entry.message.contains("reviewer_id=planner"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_reviewer_vote_prompt_failure_does_not_emit_member_started_telemetry() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-reviewer-vote-prompt-failure");
+        let adapter = RecordingFinalReviewAdapter::with_template_override_after_invocation(
+            "voter-planner",
+            "final_review_voter",
+            "broken voter",
+        );
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-reviewer-vote-prompt-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("reviewer vote prompt failure should abort final review");
+
+        assert!(
+            matches!(error, AppError::MalformedTemplate { .. }),
+            "expected malformed template error, got: {error:?}"
+        );
+        assert_eq!(
+            adapter.invocation_ids_for("final_review:voter").len(),
+            1,
+            "planner vote should succeed before reviewer vote prompt construction fails"
+        );
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                JournalEventType::ReviewerStarted | JournalEventType::ReviewerCompleted
+            ) && event.details["phase"] == "vote"
+                && event.details["reviewer_id"] == "reviewer-1"
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().all(|entry| {
+            !(entry.message.contains("phase=vote")
+                && entry.message.contains("reviewer_id=reviewer-1"))
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_arbiter_prompt_failure_does_not_emit_started_telemetry() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-arbiter-prompt-failure");
+        write_workspace_template_override(base_dir, "final_review_arbiter", "broken arbiter");
+        let adapter = RecordingFinalReviewAdapter::default();
+        let agent_service =
+            AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-arbiter-prompt-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.1,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("arbiter prompt failure should abort final review");
+
+        assert!(
+            matches!(error, AppError::MalformedTemplate { .. }),
+            "expected malformed template error, got: {error:?}"
+        );
+        assert!(adapter
+            .invocation_ids_for("final_review:arbiter")
+            .is_empty());
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(!events.iter().any(|event| {
+            matches!(
+                event.event_type,
+                JournalEventType::ReviewerStarted | JournalEventType::ReviewerCompleted
+            ) && event.details["phase"] == "arbitrate"
+                && event.details["reviewer_id"] == "arbiter"
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().all(|entry| {
+            !(entry.message.contains("phase=arbitrate")
+                && entry.message.contains("reviewer_id=arbiter"))
+        }));
+    }
+
+    #[tokio::test]
     async fn final_review_votes_only_with_successful_proposal_reviewers_and_uses_unique_ids() {
         let tmp = tempdir().expect("tempdir");
         let base_dir = tmp.path();
@@ -1290,6 +2633,10 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
         let panel = FinalReviewPanelResolution {
             planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
@@ -1319,11 +2666,13 @@ mod tests {
             &agent_service,
             &FsPayloadArtifactWriteStore,
             &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
             base_dir,
             &project_root(base_dir, &project_id),
             base_dir,
             &project_id,
             &run_id,
+            &mut seq,
             &cursor,
             &panel,
             2,
@@ -1359,6 +2708,184 @@ mod tests {
             unique_ids.len(),
             "every final-review invocation id must be distinct: {all_ids:?}"
         );
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        let reviewer_started: Vec<_> = events
+            .iter()
+            .filter(|event| {
+                event.event_type
+                    == crate::contexts::project_run_record::model::JournalEventType::ReviewerStarted
+            })
+            .collect();
+        let reviewer_completed: Vec<_> = events
+            .iter()
+            .filter(|event| event.event_type == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted)
+            .collect();
+        assert!(
+            reviewer_started.len() >= 5,
+            "expected proposal, planner, and reviewer vote starts"
+        );
+        assert_eq!(
+            reviewer_started.len(),
+            reviewer_completed.len(),
+            "every panel member start should have a matching completion"
+        );
+        assert!(reviewer_completed.iter().any(|event| {
+            event.details["reviewer_id"] == "reviewer-1"
+                && event.details["phase"] == "proposal"
+                && event.details["outcome"] == "proposed_amendments"
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_completion_telemetry_persists_even_when_supporting_record_write_fails() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-persist-failure-telemetry");
+        let adapter = RecordingFinalReviewAdapter::default();
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-persist-failure").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let error = execute_final_review_panel(
+            &agent_service,
+            &AlwaysFailPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .err()
+        .expect("supporting record persistence should fail");
+
+        assert!(
+            matches!(error, AppError::Io(_)),
+            "expected write failure, got: {error:?}"
+        );
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type
+                == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                && event.details["reviewer_id"] == "reviewer-1"
+                && event.details["phase"] == "proposal"
+                && event.details["outcome"] == "proposed_amendments"
+        }));
+
+        let runtime_logs = FsRuntimeLogStore
+            .read_runtime_logs(base_dir, &project_id)
+            .expect("runtime logs");
+        assert!(runtime_logs.iter().any(|entry| {
+            entry.message.contains("final_review completed:")
+                && entry.message.contains("reviewer_id=reviewer-1")
+                && entry.message.contains("phase=proposal")
+                && entry.message.contains("outcome=proposed_amendments")
+        }));
+    }
+
+    #[tokio::test]
+    async fn final_review_uses_effective_producer_identity_for_sources_and_completion_events() {
+        let tmp = tempdir().expect("tempdir");
+        let base_dir = tmp.path();
+        let project_id = setup_project(base_dir, "fr-effective-producer-identity");
+        let adapter = RecordingFinalReviewAdapter::with_actual_target(
+            "reviewer-1",
+            BackendFamily::OpenRouter,
+            "openai/gpt-4.1",
+        );
+        let agent_service = AgentExecutionService::new(adapter, FsRawOutputStore, FsSessionStore);
+        let run_id = RunId::new("run-final-review-effective-identity").expect("run id");
+        let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
+        let panel = FinalReviewPanelResolution {
+            planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
+            reviewers: vec![ResolvedPanelMember {
+                target: ResolvedBackendTarget::new(BackendFamily::Claude, "reviewer-1-model"),
+                required: true,
+                configured_index: 0,
+            }],
+            arbiter: ResolvedBackendTarget::new(BackendFamily::Claude, "arbiter-model"),
+        };
+
+        let result = execute_final_review_panel(
+            &agent_service,
+            &FsPayloadArtifactWriteStore,
+            &FsRuntimeLogWriteStore,
+            &FsJournalStore,
+            base_dir,
+            &project_root(base_dir, &project_id),
+            base_dir,
+            &project_id,
+            &run_id,
+            &mut seq,
+            &cursor,
+            &panel,
+            1,
+            1.0,
+            0,
+            0,
+            "prompt.md",
+            0,
+            Duration::from_secs(1),
+            &|_| Duration::from_secs(1),
+            Duration::from_secs(1),
+            CancellationToken::new(),
+        )
+        .await
+        .expect("final review should succeed");
+
+        assert_eq!(result.final_accepted_amendments.len(), 1);
+        assert_eq!(
+            result.final_accepted_amendments[0].sources[0].backend_family,
+            "openrouter"
+        );
+        assert_eq!(
+            result.final_accepted_amendments[0].sources[0].model_id,
+            "openai/gpt-4.1"
+        );
+
+        let events = FsJournalStore.read_journal(base_dir, &project_id).unwrap();
+        assert!(events.iter().any(|event| {
+            event.event_type
+                == crate::contexts::project_run_record::model::JournalEventType::ReviewerCompleted
+                && event.details["reviewer_id"] == "reviewer-1"
+                && event.details["phase"] == "proposal"
+                && event.details["backend_family"] == "openrouter"
+                && event.details["model_id"] == "openai/gpt-4.1"
+        }));
     }
 
     #[tokio::test]
@@ -1371,6 +2898,10 @@ mod tests {
             AgentExecutionService::new(adapter.clone(), FsRawOutputStore, FsSessionStore);
         let run_id = RunId::new("run-final-review-vote-failure").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
         let panel = FinalReviewPanelResolution {
             planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
@@ -1400,11 +2931,13 @@ mod tests {
             &agent_service,
             &FsPayloadArtifactWriteStore,
             &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
             base_dir,
             &project_root(base_dir, &project_id),
             base_dir,
             &project_id,
             &run_id,
+            &mut seq,
             &cursor,
             &panel,
             2,
@@ -1442,6 +2975,10 @@ mod tests {
         );
         let run_id = RunId::new("run-final-review-producer").expect("run id");
         let cursor = StageCursor::new(StageId::FinalReview, 1, 1, 1).expect("cursor");
+        let mut seq = FsJournalStore
+            .read_journal(base_dir, &project_id)
+            .expect("journal")
+            .len() as u64;
         let panel = FinalReviewPanelResolution {
             planner: ResolvedBackendTarget::new(BackendFamily::Claude, "planner-model"),
             reviewers: vec![
@@ -1463,11 +3000,13 @@ mod tests {
             &agent_service,
             &FsPayloadArtifactWriteStore,
             &crate::adapters::fs::FsRuntimeLogWriteStore,
+            &FsJournalStore,
             base_dir,
             &project_root(base_dir, &project_id),
             base_dir,
             &project_id,
             &run_id,
+            &mut seq,
             &cursor,
             &panel,
             2,

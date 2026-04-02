@@ -407,6 +407,15 @@ impl<'a> BackendDiagnosticsService<'a> {
         // Note: aligned with engine stage_plan_for_flow() which does NOT filter
         // FinalReview based on final_review.enabled.
         if flow_def.stages.contains(&StageId::FinalReview) {
+            // Planner — always required, resolved independently of panel
+            if let Ok(planner_target) = self.policy.resolve_final_review_planner_target(1) {
+                required_targets.push((
+                    planner_target,
+                    "final_review_panel.planner".to_owned(),
+                    self.final_review_planner_config_source(),
+                ));
+            }
+
             // Arbiter — always required, resolved independently of panel
             if let Ok(arbiter_target) = self
                 .policy
@@ -421,14 +430,6 @@ impl<'a> BackendDiagnosticsService<'a> {
 
             // Full panel resolution for planner + reviewers
             if let Ok(res) = self.policy.resolve_final_review_panel(1) {
-                // Planner is already checked via stage roles, but include it
-                // with panel-specific identity for completeness
-                required_targets.push((
-                    res.planner.clone(),
-                    "final_review_panel.planner".to_owned(),
-                    self.config_source_for_role(BackendPolicyRole::Planner),
-                ));
-
                 let minimum = self.config.final_review_policy().min_reviewers;
                 self.check_panel_availability(
                     adapter,
@@ -625,6 +626,16 @@ impl<'a> BackendDiagnosticsService<'a> {
     fn check_final_review_panel_config(&self, failures: &mut Vec<BackendCheckFailure>) {
         let policy = self.config.final_review_policy();
 
+        if let Err(e) = self.policy.resolve_final_review_planner_target(1) {
+            failures.push(BackendCheckFailure {
+                role: "final_review_panel.planner".to_owned(),
+                backend_family: self.final_review_planner_family(),
+                failure_kind: BackendCheckFailureKind::RequiredMemberUnavailable,
+                details: e.to_string(),
+                config_source: self.final_review_planner_config_source(),
+            });
+        }
+
         // Check arbiter separately — this was previously collapsed into the panel
         if let Err(e) = self
             .policy
@@ -769,7 +780,7 @@ impl<'a> BackendDiagnosticsService<'a> {
             }
         };
 
-        let roles = BackendPolicyRole::ALL
+        let mut roles = BackendPolicyRole::ALL
             .iter()
             .map(|role| {
                 let override_source = self.override_source_for_role(*role);
@@ -812,7 +823,8 @@ impl<'a> BackendDiagnosticsService<'a> {
                     }
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        roles.push(self.final_review_planner_effective_view());
 
         EffectiveBackendView {
             base_backend,
@@ -945,13 +957,13 @@ impl<'a> BackendDiagnosticsService<'a> {
     ) -> AppResult<BackendProbeResult> {
         // Resolve planner separately for exact error identity
         self.policy
-            .resolve_role_target(BackendPolicyRole::Planner, cycle)
+            .resolve_final_review_planner_target(cycle)
             .map_err(|err| {
                 self.make_probe_target_error(
                     "final_review_panel",
                     "planner",
-                    &self.family_for_role(BackendPolicyRole::Planner),
-                    &self.config_source_for_role(BackendPolicyRole::Planner),
+                    &self.final_review_planner_family(),
+                    &self.final_review_planner_config_source(),
                     &err,
                 )
             })?;
@@ -1138,21 +1150,28 @@ impl<'a> BackendDiagnosticsService<'a> {
             // For panel probes (target: None), check the panel's primary role
             // availability (planner for completion/final_review, refiner for prompt_review).
             let primary_role = match panel.panel_type.as_str() {
-                "completion" | "final_review" => Some(BackendPolicyRole::Planner),
-                "prompt_review" => Some(BackendPolicyRole::PromptReviewer),
+                "completion" => Some(
+                    self.policy
+                        .resolve_role_target(BackendPolicyRole::Planner, result.cycle),
+                ),
+                "final_review" => Some(
+                    self.policy
+                        .resolve_final_review_planner_target(result.cycle),
+                ),
+                "prompt_review" => Some(
+                    self.policy
+                        .resolve_role_target(BackendPolicyRole::PromptReviewer, result.cycle),
+                ),
                 _ => None,
             };
-            if let Some(role) = primary_role {
-                if let Ok(primary) = self.policy.resolve_role_target(role, result.cycle) {
+            if let Some(primary) = primary_role {
+                if let Ok(primary) = primary {
                     if let Err(err) = adapter.check_availability(&primary).await {
                         return Err(AppError::BackendUnavailable {
                             backend: primary.backend.family.as_str().to_owned(),
                             details: format!(
                                 "required primary '{}' for '{}' unavailable: {} [source: {}]",
-                                role.as_str(),
-                                role_str,
-                                err,
-                                primary_source
+                                primary_target, role_str, err, primary_source
                             ),
                             failure_class: None,
                         });
@@ -1322,9 +1341,8 @@ impl<'a> BackendDiagnosticsService<'a> {
     fn probe_primary_config_source(&self, role_str: &str) -> String {
         match role_str {
             // Completion and final-review panels use the planner as primary target
-            "completion_panel" | "final_review_panel" => {
-                self.config_source_for_role(BackendPolicyRole::Planner)
-            }
+            "completion_panel" => self.config_source_for_role(BackendPolicyRole::Planner),
+            "final_review_panel" => self.final_review_planner_config_source(),
             // Prompt-review panel uses the refiner as primary target
             "prompt_review_panel" => self.config_source_for_role(BackendPolicyRole::PromptReviewer),
             // Singular role probe — parse to get the actual role's config source
@@ -1476,6 +1494,15 @@ impl<'a> BackendDiagnosticsService<'a> {
         }
     }
 
+    fn final_review_planner_config_source(&self) -> String {
+        let bp = self.config.backend_policy();
+        if bp.final_review_planner_backend.is_some() {
+            "final_review.planner_backend".to_owned()
+        } else {
+            self.config_source_for_role(BackendPolicyRole::Planner)
+        }
+    }
+
     fn source_for_base_backend(&self) -> String {
         let entry = self.config.get("default_backend");
         match entry {
@@ -1528,6 +1555,30 @@ impl<'a> BackendDiagnosticsService<'a> {
                 let base_source = self.source_for_base_backend();
                 format!("default_backend ({})", base_source)
             }
+        }
+    }
+
+    fn override_source_for_final_review_planner(&self) -> String {
+        if self
+            .config
+            .backend_policy()
+            .final_review_planner_backend
+            .is_some()
+        {
+            match self.config.get("final_review.planner_backend") {
+                Ok(entry) => {
+                    if entry.source
+                        == crate::contexts::workspace_governance::config::ConfigValueSource::Default
+                    {
+                        self.override_source_for_role(BackendPolicyRole::Planner)
+                    } else {
+                        entry.source.to_string()
+                    }
+                }
+                Err(_) => self.override_source_for_role(BackendPolicyRole::Planner),
+            }
+        } else {
+            self.override_source_for_role(BackendPolicyRole::Planner)
         }
     }
 
@@ -1592,6 +1643,46 @@ impl<'a> BackendDiagnosticsService<'a> {
         "default".to_owned()
     }
 
+    fn model_source_for_final_review_planner(&self, family: BackendFamily) -> String {
+        let bp = self.config.backend_policy();
+        if let Some(selection) = bp.final_review_planner_backend.as_ref() {
+            if selection.model.is_some() {
+                return self.override_source_for_final_review_planner();
+            }
+
+            let key = format!(
+                "backends.{}.role_models.{}",
+                family.as_str(),
+                BackendPolicyRole::Planner.as_str()
+            );
+            if let Ok(entry) = self.config.get(&key) {
+                if !matches!(
+                    entry.value,
+                    crate::contexts::workspace_governance::config::ConfigValue::String(None)
+                ) {
+                    let source = entry.source;
+                    if source
+                        != crate::contexts::workspace_governance::config::ConfigValueSource::Default
+                    {
+                        return source.to_string();
+                    }
+                }
+            }
+
+            if family == bp.base_backend.family && bp.base_backend.model.is_some() {
+                if bp.default_model.as_ref() == bp.base_backend.model.as_ref() {
+                    return self.source_for_default_model();
+                } else {
+                    return self.source_for_base_backend();
+                }
+            }
+
+            return "default".to_owned();
+        }
+
+        self.model_source_for_role(BackendPolicyRole::Planner, family)
+    }
+
     /// Determine the source precedence for a role's resolved timeout_seconds.
     ///
     /// Timeout resolution order (matching `BackendPolicyService::timeout_for_role`):
@@ -1623,6 +1714,51 @@ impl<'a> BackendDiagnosticsService<'a> {
 
         // 3. Global default
         "default".to_owned()
+    }
+
+    fn final_review_planner_family(&self) -> String {
+        self.config
+            .backend_policy()
+            .final_review_planner_backend
+            .as_ref()
+            .map(|selection| selection.family.as_str().to_owned())
+            .unwrap_or_else(|| self.family_for_role(BackendPolicyRole::Planner))
+    }
+
+    fn final_review_planner_effective_view(&self) -> RoleEffectiveView {
+        let override_source = self.override_source_for_final_review_planner();
+
+        match self.policy.resolve_final_review_planner_target(1) {
+            Ok(target) => {
+                let family = target.backend.family;
+                let timeout = self
+                    .policy
+                    .timeout_for_role(family, BackendPolicyRole::Planner);
+                RoleEffectiveView {
+                    role: "final_review_panel.planner".to_owned(),
+                    backend_family: family.as_str().to_owned(),
+                    model_id: target.model.model_id,
+                    timeout_seconds: timeout.as_secs(),
+                    session_policy: "new_session".to_owned(),
+                    override_source,
+                    model_source: self.model_source_for_final_review_planner(family),
+                    timeout_source: self
+                        .timeout_source_for_role(BackendPolicyRole::Planner, family),
+                    resolution_error: None,
+                }
+            }
+            Err(err) => RoleEffectiveView {
+                role: "final_review_panel.planner".to_owned(),
+                backend_family: self.final_review_planner_family(),
+                model_id: "unresolved".to_owned(),
+                timeout_seconds: 0,
+                session_policy: "new_session".to_owned(),
+                override_source,
+                model_source: "unresolved".to_owned(),
+                timeout_source: "unresolved".to_owned(),
+                resolution_error: Some(err.to_string()),
+            },
+        }
     }
 }
 

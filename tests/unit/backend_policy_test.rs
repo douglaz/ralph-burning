@@ -304,6 +304,69 @@ fn final_review_panel_resolution_includes_planner_target() {
 }
 
 #[test]
+fn final_review_panel_supports_same_family_with_distinct_models() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    workspace.final_review.backends = Some(vec![
+        PanelBackendSpec::required_selection(BackendSelection::new(
+            BackendFamily::Codex,
+            Some("gpt-5.3-codex-spark-xhigh".to_owned()),
+        )),
+        PanelBackendSpec::required_selection(BackendSelection::new(
+            BackendFamily::Codex,
+            Some("gpt-5.4-xhigh".to_owned()),
+        )),
+    ]);
+    workspace.final_review.min_reviewers = Some(2);
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+
+    assert_eq!(2, panel.reviewers.len());
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[0].target.backend.family
+    );
+    assert_eq!(
+        "gpt-5.3-codex-spark-xhigh",
+        panel.reviewers[0].target.model.model_id
+    );
+    assert_eq!(
+        BackendFamily::Codex,
+        panel.reviewers[1].target.backend.family
+    );
+    assert_eq!("gpt-5.4-xhigh", panel.reviewers[1].target.model.model_id);
+}
+
+#[test]
+fn final_review_planner_override_does_not_eagerly_require_workflow_planner() {
+    let temp_dir = tempdir().expect("create temp dir");
+    initialize_workspace_fixture(temp_dir.path());
+
+    let mut workspace = WorkspaceConfig::new(test_timestamp());
+    workspace.settings.default_backend = Some("claude".to_owned());
+    workspace
+        .backends
+        .insert("codex".to_owned(), empty_backend_settings(true));
+    workspace.workflow.planner_backend = Some("openrouter".to_owned());
+    workspace.final_review.planner_backend = Some("codex".to_owned());
+    write_workspace_config(temp_dir.path(), &workspace);
+
+    let effective = EffectiveConfig::load(temp_dir.path()).expect("load config");
+    let panel = BackendPolicyService::new(&effective)
+        .resolve_final_review_panel(1)
+        .expect("resolve final review panel");
+
+    assert_eq!(BackendFamily::Codex, panel.planner.backend.family);
+}
+
+#[test]
 fn opposite_family_uses_fallback_chain_and_cycle_alternates() {
     let temp_dir = tempdir().expect("create temp dir");
     initialize_workspace_fixture(temp_dir.path());

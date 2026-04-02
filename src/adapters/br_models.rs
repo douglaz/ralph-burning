@@ -188,7 +188,7 @@ impl<'de> Deserialize<'de> for BeadType {
 // ── DependencyKind ──────────────────────────────────────────────────────────
 
 /// How two beads are related.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DependencyKind {
     Blocks,
@@ -204,12 +204,30 @@ impl fmt::Display for DependencyKind {
     }
 }
 
+impl<'de> Deserialize<'de> for DependencyKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let raw = String::deserialize(deserializer)?;
+        match raw.as_str() {
+            "blocks" => Ok(Self::Blocks),
+            "parent_child" | "parent-child" => Ok(Self::ParentChild),
+            other => Err(de::Error::unknown_variant(
+                other,
+                &["blocks", "parent_child", "parent-child"],
+            )),
+        }
+    }
+}
+
 // ── DependencyRef ───────────────────────────────────────────────────────────
 
 /// A reference to a dependency or dependent bead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DependencyRef {
     pub id: String,
+    #[serde(alias = "dependency_type")]
     pub kind: DependencyKind,
     #[serde(default)]
     pub title: Option<String>,
@@ -224,6 +242,7 @@ pub struct BeadSummary {
     pub title: String,
     pub status: BeadStatus,
     pub priority: BeadPriority,
+    #[serde(alias = "issue_type")]
     pub bead_type: BeadType,
     #[serde(default)]
     pub labels: Vec<String>,
@@ -238,12 +257,13 @@ pub struct BeadDetail {
     pub title: String,
     pub status: BeadStatus,
     pub priority: BeadPriority,
+    #[serde(alias = "issue_type")]
     pub bead_type: BeadType,
     #[serde(default)]
     pub labels: Vec<String>,
     #[serde(default)]
     pub description: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_acceptance_criteria")]
     pub acceptance_criteria: Vec<String>,
     #[serde(default)]
     pub dependencies: Vec<DependencyRef>,
@@ -265,9 +285,71 @@ pub struct ReadyBead {
     pub id: String,
     pub title: String,
     pub priority: BeadPriority,
+    #[serde(alias = "issue_type")]
     pub bead_type: BeadType,
     #[serde(default)]
     pub labels: Vec<String>,
+}
+
+fn deserialize_acceptance_criteria<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum RawAcceptanceCriteria {
+        List(Vec<String>),
+        Text(String),
+    }
+
+    let raw = Option::<RawAcceptanceCriteria>::deserialize(deserializer)?;
+    Ok(match raw {
+        None => Vec::new(),
+        Some(RawAcceptanceCriteria::List(items)) => items
+            .into_iter()
+            .flat_map(|item| split_acceptance_criteria_text(&item))
+            .collect(),
+        Some(RawAcceptanceCriteria::Text(item)) => split_acceptance_criteria_text(&item),
+    })
+}
+
+fn split_acceptance_criteria_text(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let lines = trimmed
+        .lines()
+        .map(clean_acceptance_line)
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<_>>();
+
+    if lines.len() <= 1 && !trimmed.contains('\n') {
+        vec![clean_acceptance_line(trimmed)]
+    } else {
+        lines
+    }
+}
+
+fn clean_acceptance_line(line: &str) -> String {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let without_bullet = trimmed
+        .strip_prefix("- ")
+        .or_else(|| trimmed.strip_prefix("* "))
+        .unwrap_or(trimmed);
+
+    let numbered = without_bullet
+        .split_once(". ")
+        .filter(|(prefix, _)| !prefix.is_empty() && prefix.chars().all(|ch| ch.is_ascii_digit()))
+        .map(|(_, remainder)| remainder)
+        .unwrap_or(without_bullet);
+
+    numbered.trim().to_owned()
 }
 
 // ── DepTreeNode ─────────────────────────────────────────────────────────────
@@ -450,6 +532,18 @@ mod tests {
 
         let parsed: DependencyKind = serde_json::from_str(r#""parent_child""#)?;
         assert_eq!(parsed, DependencyKind::ParentChild);
+
+        let parsed: DependencyKind = serde_json::from_str(r#""parent-child""#)?;
+        assert_eq!(parsed, DependencyKind::ParentChild);
+
+        assert_eq!(
+            serde_json::to_string(&DependencyKind::Blocks)?,
+            r#""blocks""#
+        );
+        assert_eq!(
+            serde_json::to_string(&DependencyKind::ParentChild)?,
+            r#""parent_child""#
+        );
         Ok(())
     }
 
@@ -618,6 +712,39 @@ mod tests {
         assert!(detail.owner.is_none());
         assert!(detail.created_at.is_none());
         assert!(detail.updated_at.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn bead_detail_accepts_live_show_field_names_and_splits_acceptance_criteria(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let json = r#"{
+            "id": "bead-1",
+            "title": "Live shape",
+            "status": "open",
+            "priority": "P1",
+            "issue_type": "feature",
+            "acceptance_criteria": "- Ship the task creation path\n- Keep the result inspectable",
+            "dependencies": [
+                {
+                    "id": "epic-1",
+                    "dependency_type": "parent-child",
+                    "title": "Parent epic"
+                }
+            ]
+        }"#;
+
+        let detail: BeadDetail = serde_json::from_str(json)?;
+        assert_eq!(detail.bead_type, BeadType::Feature);
+        assert_eq!(
+            detail.acceptance_criteria,
+            vec![
+                "Ship the task creation path".to_owned(),
+                "Keep the result inspectable".to_owned()
+            ]
+        );
+        assert_eq!(detail.dependencies.len(), 1);
+        assert_eq!(detail.dependencies[0].kind, DependencyKind::ParentChild);
         Ok(())
     }
 
