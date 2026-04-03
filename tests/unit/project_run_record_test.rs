@@ -825,6 +825,30 @@ fn render_bead_task_prompt_keeps_plain_subsections_inside_non_goals() {
 }
 
 #[test]
+fn render_bead_task_prompt_keeps_markdown_subsections_inside_non_goals() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- update the canonical prompt generator\n\nNon-goals:\n### Examples\n- do not change CLI\n- do not rewrite the workflow engine\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!must_do_section.contains("### Examples"));
+    assert!(!must_do_section.contains("do not change CLI"));
+    assert!(prompt.contains("- do not change CLI"));
+    assert!(prompt.contains("- do not rewrite the workflow engine"));
+}
+
+#[test]
 fn render_bead_task_prompt_keeps_plain_subsections_inside_embedded_acceptance_criteria() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -844,6 +868,56 @@ fn render_bead_task_prompt_keeps_plain_subsections_inside_embedded_acceptance_cr
     assert!(must_do_section.contains("Scope:"));
     assert!(!must_do_section.contains("Notes:"));
     assert!(!must_do_section.contains("keep the rendered contract stable"));
+}
+
+#[test]
+fn render_bead_task_prompt_keeps_markdown_subsections_inside_embedded_acceptance_criteria() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n## Acceptance Criteria\n### Notes\n- keep the rendered contract stable\n- keep downstream consumers aligned\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!must_do_section.contains("### Notes"));
+    assert!(!must_do_section.contains("keep the rendered contract stable"));
+}
+
+#[test]
+fn render_bead_task_prompt_ignores_embedded_section_labels_inside_fenced_code_blocks() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Here is an example:\n```md\nNon-goals:\n- this is code, not a real section\n```\n\nScope:\n- keep the contract explicit\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let acceptance_start = prompt
+        .find("## Acceptance Criteria")
+        .expect("acceptance section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+    let non_goals_section = &prompt[non_goals_start..acceptance_start];
+
+    assert!(must_do_section.contains("```md"));
+    assert!(must_do_section.contains("Non-goals:"));
+    assert!(must_do_section.contains("- this is code, not a real section"));
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!non_goals_section.contains("this is code, not a real section"));
 }
 
 #[test]

@@ -484,6 +484,11 @@ fn markdown_heading_title(line: &str) -> Option<&str> {
     Some(trimmed[hash_count..].trim())
 }
 
+fn is_fence_delimiter(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 fn normalized_section_label(label: &str) -> String {
     label
         .chars()
@@ -564,15 +569,31 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
     let mut must_do_lines = Vec::new();
     let mut non_goal_lines = Vec::new();
     let mut active_section = None;
+    let mut in_fence = false;
 
     for line in description.lines() {
-        if let Some(section_kind) = section_kind_for_bead_description_line(line) {
-            active_section = Some(section_kind);
+        if is_fence_delimiter(line) {
+            match active_section {
+                Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {}
+                Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
+                None => must_do_lines.push(line.to_owned()),
+            }
+            in_fence = !in_fence;
             continue;
         }
 
-        if active_section.is_some() && markdown_heading_title(line).is_some() {
-            active_section = None;
+        if in_fence {
+            match active_section {
+                Some(BeadDescriptionSectionKind::AcceptanceCriteria) => {}
+                Some(BeadDescriptionSectionKind::NonGoals) => non_goal_lines.push(line.to_owned()),
+                None => must_do_lines.push(line.to_owned()),
+            }
+            continue;
+        }
+
+        if let Some(section_kind) = section_kind_for_bead_description_line(line) {
+            active_section = Some(section_kind);
+            continue;
         }
 
         match active_section {

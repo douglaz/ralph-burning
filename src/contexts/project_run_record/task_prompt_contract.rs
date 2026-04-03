@@ -141,6 +141,7 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 
     let mut seen_positions = vec![None; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
+    let mut reported_missing = vec![false; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
     let mut expected_index = 0usize;
     let mut in_fence = false;
 
@@ -163,6 +164,19 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
             continue;
         }
 
+        if found_index > expected_index && expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() {
+            for missing_index in expected_index..found_index {
+                errors.push(format!(
+                    "missing section heading `## {}`",
+                    BEAD_TASK_PROMPT_SECTION_TITLES[missing_index]
+                ));
+                reported_missing[missing_index] = true;
+            }
+            seen_positions[found_index] = Some(line_index);
+            expected_index = found_index + 1;
+            continue;
+        }
+
         if let Some(expected_section) = BEAD_TASK_PROMPT_SECTION_TITLES.get(expected_index) {
             let heading = format!("## {}", BEAD_TASK_PROMPT_SECTION_TITLES[found_index]);
             let expected_heading = format!("## {expected_section}");
@@ -173,7 +187,7 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 
     for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
-        if seen_positions[index].is_none() {
+        if seen_positions[index].is_none() && !reported_missing[index] {
             errors.push(format!("missing section heading `## {section}`"));
         }
     }
@@ -270,9 +284,26 @@ mod tests {
         );
 
         let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing section heading `## Explicit Non-Goals`")));
         assert!(errors.iter().any(|error| {
-            error.contains("unexpected canonical heading `## Acceptance Criteria`")
+            error.contains("unexpected canonical heading `## Explicit Non-Goals`")
         }));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_reports_missing_section_without_cascading_later_errors() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert_eq!(
+            errors,
+            vec!["missing section heading `## Explicit Non-Goals`"]
+        );
     }
 
     #[test]
