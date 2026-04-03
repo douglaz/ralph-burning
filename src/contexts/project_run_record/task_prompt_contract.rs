@@ -129,18 +129,31 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
     }
 
     let trimmed_lines: Vec<&str> = prompt.lines().map(str::trim).collect();
-    let mut next_search_start = 0usize;
+    let mut ordered_heading_positions = Vec::new();
     for section in BEAD_TASK_PROMPT_SECTION_TITLES {
         let heading = format!("## {section}");
-        match trimmed_lines[next_search_start..]
+        let matches = trimmed_lines
             .iter()
-            .position(|line| *line == heading)
-            .map(|offset| next_search_start + offset)
-        {
-            Some(index) => {
-                next_search_start = index + 1;
-            }
-            None => errors.push(format!("missing section heading `{heading}`")),
+            .enumerate()
+            .filter_map(|(index, line)| (*line == heading).then_some(index))
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [index] => ordered_heading_positions.push((heading, *index)),
+            [] => errors.push(format!("missing section heading `{heading}`")),
+            _ => errors.push(format!(
+                "section heading `{heading}` must appear exactly once"
+            )),
+        }
+    }
+
+    for window in ordered_heading_positions.windows(2) {
+        let [(previous_heading, previous_index), (heading, index)] = window else {
+            continue;
+        };
+        if index <= previous_index {
+            errors.push(format!(
+                "section heading `{heading}` appears out of order (after `{previous_heading}` in the contract)"
+            ));
         }
     }
 
@@ -216,12 +229,28 @@ mod tests {
     }
 
     #[test]
-    fn canonical_prompt_shape_ignores_duplicate_headings_inside_section_bodies() {
+    fn canonical_prompt_shape_rejects_duplicate_canonical_headings() {
         let prompt = format!(
             "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nGoal:\nShip the thing.\n\n## Acceptance Criteria\n\nEmbedded bead marker that should stay inside the body.\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
             contract_marker()
         );
 
-        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors.iter().any(|error| {
+            error.contains("section heading `## Acceptance Criteria` must appear exactly once")
+        }));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_rejects_out_of_order_headings() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Acceptance Criteria\n\nE\n\n## Explicit Non-Goals\n\nD\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
+        assert!(errors.iter().any(|error| {
+            error.contains("section heading `## Acceptance Criteria` appears out of order")
+        }));
     }
 }

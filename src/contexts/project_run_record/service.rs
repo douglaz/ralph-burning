@@ -574,10 +574,6 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
 
         if active_section.is_some() && is_bead_description_section_boundary(line) {
             active_section = None;
-            if let Some(section_kind) = section_kind_for_bead_description_line(line) {
-                active_section = Some(section_kind);
-                continue;
-            }
         }
 
         match active_section {
