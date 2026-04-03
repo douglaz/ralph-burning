@@ -20,6 +20,7 @@ use super::model::{
 use super::queries::{
     self, RunHistoryView, RunRollbackTargetView, RunStatusJsonView, RunStatusView, RunTailView,
 };
+use super::task_prompt_contract;
 
 /// Port for reading and writing project records.
 pub trait ProjectStorePort {
@@ -247,6 +248,7 @@ pub struct BeadProjectContext {
     pub milestone_description: String,
     pub milestone_summary: Option<String>,
     pub milestone_goals: Vec<String>,
+    pub milestone_non_goals: Vec<String>,
     pub milestone_constraints: Vec<String>,
     pub agents_guidance: Option<String>,
     pub bead_id: String,
@@ -254,6 +256,8 @@ pub struct BeadProjectContext {
     pub bead_description: Option<String>,
     pub bead_acceptance_criteria: Vec<String>,
     pub bead_dependencies: Vec<String>,
+    pub already_planned_elsewhere: Vec<String>,
+    pub review_policy: Vec<String>,
     pub parent_epic_id: Option<String>,
     pub flow: FlowPreset,
     pub plan_hash: Option<String>,
@@ -460,65 +464,163 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
             .join("\n")
     }
 
-    let mut sections = vec![
-        format!(
-            "# Ralph Task Prompt\n\nThis project executes bead `{}` for milestone `{}`.",
-            context.bead_id, context.milestone_id
-        ),
-        format!(
-            "## Milestone\n\n- ID: `{}`\n- Name: {}\n\n{}",
-            context.milestone_id, context.milestone_name, context.milestone_description
-        ),
-    ];
-
-    if let Some(summary) = &context.milestone_summary {
-        sections.push(format!("## Milestone Summary\n\n{summary}"));
-    }
-    if !context.milestone_goals.is_empty() {
-        sections.push(format!(
-            "## Milestone Goals\n\n{}",
-            bullet_lines(&context.milestone_goals)
-        ));
-    }
-    if !context.milestone_constraints.is_empty() {
-        sections.push(format!(
-            "## Constraints\n\n{}",
-            bullet_lines(&context.milestone_constraints)
-        ));
+    fn bullet_lines_or_default(items: &[String], default: &str) -> String {
+        if items.is_empty() {
+            default.to_owned()
+        } else {
+            bullet_lines(items)
+        }
     }
 
-    let mut bead_header = format!(
-        "## Active Bead\n\n- ID: `{}`\n- Title: {}",
-        context.bead_id, context.bead_title
+    let milestone_summary = {
+        let mut lines = vec![
+            format!("- Milestone ID: `{}`", context.milestone_id),
+            format!("- Milestone Name: {}", context.milestone_name),
+        ];
+        if let Some(summary) = &context.milestone_summary {
+            lines.push(format!("- Summary: {summary}"));
+        }
+        lines.push(format!("- Description: {}", context.milestone_description));
+        if !context.milestone_goals.is_empty() {
+            lines.push("- Goals:".to_owned());
+            lines.extend(
+                context
+                    .milestone_goals
+                    .iter()
+                    .map(|goal| format!("  - {goal}")),
+            );
+        }
+        if !context.milestone_constraints.is_empty() {
+            lines.push("- Constraints:".to_owned());
+            lines.extend(
+                context
+                    .milestone_constraints
+                    .iter()
+                    .map(|constraint| format!("  - {constraint}")),
+            );
+        }
+        lines.join("\n")
+    };
+
+    let current_bead_details = {
+        let mut lines = vec![
+            format!("- Bead ID: `{}`", context.bead_id),
+            format!("- Title: {}", context.bead_title),
+            format!("- Flow: `{}`", context.flow.as_str()),
+        ];
+        if let Some(parent_epic_id) = &context.parent_epic_id {
+            lines.push(format!("- Parent epic: `{parent_epic_id}`"));
+        } else {
+            lines.push("- Parent epic: None.".to_owned());
+        }
+        if let Some(plan_hash) = &context.plan_hash {
+            lines.push(format!("- Plan hash: `{plan_hash}`"));
+        } else {
+            lines.push("- Plan hash: None.".to_owned());
+        }
+        if let Some(plan_version) = context.plan_version {
+            lines.push(format!("- Plan version: {plan_version}"));
+        } else {
+            lines.push("- Plan version: None.".to_owned());
+        }
+        if context.bead_dependencies.is_empty() {
+            lines.push("- Blocking dependencies: None.".to_owned());
+        } else {
+            lines.push("- Blocking dependencies:".to_owned());
+            lines.extend(
+                context
+                    .bead_dependencies
+                    .iter()
+                    .map(|dependency| format!("  - {dependency}")),
+            );
+        }
+        lines.join("\n")
+    };
+
+    let must_do_scope = context
+        .bead_description
+        .clone()
+        .unwrap_or_else(|| "No explicit scope description was supplied. Use the bead title and acceptance criteria as the required scope boundary.".to_owned());
+    let non_goals = bullet_lines_or_default(
+        &context.milestone_non_goals,
+        "None captured in the milestone plan.",
     );
-    if let Some(parent_epic_id) = &context.parent_epic_id {
-        bead_header.push_str(&format!("\n- Parent epic: `{parent_epic_id}`"));
-    }
-    if let Some(plan_version) = context.plan_version {
-        bead_header.push_str(&format!("\n- Plan version: {plan_version}"));
-    }
-    sections.push(bead_header);
+    let acceptance_criteria = bullet_lines_or_default(
+        &context.bead_acceptance_criteria,
+        "No explicit acceptance criteria were supplied.",
+    );
+    let planned_elsewhere = bullet_lines_or_default(
+        &context.already_planned_elsewhere,
+        "No explicit planned-elsewhere items were supplied. Do not absorb adjacent bead work unless it is required to satisfy this bead's acceptance criteria.",
+    );
+    let review_policy = bullet_lines_or_default(
+        &context.review_policy,
+        "Use the active bead scope as the review boundary.",
+    );
+    let repo_guidance = {
+        let mut lines =
+            vec!["- Follow the repository AGENTS.md instructions for this repo.".to_owned()];
+        if let Some(guidance) = &context.agents_guidance {
+            lines.push(format!("- {guidance}"));
+        } else {
+            lines.push("- No milestone-specific AGENTS guidance was supplied.".to_owned());
+        }
+        lines.join("\n")
+    };
 
-    if let Some(description) = &context.bead_description {
-        sections.push(format!("## Scope\n\n{description}"));
-    }
-    if !context.bead_dependencies.is_empty() {
-        sections.push(format!(
-            "## Dependencies\n\n{}",
-            bullet_lines(&context.bead_dependencies)
-        ));
-    }
-    if !context.bead_acceptance_criteria.is_empty() {
-        sections.push(format!(
-            "## Acceptance Criteria\n\n{}",
-            bullet_lines(&context.bead_acceptance_criteria)
-        ));
-    }
-    if let Some(guidance) = &context.agents_guidance {
-        sections.push(format!("## AGENTS Guidance\n\n{guidance}"));
-    }
-
-    sections.join("\n\n")
+    vec![
+        format!(
+            "# Ralph Task Prompt\n\n{}\n\n- Contract: `{}`\n- Version: `{}`\n- Milestone: `{}`\n- Bead: `{}`\n\nThis project executes bead `{}` for milestone `{}`.",
+            task_prompt_contract::contract_marker(),
+            task_prompt_contract::BEAD_TASK_PROMPT_CONTRACT_NAME,
+            task_prompt_contract::BEAD_TASK_PROMPT_CONTRACT_VERSION,
+            context.milestone_id,
+            context.bead_id,
+            context.bead_id,
+            context.milestone_id
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_MILESTONE_SUMMARY,
+            milestone_summary
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_CURRENT_BEAD_DETAILS,
+            current_bead_details
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_MUST_DO_SCOPE,
+            must_do_scope
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_EXPLICIT_NON_GOALS,
+            non_goals
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_ACCEPTANCE_CRITERIA,
+            acceptance_criteria
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_ALREADY_PLANNED_ELSEWHERE,
+            planned_elsewhere
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_REVIEW_POLICY,
+            review_policy
+        ),
+        format!(
+            "## {}\n\n{}",
+            task_prompt_contract::SECTION_AGENTS_REPO_GUIDANCE,
+            repo_guidance
+        ),
+    ]
+    .join("\n\n")
 }
 
 fn default_project_id_for_bead(milestone_id: &str, bead_id: &str) -> AppResult<ProjectId> {

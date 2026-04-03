@@ -1878,9 +1878,11 @@ exit 1
 
     let prompt = fs::read_to_string(project_root.join("prompt.md")).expect("read prompt");
     assert!(prompt.contains("Ship bead-backed task creation."));
-    assert!(prompt.contains("## Active Bead"));
+    assert!(prompt.contains("bead_execution_prompt"));
+    assert!(prompt.contains("## Current Bead Details"));
     assert!(prompt.contains("Keep changes inspectable and deterministic."));
-    assert!(prompt.contains("## Dependencies\n\n- ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(prompt
+        .contains("- Blocking dependencies:\n  - ms-alpha.bead-1 (Define task-source metadata)"));
     assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
     assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
 

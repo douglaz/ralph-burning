@@ -10,7 +10,10 @@ use ralph_burning::contexts::project_run_record::journal;
 use ralph_burning::contexts::project_run_record::model::{
     ArtifactRecord, JournalEvent, JournalEventType, PayloadRecord, QueuedAmendment,
 };
-use ralph_burning::contexts::project_run_record::service::ArtifactStorePort;
+use ralph_burning::contexts::project_run_record::service::{
+    render_bead_task_prompt, ArtifactStorePort, BeadProjectContext,
+};
+use ralph_burning::contexts::project_run_record::task_prompt_contract;
 use ralph_burning::contexts::workflow_composition::contracts::contract_for_stage;
 use ralph_burning::contexts::workflow_composition::engine::build_stage_prompt;
 use ralph_burning::contexts::workflow_composition::panel_contracts::RecordKind;
@@ -93,6 +96,34 @@ fn amendment(body: &str) -> QueuedAmendment {
         batch_sequence: 1,
         source,
         dedup_key,
+    }
+}
+
+fn sample_bead_context() -> BeadProjectContext {
+    BeadProjectContext {
+        milestone_id: "ms-alpha".to_owned(),
+        milestone_name: "Alpha Milestone".to_owned(),
+        milestone_description: "Deliver the alpha milestone.".to_owned(),
+        milestone_summary: Some("Ship milestone-aware task execution.".to_owned()),
+        milestone_goals: vec!["Create bead-backed tasks without manual setup".to_owned()],
+        milestone_non_goals: vec!["Avoid unrelated milestone work".to_owned()],
+        milestone_constraints: vec!["Reuse the current project substrate".to_owned()],
+        agents_guidance: Some("Keep changes inspectable and deterministic.".to_owned()),
+        bead_id: "ms-alpha.bead-2".to_owned(),
+        bead_title: "Bootstrap bead-backed task creation".to_owned(),
+        bead_description: Some(
+            "Create a project directly from milestone and bead context.".to_owned(),
+        ),
+        bead_acceptance_criteria: vec![
+            "Controller can create the project without manual setup".to_owned()
+        ],
+        bead_dependencies: vec!["ms-alpha.bead-1 (Define task-source metadata)".to_owned()],
+        already_planned_elsewhere: vec!["ms-alpha.bead-4 handles follow-up automation.".to_owned()],
+        review_policy: task_prompt_contract::default_review_policy(),
+        parent_epic_id: Some("ms-alpha.epic-1".to_owned()),
+        flow: FlowPreset::QuickDev,
+        plan_hash: Some("plan-hash-123".to_owned()),
+        plan_version: Some(3),
     }
 }
 
@@ -285,6 +316,50 @@ fn build_stage_prompt_omits_prior_outputs_section_when_current_cycle_has_no_comp
 
     assert!(!prompt.contains("## Prior Stage Outputs This Cycle"));
     assert!(prompt.contains("Only current-cycle outputs should appear."));
+}
+
+#[test]
+fn build_stage_prompt_surfaces_shared_bead_task_prompt_contract_guidance() {
+    let temp_dir = tempdir().expect("create temp dir");
+    let base_dir = temp_dir.path();
+    let project_id = ProjectId::new("prompt-builder-bead-contract").unwrap();
+    let run_id = RunId::new("run-20260314193208").unwrap();
+    let prompt_reference = "prompt.md";
+    let cursor = StageCursor::new(StageId::PlanAndImplement, 1, 1, 1).unwrap();
+    let contract = contract_for_stage(StageId::PlanAndImplement);
+
+    let events = vec![
+        project_created_event(&project_id),
+        journal::run_started_event(2, Utc::now(), &run_id, StageId::Planning, 20),
+    ];
+    write_prompt_fixture(
+        base_dir,
+        &project_id,
+        prompt_reference,
+        &render_bead_task_prompt(&sample_bead_context()),
+        &events,
+    );
+
+    let artifact_store = InMemoryArtifactStore { payloads: vec![] };
+    let prompt = build_stage_prompt(
+        &artifact_store,
+        base_dir,
+        &project_id,
+        &project_root(base_dir, &project_id),
+        prompt_reference,
+        BackendRole::Implementer,
+        &contract,
+        &run_id,
+        &cursor,
+        None,
+        None,
+    )
+    .expect("build prompt");
+
+    assert!(prompt.contains("## Task Prompt Contract"));
+    assert!(prompt.contains("bead_execution_prompt/1"));
+    assert!(prompt.contains("## Must-Do Scope"));
+    assert!(prompt.contains("## Already Planned Elsewhere"));
 }
 
 #[test]

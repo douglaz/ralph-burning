@@ -2,6 +2,7 @@ pub mod journal;
 pub mod model;
 pub mod queries;
 pub mod service;
+pub mod task_prompt_contract;
 
 pub const CONTEXT_NAME: &str = "project_run_record";
 

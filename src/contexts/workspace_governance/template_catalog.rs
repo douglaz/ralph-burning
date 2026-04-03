@@ -103,6 +103,8 @@ const STAGE_DEFAULT_TEMPLATE: &str = "\
 
 {{role_instruction}}
 
+{{task_prompt_contract}}\
+\n\n\
 ## Original Project Prompt
 
 {{project_prompt}}\
@@ -394,7 +396,7 @@ Gap Analysis:
 
 /// Stage template placeholders (shared by all stage IDs).
 const STAGE_REQUIRED: &[&str] = &["role_instruction", "project_prompt", "json_schema"];
-const STAGE_OPTIONAL: &[&str] = &["prior_outputs", "remediation"];
+const STAGE_OPTIONAL: &[&str] = &["task_prompt_contract", "prior_outputs", "remediation"];
 
 /// Return the manifest for a known template ID, or `None` if unrecognized.
 pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {

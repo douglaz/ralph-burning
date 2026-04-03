@@ -480,6 +480,7 @@ fn sample_bead_context() -> BeadProjectContext {
             "Create bead-backed tasks without manual setup".to_owned(),
             "Keep run start compatibility intact".to_owned(),
         ],
+        milestone_non_goals: vec!["Do not absorb unrelated future-bead work".to_owned()],
         milestone_constraints: vec!["Reuse the current project substrate".to_owned()],
         agents_guidance: Some("Follow AGENTS.md and keep changes inspectable.".to_owned()),
         bead_id: "ms-alpha.bead-2".to_owned(),
@@ -495,6 +496,12 @@ fn sample_bead_context() -> BeadProjectContext {
             "ms-alpha.bead-1 (Define task-source metadata)".to_owned(),
             "ms-alpha.epic-1 (Task substrate epic)".to_owned(),
         ],
+        already_planned_elsewhere: vec![
+            "ms-alpha.bead-4 handles dependency-driven follow-up work.".to_owned(),
+        ],
+        review_policy:
+            ralph_burning::contexts::project_run_record::task_prompt_contract::default_review_policy(
+            ),
         parent_epic_id: Some("ms-alpha.epic-1".to_owned()),
         flow: FlowPreset::QuickDev,
         plan_hash: Some("plan-hash-123".to_owned()),
@@ -723,12 +730,33 @@ fn render_bead_task_prompt_includes_milestone_scope_and_agents_guidance() {
     let prompt = render_bead_task_prompt(&sample_bead_context());
 
     assert!(prompt.contains("This project executes bead `ms-alpha.bead-2`"));
+    assert!(prompt.contains("bead_execution_prompt"));
     assert!(prompt.contains("## Milestone Summary"));
-    assert!(prompt.contains("## Active Bead"));
-    assert!(prompt.contains("## Dependencies"));
+    assert!(prompt.contains("## Current Bead Details"));
+    assert!(prompt.contains("## Must-Do Scope"));
+    assert!(prompt.contains("## Explicit Non-Goals"));
     assert!(prompt.contains("## Acceptance Criteria"));
-    assert!(prompt.contains("## AGENTS Guidance"));
+    assert!(prompt.contains("## Already Planned Elsewhere"));
+    assert!(prompt.contains("## Review Policy"));
+    assert!(prompt.contains("## AGENTS / Repo Guidance"));
     assert!(prompt.contains("Follow AGENTS.md and keep changes inspectable."));
+}
+
+#[test]
+fn render_bead_task_prompt_is_deterministic_for_hashing_and_drift_checks() {
+    let context = sample_bead_context();
+    let first = render_bead_task_prompt(&context);
+    let second = render_bead_task_prompt(&context);
+
+    assert_eq!(first, second);
+    assert!(first.contains("<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->"));
+    let milestone_index = first.find("## Milestone Summary").unwrap();
+    let bead_index = first.find("## Current Bead Details").unwrap();
+    let scope_index = first.find("## Must-Do Scope").unwrap();
+    let review_index = first.find("## Review Policy").unwrap();
+    assert!(milestone_index < bead_index);
+    assert!(bead_index < scope_index);
+    assert!(scope_index < review_index);
 }
 
 #[test]
@@ -769,7 +797,7 @@ fn create_project_from_bead_context_bootstraps_task_metadata_and_prompt() {
     );
     assert_eq!(task_source.plan_hash.as_deref(), Some("plan-hash-123"));
     assert_eq!(task_source.plan_version, Some(3));
-    assert!(captured.prompt_contents.contains("## Active Bead"));
+    assert!(captured.prompt_contents.contains("## Current Bead Details"));
     assert!(captured
         .prompt_contents
         .contains("Bootstrap bead-backed task creation"));
