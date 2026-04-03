@@ -3223,10 +3223,22 @@ mod tests {
 
         let req_store = FsRequirementsStore;
         let mut run = req_store.read_run(base, &run_id).expect("read run");
+        let payload_id = run
+            .latest_milestone_bundle_id
+            .clone()
+            .expect("payload id should exist");
         let mut bundle = run.milestone_bundle.clone().expect("bundle");
         bundle.schema_version += 1;
-        run.milestone_bundle = Some(bundle);
+        run.milestone_bundle = Some(bundle.clone());
         req_store.write_run(base, &run_id, &run).expect("write run");
+        req_store
+            .write_payload(
+                base,
+                &run_id,
+                &payload_id,
+                &serde_json::to_value(&bundle).expect("serialize invalid bundle"),
+            )
+            .expect("write invalid payload");
 
         let daemon_store = FsDaemonStore;
         daemon_store
