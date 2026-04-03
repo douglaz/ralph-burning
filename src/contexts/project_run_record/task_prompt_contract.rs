@@ -57,6 +57,18 @@ fn contract_identifier() -> String {
     )
 }
 
+fn canonical_section_heading_index(line: &str) -> Option<usize> {
+    let title = line.trim().strip_prefix("## ")?;
+    BEAD_TASK_PROMPT_SECTION_TITLES
+        .iter()
+        .position(|section| *section == title)
+}
+
+fn is_fence_delimiter(line: &str) -> bool {
+    let trimmed = line.trim();
+    trimmed.starts_with("```") || trimmed.starts_with("~~~")
+}
+
 fn consumer_guidance_body() -> String {
     let mut out = String::new();
     out.push_str(&format!(
@@ -128,32 +140,41 @@ pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> 
         ));
     }
 
-    let trimmed_lines: Vec<&str> = prompt.lines().map(str::trim).collect();
-    let mut ordered_heading_positions = Vec::new();
-    for section in BEAD_TASK_PROMPT_SECTION_TITLES {
-        let heading = format!("## {section}");
-        let matches = trimmed_lines
-            .iter()
-            .enumerate()
-            .filter_map(|(index, line)| (*line == heading).then_some(index))
-            .collect::<Vec<_>>();
-        match matches.as_slice() {
-            [index] => ordered_heading_positions.push((heading, *index)),
-            [] => errors.push(format!("missing section heading `{heading}`")),
-            _ => errors.push(format!(
-                "section heading `{heading}` must appear exactly once"
-            )),
+    let mut seen_positions = vec![None; BEAD_TASK_PROMPT_SECTION_TITLES.len()];
+    let mut expected_index = 0usize;
+    let mut in_fence = false;
+
+    for (line_index, line) in prompt.lines().enumerate() {
+        if is_fence_delimiter(line) {
+            in_fence = !in_fence;
+            continue;
+        }
+        if in_fence {
+            continue;
+        }
+
+        let Some(found_index) = canonical_section_heading_index(line) else {
+            continue;
+        };
+
+        if expected_index < BEAD_TASK_PROMPT_SECTION_TITLES.len() && found_index == expected_index {
+            seen_positions[found_index] = Some(line_index);
+            expected_index += 1;
+            continue;
+        }
+
+        if let Some(expected_section) = BEAD_TASK_PROMPT_SECTION_TITLES.get(expected_index) {
+            let heading = format!("## {}", BEAD_TASK_PROMPT_SECTION_TITLES[found_index]);
+            let expected_heading = format!("## {expected_section}");
+            errors.push(format!(
+                "unexpected canonical heading `{heading}` before `{expected_heading}`"
+            ));
         }
     }
 
-    for window in ordered_heading_positions.windows(2) {
-        let [(previous_heading, previous_index), (heading, index)] = window else {
-            continue;
-        };
-        if index <= previous_index {
-            errors.push(format!(
-                "section heading `{heading}` appears out of order (after `{previous_heading}` in the contract)"
-            ));
+    for (index, section) in BEAD_TASK_PROMPT_SECTION_TITLES.iter().enumerate() {
+        if seen_positions[index].is_none() {
+            errors.push(format!("missing section heading `## {section}`"));
         }
     }
 
@@ -236,9 +257,9 @@ mod tests {
         );
 
         let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
-        assert!(errors.iter().any(|error| {
-            error.contains("section heading `## Acceptance Criteria` must appear exactly once")
-        }));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("unexpected canonical heading `## Acceptance Criteria`")));
     }
 
     #[test]
@@ -250,7 +271,27 @@ mod tests {
 
         let errors = validate_canonical_prompt_shape(&prompt).expect_err("shape should fail");
         assert!(errors.iter().any(|error| {
-            error.contains("section heading `## Acceptance Criteria` appears out of order")
+            error.contains("unexpected canonical heading `## Acceptance Criteria`")
         }));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_allows_verbatim_agents_guidance_with_canonical_heading_lines() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nFollow repo guidance verbatim.\n\n## Review Policy\n\nThis heading belongs to the embedded AGENTS snippet, not the canonical contract.",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
+    }
+
+    #[test]
+    fn canonical_prompt_shape_ignores_canonical_headings_inside_fenced_examples() {
+        let prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\n```md\n## Acceptance Criteria\n```\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+
+        assert!(validate_canonical_prompt_shape(&prompt).is_ok());
     }
 }

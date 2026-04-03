@@ -374,10 +374,24 @@ pub fn create_project_from_bead_context(
         &context.milestone_id,
         &context.bead_id,
     )?);
-    let prompt_contents = match prompt_override {
-        Some(prompt) => prompt,
-        None => render_bead_task_prompt(&context),
+    let (prompt_contents, prompt_path) = match prompt_override {
+        Some(prompt) => (prompt, "<prompt override>".to_owned()),
+        None => (
+            render_bead_task_prompt(&context),
+            "generated bead task prompt".to_owned(),
+        ),
     };
+    if task_prompt_contract::prompt_uses_contract(&prompt_contents) {
+        task_prompt_contract::validate_canonical_prompt_shape(&prompt_contents).map_err(
+            |errors| AppError::InvalidPrompt {
+                path: prompt_path.clone(),
+                reason: format!(
+                    "canonical bead task contract violated: {}",
+                    errors.join("; ")
+                ),
+            },
+        )?;
+    }
     let prompt_hash = FileSystem::prompt_hash(&prompt_contents);
 
     let mut initial_details = serde_json::Map::from_iter([
@@ -497,21 +511,6 @@ fn section_kind_for_bead_description_line(line: &str) -> Option<BeadDescriptionS
         .and_then(bead_description_section_kind_from_label)
 }
 
-fn is_plain_section_label_line(line: &str) -> bool {
-    let trimmed = line.trim();
-    let Some(label) = trimmed.strip_suffix(':') else {
-        return false;
-    };
-    !label.is_empty()
-        && label
-            .chars()
-            .all(|ch| ch.is_ascii_alphabetic() || matches!(ch, ' ' | '-' | '/'))
-}
-
-fn is_bead_description_section_boundary(line: &str) -> bool {
-    markdown_heading_title(line).is_some() || is_plain_section_label_line(line)
-}
-
 fn collect_non_goal_items(lines: &[String]) -> Vec<String> {
     let mut items = Vec::new();
     let mut current = String::new();
@@ -572,7 +571,7 @@ fn split_bead_description_scope(description: &str) -> (String, Vec<String>) {
             continue;
         }
 
-        if active_section.is_some() && is_bead_description_section_boundary(line) {
+        if active_section.is_some() && markdown_heading_title(line).is_some() {
             active_section = None;
         }
 

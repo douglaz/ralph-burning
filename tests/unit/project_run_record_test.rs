@@ -801,6 +801,52 @@ fn render_bead_task_prompt_extracts_bead_local_non_goals_and_strips_embedded_con
 }
 
 #[test]
+fn render_bead_task_prompt_keeps_plain_subsections_inside_non_goals() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- update the canonical prompt generator\n\nNon-goals:\nExamples:\n- do not change CLI\n- do not rewrite the workflow engine\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!must_do_section.contains("Examples:"));
+    assert!(!must_do_section.contains("do not change CLI"));
+    assert!(prompt.contains("- do not change CLI"));
+    assert!(prompt.contains("- do not rewrite the workflow engine"));
+}
+
+#[test]
+fn render_bead_task_prompt_keeps_plain_subsections_inside_embedded_acceptance_criteria() {
+    let mut context = sample_bead_context();
+    context.bead_description = Some(
+        "Scope:\n- keep the contract explicit\n\n## Acceptance Criteria\nNotes:\n- keep the rendered contract stable\n- keep downstream consumers aligned\n".to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    let must_do_start = prompt
+        .find("## Must-Do Scope")
+        .expect("must-do section should exist");
+    let non_goals_start = prompt
+        .find("## Explicit Non-Goals")
+        .expect("non-goals section should exist");
+    let must_do_section = &prompt[must_do_start..non_goals_start];
+
+    assert!(must_do_section.contains("Scope:"));
+    assert!(!must_do_section.contains("Notes:"));
+    assert!(!must_do_section.contains("keep the rendered contract stable"));
+}
+
+#[test]
 fn rendered_bead_task_prompt_with_embedded_sections_still_satisfies_contract_shape() {
     let mut context = sample_bead_context();
     context.bead_description = Some(
@@ -897,6 +943,37 @@ fn create_project_from_bead_context_respects_explicit_project_id_and_prompt_over
             "# Custom Prompt\nUse the explicit prompt."
         )
     );
+}
+
+#[test]
+fn create_project_from_bead_context_rejects_invalid_canonical_prompt_override() {
+    let store = RecordingProjectStore::empty();
+    let journal_store = FakeJournalStore;
+
+    let error = create_project_from_bead_context(
+        &store,
+        &journal_store,
+        &dummy_base_dir(),
+        CreateProjectFromBeadContextInput {
+            project_id: Some(ProjectId::new("custom-task").unwrap()),
+            prompt_override: Some(format!(
+                "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nOnly one section.",
+                ralph_burning::contexts::project_run_record::task_prompt_contract::contract_marker(
+                )
+            )),
+            created_at: test_timestamp(),
+            context: sample_bead_context(),
+        },
+    )
+    .expect_err("invalid canonical override should fail");
+
+    assert!(matches!(
+        error,
+        AppError::InvalidPrompt { ref path, ref reason }
+            if path == "<prompt override>"
+                && reason.contains("canonical bead task contract violated")
+                && reason.contains("## Current Bead Details")
+    ));
 }
 
 #[test]
