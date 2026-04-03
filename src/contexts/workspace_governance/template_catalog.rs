@@ -138,6 +138,8 @@ untestable claims, implicit assumptions, and scope gaps.
 Return only JSON. Put the rewritten prompt in `refined_prompt`, summarize \
 the changes in `refinement_summary`, and list the key improvements in `improvements`.
 
+{{task_prompt_contract}}\
+\n\n\
 {{prior_concerns}}
 ## Prompt to Review
 
@@ -166,6 +168,8 @@ requirements, and could be handed to an implementation agent without further cla
 4. If rejecting, your reason must be specific and actionable — explain exactly \
 what is wrong and how to fix it.
 
+{{task_prompt_contract}}\
+\n\n\
 ## Prompt to Validate
 
 {{prompt_text}}
@@ -200,6 +204,8 @@ requirement to the feature that satisfies it.
 If requirements are missing or incomplete, vote CONTINUE and list what is \
 still needed.
 
+{{task_prompt_contract}}\
+\n\n\
 ## Project Prompt
 
 {{prompt_text}}
@@ -224,6 +230,8 @@ end-to-end. For each issue found, cite specific files and line numbers.
 Ignore style and cosmetics — only report real bugs, safety problems, \
 correctness gaps, and significant maintainability risks.
 
+{{task_prompt_contract}}\
+\n\n\
 ## Project Prompt
 
 {{project_prompt}}
@@ -415,25 +423,25 @@ pub fn manifest_for(template_id: &str) -> Option<TemplateManifest> {
         "prompt_review_refiner" => Some(TemplateManifest {
             template_id: "prompt_review_refiner",
             required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &["prior_concerns"],
+            optional_placeholders: &["task_prompt_contract", "prior_concerns"],
             built_in_default: PROMPT_REVIEW_REFINER_DEFAULT,
         }),
         "prompt_review_validator" => Some(TemplateManifest {
             template_id: "prompt_review_validator",
             required_placeholders: &["role_label", "prompt_text", "json_schema"],
-            optional_placeholders: &[],
+            optional_placeholders: &["task_prompt_contract"],
             built_in_default: PROMPT_REVIEW_VALIDATOR_DEFAULT,
         }),
         "completion_panel_completer" => Some(TemplateManifest {
             template_id: "completion_panel_completer",
             required_placeholders: &["prompt_text", "json_schema"],
-            optional_placeholders: &[],
+            optional_placeholders: &["task_prompt_contract"],
             built_in_default: COMPLETION_PANEL_COMPLETER_DEFAULT,
         }),
         "final_review_reviewer" => Some(TemplateManifest {
             template_id: "final_review_reviewer",
             required_placeholders: &["project_prompt", "json_schema"],
-            optional_placeholders: &[],
+            optional_placeholders: &["task_prompt_contract"],
             built_in_default: FINAL_REVIEW_REVIEWER_DEFAULT,
         }),
         "final_review_voter" => Some(TemplateManifest {
@@ -954,6 +962,7 @@ mod tests {
         let m = manifest_for("completion_panel_completer").expect("completer manifest");
         assert!(m.required_placeholders.contains(&"prompt_text"));
         assert!(m.required_placeholders.contains(&"json_schema"));
+        assert!(m.optional_placeholders.contains(&"task_prompt_contract"));
     }
 
     #[test]

@@ -29,6 +29,7 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
     PromptRefinementPayload, PromptReviewDecision, PromptReviewPrimaryPayload,
     PromptValidationPayload, RecordKind, RecordProducer,
@@ -241,6 +242,16 @@ where
         if reject_count == 0 {
             // Success: all validators accepted.
             let refined = refinement.refined_prompt.clone();
+            if task_prompt_contract::prompt_uses_contract(&original_prompt) {
+                task_prompt_contract::validate_canonical_prompt_shape(&refined).map_err(
+                    |errors| AppError::PromptReviewRejected {
+                        details: format!(
+                            "refined prompt no longer satisfies the canonical bead task contract: {}",
+                            errors.join("; ")
+                        ),
+                    },
+                )?;
+            }
             let primary = PromptReviewPrimaryPayload {
                 decision: PromptReviewDecision::Accepted,
                 refined_prompt: refinement.refined_prompt,
@@ -292,6 +303,33 @@ fn format_prior_concerns(concerns: &[String]) -> String {
     section
 }
 
+fn build_prompt_review_member_prompt(
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+    prompt_text: &str,
+    role_label: &str,
+    schema_str: &str,
+    extra_values: &[(&str, &str)],
+) -> AppResult<String> {
+    let template_id = if role_label == "refiner" {
+        "prompt_review_refiner"
+    } else {
+        "prompt_review_validator"
+    };
+    let task_prompt_contract_block =
+        task_prompt_contract::prompt_review_consumer_guidance_for_prompt(prompt_text);
+
+    let mut values: Vec<(&str, &str)> = vec![
+        ("role_label", role_label),
+        ("prompt_text", prompt_text),
+        ("task_prompt_contract", task_prompt_contract_block.as_str()),
+        ("json_schema", schema_str),
+    ];
+    values.extend_from_slice(extra_values);
+
+    template_catalog::resolve_and_render(template_id, base_dir, project_id, &values)
+}
+
 /// Invoke a single panel member (refiner or validator) and return the raw parsed payload.
 #[allow(clippy::too_many_arguments)]
 async fn invoke_panel_member<A, R, S>(
@@ -327,21 +365,14 @@ where
 
     let schema = super::panel_contracts::panel_json_schema(stage_id, role_label);
     let schema_str = serde_json::to_string_pretty(&schema)?;
-
-    let template_id = if role_label == "refiner" {
-        "prompt_review_refiner"
-    } else {
-        "prompt_review_validator"
-    };
-
-    let mut values: Vec<(&str, &str)> = vec![
-        ("role_label", role_label),
-        ("prompt_text", prompt_text),
-        ("json_schema", &schema_str),
-    ];
-    values.extend_from_slice(extra_values);
-
-    let prompt = template_catalog::resolve_and_render(template_id, base_dir, project_id, &values)?;
+    let prompt = build_prompt_review_member_prompt(
+        base_dir,
+        project_id,
+        prompt_text,
+        role_label,
+        &schema_str,
+        extra_values,
+    )?;
 
     let request = InvocationRequest {
         invocation_id,
@@ -433,4 +464,46 @@ fn persist_supporting_record(
         &payload_record,
         &artifact_record,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    const CANONICAL_PROMPT: &str = "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH";
+
+    #[test]
+    fn build_prompt_review_member_prompt_surfaces_contract_guidance() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            CANONICAL_PROMPT,
+            "refiner",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("preserve the exact contract marker line"));
+    }
+
+    #[test]
+    fn build_prompt_review_member_prompt_omits_contract_guidance_for_generic_prompt() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_prompt_review_member_prompt(
+            tmp.path(),
+            None,
+            "# Prompt\n\nGeneric.",
+            "validator",
+            "{}",
+            &[],
+        )
+        .expect("render prompt");
+
+        assert!(!prompt.contains("## Task Prompt Contract"));
+    }
 }

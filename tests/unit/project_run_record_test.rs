@@ -760,6 +760,21 @@ fn render_bead_task_prompt_is_deterministic_for_hashing_and_drift_checks() {
 }
 
 #[test]
+fn render_bead_task_prompt_preserves_multiline_agents_guidance_verbatim() {
+    let mut context = sample_bead_context();
+    context.agents_guidance = Some(
+        "### Repo Notes\n\n- Preserve existing markdown blocks.\n\n```bash\nbr ready\n```"
+            .to_owned(),
+    );
+
+    let prompt = render_bead_task_prompt(&context);
+
+    assert!(prompt.contains("### Repo Notes"));
+    assert!(prompt.contains("```bash\nbr ready\n```"));
+    assert!(!prompt.contains("- ### Repo Notes"));
+}
+
+#[test]
 fn create_project_from_bead_context_bootstraps_task_metadata_and_prompt() {
     let store = RecordingProjectStore::empty();
     let journal_store = FakeJournalStore;

@@ -106,12 +106,8 @@ pub fn build_stage_prompt(
     )?;
     let schema =
         serde_json::to_string_pretty(&InvocationContract::Stage(*contract).json_schema_value())?;
-    let task_prompt_contract_block = if task_prompt_contract::prompt_uses_contract(&project_prompt)
-    {
-        task_prompt_contract::stage_consumer_guidance()
-    } else {
-        String::new()
-    };
+    let task_prompt_contract_block =
+        task_prompt_contract::stage_consumer_guidance_for_prompt(&project_prompt);
 
     // Pre-render optional sections
     let prior_outputs_block = if !prior_outputs.is_empty() {

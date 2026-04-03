@@ -337,7 +337,11 @@ async fn handle_create_from_bead(args: CreateFromBeadArgs) -> AppResult<()> {
             .filter(|dependency| dependency.kind == DependencyKind::Blocks)
             .map(format_dependency_reference)
             .collect(),
-        already_planned_elsewhere: Vec::new(),
+        already_planned_elsewhere: bead
+            .dependents
+            .iter()
+            .map(format_dependency_reference)
+            .collect(),
         review_policy:
             crate::contexts::project_run_record::task_prompt_contract::default_review_policy(),
         parent_epic_id: infer_parent_epic_id(&bead),

@@ -50,18 +50,18 @@ pub fn contract_marker() -> String {
     )
 }
 
-/// Return whether the prompt declares the canonical bead task prompt contract.
-pub fn prompt_uses_contract(prompt: &str) -> bool {
-    prompt.lines().any(|line| line.trim() == contract_marker())
+fn contract_identifier() -> String {
+    format!(
+        "{BEAD_TASK_PROMPT_CONTRACT_NAME}/{}",
+        BEAD_TASK_PROMPT_CONTRACT_VERSION
+    )
 }
 
-/// Guidance injected into workflow stage prompts when the project prompt uses
-/// the canonical bead task prompt contract.
-pub fn stage_consumer_guidance() -> String {
-    let mut out = String::from("## Task Prompt Contract\n\n");
+fn consumer_guidance_body() -> String {
+    let mut out = String::new();
     out.push_str(&format!(
-        "The project prompt below uses `{BEAD_TASK_PROMPT_CONTRACT_NAME}/{}.`\n\n",
-        BEAD_TASK_PROMPT_CONTRACT_VERSION
+        "The project prompt below uses `{}`.\n\n",
+        contract_identifier()
     ));
     out.push_str("Treat these sections as authoritative:\n");
     for section in BEAD_TASK_PROMPT_SECTION_TITLES {
@@ -71,6 +71,85 @@ pub fn stage_consumer_guidance() -> String {
         "\nUse `Must-Do Scope` plus `Acceptance Criteria` as the in-scope boundary. Treat `Explicit Non-Goals` and `Already Planned Elsewhere` as out-of-scope unless the work is strictly required to satisfy the active bead.",
     );
     out
+}
+
+/// Return whether the prompt declares the canonical bead task prompt contract.
+pub fn prompt_uses_contract(prompt: &str) -> bool {
+    prompt.lines().any(|line| line.trim() == contract_marker())
+}
+
+/// Guidance injected into workflow stage prompts when the project prompt uses
+/// the canonical bead task prompt contract.
+pub fn stage_consumer_guidance() -> String {
+    let mut out = String::from("## Task Prompt Contract\n\n");
+    out.push_str(&consumer_guidance_body());
+    out
+}
+
+/// Guidance injected into prompt-review templates when the prompt uses the
+/// canonical bead task prompt contract.
+pub fn prompt_review_consumer_guidance() -> String {
+    let mut out = stage_consumer_guidance();
+    out.push_str(&format!(
+        "\n\nIf you rewrite the prompt, preserve the exact contract marker line `{}` and keep the canonical section headings in the same order.",
+        contract_marker()
+    ));
+    out.push_str(
+        "\n\nPreserve milestone-provided `AGENTS / Repo Guidance` verbatim instead of rewriting it into synthesized bullets.",
+    );
+    out
+}
+
+/// Return stage-consumer guidance when the prompt uses the canonical contract.
+pub fn stage_consumer_guidance_for_prompt(prompt: &str) -> String {
+    if prompt_uses_contract(prompt) {
+        stage_consumer_guidance()
+    } else {
+        String::new()
+    }
+}
+
+/// Return prompt-review guidance when the prompt uses the canonical contract.
+pub fn prompt_review_consumer_guidance_for_prompt(prompt: &str) -> String {
+    if prompt_uses_contract(prompt) {
+        prompt_review_consumer_guidance()
+    } else {
+        String::new()
+    }
+}
+
+/// Validate that a prompt preserves the canonical marker and section order.
+pub fn validate_canonical_prompt_shape(prompt: &str) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    if !prompt_uses_contract(prompt) {
+        errors.push(format!(
+            "missing exact contract marker `{}`",
+            contract_marker()
+        ));
+    }
+
+    let headings: Vec<&str> = prompt.lines().map(str::trim).collect();
+    let mut previous_heading_index = None;
+    for section in BEAD_TASK_PROMPT_SECTION_TITLES {
+        let heading = format!("## {section}");
+        match headings.iter().position(|line| *line == heading) {
+            Some(index) => {
+                if let Some(previous_index) = previous_heading_index {
+                    if index <= previous_index {
+                        errors.push(format!("section heading `{heading}` is out of order"));
+                    }
+                }
+                previous_heading_index = Some(index);
+            }
+            None => errors.push(format!("missing section heading `{heading}`")),
+        }
+    }
+
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// Default review policy for canonical bead execution prompts.
@@ -108,5 +187,32 @@ mod tests {
         for section in BEAD_TASK_PROMPT_SECTION_TITLES {
             assert!(guidance.contains(section));
         }
+        assert!(guidance.contains("`bead_execution_prompt/1`."));
+    }
+
+    #[test]
+    fn prompt_review_guidance_requires_exact_marker_preservation() {
+        let guidance = prompt_review_consumer_guidance();
+        assert!(guidance.contains(&contract_marker()));
+        assert!(guidance.contains("keep the canonical section headings in the same order"));
+    }
+
+    #[test]
+    fn canonical_prompt_shape_requires_marker_and_all_sections() {
+        let valid_prompt = format!(
+            "{}\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            contract_marker()
+        );
+        assert!(validate_canonical_prompt_shape(&valid_prompt).is_ok());
+
+        let invalid_prompt = "# Ralph Task Prompt\n\n## Milestone Summary\n\nA".to_owned();
+        let errors =
+            validate_canonical_prompt_shape(&invalid_prompt).expect_err("shape should fail");
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("missing exact contract marker")));
+        assert!(errors
+            .iter()
+            .any(|error| error.contains("## Current Bead Details")));
     }
 }

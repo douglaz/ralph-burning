@@ -34,6 +34,7 @@ use crate::contexts::project_run_record::model::{
 use crate::contexts::project_run_record::service::{
     JournalStorePort, PayloadArtifactWritePort, RuntimeLogWritePort,
 };
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
     FinalReviewAggregatePayload, FinalReviewAmendmentSource, FinalReviewArbiterPayload,
     FinalReviewCanonicalAmendment, FinalReviewProposalPayload, FinalReviewVoteDecision,
@@ -1581,11 +1582,14 @@ fn build_reviewer_prompt(
 ) -> AppResult<String> {
     let schema = super::panel_contracts::panel_json_schema(StageId::FinalReview, "reviewer");
     let schema_str = serde_json::to_string_pretty(&schema)?;
+    let task_prompt_contract_block =
+        task_prompt_contract::stage_consumer_guidance_for_prompt(project_prompt);
     template_catalog::resolve_and_render(
         "final_review_reviewer",
         base_dir,
         project_id,
         &[
+            ("task_prompt_contract", task_prompt_contract_block.as_str()),
             ("project_prompt", project_prompt),
             ("json_schema", &schema_str),
         ],
@@ -2148,6 +2152,20 @@ mod tests {
         std::fs::create_dir_all(&template_dir)?;
         std::fs::write(template_dir.join(format!("{template_id}.md")), content)?;
         Ok(())
+    }
+
+    #[test]
+    fn build_reviewer_prompt_surfaces_task_prompt_contract_guidance() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_reviewer_prompt(
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            tmp.path(),
+            None,
+        )
+        .expect("reviewer prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("## Already Planned Elsewhere"));
     }
 
     fn proposal_record(reviewer_id: &str, body: &str) -> ReviewerProposalRecord {

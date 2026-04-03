@@ -557,15 +557,11 @@ pub fn render_bead_task_prompt(context: &BeadProjectContext) -> String {
         &context.review_policy,
         "Use the active bead scope as the review boundary.",
     );
-    let repo_guidance = {
-        let mut lines =
-            vec!["- Follow the repository AGENTS.md instructions for this repo.".to_owned()];
-        if let Some(guidance) = &context.agents_guidance {
-            lines.push(format!("- {guidance}"));
-        } else {
-            lines.push("- No milestone-specific AGENTS guidance was supplied.".to_owned());
-        }
-        lines.join("\n")
+    let repo_guidance = match &context.agents_guidance {
+        Some(guidance) => format!(
+            "Follow the repository AGENTS.md instructions for this repo.\n\n{guidance}"
+        ),
+        None => "Follow the repository AGENTS.md instructions for this repo.\n\nNo milestone-specific AGENTS guidance was supplied.".to_owned(),
     };
 
     vec![

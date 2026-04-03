@@ -1883,6 +1883,7 @@ exit 1
     assert!(prompt.contains("Keep changes inspectable and deterministic."));
     assert!(prompt
         .contains("- Blocking dependencies:\n  - ms-alpha.bead-1 (Define task-source metadata)"));
+    assert!(prompt.contains("## Already Planned Elsewhere\n\n- ms-alpha.bead-3 (Child bead)"));
     assert!(!prompt.contains("- ms-alpha.epic-1 (Task Substrate)"));
     assert!(!prompt.contains("Parent epic: `ms-alpha.bead-3`"));
 

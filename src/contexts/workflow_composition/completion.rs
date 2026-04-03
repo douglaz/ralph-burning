@@ -28,6 +28,7 @@ use crate::contexts::agent_execution::session::SessionStorePort;
 use crate::contexts::agent_execution::AgentExecutionService;
 use crate::contexts::project_run_record::model::{ArtifactRecord, PayloadRecord};
 use crate::contexts::project_run_record::service::{PayloadArtifactWritePort, RuntimeLogWritePort};
+use crate::contexts::project_run_record::task_prompt_contract;
 use crate::contexts::workflow_composition::panel_contracts::{
     CompletionAggregatePayload, CompletionVerdict, CompletionVotePayload, RecordKind,
     RecordProducer,
@@ -67,6 +68,26 @@ pub fn compute_completion_verdict(
     } else {
         CompletionVerdict::ContinueWork
     }
+}
+
+fn build_completer_prompt(
+    base_dir: &Path,
+    project_id: Option<&ProjectId>,
+    prompt_text: &str,
+    schema_str: &str,
+) -> AppResult<String> {
+    let task_prompt_contract_block =
+        task_prompt_contract::stage_consumer_guidance_for_prompt(prompt_text);
+    template_catalog::resolve_and_render(
+        "completion_panel_completer",
+        base_dir,
+        project_id,
+        &[
+            ("task_prompt_contract", task_prompt_contract_block.as_str()),
+            ("prompt_text", prompt_text),
+            ("json_schema", schema_str),
+        ],
+    )
 }
 
 /// Execute the completion panel workflow.
@@ -248,12 +269,7 @@ where
     let schema = super::panel_contracts::panel_json_schema(stage_id, "completer");
     let schema_str = serde_json::to_string_pretty(&schema)?;
 
-    let prompt = template_catalog::resolve_and_render(
-        "completion_panel_completer",
-        base_dir,
-        project_id,
-        &[("prompt_text", prompt_text), ("json_schema", &schema_str)],
-    )?;
+    let prompt = build_completer_prompt(base_dir, project_id, prompt_text, &schema_str)?;
 
     let request = InvocationRequest {
         invocation_id,
@@ -345,6 +361,37 @@ fn persist_supporting_record(
         &payload_record,
         &artifact_record,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+
+    use super::*;
+
+    #[test]
+    fn build_completer_prompt_surfaces_task_prompt_contract_guidance() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_completer_prompt(
+            tmp.path(),
+            None,
+            "<!-- ralph-task-prompt-contract: bead_execution_prompt/1 -->\n# Ralph Task Prompt\n\n## Milestone Summary\n\nA\n\n## Current Bead Details\n\nB\n\n## Must-Do Scope\n\nC\n\n## Explicit Non-Goals\n\nD\n\n## Acceptance Criteria\n\nE\n\n## Already Planned Elsewhere\n\nF\n\n## Review Policy\n\nG\n\n## AGENTS / Repo Guidance\n\nH",
+            "{}",
+        )
+        .expect("render prompt");
+
+        assert!(prompt.contains("## Task Prompt Contract"));
+        assert!(prompt.contains("## Must-Do Scope"));
+    }
+
+    #[test]
+    fn build_completer_prompt_omits_task_prompt_contract_guidance_for_generic_prompts() {
+        let tmp = tempdir().expect("tempdir");
+        let prompt = build_completer_prompt(tmp.path(), None, "# Prompt\n\nGeneric.", "{}")
+            .expect("render prompt");
+
+        assert!(!prompt.contains("## Task Prompt Contract"));
+    }
 }
 
 /// Persist the aggregate record for the completion panel.
